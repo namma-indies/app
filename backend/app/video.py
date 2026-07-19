@@ -11,13 +11,13 @@ The raw video bytes are never persisted -- only the resulting frame
 photos and discard the video.
 """
 
+import io
 import os
 import tempfile
 
 import imageio.v2 as imageio
 import imagehash
 from PIL import Image
-import io
 
 from app.photos import process_photo, ProcessedPhoto
 

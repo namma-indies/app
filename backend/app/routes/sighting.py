@@ -150,17 +150,25 @@ async def create_sighting(
         raise HTTPException(
             status_code=422, detail="at least one photo or a video is required"
         )
+    if photos and video is not None:
+        raise HTTPException(
+            status_code=422, detail="provide either photos or a video, not both"
+        )
 
     sighting_id = uuid7()
 
     processed_frames: list[ProcessedPhoto]
     if video is not None:
         try:
+            # Decoding is CPU-bound and can run for seconds on a long clip;
+            # off the event loop so it does not stall every other request.
             processed_frames = await run_in_threadpool(
                 extract_diverse_frames, await video.read()
             )
-        except ValueError as e:
-            raise HTTPException(status_code=422, detail=str(e))
+        except (ValueError, OSError, RuntimeError):
+            raise HTTPException(
+                status_code=422, detail="could not read video / no decodable frames"
+            )
         # The raw video is never persisted -- only the frames it yielded. Those
         # frames are also what the background tasks see, so dog-confidence and
         # the embedding score exactly the bytes we stored.

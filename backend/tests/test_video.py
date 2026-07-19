@@ -71,9 +71,17 @@ async def test_video_sighting_creates_multiple_frames(authed_client):
 @pytest.mark.asyncio
 async def test_video_frames_are_diverse_not_all(authed_client):
     client, _ = authed_client
-    # 3 unique looks, each repeated 4x -> 12 raw frames but should collapse
-    # to close to 3 kept frames (near-duplicates removed).
-    video_bytes = _make_video(_frames_with_duplicates(n_unique=3, repeats=4))
+    # 3 visually distinct looks, each repeated 7x -> 21 raw frames written at
+    # a low declared fps (2 fps) so that extract_diverse_frames' stride
+    # collapses to 1 (every frame sampled, capped at max_raw=20). That means
+    # >12 frames actually get sampled and passed through dedup -- unlike the
+    # old version of this test (12 frames @ fps=6 with target_fps=2, which
+    # only ever sampled ~4 frames, so the dedup path was never exercised).
+    # With heavy repetition, dedup must collapse the ~20 sampled frames down
+    # to roughly the 3 distinct visuals.
+    video_bytes = _make_video(
+        _frames_with_duplicates(n_unique=3, repeats=7), fps=2
+    )
     r = await client.post(
         "/sighting",
         files={"video": ("clip.mp4", video_bytes, "video/mp4")},
@@ -84,8 +92,21 @@ async def test_video_frames_are_diverse_not_all(authed_client):
     pool = client._transport.app.state.pool
     async with pool.acquire() as c:
         n = await c.fetchval("SELECT count(*) FROM photos WHERE sighting_id=$1", sid)
-    # 12 raw sampled frames collapsed down substantially due to dedup
-    assert n < 12
+    # ~20 near-duplicate-heavy sampled frames must collapse down to roughly
+    # the number of distinct visuals (3), proving dedup actually ran -- not
+    # just that the result stayed under some cap.
+    assert 2 <= n <= 4, f"expected dedup to collapse to ~3 distinct frames, got {n}"
+
+
+@pytest.mark.asyncio
+async def test_video_bad_upload_returns_422(authed_client):
+    client, _ = authed_client
+    r = await client.post(
+        "/sighting",
+        files={"video": ("clip.mp4", b"not a video", "video/mp4")},
+        data={"geo_source": "none", "captured_at": "2026-07-19T10:00:00Z"},
+    )
+    assert r.status_code == 422, r.text
 
 
 @pytest.mark.asyncio
