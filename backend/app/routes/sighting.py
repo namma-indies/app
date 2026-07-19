@@ -14,8 +14,9 @@ from app.deps import get_conn, get_storage
 from app.detect import DOG_CONF_THRESHOLD
 from app.detect_reid import animal_confidence
 from app.ids import uuid7
-from app.photos import process_photo
+from app.photos import process_photo, ProcessedPhoto
 from app.storage.s3 import S3Storage
+from app.video import extract_diverse_frames
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +126,8 @@ async def _score_and_save_dog_confidence(
 async def create_sighting(
     background_tasks: BackgroundTasks,
     request: Request,
-    photos: list[UploadFile] = File(...),
+    photos: list[UploadFile] | None = File(None),
+    video: UploadFile | None = File(None),
     lat: float | None = Form(None),
     lng: float | None = Form(None),
     geo_accuracy_m: float | None = Form(None),
@@ -144,17 +146,35 @@ async def create_sighting(
     conn=Depends(get_conn),
     storage: S3Storage = Depends(get_storage),
 ):
-    if not photos:
-        raise HTTPException(status_code=422, detail="at least one photo is required")
-
-    raws = [await f.read() for f in photos]
+    if not photos and video is None:
+        raise HTTPException(
+            status_code=422, detail="at least one photo or a video is required"
+        )
 
     sighting_id = uuid7()
 
+    processed_frames: list[ProcessedPhoto]
+    if video is not None:
+        try:
+            processed_frames = await run_in_threadpool(
+                extract_diverse_frames, await video.read()
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        # The raw video is never persisted -- only the frames it yielded. Those
+        # frames are also what the background tasks see, so dog-confidence and
+        # the embedding score exactly the bytes we stored.
+        raws = [p.original for p in processed_frames]
+    else:
+        # Read once. An UploadFile is a stream: reading it a second time yields
+        # b"", so `raws` has to be the single source for both the stored photo
+        # and the background tasks.
+        raws = [await f.read() for f in photos]
+        processed_frames = [process_photo(raw) for raw in raws]
+
     photo_rows = []
     first_phash: str | None = None
-    for raw in raws:
-        p = process_photo(raw)
+    for p in processed_frames:
         photo_id = uuid7()
         if first_phash is None:
             first_phash = p.phash
@@ -183,6 +203,8 @@ async def create_sighting(
         }.items()
         if v
     }
+    if from_video:
+        attrs["source"] = "video"
 
     async with conn.transaction():
         if geog_present:

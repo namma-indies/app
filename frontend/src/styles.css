@@ -221,6 +221,21 @@ button { font-family: inherit; }
 
 .hint { color: var(--muted); font-size: 0.88rem; text-align: center; }
 
+/* Secondary action that must not compete with the shutter: the clip is the
+   better evidence, but photo-first is still the fast path most sightings take. */
+.link-btn {
+  background: none;
+  border: 0;
+  padding: 0.35rem 0.5rem;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.9rem;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.link-btn:active { transform: translate(1px, 1px); }
+
 .filmstrip {
   display: flex;
   flex-wrap: wrap;
