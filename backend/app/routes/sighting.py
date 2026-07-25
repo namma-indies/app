@@ -1,18 +1,37 @@
 import json
+import logging
 from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
 from app.auth.deps import require_observer
 from app.deps import get_conn, get_storage
+from app.detect import DOG_CONF_THRESHOLD, dog_confidence
 from app.ids import uuid7
 from app.photos import process_photo
 from app.storage.s3 import S3Storage
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+
+async def _max_dog_confidence(raws: list[bytes]) -> float:
+    """Highest dog-confidence across the uploaded photos. Fails open: any
+    detector error (bad image, model issue) returns 1.0 so a broken gate never
+    blocks a legitimate capture."""
+    best = 0.0
+    for raw in raws:
+        try:
+            best = max(best, await run_in_threadpool(dog_confidence, raw))
+        except Exception:
+            logger.warning("dog detection failed; failing open", exc_info=True)
+            return 1.0
+    return best
 
 
 @router.post("/sighting")
@@ -28,6 +47,7 @@ async def create_sighting(
     sex: Literal["male", "female", "unsure"] | None = Form(None),
     ear_notch: Literal["none", "left", "right", "unsure"] | None = Form(None),
     condition: Literal["healthy", "injured", "unsure"] | None = Form(None),
+    override_no_dog: bool = Form(False),
     observer_id: UUID = Depends(require_observer),
     conn=Depends(get_conn),
     storage: S3Storage = Depends(get_storage),
@@ -35,12 +55,23 @@ async def create_sighting(
     if not photos:
         raise HTTPException(status_code=422, detail="at least one photo is required")
 
+    raws = [await f.read() for f in photos]
+
+    # Dog-presence gate. High-recall: block only when no photo shows a dog, and
+    # let the user override ("save anyway"). Fails open on detector errors.
+    if not override_no_dog:
+        conf = await _max_dog_confidence(raws)
+        if conf < DOG_CONF_THRESHOLD:
+            return JSONResponse(
+                status_code=422,
+                content={"reason": "no_dog", "confidence": round(conf, 3)},
+            )
+
     sighting_id = uuid7()
 
     photo_rows = []
     first_phash: str | None = None
-    for f in photos:
-        raw = await f.read()
+    for raw in raws:
         p = process_photo(raw)
         photo_id = uuid7()
         if first_phash is None:
