@@ -54,14 +54,24 @@ class MagicLinkProvider:
         return observer_id
 
 
+async def create_observer(
+    conn: asyncpg.Connection, *, display_name: str, created_via: str
+) -> UUID:
+    observer_id = uuid7()
+    await conn.execute(
+        "INSERT INTO observers (id, display_name, created_via) VALUES ($1, $2, $3)",
+        observer_id,
+        display_name,
+        created_via,
+    )
+    return observer_id
+
+
 async def create_observer_and_link(
     conn: asyncpg.Connection, *, display_name: str, base_url: str
 ) -> str:
-    observer_id = uuid7()
-    await conn.execute(
-        "INSERT INTO observers (id, display_name, created_via) VALUES ($1, $2, 'magic_link')",
-        observer_id,
-        display_name,
+    observer_id = await create_observer(
+        conn, display_name=display_name, created_via="magic_link"
     )
     token = MagicLinkProvider().mint(observer_id)
     return f"{base_url}/auth/magic-link/consume?token={token}"

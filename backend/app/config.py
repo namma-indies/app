@@ -11,6 +11,8 @@ class Settings(BaseSettings):
         "postgresql+psycopg://postgres:dev@localhost:5432/indiedex_test"
     )
 
+    join_passcode: str = "dev-join"  # shared passcode for the /join closed-pilot gate
+
     phone_hash_secret: str = "dev-phone-secret"
     session_secret: str = "dev-session-secret"
     magic_link_secret: str = "dev-magic-secret"

@@ -8,6 +8,14 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: "autoUpdate",
+      workbox: {
+        // Server-owned routes must reach the network, not the cached SPA shell.
+        // Without this the SW's navigateFallback serves index.html for the
+        // magic-link consume redirect and the /join gate, swallowing the
+        // Set-Cookie (login silently fails) and hiding the server-rendered
+        // /join page. Let these navigations pass through to the backend.
+        navigateFallbackDenylist: [/^\/auth\//, /^\/join/],
+      },
       manifest: {
         name: "indiedex — Namma Indies",
         short_name: "indiedex",
