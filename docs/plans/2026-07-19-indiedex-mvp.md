@@ -264,7 +264,7 @@ def test_session_roundtrip_and_tamper():
 
 ### Task E1: Photo processing (strip metadata, dimensions, phash)
 
-> **PENDING [issue #1](https://github.com/nammaindies/app/issues/1) (Aswin):** final format/fidelity + the video→frames path. Build the **conservative default below** so his answer is a config/derivative change, not a rewrite.
+> **PENDING [issue #1](https://github.com/namma-indies/app/issues/1) (Aswin):** final format/fidelity + the video→frames path. Build the **conservative default below** so his answer is a config/derivative change, not a rewrite.
 
 **Files:** Create `backend/app/photos.py`, `backend/tests/test_photos.py`.
 
@@ -380,7 +380,7 @@ export async function getDex(): Promise<{sightings: Sighting[]}>;
 
 **Files:** Create `frontend/src/screens/Dex.tsx`, `frontend/src/components/DogMap.tsx`.
 
-**Behavior:** `getDex()` → MapLibre map (OSM raster source behind a single style-URL swap — **PENDING [issue #2](https://github.com/nammaindies/app/issues/2) (Aswin) for the real provider**; OSM raster is the MVP placeholder) with a clustered pin per sighting; tap pin → photo + time + accuracy popup. Below/toggle: reverse-chron gallery grid; tap card → detail. Sightings with null geo render in the gallery only, flagged "no location."
+**Behavior:** `getDex()` → MapLibre map (OSM raster source behind a single style-URL swap — **PENDING [issue #2](https://github.com/namma-indies/app/issues/2) (Aswin) for the real provider**; OSM raster is the MVP placeholder) with a clustered pin per sighting; tap pin → photo + time + accuracy popup. Below/toggle: reverse-chron gallery grid; tap card → detail. Sightings with null geo render in the gallery only, flagged "no location."
 
 - [ ] **Acceptance (Playwright MCP):** after seeding 3 sightings for the authed observer, the map shows 3 pins (or a cluster) and the gallery shows 3 cards; another observer's sightings never appear. Commit `feat: IndieDex map + gallery`.
 
@@ -398,7 +398,7 @@ export async function getDex(): Promise<{sightings: Sighting[]}>;
 ### Task H2: Image registry + box bootstrap
 
 **Files:** Create `deploy/provision.md`.
-- [ ] Publish the image to **GHCR** (`ghcr.io/nammaindies/app`); on the VM install Docker + compose, log in to GHCR, pull. **DB host is a connection-string swap:** on-box `db` container for the pilot (per spec's single-VM principle), **RDS the likely production move** (RDS Postgres supports `postgis`+`vector`) — set via `DATABASE_URL`, no rework. **Acceptance:** `docker compose -f docker-compose.prod.yml pull` succeeds on the box; migrations run (`docker compose run app alembic upgrade head`); `psql` shows all 10 tables + `app_rw`/`public_read`.
+- [ ] Publish the image to **GHCR** (`ghcr.io/namma-indies/app`); on the VM install Docker + compose, log in to GHCR, pull. **DB host is a connection-string swap:** on-box `db` container for the pilot (per spec's single-VM principle), **RDS the likely production move** (RDS Postgres supports `postgis`+`vector`) — set via `DATABASE_URL`, no rework. **Acceptance:** `docker compose -f docker-compose.prod.yml pull` succeeds on the box; migrations run (`docker compose run app alembic upgrade head`); `psql` shows all 10 tables + `app_rw`/`public_read`.
 
 ### Task H3: S3 bucket + secrets + TLS domain
 

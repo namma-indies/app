@@ -33,7 +33,7 @@ cd ~/app && git pull origin main && \
   sudo docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-- `~/app` is a **git clone of `github.com/nammaindies/app` (public), branch `main`**.
+- `~/app` is a **git clone of `github.com/namma-indies/app` (public), branch `main`**.
 - `.env` (all secrets + `JOIN_PASSCODE`) is git-ignored and **lives only on the box** —
   never overwrite it on deploy. Rotating secrets = edit `.env`, `up -d`.
 - DB and TLS certs persist in named volumes (`app_pgdata`, `app_caddy_data`).

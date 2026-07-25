@@ -124,7 +124,7 @@ The MVP collects data; these light up the tables that already exist:
 
 - [ ] **Individuals & manual identity** — group sightings into named dogs by hand.
 - [ ] **Re-identification** — an embedding worker + geo/time-priored candidate matching (the core research bet).
-- [ ] **Video capture** — record a clip → extract diverse frames as one multi-view sighting *(in review: [#3](https://github.com/nammaindies/app/pull/3))*.
+- [ ] **Video capture** — record a clip → extract diverse frames as one multi-view sighting *(in review: [#3](https://github.com/namma-indies/app/pull/3))*.
 - [ ] **Public heatmap + population estimates** with honest confidence intervals.
 - [ ] **WhatsApp intake** for public contribution.
 
