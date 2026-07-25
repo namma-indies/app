@@ -23,3 +23,4 @@ Do not narrate implementation mechanics unless asked. Trust is that the code is 
 
 See `build-foundations.md` (stack, guardrails, north star) and `docs/specs/` for design specs.
 Current build: **IndieDex MVP** — `docs/specs/2026-07-19-indiedex-mvp-design.md`.
+For what's **actually deployed and how to operate it** (deploy, testers, dog gate, flags) see `docs/OPERATIONS.md`.
