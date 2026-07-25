@@ -89,11 +89,12 @@ The **full v2 migration ships day one** (all 10 tables from `docs/specs/2026-07-
 1. Camera button → native camera (`<input capture>` / `getUserMedia`) → one or more photos.
 2. On capture, silently read `navigator.geolocation` (lat/lng + accuracy) and the timestamp.
 3. Optional minimal `attrs`: a free-text note (quick chips like collar?/notch? may come later); stored in `attrs` jsonb.
-4. Submit → `POST /sighting` (multipart: photo bytes + geo + time) → photos to S3, rows to `sightings`/`photos`. Toast, return to camera.
+4. Submit → `POST /sighting` (multipart: photo bytes + geo + time). A **server-side dog-presence gate** (YOLOv8n via ONNX) checks the photos first; if none shows a dog it responds `no_dog` and the UI offers *save anyway*. On pass (or override) → photos to S3, rows to `sightings`/`photos`. Toast, return to camera. _(Added 2026-07-25; see `docs/OPERATIONS.md`.)_
 
 **Edge cases:**
 - GPS denied/slow → capture still succeeds; `geo_source='none'`, flagged for optional manual pin later. Capture is never blocked on a fix.
 - GPS present → `geo_source='device_gps'`, `geo_accuracy_m` from the browser.
+- No dog detected → warn + **save-anyway** override. High-recall threshold, and the gate **fails open** on any detector error so a real dog is never blocked. Offline captures bypass the gate (respect the user's save intent).
 - Offline → queue the capture locally (PWA/service worker + IndexedDB) and sync when signal returns.
 
 ### Screen 2 — IndieDex (browse the collection)
@@ -103,13 +104,17 @@ The **full v2 migration ships day one** (all 10 tables from `docs/specs/2026-07-
 
 ---
 
-## 5. Auth — pluggable, magic-link first
+## 5. Auth — pluggable; passcode + magic-link now, social later
+
+_Updated 2026-07-25: a shared-passcode gate was added alongside magic-link for pilot onboarding, and sessions were made persistent. The seam below is unchanged._
 
 Auth is built behind a **provider interface** from day one, so sign-in methods are swappable and additive without touching session handling or the app:
 
 - **`AuthProvider` seam:** the app depends on "resolve a request → an authenticated `observer`," not on any specific sign-in method. Magic-link is the first provider; **Google / Facebook OAuth are future providers that plug into the same seam** with no rework of sessions, the observer model, or app code. (This is Akash's explicit call — build auth modular for later social login.)
-- **Magic-link provider (MVP):** a server signing key mints a per-user link; opening it establishes an `httpOnly` session cookie → that browser is a known `observer`. No passwords, no public signup. Adding a tester = minting one more link.
-- **Sessions are provider-agnostic:** every write is tied to the session's `observer_id` regardless of how the session was created. `phone_hash` (HMAC with server-side secret, `build-foundations.md` §10 / D6) stored when a number is attached.
+- **Magic-link provider:** a server signing key mints a per-user link; opening it establishes an `httpOnly` session cookie → that browser is a known `observer`. No passwords. Adding a tester = minting one more link.
+- **Passcode gate (`/join`) — closed-pilot onboarding:** a shared passcode admits testers who enter a name, minting the same session. Lets the pilot widen without minting a link per person; observers tagged `created_via='passcode'`.
+- **Sessions are provider-agnostic and persistent:** every write is tied to the session's `observer_id` regardless of how the session was created. The cookie is long-lived (~400 days) so testers stay logged in across PWA restarts. `phone_hash` (HMAC with server-side secret, `build-foundations.md` §10 / D6) stored when a number is attached.
+- **Rollout direction:** passcode → email + allowlist (Resend) → open email signup → Google sign-in, each via the same seam. Detailed in `docs/OPERATIONS.md`.
 - The whole app sits behind an authenticated session: no session, no access. Matches `docs/specs/2026-07-10-design.md` Slice 2 ("gated to Akash first, then a small allowlist").
 
 ---
@@ -132,7 +137,7 @@ Auth is built behind a **provider interface** from day one, so sign-in methods a
 
 1. Migration applies clean on fresh Postgres + PostGIS + pgvector, all 10 tables + indexes present; `public_read` role exists and cannot see `individual_id` or raw `geog`.
 2. From a phone, over HTTPS, Akash can photograph a dog and have a sighting with accurate GPS + time land in `sightings`/`photos`, photo bytes in S3.
-3. Access is gated by a magic-link session; a minted link admits a tester, absence of a session denies all access. Auth sits behind an `AuthProvider` seam (magic-link is one provider; adding Google/Facebook later requires no change to sessions or app code).
+3. Access is gated by a session; a minted magic-link **or** the `/join` passcode admits a tester, absence of a session denies all access. Auth sits behind an `AuthProvider` seam (magic-link is one provider; adding Google/Facebook later requires no change to sessions or app code).
 4. Multiple distinct observers can each log in and capture independently; each observer's IndieDex shows only their own sightings.
 5. `phone_hash` is HMAC; all PKs are uuidv7.
 6. The IndieDex renders every one of the caller's sightings as map pins (MapLibre) **and** a gallery grid; tapping either opens a detail view.
