@@ -1,7 +1,6 @@
 import { useRef, useState } from "react";
 import {
   postSighting,
-  NoDogError,
   UnauthorizedError,
   type Condition,
   type EarNotch,
@@ -76,7 +75,6 @@ export default function Capture({ onUnauthorized }: { onUnauthorized: () => void
   const [condition, setCondition] = useState<Condition | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [noDogWarn, setNoDogWarn] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
   function showToast(msg: string) {
@@ -89,7 +87,6 @@ export default function Capture({ onUnauthorized }: { onUnauthorized: () => void
     if (!f) return;
     setPhoto(f);
     setPreviewUrl(URL.createObjectURL(f));
-    setNoDogWarn(false);
   }
 
   function reset() {
@@ -100,11 +97,10 @@ export default function Capture({ onUnauthorized }: { onUnauthorized: () => void
     setEarNotch(null);
     setCondition(null);
     setMoreOpen(false);
-    setNoDogWarn(false);
     if (fileRef.current) fileRef.current.value = "";
   }
 
-  async function submit(override = false) {
+  async function submit() {
     if (!photo) return;
     setSubmitting(true);
     const capturedAt = new Date().toISOString();
@@ -122,7 +118,6 @@ export default function Capture({ onUnauthorized }: { onUnauthorized: () => void
       sex: sex || undefined,
       ear_notch: earNotch || undefined,
       condition: condition || undefined,
-      override_no_dog: override,
     };
 
     try {
@@ -134,16 +129,9 @@ export default function Capture({ onUnauthorized }: { onUnauthorized: () => void
         onUnauthorized();
         return;
       }
-      if (err instanceof NoDogError) {
-        // Server didn't spot a dog: warn and let them save anyway.
-        setNoDogWarn(true);
-        return;
-      }
-      // Network failure (offline) or other error: queue for later. Carry the
-      // override so the gate can't strand it on replay -- saving offline is an
-      // explicit "keep this" intent.
+      // Network failure (offline) or other error: queue for later.
       try {
-        await enqueue({ ...input, override_no_dog: true });
+        await enqueue(input);
         showToast("Saved offline — will sync later");
         reset();
       } catch {
@@ -232,32 +220,16 @@ export default function Capture({ onUnauthorized }: { onUnauthorized: () => void
             </div>
           )}
 
-          {noDogWarn && (
-            <div className="dog-warn" role="alert">
-              <span className="dog-warn-icon">⚠</span>
-              <span>
-                We didn't spot a dog here. Retake, or save it anyway if we're
-                wrong.
-              </span>
-            </div>
-          )}
-
           <div className="actions-row">
             <button className="btn btn-secondary" onClick={reset} disabled={submitting}>
               RETAKE
             </button>
             <button
               className="btn btn-primary"
-              onClick={() => submit(noDogWarn)}
+              onClick={() => submit()}
               disabled={submitting}
             >
-              {submitting ? (
-                <span className="spinner" />
-              ) : noDogWarn ? (
-                "SAVE ANYWAY"
-              ) : (
-                "LOG IT"
-              )}
+              {submitting ? <span className="spinner" /> : "LOG IT"}
             </button>
           </div>
         </>

@@ -20,17 +20,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _max_dog_confidence(raws: list[bytes]) -> float:
-    """Highest dog-confidence across the uploaded photos. Fails open: any
-    detector error (bad image, model issue) returns 1.0 so a broken gate never
-    blocks a legitimate capture."""
-    best = 0.0
+async def _max_dog_confidence(raws: list[bytes]) -> float | None:
+    """Highest dog-confidence across the uploaded photos, or None if we
+    couldn't score them. This is a label, never a gate -- the caller saves the
+    sighting either way, so a detector failure costs us a label, not a photo."""
+    best: float | None = None
     for raw in raws:
         try:
-            best = max(best, await run_in_threadpool(dog_confidence, raw))
+            conf = await run_in_threadpool(dog_confidence, raw)
         except Exception:
-            logger.warning("dog detection failed; failing open", exc_info=True)
-            return 1.0
+            logger.warning("dog detection failed; saving unscored", exc_info=True)
+            continue
+        best = conf if best is None else max(best, conf)
     return best
 
 
@@ -47,6 +48,9 @@ async def create_sighting(
     sex: Literal["male", "female", "unsure"] | None = Form(None),
     ear_notch: Literal["none", "left", "right", "unsure"] | None = Form(None),
     condition: Literal["healthy", "injured", "unsure"] | None = Form(None),
+    # Accepted and ignored: queued offline captures still carry this field, and
+    # rejecting them on replay would strand exactly the sightings we promised
+    # to keep. Remove once no client in the field sends it.
     override_no_dog: bool = Form(False),
     observer_id: UUID = Depends(require_observer),
     conn=Depends(get_conn),
@@ -57,15 +61,21 @@ async def create_sighting(
 
     raws = [await f.read() for f in photos]
 
-    # Dog-presence gate. High-recall: block only when no photo shows a dog, and
-    # let the user override ("save anyway"). Fails open on detector errors.
-    if not override_no_dog:
-        conf = await _max_dog_confidence(raws)
-        if conf < DOG_CONF_THRESHOLD:
-            return JSONResponse(
-                status_code=422,
-                content={"reason": "no_dog", "confidence": round(conf, 3)},
-            )
+    # Dog detection is a LABEL, not a gate: we always save. The observer is in
+    # front of the dog and the model is not; when they disagree, the observer
+    # wins. A capture is also the only copy that exists (iOS never writes PWA
+    # camera frames to the photo library), so discarding one destroys data.
+    # Low scorers are for review and threshold tuning -- see DOG_CONF_THRESHOLD.
+    dog_conf = await _max_dog_confidence(raws)
+    if dog_conf is not None and dog_conf < DOG_CONF_THRESHOLD:
+        logger.info(
+            "low dog confidence, saving anyway: conf=%.3f threshold=%.2f "
+            "observer=%s photos=%d",
+            dog_conf,
+            DOG_CONF_THRESHOLD,
+            observer_id,
+            len(raws),
+        )
 
     sighting_id = uuid7()
 
@@ -109,11 +119,11 @@ async def create_sighting(
                 INSERT INTO sightings
                     (id, observer_id, captured_at, reported_at, geog, geo_source,
                      geo_accuracy_m, individual_id, match_status, review_status,
-                     phash, attrs)
+                     phash, attrs, dog_confidence)
                 VALUES
                     ($1, $2, $3, $4,
                      ST_SetSRID(ST_MakePoint($5, $6), 4326)::geography,
-                     $7, $8, NULL, 'unmatched', 'valid', $9, $10::jsonb)
+                     $7, $8, NULL, 'unmatched', 'valid', $9, $10::jsonb, $11)
                 """,
                 sighting_id,
                 observer_id,
@@ -125,6 +135,7 @@ async def create_sighting(
                 geo_accuracy_m,
                 first_phash,
                 json.dumps(attrs),
+                dog_conf,
             )
         else:
             await conn.execute(
@@ -132,9 +143,10 @@ async def create_sighting(
                 INSERT INTO sightings
                     (id, observer_id, captured_at, reported_at, geog, geo_source,
                      geo_accuracy_m, individual_id, match_status, review_status,
-                     phash, attrs)
+                     phash, attrs, dog_confidence)
                 VALUES
-                    ($1, $2, $3, $4, NULL, $5, $6, NULL, 'unmatched', 'valid', $7, $8::jsonb)
+                    ($1, $2, $3, $4, NULL, $5, $6, NULL, 'unmatched', 'valid',
+                     $7, $8::jsonb, $9)
                 """,
                 sighting_id,
                 observer_id,
@@ -144,6 +156,7 @@ async def create_sighting(
                 geo_accuracy_m,
                 first_phash,
                 json.dumps(attrs),
+                dog_conf,
             )
 
         for row in photo_rows:

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 import onnxruntime as ort
-from PIL import Image
+from PIL import Image, ImageOps
 
 _MODEL_PATH = Path(__file__).resolve().parent / "ml" / "yolov8n.onnx"
 _INPUT = 640
@@ -41,6 +41,14 @@ def _get_session() -> ort.InferenceSession:
     return _session
 
 
+def load_upright(image_bytes: bytes) -> Image.Image:
+    """Decode to RGB with EXIF orientation applied. Phone cameras store
+    portrait shots rotated with an orientation tag; feeding those to the
+    detector sideways measurably drops dog confidence, so we must match what
+    `photos.process_photo` does before it hashes and stores the same pixels."""
+    return ImageOps.exif_transpose(Image.open(io.BytesIO(image_bytes))).convert("RGB")
+
+
 def _letterbox(img: Image.Image) -> np.ndarray:
     """Resize keeping aspect ratio, pad to _INPUT square (grey), return a
     normalized NCHW float32 batch of 1."""
@@ -58,7 +66,7 @@ def dog_confidence(image_bytes: bytes) -> float:
     """Max 'dog' confidence in the image, in [0, 1]. May raise on an
     unreadable image or model error -- callers should fail open (treat a
     detection failure as 'inconclusive' and let the save proceed)."""
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    img = load_upright(image_bytes)
     sess = _get_session()
     out = sess.run(None, {sess.get_inputs()[0].name: _letterbox(img)})[0]
     o = out[0]  # drop batch dim

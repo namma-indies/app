@@ -256,15 +256,6 @@ button { font-family: inherit; }
 .btn-primary { background: var(--accent); color: #fff; }
 .btn-secondary { background: var(--panel); color: var(--ink); }
 
-.dog-warn {
-  display: flex; align-items: center; gap: 0.5rem; width: 100%;
-  background: var(--dust); color: var(--ink);
-  border: 3px solid var(--danger); border-radius: 4px;
-  box-shadow: 3px 3px 0 var(--danger);
-  padding: 0.55rem 0.7rem; font-size: 0.72rem; line-height: 1.35;
-}
-.dog-warn-icon { color: var(--danger); font-size: 1rem; flex: none; }
-
 .toast {
   position: fixed; bottom: 5.5rem; left: 50%; transform: translateX(-50%);
   background: var(--ink); color: var(--bg); padding: 0.6rem 1rem;

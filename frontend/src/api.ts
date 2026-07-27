@@ -44,7 +44,6 @@ export interface PostSightingInput {
   sex?: Sex;
   ear_notch?: EarNotch;
   condition?: Condition;
-  override_no_dog?: boolean;
 }
 
 export interface PostSightingResponse {
@@ -55,14 +54,6 @@ export interface PostSightingResponse {
 export class UnauthorizedError extends Error {
   constructor() {
     super("unauthorized");
-  }
-}
-
-// Thrown when the server's dog-presence gate found no dog. Carries the model's
-// best confidence so the UI can offer "save anyway" (resubmit with override).
-export class NoDogError extends Error {
-  constructor(public confidence: number) {
-    super("no_dog");
   }
 }
 
@@ -91,7 +82,6 @@ export function buildSightingForm(input: PostSightingInput): FormData {
   if (input.sex) form.append("sex", input.sex);
   if (input.ear_notch) form.append("ear_notch", input.ear_notch);
   if (input.condition) form.append("condition", input.condition);
-  if (input.override_no_dog) form.append("override_no_dog", "true");
   return form;
 }
 
@@ -103,9 +93,5 @@ export async function postSighting(
     credentials: "include",
     body: buildSightingForm(input),
   });
-  if (res.status === 422) {
-    const body = await res.json().catch(() => null);
-    if (body?.reason === "no_dog") throw new NoDogError(body.confidence ?? 0);
-  }
   return handle<PostSightingResponse>(res);
 }
