@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     email_allowlist_domains: str = "dognosis.tech"
     email_allowlist_addresses: str = ""
 
+    resend_api_key: str = ""  # empty => links are printed to the log, not emailed
+    email_from: str = "IndieDex <hello@nammaindies.org>"
+    public_base_url: str = "http://localhost:8000"
+
     phone_hash_secret: str = "dev-phone-secret"
     session_secret: str = "dev-session-secret"
     magic_link_secret: str = "dev-magic-secret"
