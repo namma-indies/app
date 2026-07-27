@@ -105,10 +105,22 @@ Side benefit: this is a login audit trail — who signed in, when.
 The existing stateless `MagicLinkProvider` token stays for the CLI mint path, so
 hand-minted long-lived WhatsApp links keep working unchanged.
 
-### Sender: Resend
+### Sender: Amazon SES
 
-Per the existing note in `OPERATIONS.md` — not raw SES, whose sandbox-approval
-gate isn't worth it. `RESEND_API_KEY` in the box `.env`.
+Reversed on 2026-07-27, having originally specified Resend. The stated reason
+for avoiding SES was its sandbox-approval gate — but **the sandbox does not
+block internal testing**. Sandbox restricts sending to *verified* identities,
+and the entire pilot cohort is a handful of addresses that can be verified in
+minutes; 200/day is far past what a few testers logging in will use. Production
+access is only needed before stage 2 opens signup to the public.
+
+That removed the one argument for adding a vendor. SES is in the NI AWS account
+we already use for the S3 photo bucket, and the sender seam made the swap a
+single class.
+
+`EMAIL_SENDER=console|ses` in the box `.env`. Credentials come from the ambient
+AWS chain, not app settings — the same IAM user that already holds the S3 keys,
+with `ses:SendEmail` added, so the box gains sending without a new credential.
 
 ---
 
@@ -121,15 +133,24 @@ For a pilot cohort this size, the merge tooling isn't worth building.
 
 ## Risks
 
-- **New sending domain.** `nammaindies.org` has no MX and no SPF/DKIM/DMARC
-  today — greenfield, nothing to conflict with, but a brand-new sending domain
-  mailing Google Workspace can land in spam at first. Send a test before telling
-  the team it's ready.
-- **DNS lives in a Cloudflare account** separate from the Dognosis one, so the
-  records are a manual step for the operator.
+- **New sending domain.** A brand-new sending domain mailing Google Workspace
+  can land in spam at first. Send a test before telling the team it's ready.
+- **SES is in sandbox** until AWS grants production access (requested
+  2026-07-27). Until then, a login link only reaches a **verified** recipient —
+  so each tester's address must be verified in SES, or the mail bounces.
+- **Single-use links assume Google Workspace.** Microsoft 365 Safe Links
+  pre-clicks URLs and would burn a token before the human does. If the allowlist
+  ever gains a Microsoft-hosted domain, revisit single-use.
 
 ## Dependencies
 
-1. Resend account; `nammaindies.org` added as a sending domain (US region).
-2. DKIM/SPF/DMARC records added to `nammaindies.org` in the NI Cloudflare account.
-3. `RESEND_API_KEY` in the box `.env`.
+_All resolved 2026-07-27 except production access._
+
+1. ~~SES sending domain~~ — `nammaindies.org` verified in the NI AWS account,
+   region `ap-south-1`. DKIM `SUCCESS`, custom MAIL FROM `mail.nammaindies.org`.
+2. ~~DNS~~ — 3 DKIM CNAMEs, MAIL FROM MX + SPF, and DMARC (`p=none`) live in the
+   NI Cloudflare zone.
+3. `ses:SendEmail` on the IAM user whose S3 keys are already in the box `.env`,
+   plus `EMAIL_SENDER=ses`.
+4. SES production access — **pending AWS review**. Not blocking internal
+   testing, since verified recipients work in sandbox.

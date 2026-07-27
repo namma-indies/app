@@ -1107,11 +1107,10 @@ Add below that bullet:
 Append to the rollout ladder section:
 
 ```markdown
-Sending domain `nammaindies.org` is on Cloudflare in the **NI account**
-(`Nammaindies@gmail.com's Account`), separate from the Dognosis one; zone
-`a62218d755169b97600f578f3d0010e8`. DKIM/SPF/DMARC records are added there. The
-API token is the `nammaindies-narrow` account token (Zone Read + DNS Write),
-stored in Bitwarden as `CLOUDFLARE_API_TOKEN_DNS`.
+DNS for `nammaindies.org` is on Cloudflare in the **NI account**, separate from
+the Dognosis one. Zone and account ids live in the operator's local notes, not
+in this public repo. The API token is an account-scoped token with Zone Read +
+DNS Write, kept in Bitwarden.
 
 Login links are **single-use**, which is safe because `dognosis.tech` is Google
 Workspace — Gmail proxies images but does not pre-click links. Microsoft 365

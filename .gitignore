@@ -9,3 +9,6 @@ sdd
 .playwright-mcp/
 node_modules/
 frontend/dist/
+
+# Operational runbook: deploy details, infra ids. Public repo — keep local.
+docs/OPERATIONS.md
