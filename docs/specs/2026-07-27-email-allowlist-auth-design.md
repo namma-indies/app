@@ -124,12 +124,35 @@ with `ses:SendEmail` added, so the box gains sending without a new credential.
 
 ---
 
-## What this does not fix
+## Carry-over from the passcode door
 
-Existing passcode observers keep their sightings under their old identity.
-Signing in by email later creates a clean, separate observer — **no merge, no
-claim flow** (decided 2026-07-27). Data isn't lost, it's just not reattributed.
-For a pilot cohort this size, the merge tooling isn't worth building.
+_Reversed later on 2026-07-27. This section originally read "no merge, no claim
+flow"._
+
+Merging was rejected while the passcode door had only a typed **name** to match
+on — not a key, two Priyas collide, and anyone can claim to be anyone. What
+changed: SES sandbox delayed the email door, so testers were told to type their
+**work email** into the passcode form's name field as a stopgap. That string is
+a key, and the objection dissolves.
+
+So on consuming a login link, passcode observers whose `display_name` normalizes
+to that address are folded into the verified observer. All six FK columns
+pointing at `observers` move together (`sightings.observer_id`,
+`individuals.named_by`, `individuals.created_by_observer`,
+`match_proposals.resolved_by`, `confirmations.observer_id`,
+`observers.created_by_observer`) — miss one and retiring the absorbed row
+orphans data. Absorbed rows are soft-deleted, which keeps the operation
+idempotent and preserves how the data arrived.
+
+**At consume, not at submit.** Typing an address proves nothing; clicking what
+was mailed to it proves control. Only `created_via='passcode'` rows with no
+email of their own are absorbable, so one verified identity can never swallow
+another.
+
+**Known trade:** the passcode is shared, so someone who types a colleague's
+address — by typo or mischief — has their sightings attributed to that
+colleague. Accepted for a closed staff pilot. Revisit before the passcode door
+opens wider; the alternative is a claim prompt the verified person confirms.
 
 ## Risks
 
