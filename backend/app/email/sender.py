@@ -1,6 +1,6 @@
 from typing import Protocol
 
-import httpx
+import aioboto3
 
 from app.config import settings
 
@@ -31,30 +31,39 @@ class LoginEmail(Protocol):
 
 
 class ConsoleSender:
-    """Used whenever RESEND_API_KEY is unset -- local dev and tests. Prints the
-    link instead of sending, so the flow is exercisable without a mail account."""
+    """The default. Prints the link instead of sending, so the whole sign-in
+    flow is exercisable in dev and in tests without touching SES -- and so a
+    misconfigured deploy fails loudly-but-harmlessly rather than mailing people."""
 
     async def send(self, to: str, link: str) -> None:
         print(f"[login-email] to={to} link={link}", flush=True)
 
 
-class ResendSender:
+class SesSender:
+    """Amazon SES v2. Credentials come from the ambient AWS chain (env vars on
+    the box), not from settings -- the same NI-account IAM user that already
+    holds the S3 photo-bucket keys, with `ses:SendEmail` added."""
+
     async def send(self, to: str, link: str) -> None:
         text, html = _bodies(link)
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                "https://api.resend.com/emails",
-                headers={"Authorization": f"Bearer {settings.resend_api_key}"},
-                json={
-                    "from": settings.email_from,
-                    "to": [to],
-                    "subject": SUBJECT,
-                    "text": text,
-                    "html": html,
+        session = aioboto3.Session()
+        async with session.client("sesv2", region_name=settings.ses_region) as client:
+            await client.send_email(
+                FromEmailAddress=settings.email_from,
+                Destination={"ToAddresses": [to]},
+                Content={
+                    "Simple": {
+                        "Subject": {"Data": SUBJECT},
+                        "Body": {
+                            "Text": {"Data": text},
+                            "Html": {"Data": html},
+                        },
+                    }
                 },
             )
-            resp.raise_for_status()
 
 
 def get_sender() -> LoginEmail:
-    return ResendSender() if settings.resend_api_key else ConsoleSender()
+    """Anything other than an explicit "ses" means console. A typo in
+    EMAIL_SENDER must not resolve to "send real mail to real people"."""
+    return SesSender() if settings.email_sender == "ses" else ConsoleSender()

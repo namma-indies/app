@@ -17,7 +17,10 @@ class Settings(BaseSettings):
     email_allowlist_domains: str = "dognosis.tech"
     email_allowlist_addresses: str = ""
 
-    resend_api_key: str = ""  # empty => links are printed to the log, not emailed
+    # "console" (default) prints the link to the log; "ses" actually sends.
+    # Fails safe: any other value means console.
+    email_sender: str = "console"
+    ses_region: str = "ap-south-1"
     email_from: str = "IndieDex <hello@nammaindies.org>"
     public_base_url: str = "http://localhost:8000"
 
