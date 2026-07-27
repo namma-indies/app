@@ -6,7 +6,10 @@ from starlette.responses import HTMLResponse, RedirectResponse
 
 from app.auth.allowlist import is_allowed, normalize_email
 from app.auth.deps import set_session_cookie
-from app.auth.email_login import get_or_create_observer_by_email
+from app.auth.email_login import (
+    absorb_passcode_observers,
+    get_or_create_observer_by_email,
+)
 from app.auth.logintoken import consume as consume_login_token
 from app.auth.logintoken import issue as issue_login_token
 from app.auth.magiclink import create_observer
@@ -148,6 +151,13 @@ async def email_consume(token: str, conn=Depends(get_conn)):
             _page(error="That link has expired or was already used. Request a new one."),
             status_code=401,
         )
+    # Carry-over happens *here*, not at submit: consuming the link is the first
+    # moment we know this person actually controls the address. Testers were
+    # told to use their work email as their passcode-door name, so anything
+    # logged under that string folds into this now-verified identity.
+    email = await conn.fetchval("SELECT email FROM observers WHERE id = $1", observer_id)
+    if email:
+        await absorb_passcode_observers(conn, target=observer_id, email=email)
     resp = RedirectResponse(url="/", status_code=303)
     set_session_cookie(resp, observer_id)
     return resp

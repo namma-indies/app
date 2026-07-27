@@ -106,3 +106,56 @@ async def test_passcode_door_still_works(app_client):
     )
     assert r.status_code == 303
     assert "session=" in r.headers.get("set-cookie", "")
+
+
+@pytest.mark.asyncio
+async def test_passcode_sightings_carry_over_on_first_email_signin(app_client):
+    """A tester who logged under the passcode door with their work email as
+    their name keeps that history when they later sign in properly."""
+    from app.ids import uuid7
+    pool = app_client._transport.app.state.pool
+
+    async with pool.acquire() as c:
+        old = uuid7()
+        await c.execute(
+            "INSERT INTO observers (id, display_name, created_via) "
+            "VALUES ($1, 'akash@dognosis.tech', 'passcode')", old)
+        await c.execute(
+            "INSERT INTO sightings (id, observer_id, captured_at) VALUES ($1,$2, now())",
+            uuid7(), old)
+
+    await app_client.post("/auth/email", data={"email": "akash@dognosis.tech"})
+    _, link = CAPTURED[0]
+    r = await app_client.get(link.replace("http://test", ""), follow_redirects=False)
+    assert r.status_code == 303
+
+    async with pool.acquire() as c:
+        new = await c.fetchval(
+            "SELECT id FROM observers WHERE email = 'akash@dognosis.tech'")
+        assert await c.fetchval(
+            "SELECT count(*) FROM sightings WHERE observer_id = $1", new) == 1
+        assert await c.fetchval(
+            "SELECT deleted_at FROM observers WHERE id = $1", old) is not None
+
+
+@pytest.mark.asyncio
+async def test_no_carry_over_merely_from_requesting_a_link(app_client):
+    """Typing an address proves nothing -- absorption waits for the click."""
+    from app.ids import uuid7
+    pool = app_client._transport.app.state.pool
+    async with pool.acquire() as c:
+        old = uuid7()
+        await c.execute(
+            "INSERT INTO observers (id, display_name, created_via) "
+            "VALUES ($1, 'akash@dognosis.tech', 'passcode')", old)
+        await c.execute(
+            "INSERT INTO sightings (id, observer_id, captured_at) VALUES ($1,$2, now())",
+            uuid7(), old)
+
+    await app_client.post("/auth/email", data={"email": "akash@dognosis.tech"})
+
+    async with pool.acquire() as c:
+        assert await c.fetchval(
+            "SELECT count(*) FROM sightings WHERE observer_id = $1", old) == 1
+        assert await c.fetchval(
+            "SELECT deleted_at FROM observers WHERE id = $1", old) is None

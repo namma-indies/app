@@ -37,3 +37,68 @@ async def get_or_create_observer_by_email(
     if row is not None:
         return row["id"]
     return await conn.fetchval("SELECT id FROM observers WHERE email = $1", email)
+
+
+# Every column anywhere in the schema that points at an observer. A merge has
+# to move all of them -- miss one and retiring the absorbed row orphans data.
+_OBSERVER_REFS = (
+    ("sightings", "observer_id"),
+    ("individuals", "named_by"),
+    ("individuals", "created_by_observer"),
+    ("match_proposals", "resolved_by"),
+    ("confirmations", "observer_id"),
+    ("observers", "created_by_observer"),
+)
+
+
+async def absorb_passcode_observers(
+    conn: asyncpg.Connection, *, target: UUID, email: str
+) -> int:
+    """Fold anonymous passcode observers who typed `email` as their name into
+    the verified observer that owns that address. Returns how many were absorbed.
+
+    Testers were told to put their work email in the passcode form's name field,
+    which turns that string into a usable key -- so their pre-email sightings can
+    follow them instead of being stranded under a throwaway identity.
+
+    Two guards. Only `created_via='passcode'` rows with no email of their own are
+    absorbable, so a verified identity is never swallowed by another. And the
+    caller must invoke this at *link-consume* time, not at submit: typing an
+    address proves nothing, clicking what was mailed to it proves control.
+
+    The passcode is shared, so someone who types a colleague's address does get
+    their sightings attributed to that colleague. Accepted for a closed staff
+    pilot; revisit before the passcode door is opened wider.
+    """
+    ids = [
+        r["id"]
+        for r in await conn.fetch(
+            """
+            SELECT id FROM observers
+            WHERE created_via = 'passcode'
+              AND email IS NULL
+              AND deleted_at IS NULL
+              AND lower(btrim(display_name)) = $1
+              AND id <> $2
+            """,
+            email,
+            target,
+        )
+    ]
+    if not ids:
+        return 0
+
+    for table, column in _OBSERVER_REFS:
+        await conn.execute(
+            f"UPDATE {table} SET {column} = $1 WHERE {column} = ANY($2::uuid[])",
+            target,
+            ids,
+        )
+    # Retire rather than delete: the row is evidence of how the data arrived,
+    # and soft-deleting keeps this idempotent on a second sign-in.
+    await conn.execute(
+        "UPDATE observers SET deleted_at = now(), updated_at = now() "
+        "WHERE id = ANY($1::uuid[])",
+        ids,
+    )
+    return len(ids)
