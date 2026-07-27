@@ -13,6 +13,10 @@ class Settings(BaseSettings):
 
     join_passcode: str = "dev-join"  # shared passcode for the /join closed-pilot gate
 
+    # Comma-separated. Empty allowlist allows nobody -- fail closed.
+    email_allowlist_domains: str = "dognosis.tech"
+    email_allowlist_addresses: str = ""
+
     phone_hash_secret: str = "dev-phone-secret"
     session_secret: str = "dev-session-secret"
     magic_link_secret: str = "dev-magic-secret"
