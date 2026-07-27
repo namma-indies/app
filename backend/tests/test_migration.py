@@ -34,3 +34,38 @@ async def test_embeddings_unique_photo_model(migrated_db):
         "SELECT conname, contype FROM pg_constraint c JOIN pg_class t ON c.conrelid=t.oid "
         "WHERE t.relname='embeddings' AND contype='u'")
     assert len(con) >= 1
+
+
+@pytest.mark.asyncio
+async def test_observers_has_unique_email(migrated_db):
+    col = await migrated_db.fetchval(
+        "SELECT data_type FROM information_schema.columns "
+        "WHERE table_name='observers' AND column_name='email'")
+    assert col == 'text'
+    idx = await migrated_db.fetch(
+        "SELECT indexdef FROM pg_indexes WHERE tablename='observers'")
+    assert any('email' in r['indexdef'] and 'UNIQUE' in r['indexdef'].upper() for r in idx)
+
+
+@pytest.mark.asyncio
+async def test_login_tokens_table_shape(migrated_db):
+    cols = {r['column_name']: r['is_nullable'] for r in await migrated_db.fetch(
+        "SELECT column_name, is_nullable FROM information_schema.columns "
+        "WHERE table_name='login_tokens'")}
+    assert cols == {
+        'token_hash': 'NO', 'observer_id': 'NO', 'expires_at': 'NO',
+        'used_at': 'YES', 'created_at': 'NO',
+    }
+
+
+@pytest.mark.asyncio
+async def test_login_tokens_cascade_on_observer_delete(migrated_db):
+    from app.ids import uuid7
+    oid = uuid7()
+    await migrated_db.execute(
+        "INSERT INTO observers (id, display_name, created_via) VALUES ($1,'X','test')", oid)
+    await migrated_db.execute(
+        "INSERT INTO login_tokens (token_hash, observer_id, expires_at) "
+        "VALUES ('deadbeef', $1, now() + interval '1 hour')", oid)
+    await migrated_db.execute("DELETE FROM observers WHERE id = $1", oid)
+    assert await migrated_db.fetchval("SELECT count(*) FROM login_tokens") == 0
