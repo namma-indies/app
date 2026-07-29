@@ -32,7 +32,7 @@ export async function enqueue(input: PostSightingInput): Promise<void> {
 async function countByStatus(status: QueueStatus): Promise<number> {
   const db = await getDb();
   const all = (await db.getAll(STORE)) as QueuedItem[];
-  return all.filter((item) => item.status === status).length;
+  return all.filter((item) => (item.status ?? "pending") === status).length;
 }
 
 export function pendingCount(): Promise<number> {
@@ -46,7 +46,7 @@ export function failedCount(): Promise<number> {
 export async function listFailed(): Promise<QueuedItem[]> {
   const db = await getDb();
   const all = (await db.getAll(STORE)) as QueuedItem[];
-  return all.filter((item) => item.status === "failed");
+  return all.filter((item) => (item.status ?? "pending") === "failed");
 }
 
 export async function retryFailed(id: number): Promise<void> {
@@ -86,7 +86,8 @@ export async function flush(): Promise<void> {
     const db = await getDb();
     const all = (await db.getAll(STORE)) as QueuedItem[];
     for (const item of all) {
-      if (item.status !== "pending") continue;
+      const status = item.status ?? "pending";
+      if (status !== "pending") continue;
       try {
         await postSighting(item);
         await db.delete(STORE, item.id);

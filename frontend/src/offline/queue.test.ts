@@ -80,6 +80,32 @@ describe("flush", () => {
   });
 });
 
+describe("legacy items with no status field", () => {
+  it("still gets picked up and synced by flush()", async () => {
+    const { flush, pendingCount } = await freshQueue();
+
+    // Bypass enqueue() to simulate an item written by the pre-status version
+    // of the queue: no `status` key at all. Create the DB/store directly via
+    // the raw idb API, matching queue.ts's schema, rather than going through
+    // enqueue() (which always sets status).
+    const idb = await import("idb");
+    const raw = await idb.openDB("indiedex-queue", 1, {
+      upgrade(db) {
+        db.createObjectStore("pending", { keyPath: "id", autoIncrement: true });
+      },
+    });
+    await raw.add("pending", { ...SAMPLE });
+    raw.close();
+
+    vi.mocked(postSighting).mockResolvedValue({ sighting_id: "s1", photo_ids: [] });
+
+    await flush();
+
+    expect(await pendingCount()).toBe(0);
+    expect(vi.mocked(postSighting)).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("retryFailed / discardFailed", () => {
   it("moves a failed item back to pending on retry", async () => {
     const { enqueue, flush, failedCount, pendingCount, listFailed, retryFailed } =
