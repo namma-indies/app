@@ -80,6 +80,38 @@ describe("flush", () => {
   });
 });
 
+describe("concurrent flush", () => {
+  it("doesn't strand an item enqueued during an in-flight flush", async () => {
+    const { enqueue, flush, pendingCount } = await freshQueue();
+    await enqueue(SAMPLE);
+
+    // Deferred promise so we control exactly when the first item's
+    // postSighting call resolves, simulating a slow upload.
+    let resolveFirst!: (v: { sighting_id: string; photo_ids: string[] }) => void;
+    const firstCall = new Promise<{ sighting_id: string; photo_ids: string[] }>((resolve) => {
+      resolveFirst = resolve;
+    });
+
+    vi.mocked(postSighting).mockImplementationOnce(() => firstCall);
+    vi.mocked(postSighting).mockResolvedValueOnce({ sighting_id: "s2", photo_ids: [] });
+
+    const firstFlush = flush();
+
+    // Simulate a second capture arriving while the first flush is still
+    // in-flight: it enqueues a new item and triggers its own flush() call.
+    await enqueue(SAMPLE);
+    const secondFlush = flush();
+
+    // Let the first upload complete.
+    resolveFirst({ sighting_id: "s1", photo_ids: [] });
+
+    await Promise.all([firstFlush, secondFlush]);
+
+    expect(await pendingCount()).toBe(0);
+    expect(vi.mocked(postSighting)).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("legacy items with no status field", () => {
   it("still gets picked up and synced by flush()", async () => {
     const { flush, pendingCount } = await freshQueue();

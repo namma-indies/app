@@ -78,28 +78,39 @@ function isPermanentFailure(err: unknown): boolean {
 }
 
 let flushing = false;
+let pendingRerun = false;
 
 export async function flush(): Promise<void> {
-  if (flushing) return;
+  // A second call while one is already in progress (e.g. a rapid second
+  // capture) must not just no-op -- that would strand its item until the
+  // next app-open or `online` event. Instead, request one more full pass
+  // once the in-flight one finishes.
+  if (flushing) {
+    pendingRerun = true;
+    return;
+  }
   flushing = true;
   try {
-    const db = await getDb();
-    const all = (await db.getAll(STORE)) as QueuedItem[];
-    for (const item of all) {
-      const status = item.status ?? "pending";
-      if (status !== "pending") continue;
-      try {
-        await postSighting(item);
-        await db.delete(STORE, item.id);
-      } catch (err) {
-        if (isPermanentFailure(err)) {
-          await db.put(STORE, { ...item, status: "failed" satisfies QueueStatus });
-          continue;
+    do {
+      pendingRerun = false;
+      const db = await getDb();
+      const all = (await db.getAll(STORE)) as QueuedItem[];
+      for (const item of all) {
+        const status = item.status ?? "pending";
+        if (status !== "pending") continue;
+        try {
+          await postSighting(item);
+          await db.delete(STORE, item.id);
+        } catch (err) {
+          if (isPermanentFailure(err)) {
+            await db.put(STORE, { ...item, status: "failed" satisfies QueueStatus });
+            continue;
+          }
+          // Retryable (network failure or 5xx): stop here, try the rest later.
+          break;
         }
-        // Retryable (network failure or 5xx): stop here, try the rest later.
-        break;
       }
-    }
+    } while (pendingRerun);
   } finally {
     flushing = false;
   }
