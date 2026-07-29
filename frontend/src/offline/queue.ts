@@ -1,11 +1,15 @@
-// Simple IndexedDB queue for captures made while offline or when the POST
-// fails. Deliberately minimal: one object store, no retries/backoff beyond
-// "try once on flush". Good enough for a placeholder PWA.
+// Simple IndexedDB queue for every capture. Every submit enqueues here first
+// (see Capture.tsx) -- there is no separate "live" path. flush() drains
+// pending items to the server whenever it's called (on enqueue, on app
+// open, on the browser's `online` event).
 import { openDB, type IDBPDatabase } from "idb";
-import { postSighting, type PostSightingInput } from "../api";
+import { HttpError, postSighting, UnauthorizedError, type PostSightingInput } from "../api";
 
 const DB_NAME = "indiedex-queue";
 const STORE = "pending";
+
+export type QueueStatus = "pending" | "failed";
+export type QueuedItem = PostSightingInput & { id: number; status: QueueStatus };
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
@@ -22,33 +26,112 @@ function getDb() {
 
 export async function enqueue(input: PostSightingInput): Promise<void> {
   const db = await getDb();
-  await db.add(STORE, input);
+  await db.add(STORE, { ...input, status: "pending" as QueueStatus });
 }
 
-export async function pendingCount(): Promise<number> {
+async function countByStatus(status: QueueStatus): Promise<number> {
   const db = await getDb();
-  return db.count(STORE);
+  const all = (await db.getAll(STORE)) as QueuedItem[];
+  return all.filter((item) => (item.status ?? "pending") === status).length;
+}
+
+export function pendingCount(): Promise<number> {
+  return countByStatus("pending");
+}
+
+export function failedCount(): Promise<number> {
+  return countByStatus("failed");
+}
+
+export async function listFailed(): Promise<QueuedItem[]> {
+  const db = await getDb();
+  const all = (await db.getAll(STORE)) as QueuedItem[];
+  return all.filter((item) => (item.status ?? "pending") === "failed");
+}
+
+export async function retryFailed(id: number): Promise<void> {
+  const db = await getDb();
+  const item = (await db.get(STORE, id)) as QueuedItem | undefined;
+  if (!item) return;
+  await db.put(STORE, { ...item, status: "pending" satisfies QueueStatus });
+}
+
+export async function discardFailed(id: number): Promise<void> {
+  const db = await getDb();
+  await db.delete(STORE, id);
+}
+
+/** A permanent failure means retrying without user action can't succeed:
+ * the request was rejected (4xx), not merely unreachable. 401 gets its own
+ * branch since it's a `UnauthorizedError` instance rather than a `HttpError`.
+ * 408 (request timeout) and 429 (rate limited) are 4xx but are meant to be
+ * retried -- 429 especially, since a queue drain hammering the server is
+ * exactly the case that would trigger it. */
+function isPermanentFailure(err: unknown): boolean {
+  if (err instanceof UnauthorizedError) return true;
+  if (err instanceof HttpError) {
+    if (err.status === 408 || err.status === 429) return false;
+    return err.status >= 400 && err.status < 500;
+  }
+  return false;
+}
+
+// Notified after every flush() pass finishes, so UI that isn't the caller of
+// flush() (e.g. App's badge count) can stay in sync without prop-drilling or
+// polling. Kept as a single module-level slot rather than a full event
+// emitter -- there's only ever one subscriber (App.tsx).
+let onFlushed: (() => void) | null = null;
+
+export function setOnFlushed(cb: (() => void) | null): void {
+  onFlushed = cb;
+}
+
+// Notified specifically when flush() classifies a failure as a 401 --
+// distinct from other permanent (4xx) failures, since a dead session needs
+// the invite/login gate, not just a "couldn't sync" badge entry.
+let onUnauthorized: (() => void) | null = null;
+
+export function setOnUnauthorized(cb: (() => void) | null): void {
+  onUnauthorized = cb;
 }
 
 let flushing = false;
+let pendingRerun = false;
 
 export async function flush(): Promise<void> {
-  if (flushing) return;
+  // A second call while one is already in progress (e.g. a rapid second
+  // capture) must not just no-op -- that would strand its item until the
+  // next app-open or `online` event. Instead, request one more full pass
+  // once the in-flight one finishes.
+  if (flushing) {
+    pendingRerun = true;
+    return;
+  }
   flushing = true;
   try {
-    const db = await getDb();
-    const all = await db.getAll(STORE);
-    const keys = await db.getAllKeys(STORE);
-    for (let i = 0; i < all.length; i++) {
-      try {
-        await postSighting(all[i]);
-        await db.delete(STORE, keys[i]);
-      } catch {
-        // Stop on first failure (likely still offline/unauthed); try again later.
-        break;
+    do {
+      pendingRerun = false;
+      const db = await getDb();
+      const all = (await db.getAll(STORE)) as QueuedItem[];
+      for (const item of all) {
+        const status = item.status ?? "pending";
+        if (status !== "pending") continue;
+        try {
+          await postSighting(item);
+          await db.delete(STORE, item.id);
+        } catch (err) {
+          if (isPermanentFailure(err)) {
+            await db.put(STORE, { ...item, status: "failed" satisfies QueueStatus });
+            if (err instanceof UnauthorizedError) onUnauthorized?.();
+            continue;
+          }
+          // Retryable (network failure or 5xx): stop here, try the rest later.
+          break;
+        }
       }
-    }
+    } while (pendingRerun);
   } finally {
     flushing = false;
+    onFlushed?.();
   }
 }

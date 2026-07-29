@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import Capture from "./screens/Capture";
 import Dex from "./screens/Dex";
-import { flush } from "./offline/queue";
+import { failedCount, flush, setOnFlushed, setOnUnauthorized } from "./offline/queue";
+import FailedSightings from "./components/FailedSightings";
 import { getDex, UnauthorizedError } from "./api";
 import mark from "./assets/mark.svg";
 
@@ -11,11 +12,38 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("capture");
   const [unauthorized, setUnauthorized] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
+  const [failed, setFailed] = useState(0);
+  const [showFailed, setShowFailed] = useState(false);
 
   useEffect(() => {
-    flush();
-    window.addEventListener("online", flush);
-    return () => window.removeEventListener("online", flush);
+    async function run() {
+      await flush();
+      setFailed(await failedCount());
+    }
+    run();
+    window.addEventListener("online", run);
+    // A backgrounded-then-resumed PWA doesn't remount, so mount-only misses
+    // "app open" in the PWA sense -- catch it on foreground resume too.
+    function onVisibilityChange() {
+      if (document.visibilityState === "visible") run();
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    // flush() can also be triggered elsewhere (Capture's submit()) without
+    // App knowing when it resolves -- have flush() itself notify us so the
+    // badge count stays current mid-session, not just on mount/online.
+    setOnFlushed(() => {
+      failedCount().then(setFailed);
+    });
+    // A 401 during a background flush means the session is dead -- reuse the
+    // same invite/login gate the initial getDex() auth probe shows, rather
+    // than leaving the user stuck with a growing unsyncable badge.
+    setOnUnauthorized(() => setUnauthorized(true));
+    return () => {
+      window.removeEventListener("online", run);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      setOnFlushed(null);
+      setOnUnauthorized(null);
+    };
   }, []);
 
   // One-time auth probe so the invite-needed state shows immediately on
@@ -55,10 +83,15 @@ export default function App() {
           <img className="mark" src={mark} alt="" />
           indiedex
         </span>
+        {failed > 0 && (
+          <button className="failed-badge" onClick={() => setShowFailed(true)}>
+            {failed} couldn't sync
+          </button>
+        )}
       </div>
       <div className="screen">
         {tab === "capture" ? (
-          <Capture onUnauthorized={() => setUnauthorized(true)} />
+          <Capture />
         ) : (
           <Dex onUnauthorized={() => setUnauthorized(true)} />
         )}
@@ -73,6 +106,14 @@ export default function App() {
           INDIEDEX
         </button>
       </div>
+      {showFailed && (
+        <FailedSightings
+          onClose={() => {
+            setShowFailed(false);
+            failedCount().then(setFailed);
+          }}
+        />
+      )}
     </div>
   );
 }

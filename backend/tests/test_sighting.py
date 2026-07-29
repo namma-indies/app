@@ -1,4 +1,5 @@
 import io
+from uuid import UUID
 
 import pytest
 from PIL import Image
@@ -159,3 +160,68 @@ async def test_post_sighting_accepts_legacy_override_field(authed_client):
         },
     )
     assert r.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_post_sighting_dog_confidence_null_until_background_task_runs(
+    authed_client, monkeypatch
+):
+    """The insert itself must not depend on the detector: even if scoring is
+    slow or fails, the row exists with dog_confidence NULL until the
+    background task updates it."""
+    from app.routes import sighting as sighting_route
+
+    def boom(_raw):
+        raise RuntimeError("simulated detector failure")
+
+    # sighting.py does `from app.detect import dog_confidence`, which binds
+    # its own name in this module's namespace -- patch that name, not
+    # app.detect's, or the patch has no effect on the code under test.
+    monkeypatch.setattr(sighting_route, "dog_confidence", boom)
+
+    client, _ = authed_client
+    r = await client.post(
+        "/sighting",
+        files={"photos": ("d.jpg", _jpeg(), "image/jpeg")},
+        data={"geo_source": "none", "captured_at": "2026-07-19T10:00:00Z"},
+    )
+    assert r.status_code == 201
+    sid = r.json()["sighting_id"]
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as c:
+        row = await c.fetchrow(
+            "SELECT dog_confidence, review_status FROM sightings WHERE id=$1", sid
+        )
+    # Detector failure fails open: sighting still saved, just unscored.
+    assert row["dog_confidence"] is None
+    assert row["review_status"] == "valid"
+
+
+@pytest.mark.asyncio
+async def test_post_sighting_insert_does_not_call_detector_directly(
+    authed_client, monkeypatch
+):
+    """Regression guard for the whole point of this change: the detector
+    must be invoked from the background task, not inline in the request
+    handler, so a call inside `create_sighting`'s own body (before the
+    response is built) never happens."""
+    from app.routes import sighting as sighting_route
+
+    calls = []
+    orig = sighting_route._score_and_save_dog_confidence
+
+    async def spy(pool, sighting_id, raws):
+        calls.append(sighting_id)
+        await orig(pool, sighting_id, raws)
+
+    monkeypatch.setattr(sighting_route, "_score_and_save_dog_confidence", spy)
+
+    client, _ = authed_client
+    r = await client.post(
+        "/sighting",
+        files={"photos": ("d.jpg", _jpeg(), "image/jpeg")},
+        data={"geo_source": "none", "captured_at": "2026-07-19T10:00:00Z"},
+    )
+    assert r.status_code == 201
+    sid = r.json()["sighting_id"]
+    assert calls == [UUID(sid)]

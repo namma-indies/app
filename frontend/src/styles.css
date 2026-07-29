@@ -31,6 +31,7 @@
     --muted: #a9998a;
     --frame: #6a4d34;
     --dust: #3a2c20;
+    --danger: #d9634a;
     --shadow: rgba(0, 0, 0, 0.5);
   }
 }
@@ -380,3 +381,29 @@ button { font-family: inherit; }
   border-radius: 50%; animation: spin 0.7s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* --- Failed-sync badge + sheet --- */
+.failed-badge {
+  margin-left: auto; border: 2px solid var(--danger); background: var(--panel);
+  color: var(--danger); border-radius: 4px; padding: 0.3rem 0.55rem;
+  font-family: "Silkscreen", monospace; font-size: 0.6rem; cursor: pointer;
+}
+
+.viewer-overlay > .failed-sheet {
+  background: var(--panel); border: 3px solid var(--line); border-radius: 6px;
+  padding: 1rem; max-width: 90vw; width: 22rem; max-height: 70vh;
+  overflow-y: auto; display: flex; flex-direction: column; gap: 0.7rem;
+}
+.failed-sheet h2 { margin: 0; color: var(--accent); font-size: 0.95rem; }
+.failed-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
+.failed-list li {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+  border: 2px solid var(--line); border-radius: 4px; padding: 0.5rem 0.6rem;
+}
+.failed-info { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.failed-thumb {
+  width: 48px; height: 48px; flex: none; object-fit: cover;
+  border: 2px solid var(--line); border-radius: 3px; image-rendering: pixelated;
+}
+.failed-when { font-size: 0.75rem; color: var(--muted); }
+.failed-actions { display: flex; gap: 0.4rem; }
