@@ -58,7 +58,7 @@ function getLocation(): Promise<GeolocationPosition | null> {
   });
 }
 
-export default function Capture({ onUnauthorized }: { onUnauthorized: () => void }) {
+export default function Capture() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [photo, setPhoto] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);

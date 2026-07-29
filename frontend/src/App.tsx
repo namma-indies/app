@@ -91,7 +91,7 @@ export default function App() {
       </div>
       <div className="screen">
         {tab === "capture" ? (
-          <Capture onUnauthorized={() => setUnauthorized(true)} />
+          <Capture />
         ) : (
           <Dex onUnauthorized={() => setUnauthorized(true)} />
         )}
