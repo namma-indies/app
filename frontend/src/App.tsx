@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import Capture from "./screens/Capture";
 import Dex from "./screens/Dex";
-import { failedCount, flush } from "./offline/queue";
+import { failedCount, flush, setOnFlushed, setOnUnauthorized } from "./offline/queue";
 import FailedSightings from "./components/FailedSightings";
 import { getDex, UnauthorizedError } from "./api";
 import mark from "./assets/mark.svg";
@@ -22,7 +22,28 @@ export default function App() {
     }
     run();
     window.addEventListener("online", run);
-    return () => window.removeEventListener("online", run);
+    // A backgrounded-then-resumed PWA doesn't remount, so mount-only misses
+    // "app open" in the PWA sense -- catch it on foreground resume too.
+    function onVisibilityChange() {
+      if (document.visibilityState === "visible") run();
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    // flush() can also be triggered elsewhere (Capture's submit()) without
+    // App knowing when it resolves -- have flush() itself notify us so the
+    // badge count stays current mid-session, not just on mount/online.
+    setOnFlushed(() => {
+      failedCount().then(setFailed);
+    });
+    // A 401 during a background flush means the session is dead -- reuse the
+    // same invite/login gate the initial getDex() auth probe shows, rather
+    // than leaving the user stuck with a growing unsyncable badge.
+    setOnUnauthorized(() => setUnauthorized(true));
+    return () => {
+      window.removeEventListener("online", run);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      setOnFlushed(null);
+      setOnUnauthorized(null);
+    };
   }, []);
 
   // One-time auth probe so the invite-needed state shows immediately on

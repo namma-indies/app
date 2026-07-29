@@ -77,6 +77,25 @@ function isPermanentFailure(err: unknown): boolean {
   return false;
 }
 
+// Notified after every flush() pass finishes, so UI that isn't the caller of
+// flush() (e.g. App's badge count) can stay in sync without prop-drilling or
+// polling. Kept as a single module-level slot rather than a full event
+// emitter -- there's only ever one subscriber (App.tsx).
+let onFlushed: (() => void) | null = null;
+
+export function setOnFlushed(cb: (() => void) | null): void {
+  onFlushed = cb;
+}
+
+// Notified specifically when flush() classifies a failure as a 401 --
+// distinct from other permanent (4xx) failures, since a dead session needs
+// the invite/login gate, not just a "couldn't sync" badge entry.
+let onUnauthorized: (() => void) | null = null;
+
+export function setOnUnauthorized(cb: (() => void) | null): void {
+  onUnauthorized = cb;
+}
+
 let flushing = false;
 let pendingRerun = false;
 
@@ -104,6 +123,7 @@ export async function flush(): Promise<void> {
         } catch (err) {
           if (isPermanentFailure(err)) {
             await db.put(STORE, { ...item, status: "failed" satisfies QueueStatus });
+            if (err instanceof UnauthorizedError) onUnauthorized?.();
             continue;
           }
           // Retryable (network failure or 5xx): stop here, try the rest later.
@@ -113,5 +133,6 @@ export async function flush(): Promise<void> {
     } while (pendingRerun);
   } finally {
     flushing = false;
+    onFlushed?.();
   }
 }
