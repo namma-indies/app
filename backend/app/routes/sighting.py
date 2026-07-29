@@ -4,7 +4,8 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+import asyncpg
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
@@ -35,8 +36,32 @@ async def _max_dog_confidence(raws: list[bytes]) -> float | None:
     return best
 
 
+async def _score_and_save_dog_confidence(
+    pool: asyncpg.Pool, sighting_id: UUID, raws: list[bytes]
+) -> None:
+    """Runs after the sighting is already saved. Scoring is a label, never a
+    gate, so a failure here (bad image, model error) just leaves
+    dog_confidence NULL -- it must never affect whether the sighting exists."""
+    dog_conf = await _max_dog_confidence(raws)
+    if dog_conf is None:
+        return
+    if dog_conf < DOG_CONF_THRESHOLD:
+        logger.info(
+            "low dog confidence, saved anyway: conf=%.3f threshold=%.2f sighting=%s",
+            dog_conf,
+            DOG_CONF_THRESHOLD,
+            sighting_id,
+        )
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE sightings SET dog_confidence=$1 WHERE id=$2", dog_conf, sighting_id
+        )
+
+
 @router.post("/sighting")
 async def create_sighting(
+    background_tasks: BackgroundTasks,
+    request: Request,
     photos: list[UploadFile] = File(...),
     lat: float | None = Form(None),
     lng: float | None = Form(None),
@@ -60,22 +85,6 @@ async def create_sighting(
         raise HTTPException(status_code=422, detail="at least one photo is required")
 
     raws = [await f.read() for f in photos]
-
-    # Dog detection is a LABEL, not a gate: we always save. The observer is in
-    # front of the dog and the model is not; when they disagree, the observer
-    # wins. A capture is also the only copy that exists (iOS never writes PWA
-    # camera frames to the photo library), so discarding one destroys data.
-    # Low scorers are for review and threshold tuning -- see DOG_CONF_THRESHOLD.
-    dog_conf = await _max_dog_confidence(raws)
-    if dog_conf is not None and dog_conf < DOG_CONF_THRESHOLD:
-        logger.info(
-            "low dog confidence, saving anyway: conf=%.3f threshold=%.2f "
-            "observer=%s photos=%d",
-            dog_conf,
-            DOG_CONF_THRESHOLD,
-            observer_id,
-            len(raws),
-        )
 
     sighting_id = uuid7()
 
@@ -135,7 +144,7 @@ async def create_sighting(
                 geo_accuracy_m,
                 first_phash,
                 json.dumps(attrs),
-                dog_conf,
+                None,
             )
         else:
             await conn.execute(
@@ -156,7 +165,7 @@ async def create_sighting(
                 geo_accuracy_m,
                 first_phash,
                 json.dumps(attrs),
-                dog_conf,
+                None,
             )
 
         for row in photo_rows:
@@ -172,6 +181,10 @@ async def create_sighting(
                 row["height"],
                 row["phash"],
             )
+
+    background_tasks.add_task(
+        _score_and_save_dog_confidence, request.app.state.pool, sighting_id, raws
+    )
 
     return JSONResponse(
         status_code=201,
