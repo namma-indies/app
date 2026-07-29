@@ -3,7 +3,7 @@
 // pending items to the server whenever it's called (on enqueue, on app
 // open, on the browser's `online` event).
 import { openDB, type IDBPDatabase } from "idb";
-import { postSighting, UnauthorizedError, type PostSightingInput } from "../api";
+import { HttpError, postSighting, UnauthorizedError, type PostSightingInput } from "../api";
 
 const DB_NAME = "indiedex-queue";
 const STORE = "pending";
@@ -63,16 +63,15 @@ export async function discardFailed(id: number): Promise<void> {
 
 /** A permanent failure means retrying without user action can't succeed:
  * the request was rejected (4xx), not merely unreachable. 401 gets its own
- * branch only for clarity -- it's a `UnauthorizedError` instance, not a
- * generic Error with a status in its message. */
+ * branch since it's a `UnauthorizedError` instance rather than a `HttpError`.
+ * 408 (request timeout) and 429 (rate limited) are 4xx but are meant to be
+ * retried -- 429 especially, since a queue drain hammering the server is
+ * exactly the case that would trigger it. */
 function isPermanentFailure(err: unknown): boolean {
   if (err instanceof UnauthorizedError) return true;
-  if (err instanceof Error) {
-    const match = /request failed: (\d+)/.exec(err.message);
-    if (match) {
-      const status = Number(match[1]);
-      return status >= 400 && status < 500;
-    }
+  if (err instanceof HttpError) {
+    if (err.status === 408 || err.status === 429) return false;
+    return err.status >= 400 && err.status < 500;
   }
   return false;
 }

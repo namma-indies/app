@@ -57,9 +57,18 @@ export class UnauthorizedError extends Error {
   }
 }
 
+// Carries the HTTP status as a real field rather than embedding it in the
+// message string, so callers (queue.ts's failure classification) don't have
+// to regex-parse prose that could change independently of this file.
+export class HttpError extends Error {
+  constructor(public status: number) {
+    super(`request failed: ${status}`);
+  }
+}
+
 async function handle<T>(res: Response): Promise<T> {
   if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok) throw new Error(`request failed: ${res.status}`);
+  if (!res.ok) throw new HttpError(res.status);
   return (await res.json()) as T;
 }
 

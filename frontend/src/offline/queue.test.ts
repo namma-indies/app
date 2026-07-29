@@ -5,9 +5,16 @@ import { IDBFactory } from "fake-indexeddb";
 vi.mock("../api", () => ({
   postSighting: vi.fn(),
   UnauthorizedError: class UnauthorizedError extends Error {},
+  HttpError: class HttpError extends Error {
+    status: number;
+    constructor(status: number) {
+      super(`request failed: ${status}`);
+      this.status = status;
+    }
+  },
 }));
 
-import { postSighting, UnauthorizedError } from "../api";
+import { postSighting, UnauthorizedError, HttpError } from "../api";
 import type { PostSightingInput } from "../api";
 
 const SAMPLE: PostSightingInput = {
@@ -59,7 +66,7 @@ describe("flush", () => {
     await enqueue(SAMPLE);
     await enqueue(SAMPLE);
     vi.mocked(postSighting)
-      .mockRejectedValueOnce(new Error("request failed: 422"))
+      .mockRejectedValueOnce(new HttpError(422))
       .mockResolvedValueOnce({ sighting_id: "s1", photo_ids: [] });
 
     await flush();
@@ -71,7 +78,18 @@ describe("flush", () => {
   it("treats a 5xx as retryable, not failed", async () => {
     const { enqueue, flush, failedCount, pendingCount } = await freshQueue();
     await enqueue(SAMPLE);
-    vi.mocked(postSighting).mockRejectedValue(new Error("request failed: 503"));
+    vi.mocked(postSighting).mockRejectedValue(new HttpError(503));
+
+    await flush();
+
+    expect(await failedCount()).toBe(0);
+    expect(await pendingCount()).toBe(1);
+  });
+
+  it("treats a 429 as retryable, not failed", async () => {
+    const { enqueue, flush, failedCount, pendingCount } = await freshQueue();
+    await enqueue(SAMPLE);
+    vi.mocked(postSighting).mockRejectedValue(new HttpError(429));
 
     await flush();
 
