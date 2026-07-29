@@ -52,9 +52,14 @@ async def _score_and_save_dog_confidence(
             DOG_CONF_THRESHOLD,
             sighting_id,
         )
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE sightings SET dog_confidence=$1 WHERE id=$2", dog_conf, sighting_id
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE sightings SET dog_confidence=$1 WHERE id=$2", dog_conf, sighting_id
+            )
+    except Exception:
+        logger.warning(
+            "failed to save dog_confidence for sighting=%s", sighting_id, exc_info=True
         )
 
 
