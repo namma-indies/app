@@ -94,3 +94,41 @@ async def test_ses_sender_sends_to_exactly_one_recipient(ses_capture):
     await SesSender().send("a@dognosis.tech", "https://x/consume?token=abc")
     assert list(ses_capture["Destination"].keys()) == ["ToAddresses"]
     assert len(ses_capture["Destination"]["ToAddresses"]) == 1
+
+
+# --- copy shape: reduce the phishing silhouette ----------------------------
+#
+# A short message whose only content is a prominent link, from a domain with no
+# reputation, is exactly what credential-harvesting mail looks like -- and it
+# got us filed as spam by Google Workspace on first contact. The copy names the
+# project and the organisation, says why the mail arrived, and shows the
+# destination URL as text rather than hiding it behind a button alone.
+
+def test_copy_identifies_the_project_and_organisation():
+    from app.email.sender import _bodies
+    text, html = _bodies("https://app.nammaindies.org/x?token=abc")
+    for body in (text, html):
+        assert "Namma Indies" in body
+        assert "IndieDex" in body
+
+
+def test_copy_explains_why_the_mail_arrived():
+    from app.email.sender import _bodies
+    text, html = _bodies("https://app.nammaindies.org/x?token=abc")
+    for body in (text, html):
+        assert "asked to sign in" in body
+
+
+def test_html_shows_the_url_as_text_not_only_as_a_button():
+    """A visible destination is a trust signal; a bare button hides it."""
+    from app.email.sender import _bodies
+    _, html = _bodies("https://app.nammaindies.org/x?token=abc")
+    # present both as href and as readable text
+    assert html.count("https://app.nammaindies.org/x?token=abc") >= 2
+
+
+def test_copy_reassures_when_it_was_not_you():
+    from app.email.sender import _bodies
+    text, html = _bodies("https://app.nammaindies.org/x?token=abc")
+    for body in (text, html):
+        assert "wasn't you" in body or "was not you" in body
