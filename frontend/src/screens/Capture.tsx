@@ -1,13 +1,6 @@
 import { useRef, useState } from "react";
-import {
-  postSighting,
-  UnauthorizedError,
-  type Condition,
-  type EarNotch,
-  type GeoSource,
-  type Sex,
-} from "../api";
-import { enqueue } from "../offline/queue";
+import { type Condition, type EarNotch, type GeoSource, type Sex } from "../api";
+import { enqueue, flush } from "../offline/queue";
 import DogSprite from "../components/DogSprite";
 
 const SEX_OPTIONS: { value: Sex; label: string }[] = [
@@ -121,22 +114,12 @@ export default function Capture({ onUnauthorized }: { onUnauthorized: () => void
     };
 
     try {
-      await postSighting(input);
+      await enqueue(input);
       showToast("Sighting logged 🐾");
       reset();
-    } catch (err) {
-      if (err instanceof UnauthorizedError) {
-        onUnauthorized();
-        return;
-      }
-      // Network failure (offline) or other error: queue for later.
-      try {
-        await enqueue(input);
-        showToast("Saved offline — will sync later");
-        reset();
-      } catch {
-        showToast("Couldn't save. Try again.");
-      }
+      flush();
+    } catch {
+      showToast("Couldn't save. Try again.");
     } finally {
       setSubmitting(false);
     }
