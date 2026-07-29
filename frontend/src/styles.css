@@ -400,5 +400,10 @@ button { font-family: inherit; }
   display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
   border: 2px solid var(--line); border-radius: 4px; padding: 0.5rem 0.6rem;
 }
+.failed-info { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.failed-thumb {
+  width: 48px; height: 48px; flex: none; object-fit: cover;
+  border: 2px solid var(--line); border-radius: 3px; image-rendering: pixelated;
+}
 .failed-when { font-size: 0.75rem; color: var(--muted); }
 .failed-actions { display: flex; gap: 0.4rem; }
