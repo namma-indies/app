@@ -117,7 +117,7 @@ export default function Capture() {
       await enqueue(input);
       showToast("Sighting logged 🐾");
       reset();
-      flush();
+      flush().catch(() => {});
     } catch {
       showToast("Couldn't save. Try again.");
     } finally {

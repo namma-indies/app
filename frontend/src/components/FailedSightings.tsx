@@ -30,7 +30,7 @@ export default function FailedSightings({ onClose }: { onClose: () => void }) {
   async function retry(id: number) {
     await retryFailed(id);
     await refresh();
-    flush();
+    flush().catch(() => {});
   }
 
   async function discard(id: number) {
