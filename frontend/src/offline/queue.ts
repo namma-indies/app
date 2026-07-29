@@ -1,11 +1,15 @@
-// Simple IndexedDB queue for captures made while offline or when the POST
-// fails. Deliberately minimal: one object store, no retries/backoff beyond
-// "try once on flush". Good enough for a placeholder PWA.
+// Simple IndexedDB queue for every capture. Every submit enqueues here first
+// (see Capture.tsx) -- there is no separate "live" path. flush() drains
+// pending items to the server whenever it's called (on enqueue, on app
+// open, on the browser's `online` event).
 import { openDB, type IDBPDatabase } from "idb";
-import { postSighting, type PostSightingInput } from "../api";
+import { postSighting, UnauthorizedError, type PostSightingInput } from "../api";
 
 const DB_NAME = "indiedex-queue";
 const STORE = "pending";
+
+export type QueueStatus = "pending" | "failed";
+export type QueuedItem = PostSightingInput & { id: number; status: QueueStatus };
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
@@ -22,12 +26,55 @@ function getDb() {
 
 export async function enqueue(input: PostSightingInput): Promise<void> {
   const db = await getDb();
-  await db.add(STORE, input);
+  await db.add(STORE, { ...input, status: "pending" as QueueStatus });
 }
 
-export async function pendingCount(): Promise<number> {
+async function countByStatus(status: QueueStatus): Promise<number> {
   const db = await getDb();
-  return db.count(STORE);
+  const all = (await db.getAll(STORE)) as QueuedItem[];
+  return all.filter((item) => item.status === status).length;
+}
+
+export function pendingCount(): Promise<number> {
+  return countByStatus("pending");
+}
+
+export function failedCount(): Promise<number> {
+  return countByStatus("failed");
+}
+
+export async function listFailed(): Promise<QueuedItem[]> {
+  const db = await getDb();
+  const all = (await db.getAll(STORE)) as QueuedItem[];
+  return all.filter((item) => item.status === "failed");
+}
+
+export async function retryFailed(id: number): Promise<void> {
+  const db = await getDb();
+  const item = (await db.get(STORE, id)) as QueuedItem | undefined;
+  if (!item) return;
+  await db.put(STORE, { ...item, status: "pending" satisfies QueueStatus });
+}
+
+export async function discardFailed(id: number): Promise<void> {
+  const db = await getDb();
+  await db.delete(STORE, id);
+}
+
+/** A permanent failure means retrying without user action can't succeed:
+ * the request was rejected (4xx), not merely unreachable. 401 gets its own
+ * branch only for clarity -- it's a `UnauthorizedError` instance, not a
+ * generic Error with a status in its message. */
+function isPermanentFailure(err: unknown): boolean {
+  if (err instanceof UnauthorizedError) return true;
+  if (err instanceof Error) {
+    const match = /request failed: (\d+)/.exec(err.message);
+    if (match) {
+      const status = Number(match[1]);
+      return status >= 400 && status < 500;
+    }
+  }
+  return false;
 }
 
 let flushing = false;
@@ -37,14 +84,18 @@ export async function flush(): Promise<void> {
   flushing = true;
   try {
     const db = await getDb();
-    const all = await db.getAll(STORE);
-    const keys = await db.getAllKeys(STORE);
-    for (let i = 0; i < all.length; i++) {
+    const all = (await db.getAll(STORE)) as QueuedItem[];
+    for (const item of all) {
+      if (item.status !== "pending") continue;
       try {
-        await postSighting(all[i]);
-        await db.delete(STORE, keys[i]);
-      } catch {
-        // Stop on first failure (likely still offline/unauthed); try again later.
+        await postSighting(item);
+        await db.delete(STORE, item.id);
+      } catch (err) {
+        if (isPermanentFailure(err)) {
+          await db.put(STORE, { ...item, status: "failed" satisfies QueueStatus });
+          continue;
+        }
+        // Retryable (network failure or 5xx): stop here, try the rest later.
         break;
       }
     }
