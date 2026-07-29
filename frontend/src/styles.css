@@ -31,6 +31,7 @@
     --muted: #a9998a;
     --frame: #6a4d34;
     --dust: #3a2c20;
+    --danger: #d9634a;
     --shadow: rgba(0, 0, 0, 0.5);
   }
 }
@@ -388,7 +389,7 @@ button { font-family: inherit; }
   font-family: "Silkscreen", monospace; font-size: 0.6rem; cursor: pointer;
 }
 
-.failed-sheet {
+.viewer-overlay > .failed-sheet {
   background: var(--panel); border: 3px solid var(--line); border-radius: 6px;
   padding: 1rem; max-width: 90vw; width: 22rem; max-height: 70vh;
   overflow-y: auto; display: flex; flex-direction: column; gap: 0.7rem;
