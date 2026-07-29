@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import Capture from "./screens/Capture";
 import Dex from "./screens/Dex";
-import { flush } from "./offline/queue";
+import { failedCount, flush } from "./offline/queue";
+import FailedSightings from "./components/FailedSightings";
 import { getDex, UnauthorizedError } from "./api";
 import mark from "./assets/mark.svg";
 
@@ -11,11 +12,17 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("capture");
   const [unauthorized, setUnauthorized] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
+  const [failed, setFailed] = useState(0);
+  const [showFailed, setShowFailed] = useState(false);
 
   useEffect(() => {
-    flush();
-    window.addEventListener("online", flush);
-    return () => window.removeEventListener("online", flush);
+    async function run() {
+      await flush();
+      setFailed(await failedCount());
+    }
+    run();
+    window.addEventListener("online", run);
+    return () => window.removeEventListener("online", run);
   }, []);
 
   // One-time auth probe so the invite-needed state shows immediately on
@@ -55,6 +62,11 @@ export default function App() {
           <img className="mark" src={mark} alt="" />
           indiedex
         </span>
+        {failed > 0 && (
+          <button className="failed-badge" onClick={() => setShowFailed(true)}>
+            {failed} couldn't sync
+          </button>
+        )}
       </div>
       <div className="screen">
         {tab === "capture" ? (
@@ -73,6 +85,14 @@ export default function App() {
           INDIEDEX
         </button>
       </div>
+      {showFailed && (
+        <FailedSightings
+          onClose={() => {
+            setShowFailed(false);
+            failedCount().then(setFailed);
+          }}
+        />
+      )}
     </div>
   );
 }
