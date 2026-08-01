@@ -12,7 +12,7 @@ from starlette.responses import (
 )
 
 from app.auth.allowlist import is_allowed, normalize_email
-from app.auth.deps import set_session_cookie
+from app.auth.deps import clear_session_cookie, set_session_cookie
 from app.auth.email_login import (
     absorb_passcode_observers,
     get_or_create_observer_by_email,
@@ -150,6 +150,23 @@ async def join_submit(
         else RedirectResponse(url="/", status_code=303)
     )
     set_session_cookie(resp, observer_id)
+    return resp
+
+
+@router.post("/auth/logout")
+async def logout(request: Request):
+    """Drop the session. POST-only on purpose: a GET would let a link
+    prefetcher, mail scanner, or stray <img> sign someone out.
+
+    Deliberately harmless without a session -- logging out twice, or from a
+    dead session, is not an error worth surfacing.
+    """
+    resp: Response = (
+        JSONResponse({"ok": True})
+        if _wants_json(request)
+        else RedirectResponse(url="/join", status_code=303)
+    )
+    clear_session_cookie(resp)
     return resp
 
 

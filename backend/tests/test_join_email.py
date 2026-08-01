@@ -249,3 +249,70 @@ async def test_browser_path_still_gets_html(app_client):
     """No Accept header change => unchanged behaviour for /join users."""
     r = await app_client.post("/auth/email", data={"email": "akash@dognosis.tech"})
     assert r.headers["content-type"].startswith("text/html")
+
+
+# --- logout ----------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_logout_instructs_the_browser_to_drop_the_session(authed_client):
+    """Asserted on the Set-Cookie header rather than a follow-up request: the
+    session cookie is Secure, and the test client speaks plain http, so httpx
+    rightly refuses to apply it to its jar. Emitting a correct expiry is the
+    server's half of the contract; honouring it is the browser's."""
+    client, _ = authed_client
+    assert (await client.get("/dex")).status_code == 200  # signed in to start
+
+    r = await client.post("/auth/logout", headers=JSON)
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+
+    cookie = r.headers["set-cookie"]
+    assert cookie.startswith("session=")
+    assert 'session=""' in cookie or "session=;" in cookie
+    assert "Max-Age=0" in cookie
+    # attributes must mirror the ones it was set with, or the delete no-ops
+    for attr in ("Path=/", "Secure", "HttpOnly"):
+        assert attr in cookie, f"{attr} missing from {cookie}"
+
+
+@pytest.mark.asyncio
+async def test_logout_actually_ends_the_session_server_side(app_client):
+    """The end-to-end property, with the cookie jar taken out of the picture:
+    a request carrying no session cookie is unauthenticated."""
+    from app.ids import uuid7
+    from app.security import issue_session
+    oid = uuid7()
+    pool = app_client._transport.app.state.pool
+    async with pool.acquire() as c:
+        await c.execute(
+            "INSERT INTO observers (id, display_name, created_via) VALUES ($1,'T','test')", oid)
+
+    signed_in = {"Cookie": f"session={issue_session(oid)}"}
+    assert (await app_client.get("/dex", headers=signed_in)).status_code == 200
+    assert (await app_client.get("/dex")).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_logout_from_a_browser_redirects_to_the_gate(authed_client):
+    client, _ = authed_client
+    r = await client.post("/auth/logout", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/join"
+
+
+@pytest.mark.asyncio
+async def test_get_cannot_log_you_out(authed_client):
+    """A GET must never end a session -- link prefetchers, mail scanners and
+    stray <img> tags all issue GETs. Asserted as behaviour, not status: the
+    SPA StaticFiles mount at "/" swallows unmatched GETs, so this 404s rather
+    than 405s, and the status is incidental to the property that matters."""
+    client, _ = authed_client
+    await client.get("/auth/logout")
+    assert (await client.get("/dex")).status_code == 200  # still signed in
+
+
+@pytest.mark.asyncio
+async def test_logout_without_a_session_is_harmless(app_client):
+    r = await app_client.post("/auth/logout", headers=JSON)
+    assert r.status_code == 200
+    assert r.json()["ok"] is True

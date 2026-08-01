@@ -447,3 +447,20 @@ button { font-family: inherit; }
   background: var(--panel); color: var(--danger);
   padding: 0.55rem 0.7rem; font-size: 0.82rem; text-align: left;
 }
+
+/* Sign out. Deliberately quiet and pushed to the far edge -- it sits next to
+   the tabs people tap constantly, and the cost of a mis-tap is a round trip
+   through email to get back in. Confirmed on click for the same reason. */
+.signout {
+  margin-left: auto;
+  background: none;
+  border: none;
+  padding: 0.3rem 0.2rem;
+  font-family: "Silkscreen", "Courier New", monospace;
+  font-size: 0.52rem;
+  color: var(--muted);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.signout:active { color: var(--accent); }

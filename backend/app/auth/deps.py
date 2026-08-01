@@ -32,4 +32,13 @@ def set_session_cookie(response, observer_id: UUID) -> None:
 
 
 def clear_session_cookie(response) -> None:
-    response.delete_cookie(SESSION_COOKIE, path="/")
+    # Must mirror set_session_cookie's attributes. A delete only matches a
+    # cookie whose path/secure/samesite agree -- get them wrong and the browser
+    # keeps the original quietly, so logout appears to work and doesn't.
+    response.delete_cookie(
+        SESSION_COOKIE,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        secure=True,
+    )

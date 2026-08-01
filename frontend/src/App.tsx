@@ -95,6 +95,23 @@ export default function App() {
             {failed} couldn't sync
           </button>
         )}
+        <button
+          className="signout"
+          onClick={async () => {
+            // Confirm first: the tabbar is right there and a stray tap costs
+            // a round-trip through email to get back in.
+            if (!confirm("Sign out of indiedex?")) return;
+            await fetch("/auth/logout", {
+              method: "POST",
+              headers: { Accept: "application/json" },
+            }).catch(() => {});
+            // Show the gate regardless. If the request failed the cookie may
+            // survive, but the next auth probe settles it either way.
+            setUnauthorized(true);
+          }}
+        >
+          sign out
+        </button>
       </div>
       <div className="screen">
         {tab === "capture" ? (
