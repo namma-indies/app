@@ -5,6 +5,7 @@ services:
   db:
     build:
       context: ./docker/db
+    restart: unless-stopped
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: indiedex
@@ -13,6 +14,7 @@ services:
 
   app:
     build: .
+    restart: unless-stopped
     env_file: .env
     environment:
       # Override the localhost defaults in app/config.py to point at the
@@ -25,6 +27,7 @@ services:
 
   caddy:
     image: caddy:2
+    restart: unless-stopped
     environment:
       APP_DOMAIN: ${APP_DOMAIN}
     volumes:
