@@ -4,6 +4,7 @@ import { discardFailed, flush, listFailed, retryFailed, type QueuedItem } from "
 export default function FailedSightings({ onClose }: { onClose: () => void }) {
   const [items, setItems] = useState<QueuedItem[]>([]);
   const [thumbUrls, setThumbUrls] = useState<Record<number, string>>({});
+  const [retrying, setRetrying] = useState<number | null>(null);
 
   useEffect(() => {
     listFailed().then(setItems);
@@ -28,9 +29,19 @@ export default function FailedSightings({ onClose }: { onClose: () => void }) {
   }
 
   async function retry(id: number) {
-    await retryFailed(id);
-    await refresh();
-    flush().catch(() => {});
+    // Refresh only after the flush settles. Refreshing first drops the item
+    // out of the failed list for as long as it is pending, so the sheet
+    // rendered "All caught up" over a retry that was still in flight -- and
+    // stayed that way when it failed again, since nothing refreshes the sheet
+    // once the flush finishes. A capture must never look synced when it isn't.
+    setRetrying(id);
+    try {
+      await retryFailed(id);
+      await flush().catch(() => {});
+    } finally {
+      await refresh();
+      setRetrying(null);
+    }
   }
 
   async function discard(id: number) {
@@ -57,11 +68,19 @@ export default function FailedSightings({ onClose }: { onClose: () => void }) {
                   </span>
                 </div>
                 <div className="failed-actions">
-                  <button className="btn btn-secondary" onClick={() => discard(item.id)}>
+                  <button
+                    className="btn btn-secondary"
+                    onClick={() => discard(item.id)}
+                    disabled={retrying !== null}
+                  >
                     DISCARD
                   </button>
-                  <button className="btn btn-primary" onClick={() => retry(item.id)}>
-                    RETRY
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => retry(item.id)}
+                    disabled={retrying !== null}
+                  >
+                    {retrying === item.id ? <span className="spinner" /> : "RETRY"}
                   </button>
                 </div>
               </li>
