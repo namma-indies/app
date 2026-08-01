@@ -156,6 +156,49 @@ describe("legacy items with no status field", () => {
   });
 });
 
+describe("photo storage owns its bytes", () => {
+  // iOS backs a camera File with a system temp file. Storing that File in
+  // IndexedDB stores a reference, and once the OS purges the original the
+  // Blob is dead -- WebKit then serialises the whole FormData to zero bytes
+  // rather than erroring, so the server sees a well-formed multipart header
+  // with content-length 0 and reports every field missing. Reading the bytes
+  // while the file is still alive is the only thing that prevents this.
+  it("stores raw bytes rather than the File it was handed", async () => {
+    const { enqueue } = await freshQueue();
+    const photo = new File([new Uint8Array([1, 2, 3, 4])], "d.jpg", { type: "image/jpeg" });
+
+    await enqueue({ ...SAMPLE, photos: [photo] });
+
+    const idb = await import("idb");
+    const raw = await idb.openDB("indiedex-queue", 1);
+    const [stored] = await raw.getAll("pending");
+    raw.close();
+
+    expect(stored.photos?.[0]).not.toBeInstanceOf(Blob);
+    const bytes = stored.photo_data[0].bytes;
+    expect(new Uint8Array(bytes)).toEqual(new Uint8Array([1, 2, 3, 4]));
+    expect(stored.photo_data[0].type).toBe("image/jpeg");
+  });
+
+  it("sends a readable Blob even after the original File is dead", async () => {
+    const { enqueue, flush } = await freshQueue();
+    const photo = new File([new Uint8Array([9, 8, 7])], "d.jpg", { type: "image/jpeg" });
+    await enqueue({ ...SAMPLE, photos: [photo] });
+
+    // The camera's temp file is gone by send time -- reading it now throws,
+    // exactly as it does on the device.
+    photo.arrayBuffer = () => Promise.reject(new DOMException("not found", "NotFoundError"));
+
+    vi.mocked(postSighting).mockResolvedValue({ sighting_id: "s1", photo_ids: [] });
+    await flush();
+
+    const sent = vi.mocked(postSighting).mock.calls[0][0];
+    expect(sent.photos).toHaveLength(1);
+    const roundTripped = new Uint8Array(await sent.photos[0].arrayBuffer());
+    expect(roundTripped).toEqual(new Uint8Array([9, 8, 7]));
+  });
+});
+
 describe("retryFailed / discardFailed", () => {
   it("moves a failed item back to pending on retry", async () => {
     const { enqueue, flush, failedCount, pendingCount, listFailed, retryFailed } =

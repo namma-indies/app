@@ -11,6 +11,37 @@ const STORE = "pending";
 export type QueueStatus = "pending" | "failed";
 export type QueuedItem = PostSightingInput & { id: number; status: QueueStatus };
 
+/** A photo as stored: raw bytes we own outright, plus the MIME type needed to
+ * rebuild an equivalent Blob. */
+type StoredPhoto = { bytes: ArrayBuffer; type: string };
+
+/** The on-disk record. `photo_data` is the current shape; `photos` is the
+ * legacy one, kept readable so captures queued by an older build still sync. */
+type StoredItem = Omit<PostSightingInput, "photos"> & {
+  id: number;
+  status?: QueueStatus;
+  photo_data?: StoredPhoto[];
+  photos?: Blob[];
+};
+
+/** Rebuild the in-memory item a caller expects from whichever shape is on disk.
+ *
+ * Storing a Blob directly looks like it works and does, everywhere except iOS:
+ * a camera File there is a handle to a system temp file, so IndexedDB persists
+ * a reference whose target the OS may purge. The Blob then reads as dead, and
+ * WebKit responds by serialising the entire FormData to zero bytes -- the
+ * request still carries a valid multipart boundary, so the server sees a
+ * well-formed body containing nothing and rejects every field as missing.
+ * Owning the bytes at capture time is what makes the queue durable.
+ */
+function toItem(stored: StoredItem): QueuedItem {
+  const { photo_data, photos, ...rest } = stored;
+  const rebuilt = photo_data
+    ? photo_data.map((p) => new Blob([p.bytes], { type: p.type }))
+    : (photos ?? []);
+  return { ...rest, photos: rebuilt, status: stored.status ?? "pending" } as QueuedItem;
+}
+
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
 function getDb() {
@@ -26,12 +57,18 @@ function getDb() {
 
 export async function enqueue(input: PostSightingInput): Promise<void> {
   const db = await getDb();
-  await db.add(STORE, { ...input, status: "pending" as QueueStatus });
+  const { photos, ...rest } = input;
+  // Read the bytes now, while the camera's file is still alive. Deferring this
+  // to send time is what stranded every capture on iOS.
+  const photo_data: StoredPhoto[] = await Promise.all(
+    photos.map(async (p) => ({ bytes: await p.arrayBuffer(), type: p.type || "image/jpeg" })),
+  );
+  await db.add(STORE, { ...rest, photo_data, status: "pending" as QueueStatus });
 }
 
 async function countByStatus(status: QueueStatus): Promise<number> {
   const db = await getDb();
-  const all = (await db.getAll(STORE)) as QueuedItem[];
+  const all = (await db.getAll(STORE)) as StoredItem[];
   return all.filter((item) => (item.status ?? "pending") === status).length;
 }
 
@@ -45,13 +82,13 @@ export function failedCount(): Promise<number> {
 
 export async function listFailed(): Promise<QueuedItem[]> {
   const db = await getDb();
-  const all = (await db.getAll(STORE)) as QueuedItem[];
-  return all.filter((item) => (item.status ?? "pending") === "failed");
+  const all = (await db.getAll(STORE)) as StoredItem[];
+  return all.filter((item) => (item.status ?? "pending") === "failed").map(toItem);
 }
 
 export async function retryFailed(id: number): Promise<void> {
   const db = await getDb();
-  const item = (await db.get(STORE, id)) as QueuedItem | undefined;
+  const item = (await db.get(STORE, id)) as StoredItem | undefined;
   if (!item) return;
   await db.put(STORE, { ...item, status: "pending" satisfies QueueStatus });
 }
@@ -112,16 +149,19 @@ export async function flush(): Promise<void> {
     do {
       pendingRerun = false;
       const db = await getDb();
-      const all = (await db.getAll(STORE)) as QueuedItem[];
-      for (const item of all) {
-        const status = item.status ?? "pending";
+      const all = (await db.getAll(STORE)) as StoredItem[];
+      for (const stored of all) {
+        const status = stored.status ?? "pending";
         if (status !== "pending") continue;
+        const item = toItem(stored);
         try {
           await postSighting(item);
-          await db.delete(STORE, item.id);
+          await db.delete(STORE, stored.id);
         } catch (err) {
           if (isPermanentFailure(err)) {
-            await db.put(STORE, { ...item, status: "failed" satisfies QueueStatus });
+            // Write back `stored`, not the reconstructed item: persisting the
+            // rebuilt Blobs would downgrade the record to the legacy shape.
+            await db.put(STORE, { ...stored, status: "failed" satisfies QueueStatus });
             if (err instanceof UnauthorizedError) onUnauthorized?.();
             continue;
           }
