@@ -1,4 +1,5 @@
 import hmac
+import logging
 from html import escape
 
 from fastapi import APIRouter, Depends, Form
@@ -17,6 +18,7 @@ from app.config import settings
 from app.deps import get_conn
 from app.email.sender import get_sender
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _STYLE = """
@@ -139,7 +141,23 @@ async def email_submit(email: str = Form(...), conn=Depends(get_conn)):
     observer_id = await get_or_create_observer_by_email(conn, email=address)
     token = await issue_login_token(conn, observer_id)
     link = f"{settings.public_base_url}/auth/email/consume?token={token}"
-    await get_sender().send(address, link)
+    try:
+        await get_sender().send(address, link)
+    except Exception:
+        # Never let a sender failure surface as a bare 500. SES refusing a
+        # message (suppressed recipient, throttling, misconfiguration) is an
+        # operational problem, and an unhandled traceback makes it look like
+        # the button is broken -- which is exactly what happened once, for two
+        # days, when sandbox rejected an unverified recipient. The detail goes
+        # to the log; the reader gets something actionable.
+        logger.exception("login email send failed for %s", address)
+        return HTMLResponse(
+            _page(error="We couldn't send that email just now. Try again in a moment — "
+                        "if it keeps failing, tell Akash."),
+            status_code=500,
+        )
+    # The unused token simply expires in 30 minutes, so a failed send leaves
+    # nothing to clean up.
     return HTMLResponse(_page(notice=f"Check your email — a sign-in link is on its way to {address}."))
 
 

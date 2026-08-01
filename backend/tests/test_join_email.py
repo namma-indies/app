@@ -159,3 +159,26 @@ async def test_no_carry_over_merely_from_requesting_a_link(app_client):
             "SELECT count(*) FROM sightings WHERE observer_id = $1", old) == 1
         assert await c.fetchval(
             "SELECT deleted_at FROM observers WHERE id = $1", old) is None
+
+
+@pytest.mark.asyncio
+async def test_send_failure_shows_a_message_instead_of_a_stack_trace(app_client, monkeypatch):
+    """A failing sender must not surface as a 500 with a traceback.
+
+    This cost two days once: SES rejected an unverified recipient, the
+    exception went unhandled, and the page just died -- so it looked like the
+    button was broken rather than the mail being refused.
+    """
+    class ExplodingSender:
+        async def send(self, to: str, link: str) -> None:
+            raise RuntimeError("SES said no")
+
+    import app.routes.join as join_mod
+    monkeypatch.setattr(join_mod, "get_sender", lambda: ExplodingSender())
+
+    r = await app_client.post("/auth/email", data={"email": "akash@dognosis.tech"})
+
+    assert r.status_code == 500
+    assert "Traceback" not in r.text
+    assert "SES said no" not in r.text          # never leak internals to the page
+    assert "couldn't send" in r.text.lower()
