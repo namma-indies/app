@@ -3,7 +3,13 @@ import logging
 from html import escape
 
 from fastapi import APIRouter, Depends, Form
-from starlette.responses import HTMLResponse, RedirectResponse
+from starlette.requests import Request
+from starlette.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 
 from app.auth.allowlist import is_allowed, normalize_email
 from app.auth.deps import set_session_cookie
@@ -100,6 +106,18 @@ def _page(*, error: str | None = None, name: str = "", notice: str | None = None
 </html>"""
 
 
+def _wants_json(request: Request) -> bool:
+    """True when the caller is the app rather than a browser navigating to
+    /join. Both paths share these endpoints; only the reply shape differs."""
+    return "application/json" in request.headers.get("accept", "")
+
+
+def _fail(request: Request, *, error: str, status: int, name: str = "") -> Response:
+    if _wants_json(request):
+        return JSONResponse({"ok": False, "error": error}, status_code=status)
+    return HTMLResponse(_page(error=error, name=name), status_code=status)
+
+
 @router.get("/join", response_class=HTMLResponse)
 async def join_page() -> HTMLResponse:
     return HTMLResponse(_page())
@@ -107,36 +125,46 @@ async def join_page() -> HTMLResponse:
 
 @router.post("/auth/join")
 async def join_submit(
+    request: Request,
     name: str = Form(...),
     passcode: str = Form(...),
     conn=Depends(get_conn),
 ):
     display_name = name.strip()
     if not hmac.compare_digest(passcode, settings.join_passcode):
-        return HTMLResponse(
-            _page(error="Wrong passcode — check with whoever invited you.", name=display_name),
-            status_code=401,
+        return _fail(
+            request,
+            error="Wrong passcode — check with whoever invited you.",
+            status=401,
+            name=display_name,
         )
     if not display_name:
-        return HTMLResponse(_page(error="Please enter your name.", name=""), status_code=400)
+        return _fail(request, error="Please enter your name.", status=400)
 
     observer_id = await create_observer(conn, display_name=display_name, created_via="passcode")
-    resp = RedirectResponse(url="/", status_code=303)
+    # The app can't follow a 303 into an HTML page -- it wants a verdict and
+    # will re-probe its own session. The browser still gets the redirect.
+    resp: Response = (
+        JSONResponse({"ok": True})
+        if _wants_json(request)
+        else RedirectResponse(url="/", status_code=303)
+    )
     set_session_cookie(resp, observer_id)
     return resp
 
 
 @router.post("/auth/email")
-async def email_submit(email: str = Form(...), conn=Depends(get_conn)):
+async def email_submit(request: Request, email: str = Form(...), conn=Depends(get_conn)):
     address = normalize_email(email)
     if not address:
-        return HTMLResponse(_page(error="That doesn't look like an email address."), status_code=400)
+        return _fail(request, error="That doesn't look like an email address.", status=400)
     if not is_allowed(address):
         # Told plainly, not silently swallowed: the allowlist is a domain, not
         # a secret, and silent failure just generates "did it send?" pings.
-        return HTMLResponse(
-            _page(error=f"{address} isn't on the pilot list yet — ask Akash to add you."),
-            status_code=403,
+        return _fail(
+            request,
+            error=f"{address} isn't on the pilot list yet — ask Akash to add you.",
+            status=403,
         )
     observer_id = await get_or_create_observer_by_email(conn, email=address)
     token = await issue_login_token(conn, observer_id)
@@ -151,14 +179,18 @@ async def email_submit(email: str = Form(...), conn=Depends(get_conn)):
         # days, when sandbox rejected an unverified recipient. The detail goes
         # to the log; the reader gets something actionable.
         logger.exception("login email send failed for %s", address)
-        return HTMLResponse(
-            _page(error="We couldn't send that email just now. Try again in a moment — "
-                        "if it keeps failing, tell Akash."),
-            status_code=500,
+        return _fail(
+            request,
+            error="We couldn't send that email just now. Try again in a moment — "
+                  "if it keeps failing, tell Akash.",
+            status=500,
         )
     # The unused token simply expires in 30 minutes, so a failed send leaves
     # nothing to clean up.
-    return HTMLResponse(_page(notice=f"Check your email — a sign-in link is on its way to {address}."))
+    message = f"Check your email — a sign-in link is on its way to {address}."
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "message": message})
+    return HTMLResponse(_page(notice=message))
 
 
 @router.get("/auth/email/consume")

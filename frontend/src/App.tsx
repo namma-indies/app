@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import Capture from "./screens/Capture";
 import Dex from "./screens/Dex";
+import SignIn from "./screens/SignIn";
 import { failedCount, flush, setOnFlushed, setOnUnauthorized } from "./offline/queue";
 import FailedSightings from "./components/FailedSightings";
 import { getDex, UnauthorizedError } from "./api";
@@ -64,14 +65,20 @@ export default function App() {
   if (unauthorized) {
     return (
       <div className="app">
-        <div className="screen gate">
-          <div className="big-paw">🐕‍🦺</div>
-          <h2>You need an invite</h2>
-          <p className="hint">
-            indiedex, by Namma Indies, is invite-only right now. Ask a friend for a
-            magic link, or check your email for one, to start logging sightings.
-          </p>
-        </div>
+        <SignIn
+          onSignedIn={() => {
+            // Re-probe rather than trusting the POST: the server just set a
+            // session cookie, and getDex() succeeding is the only proof the
+            // app and server agree about who we are.
+            setCheckingAuth(true);
+            getDex()
+              .then(() => {
+                setUnauthorized(false);
+                setCheckingAuth(false);
+              })
+              .catch(() => setCheckingAuth(false));
+          }}
+        />
       </div>
     );
   }

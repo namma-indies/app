@@ -182,3 +182,70 @@ async def test_send_failure_shows_a_message_instead_of_a_stack_trace(app_client,
     assert "Traceback" not in r.text
     assert "SES said no" not in r.text          # never leak internals to the page
     assert "couldn't send" in r.text.lower()
+
+
+# --- JSON mode: the same endpoints, called from inside the app -------------
+#
+# The PWA's gate screen posts these itself and stays put, so it needs a
+# machine-readable answer. /join keeps rendering HTML for the plain-browser
+# path; the difference is purely the Accept header.
+
+JSON = {"Accept": "application/json"}
+
+
+@pytest.mark.asyncio
+async def test_email_submit_returns_json_when_asked(app_client):
+    r = await app_client.post("/auth/email", data={"email": "akash@dognosis.tech"}, headers=JSON)
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/json")
+    body = r.json()
+    assert body["ok"] is True
+    assert "akash@dognosis.tech" in body["message"]
+    assert len(CAPTURED) == 1
+
+
+@pytest.mark.asyncio
+async def test_email_submit_json_rejects_non_allowlisted(app_client):
+    r = await app_client.post("/auth/email", data={"email": "stranger@gmail.com"}, headers=JSON)
+    assert r.status_code == 403
+    assert r.json()["ok"] is False
+    assert "pilot list" in r.json()["error"]
+    assert CAPTURED == []
+
+
+@pytest.mark.asyncio
+async def test_email_submit_json_rejects_malformed(app_client):
+    r = await app_client.post("/auth/email", data={"email": "nope"}, headers=JSON)
+    assert r.status_code == 400
+    assert r.json()["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_passcode_json_sets_session_without_redirecting(app_client):
+    """The app can't follow a 303 into an HTML page -- it wants a verdict."""
+    from app.config import settings
+    r = await app_client.post(
+        "/auth/join",
+        data={"name": "Priya", "passcode": settings.join_passcode},
+        headers=JSON,
+        follow_redirects=False,
+    )
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert "session=" in r.headers.get("set-cookie", "")
+
+
+@pytest.mark.asyncio
+async def test_passcode_json_wrong_code_is_401_json(app_client):
+    r = await app_client.post(
+        "/auth/join", data={"name": "Priya", "passcode": "nope"}, headers=JSON)
+    assert r.status_code == 401
+    assert r.json()["ok"] is False
+    assert "passcode" in r.json()["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_browser_path_still_gets_html(app_client):
+    """No Accept header change => unchanged behaviour for /join users."""
+    r = await app_client.post("/auth/email", data={"email": "akash@dognosis.tech"})
+    assert r.headers["content-type"].startswith("text/html")

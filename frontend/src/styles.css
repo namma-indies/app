@@ -407,3 +407,43 @@ button { font-family: inherit; }
 }
 .failed-when { font-size: 0.75rem; color: var(--muted); }
 .failed-actions { display: flex; gap: 0.4rem; }
+
+/* --- Sign-in gate ---------------------------------------------------------
+   The unauthenticated landing state. It was previously a dead end that told
+   people to find a magic link somehow; both doors now live here so the app
+   is enterable from itself. */
+.signin-form {
+  display: flex; flex-direction: column; width: 100%;
+  max-width: 300px; text-align: left; gap: 0.3rem; margin-top: 0.4rem;
+}
+.signin-form label {
+  font-family: "Silkscreen", "Courier New", monospace;
+  font-size: 0.6rem; color: var(--muted); margin-top: 0.5rem;
+}
+.signin-form input {
+  border: 3px solid var(--line); border-radius: 4px; background: var(--panel);
+  color: var(--ink); padding: 0.6rem 0.7rem; font-family: inherit;
+  font-size: 0.95rem; width: 100%;
+}
+.signin-form input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.signin-form input:disabled { opacity: 0.6; }
+.signin-form .btn { margin-top: 0.9rem; flex: none; width: 100%; }
+
+.gate .btn { flex: none; width: 100%; max-width: 300px; }
+
+.signin-or {
+  display: flex; align-items: center; gap: 0.6rem;
+  width: 100%; max-width: 300px; margin: 1rem 0 0.6rem;
+  font-family: "Silkscreen", "Courier New", monospace;
+  font-size: 0.58rem; color: var(--muted);
+}
+.signin-or::before, .signin-or::after {
+  content: ""; flex: 1; height: 3px; background: var(--line); opacity: 0.25;
+}
+
+.signin-error {
+  width: 100%; max-width: 300px; margin: 0.2rem 0 0;
+  border: 3px solid var(--danger); border-radius: 4px;
+  background: var(--panel); color: var(--danger);
+  padding: 0.55rem 0.7rem; font-size: 0.82rem; text-align: left;
+}
