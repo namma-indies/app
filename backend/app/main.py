@@ -54,10 +54,16 @@ async def log_validation_error(request: Request, exc: RequestValidationError):
     The submitted values are deliberately not logged: they carry photos and
     location. Field paths and error types are enough to identify the bug.
     """
+    # Content-type and length separate the three ways a body goes wrong:
+    # never sent (no length), sent unparseable (wrong/absent content-type),
+    # or cut off mid-stream (length present but every field missing).
     logger.warning(
-        "422 on %s %s: %s",
+        "422 on %s %s: content_type=%r content_length=%r ua=%r errors=%s",
         request.method,
         request.url.path,
+        request.headers.get("content-type"),
+        request.headers.get("content-length"),
+        request.headers.get("user-agent"),
         [
             {"loc": e.get("loc"), "type": e.get("type"), "msg": e.get("msg")}
             for e in exc.errors()
