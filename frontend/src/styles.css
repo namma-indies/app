@@ -107,7 +107,13 @@ button { font-family: inherit; }
   flex: 1;
   padding: 0.5rem 1.1rem 1.25rem;
   overflow-y: auto;
+  /* A flex column so a child can claim the leftover height. `.app` sets
+     min-height rather than height, so percentage heights never resolve in
+     here -- flex sizing is what actually stretches the map. */
+  display: flex;
+  flex-direction: column;
 }
+.screen > * { flex-shrink: 0; }
 
 /* --- Tab bar --- */
 .tabbar {
@@ -289,6 +295,16 @@ button { font-family: inherit; }
 
 /* warm-dust wash over the real Bangalore map. Scoped to the tile canvas so
    pins and popups keep their true colour. */
+/* In map view the map should own the screen rather than sit in a fixed band
+   with dead space under it. Scoped to this view so the journal, which really
+   does scroll, keeps its normal block layout. */
+.dex-map-view {
+  display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0;
+}
+.dex-map-view .map-wrap {
+  flex: 1 1 auto; height: auto; min-height: 300px;
+}
+
 .map-wrap {
   width: 100%; height: 46vh; border: 3px solid var(--line);
   border-radius: 4px; overflow: hidden; position: relative;
@@ -367,6 +383,23 @@ button { font-family: inherit; }
 }
 .photo-pin img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .photo-pin-fallback { display: flex; align-items: center; justify-content: center; font-size: 1.2rem; }
+
+/* Cluster bubbles: same stamped-card language as the pins, so a group reads
+   as "several of these" rather than as a different kind of thing. */
+.cluster-pin {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: var(--frame); border: 3px solid var(--line); border-radius: 50%;
+  box-shadow: 2px 2px 0 var(--shadow); cursor: pointer; line-height: 1;
+  font-family: "Silkscreen", monospace; color: var(--ink);
+}
+.cluster-pin:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0 var(--shadow); }
+.cluster-sm { width: 38px; height: 38px; }
+.cluster-md { width: 46px; height: 46px; }
+.cluster-lg { width: 56px; height: 56px; }
+.cluster-count { font-size: 0.78rem; }
+.cluster-sm .cluster-count { font-size: 0.68rem; }
+.cluster-lg .cluster-count { font-size: 0.9rem; }
+.cluster-paw { font-size: 0.5rem; opacity: 0.65; margin-top: 2px; }
 
 .map-popup { font-family: "Quicksand", sans-serif; text-align: center; }
 .map-popup img { width: 104px; height: 104px; object-fit: cover; border: 3px solid var(--line); image-rendering: pixelated; }

@@ -63,7 +63,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
   }
 
   return (
-    <div>
+    <div className={view === "map" && sightings.length > 0 ? "dex dex-map-view" : "dex"}>
       <div className="dex-toggle">
         <button className={view === "map" ? "active" : ""} onClick={() => setView("map")}>
           MAP
