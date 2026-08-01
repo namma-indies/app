@@ -3,7 +3,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import asyncpg
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 
 from app.db import effective_dsn
@@ -38,6 +40,30 @@ app.include_router(auth_router)
 app.include_router(join_router)
 app.include_router(dex_router)
 app.include_router(sighting_router)
+
+
+@app.exception_handler(RequestValidationError)
+async def log_validation_error(request: Request, exc: RequestValidationError):
+    """Record *which* field a 422 rejected, then answer exactly as FastAPI would.
+
+    A 422 is indistinguishable from any other in the access log, so a client
+    sending one malformed field looks the same as a client sending none at
+    all. That gap made a real field failure -- every capture rejected, the
+    app reporting only "couldn't sync" -- impossible to diagnose from the box.
+
+    The submitted values are deliberately not logged: they carry photos and
+    location. Field paths and error types are enough to identify the bug.
+    """
+    logger.warning(
+        "422 on %s %s: %s",
+        request.method,
+        request.url.path,
+        [
+            {"loc": e.get("loc"), "type": e.get("type"), "msg": e.get("msg")}
+            for e in exc.errors()
+        ],
+    )
+    return await request_validation_exception_handler(request, exc)
 
 # Serve the built frontend PWA (frontend/dist) if present, e.g. after
 # `cd frontend && npm run build`. Mounted last so the API routes above still
