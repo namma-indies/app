@@ -221,6 +221,63 @@ button { font-family: inherit; }
 
 .hint { color: var(--muted); font-size: 0.88rem; text-align: center; }
 
+.filmstrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.filmstrip-thumb {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  border: 3px solid var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+  image-rendering: pixelated;
+}
+
+.filmstrip-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.thumb-remove {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--line);
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--bg);
+  font-size: 0.7rem;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+.filmstrip-add {
+  width: 56px;
+  height: 56px;
+  border: 3px dashed var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--accent);
+  font-size: 1.4rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
 .note-field { width: 100%; }
 .note-field textarea {
   width: 100%; border-radius: 4px; border: 3px solid var(--line);
