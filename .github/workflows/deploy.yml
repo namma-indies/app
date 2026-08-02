@@ -1,0 +1,48 @@
+name: Deploy
+
+# Ships every merge to main to the production box (app.nammaindies.org).
+# Runs the exact same remote steps as a manual `./deploy/deploy.sh` --
+# see deploy/remote.sh, the single source of truth for both paths.
+#
+# Requires two repo secrets (Settings > Secrets and variables > Actions):
+#   DEPLOY_SSH_KEY    - private half of a CI-only keypair (see docs/OPERATIONS.md)
+#   DEPLOY_SSH_TARGET - e.g. "ubuntu@<box-ip>" (kept out of this public repo)
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to argos
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_TARGET: ${{ secrets.DEPLOY_SSH_TARGET }}
+        run: |
+          set -euo pipefail
+          key_file="$(mktemp)"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$key_file"
+          chmod 600 "$key_file"
+
+          ssh -i "$key_file" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_SSH_TARGET" 'bash -s' < deploy/remote.sh
+
+      - name: Wait for the app to answer
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' https://app.nammaindies.org/ || true)
+            if [ "$code" = "200" ]; then echo "==> live (HTTP $code)"; exit 0; fi
+            sleep 3
+          done
+          echo "!! app did not return 200 after 90s" >&2
+          exit 1

@@ -10,7 +10,6 @@
 set -euo pipefail
 
 HOST="${HOST:-argos}"
-COMPOSE="docker-compose.prod.yml"
 
 echo "==> deploying to '$HOST'"
 
@@ -26,12 +25,7 @@ if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
   exit 1
 fi
 
-ssh "$HOST" "set -euo pipefail
-  cd ~/app
-  git pull --ff-only origin main
-  echo '==> now at' \$(git rev-parse --short HEAD)
-  sudo docker compose -f $COMPOSE up -d --build
-  sudo docker image prune -f >/dev/null"
+ssh "$HOST" 'bash -s' < "$(dirname "$0")/remote.sh"
 
 echo "==> waiting for the app to answer"
 for i in $(seq 1 30); do
@@ -40,5 +34,5 @@ for i in $(seq 1 30); do
   sleep 3
 done
 
-echo "!! app did not return 200 after 90s -- check: ssh $HOST 'cd ~/app && sudo docker compose -f $COMPOSE logs --tail=50 app'" >&2
+echo "!! app did not return 200 after 90s -- check: ssh $HOST 'cd ~/app && sudo docker compose -f docker-compose.prod.yml logs --tail=50 app'" >&2
 exit 1
