@@ -3,6 +3,8 @@ import { type Condition, type EarNotch, type GeoSource, type Sex } from "../api"
 import { enqueue, flush } from "../offline/queue";
 import DogSprite from "../components/DogSprite";
 
+const MAX_PHOTOS = 5;
+
 const SEX_OPTIONS: { value: Sex; label: string }[] = [
   { value: "male", label: "♂ male" },
   { value: "female", label: "♀ female" },
@@ -60,8 +62,8 @@ function getLocation(): Promise<GeolocationPosition | null> {
 
 export default function Capture() {
   const fileRef = useRef<HTMLInputElement>(null);
-  const [photo, setPhoto] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [photos, setPhotos] = useState<File[]>([]);
+  const [previewUrls, setPreviewUrls] = useState<string[]>([]);
   const [note, setNote] = useState("");
   const [sex, setSex] = useState<Sex | null>(null);
   const [earNotch, setEarNotch] = useState<EarNotch | null>(null);
@@ -77,14 +79,27 @@ export default function Capture() {
 
   function onFileChosen(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
+    // Reset now so choosing the same file again still fires a change event.
+    if (fileRef.current) fileRef.current.value = "";
     if (!f) return;
-    setPhoto(f);
-    setPreviewUrl(URL.createObjectURL(f));
+    setPhotos((prev) => (prev.length >= MAX_PHOTOS ? prev : [...prev, f]));
+    setPreviewUrls((prev) =>
+      prev.length >= MAX_PHOTOS ? prev : [...prev, URL.createObjectURL(f)],
+    );
+  }
+
+  function removePhoto(index: number) {
+    setPreviewUrls((prev) => {
+      URL.revokeObjectURL(prev[index]);
+      return prev.filter((_, i) => i !== index);
+    });
+    setPhotos((prev) => prev.filter((_, i) => i !== index));
   }
 
   function reset() {
-    setPhoto(null);
-    setPreviewUrl(null);
+    previewUrls.forEach((url) => URL.revokeObjectURL(url));
+    setPhotos([]);
+    setPreviewUrls([]);
     setNote("");
     setSex(null);
     setEarNotch(null);
@@ -94,14 +109,14 @@ export default function Capture() {
   }
 
   async function submit() {
-    if (!photo) return;
+    if (photos.length === 0) return;
     setSubmitting(true);
     const capturedAt = new Date().toISOString();
     const position = await getLocation();
 
     const geoSource: GeoSource = position ? "device_gps" : "none";
     const input = {
-      photos: [photo],
+      photos,
       lat: position?.coords.latitude,
       lng: position?.coords.longitude,
       geo_accuracy_m: position?.coords.accuracy,
@@ -128,8 +143,8 @@ export default function Capture() {
   return (
     <div className="capture-stage">
       <div className="preview-frame">
-        {previewUrl ? (
-          <img src={previewUrl} alt="captured dog" />
+        {previewUrls.length > 0 ? (
+          <img src={previewUrls[previewUrls.length - 1]} alt="captured dog" />
         ) : (
           <div className="placeholder">
             <DogSprite coat="tan" scale={7} />
@@ -155,11 +170,12 @@ export default function Capture() {
         type="file"
         accept="image/*"
         capture="environment"
+        aria-label="capture photo"
         style={{ display: "none" }}
         onChange={onFileChosen}
       />
 
-      {!photo ? (
+      {photos.length === 0 ? (
         <div className="shutter-wrap">
           <span className="spot-label">SPOT AN INDIE</span>
           <button className="shutter" onClick={() => fileRef.current?.click()} aria-label="Spot a sighting">
@@ -169,6 +185,37 @@ export default function Capture() {
         </div>
       ) : (
         <>
+          <div className="filmstrip">
+            {previewUrls.map((url, i) => (
+              <div className="filmstrip-thumb" key={url}>
+                <img src={url} alt={`captured dog ${i + 1}`} />
+                <button
+                  type="button"
+                  className="thumb-remove"
+                  onClick={() => removePhoto(i)}
+                  aria-label={`Remove photo ${i + 1}`}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            {photos.length < MAX_PHOTOS && (
+              <button
+                type="button"
+                className="filmstrip-add"
+                onClick={() => fileRef.current?.click()}
+                aria-label="Add another photo"
+              >
+                +
+              </button>
+            )}
+          </div>
+          {photos.length >= MAX_PHOTOS && (
+            <p className="hint">
+              {MAX_PHOTOS}/{MAX_PHOTOS} photos added
+            </p>
+          )}
+
           <div className="note-field">
             <textarea
               rows={2}
@@ -205,7 +252,7 @@ export default function Capture() {
 
           <div className="actions-row">
             <button className="btn btn-secondary" onClick={reset} disabled={submitting}>
-              RETAKE
+              CLEAR ALL
             </button>
             <button
               className="btn btn-primary"
