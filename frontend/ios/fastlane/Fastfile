@@ -15,9 +15,10 @@ platform :ios do
   desc "Build and upload a release build to TestFlight"
   lane :build_and_upload do
     certs
-    increment_build_number(xcodeproj: "App.xcodeproj")
+    latest = latest_testflight_build_number(app_identifier: "org.nammaindies.app")
+    increment_build_number(xcodeproj: "App/App.xcodeproj", build_number: latest + 1)
     build_app(
-      workspace: "App.xcworkspace",
+      workspace: "App/App.xcworkspace",
       scheme: "App",
       export_method: "app-store",
     )
