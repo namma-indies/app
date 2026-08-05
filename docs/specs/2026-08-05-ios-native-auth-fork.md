@@ -1,7 +1,55 @@
-# iOS native app: cross-origin auth — status and the open fork
+# iOS native app: cross-origin auth — resolved
 
-_Status note, not a finished design. Written mid-debugging session on
-2026-08-05 to capture where things stand before deciding which way to go._
+_Written mid-debugging session on 2026-08-05 as a status note; updated
+2026-08-06 with the actual resolution. Kept as a record of the debugging
+path — the eventual fix (`CapacitorHttp`) is one line, but getting there
+needed ruling out two confounding bugs first._
+
+## Resolution
+
+**Fix: `CapacitorHttp: { enabled: true }` in `frontend/capacitor.config.ts`.**
+Routes the webview's `fetch()`/`XMLHttpRequest` through native `URLSession`
+instead of WKWebView's own networking stack. WKWebView's cookie policy
+(reject any `Set-Cookie` whose domain doesn't match the main document's
+domain) is specific to *its* stack — `URLSession` uses the app's ordinary
+`HTTPCookieStorage`, which isn't subject to that restriction. Confirmed
+working end-to-end on-device: sign-in (passcode door) now sticks, and the
+photo-upload `FormData` path (the one real risk `CapacitorHttp` is known to
+sometimes affect) still works.
+
+No app code changed — every existing `fetch()` call in `api.ts`,
+`deepLink.ts`, `SignIn.tsx` is patched transparently by the plugin.
+
+**Left in place, deliberately, not reverted:** the CORS middleware
+(`backend/app/main.py`) and `samesite="none"` cookie
+(`backend/app/auth/deps.py`) from the earlier attempt. Native `URLSession`
+requests don't appear to need either (CORS is a browser-enforced concept;
+`URLSession` isn't a browser), but leaving them doesn't hurt anything either
+— they're just for a browser-context request against this origin that no
+longer happens. Revisit if that's ever confirmed to actually be dead code.
+
+## What was ruled out first (for the next person who hits this)
+
+Two confounding bugs made this harder to isolate than it should have been —
+worth knowing about since they'll look identical to "sign-in is broken" if
+they recur elsewhere:
+
+1. **`SignIn.tsx`'s `fetch()` was missing `credentials: "include"`** (fixed,
+   commit `cd545e9`) — on a cross-origin request the browser won't even
+   consider a response's `Set-Cookie` without that. Confounded the
+   diagnosis because it made the passcode door fail for a boring reason
+   unrelated to the real bug.
+2. **Single-use tokens getting silently burned by the debugging process
+   itself** — testing a magic link via curl, or tapping it more than once,
+   consumes it exactly like a real sign-in would, so a second look always
+   shows "expired or already used" regardless of whether the first attempt
+   actually worked. Cost real time before we started using strictly
+   single-use, freshly-minted tokens per test.
+
+Once both were controlled for, Web Inspector's Storage → Cookies panel gave
+the real answer directly: a correctly-formed, credentialed, CORS-approved
+`Set-Cookie` response still left `Cookies — app.nammaindies.org` completely
+empty. That's what `CapacitorHttp` fixes.
 
 ## What's built and confirmed working (all shipped to `main`, deployed)
 
@@ -28,93 +76,18 @@ _Status note, not a finished design. Written mid-debugging session on
   instead of relative when running natively — fixes the native app silently
   calling itself instead of the real backend.
 
-## The actual remaining bug
+## Why this took a fork analysis before the fix was found
 
-None of the above gets you signed in. Confirmed via Safari Web Inspector
-(Storage → Cookies) with a genuinely untouched, single-use token: the server
-correctly returns `Set-Cookie: session=...; SameSite=None; Secure` (verified
-directly with `curl -H "Origin: capacitor://localhost"` against production),
-but **the cookie never lands in the webview's cookie jar.** Nothing under
-`Cookies — app.nammaindies.org` ever appears, before or after the request.
+At the time, three options were on the table for a cookie problem that
+looked unconditional (native Swift cookie injection; pointing the webview at
+the live site, losing the offline shell; or a bearer-token auth scheme
+instead of cookies). A web search turned up `CapacitorHttp` as the
+community's actual answer to this exact, well-documented Capacitor/WKWebView
+problem before any of those got built — worth searching for prior art
+earlier next time a problem looks this specific to a well-known framework.
 
-Working theory: WebKit's third-party cookie blocking drops a `Set-Cookie`
-received via a cross-origin `fetch()` (as `deepLink.ts` uses to consume the
-magic link) regardless of `SameSite=None`/`Secure`/`credentials: "include"` —
-that's a client-side policy no response header can override. This is
-**confirmed for the deep-link fetch path specifically** — not yet confirmed
-to apply to *every* fetch path.
-
-**A separate, definite bug, found but not yet fixed:** `SignIn.tsx`'s `post()`
-(used by both the email-request and **passcode** doors) never sets
-`credentials: "include"` at all. On a cross-origin request this means the
-browser won't even consider storing a `Set-Cookie` in the response,
-regardless of ITP. This confounds the picture — the passcode door has never
-had a fair test in the native app. Next step, not yet done: add
-`credentials: "include"` there, rebuild, and test via the passcode door
-(faster than email — no token burn, no inbox round-trip) with Web Inspector
-open to see whether the cookie sticks this time.
-
-- If it **does** stick → the missing `credentials` was the whole story for
-  that path, and a typed one-time-passcode-by-email (Akash's suggestion,
-  see below) works with no further changes.
-- If it **still doesn't** stick → WebKit is blocking third-party
-  cookie-setting unconditionally, for any fetch, and the fork below is real.
-
-## The fork, if cookies are unconditionally blocked
-
-**Option A — native cookie injection.** Handle the consume step in Swift
-(native `URLSession`, not the webview's JS `fetch`), then explicitly push
-the resulting cookie into the webview's store via
-`WKWebsiteDataStore.default().httpCookieStore.setCookie(...)`. Real Swift
-work, but keeps the current architecture (bundled local shell, offline-first,
-cookie-based sessions matching the web PWA) unchanged.
-
-**Option B — point the webview at the live site** (`capacitor.config.ts`
-`server.url` = `https://app.nammaindies.org`) instead of bundling
-`frontend/dist` locally. Makes the webview's origin match the API's origin
-exactly, so every cross-origin problem (CORS, cookies, Universal Links) stops
-existing. **Cost: the app can no longer load its own shell offline** — it's
-used outdoors on Bangalore streets, so this is a real product regression,
-not just an implementation detail. **This is Akash's call, not a technical
-default** — flagging it rather than deciding it.
-
-**Option C — stop using cookies for the native app; use a bearer token
-instead.** `require_observer` (`backend/app/auth/deps.py`) currently reads
-only the `session` cookie. Extend it to also accept `Authorization: Bearer
-<token>`, and have `/auth/join`, `/auth/email/consume` etc. return the
-session value in the JSON body (it's already generated via
-`issue_session`/`read_session` — same value, just also handed back instead
-of cookie-only). The app stores it (Capacitor Preferences or localStorage)
-and sends it as a header on every request. No cookies, no `SameSite`, no
-CORS-credentials dance, no ITP, no origin change, no loss of the offline
-shell. Smallest total diff of the three; doesn't touch `capacitor.config.ts`
-at all.
-
-**Akash's suggestion** (send a 6-digit code by email instead of a link, typed
-into the existing passcode-style field) is a good simplification of *how the
-code reaches the app* — it sidesteps Universal Links entirely, which is
-nice regardless of which fork above gets picked. But it does **not** by
-itself solve the cookie problem: the code still has to be *submitted*
-somehow, and if that submission is a cross-origin `fetch()` and WebKit really
-does block third-party cookie-setting unconditionally, the same wall applies.
-It composes cleanly with **Option C** though: type the code in, server
-validates it and returns the session token in the response body instead of
-(or alongside) a cookie, app stores it, done — no link-tap flow, no cookie
-problem, no native Swift work.
-
-## Loose end to revisit
-
-`samesite="none"` (deps.py) is live in production right now for a
-cross-origin scenario that may not survive whichever fork gets picked. If
-the resolution ends up same-origin (Option B) or bearer-token (Option C),
-revert it back to `"lax"` — `None` is unconditionally weaker CSRF posture,
-and it's currently doing that for the **web PWA too**, not just the native
-app, with no benefit to the web path.
-
-## Not yet decided
-
-Which fork (A/B/C), and whether Akash's OTP-by-email idea should replace the
-magic-link door entirely or sit alongside it. Needs the `credentials:
-"include"` test run first — that determines whether this decision is even
-necessary yet, or whether the passcode door already works once that one bug
-is fixed.
+Akash's suggestion (send a 6-digit code by email instead of a link, typed
+into the existing passcode field) remains a good idea independent of any of
+this — it sidesteps Universal Links entirely — but wasn't needed to fix the
+cookie problem itself, since `CapacitorHttp` fixes that regardless of how
+the code/link reaches the app.
