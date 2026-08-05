@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { type Condition, type EarNotch, type GeoSource, type Sex } from "../api";
 import { enqueue, flush } from "../offline/queue";
 import DogSprite from "../components/DogSprite";
+import { takePhotoIfNative } from "../capture/takePhoto";
 
 const MAX_PHOTOS = 5;
 
@@ -77,15 +78,28 @@ export default function Capture() {
     setTimeout(() => setToast(null), 2600);
   }
 
+  function addPhoto(f: File) {
+    setPhotos((prev) => (prev.length >= MAX_PHOTOS ? prev : [...prev, f]));
+    setPreviewUrls((prev) =>
+      prev.length >= MAX_PHOTOS ? prev : [...prev, URL.createObjectURL(f)],
+    );
+  }
+
   function onFileChosen(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     // Reset now so choosing the same file again still fires a change event.
     if (fileRef.current) fileRef.current.value = "";
     if (!f) return;
-    setPhotos((prev) => (prev.length >= MAX_PHOTOS ? prev : [...prev, f]));
-    setPreviewUrls((prev) =>
-      prev.length >= MAX_PHOTOS ? prev : [...prev, URL.createObjectURL(f)],
-    );
+    addPhoto(f);
+  }
+
+  async function onShutterPress() {
+    const native = await takePhotoIfNative();
+    if (native) {
+      addPhoto(native);
+      return;
+    }
+    fileRef.current?.click();
   }
 
   function removePhoto(index: number) {
@@ -178,7 +192,7 @@ export default function Capture() {
       {photos.length === 0 ? (
         <div className="shutter-wrap">
           <span className="spot-label">SPOT AN INDIE</span>
-          <button className="shutter" onClick={() => fileRef.current?.click()} aria-label="Spot a sighting">
+          <button className="shutter" onClick={onShutterPress} aria-label="Spot a sighting">
             📷
           </button>
           <p className="hint">Tap to open camera</p>
@@ -203,7 +217,7 @@ export default function Capture() {
               <button
                 type="button"
                 className="filmstrip-add"
-                onClick={() => fileRef.current?.click()}
+                onClick={onShutterPress}
                 aria-label="Add another photo"
               >
                 +
