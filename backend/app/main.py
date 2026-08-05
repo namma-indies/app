@@ -6,6 +6,7 @@ import asyncpg
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.db import effective_dsn
@@ -36,6 +37,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+# The native iOS app's webview loads from capacitor://localhost -- a real
+# cross-origin request the web PWA (same-origin) never had to make. Only
+# that scheme is allowed; the web app doesn't need CORS at all.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["capacitor://localhost"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(auth_router)
 app.include_router(join_router)
 app.include_router(dex_router)

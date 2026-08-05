@@ -25,7 +25,11 @@ def set_session_cookie(response, observer_id: UUID) -> None:
         issue_session(observer_id),
         max_age=SESSION_MAX_AGE_S,
         httponly=True,
-        samesite="lax",
+        # "none" (not "lax"): the native iOS app's webview is a genuinely
+        # different origin from the API, and Lax withholds the cookie on
+        # cross-origin fetches even with credentials included. Requires
+        # secure=True, already set below.
+        samesite="none",
         path="/",
         secure=True,
     )
@@ -39,6 +43,6 @@ def clear_session_cookie(response) -> None:
         SESSION_COOKIE,
         path="/",
         httponly=True,
-        samesite="lax",
+        samesite="none",
         secure=True,
     )
