@@ -25,6 +25,7 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
     try {
       const res = await fetch(`${API_BASE}${path}`, {
         method: "POST",
+        credentials: "include",
         headers: { Accept: "application/json" },
         body: new URLSearchParams(body),
       });
