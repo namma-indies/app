@@ -1,6 +1,8 @@
 // Typed fetch wrappers for the IndieDex API. Always send credentials so the
 // httpOnly session cookie set by /auth/magic-link/consume is included.
 
+import { API_BASE } from "./apiBase";
+
 export type GeoSource = "device_gps" | "pin" | "none";
 export type Sex = "male" | "female" | "unsure";
 export type EarNotch = "none" | "left" | "right" | "unsure";
@@ -73,7 +75,7 @@ async function handle<T>(res: Response): Promise<T> {
 }
 
 export async function getDex(): Promise<DexResponse> {
-  const res = await fetch("/dex", { credentials: "include" });
+  const res = await fetch(`${API_BASE}/dex`, { credentials: "include" });
   return handle<DexResponse>(res);
 }
 
@@ -97,7 +99,7 @@ export function buildSightingForm(input: PostSightingInput): FormData {
 export async function postSighting(
   input: PostSightingInput,
 ): Promise<PostSightingResponse> {
-  const res = await fetch("/sighting", {
+  const res = await fetch(`${API_BASE}/sighting`, {
     method: "POST",
     credentials: "include",
     body: buildSightingForm(input),

@@ -5,6 +5,7 @@ import SignIn from "./screens/SignIn";
 import { failedCount, flush, setOnFlushed, setOnUnauthorized } from "./offline/queue";
 import FailedSightings from "./components/FailedSightings";
 import { getDex, UnauthorizedError } from "./api";
+import { API_BASE } from "./apiBase";
 import mark from "./assets/mark.svg";
 
 type Tab = "capture" | "dex";
@@ -101,7 +102,7 @@ export default function App() {
             // Confirm first: the tabbar is right there and a stray tap costs
             // a round-trip through email to get back in.
             if (!confirm("Sign out of indiedex?")) return;
-            await fetch("/auth/logout", {
+            await fetch(`${API_BASE}/auth/logout`, {
               method: "POST",
               headers: { Accept: "application/json" },
             }).catch(() => {});

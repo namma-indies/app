@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { API_BASE } from "../apiBase";
 
 /** The gate an unauthenticated visitor lands on.
  *
@@ -22,7 +23,7 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(path, {
+      const res = await fetch(`${API_BASE}${path}`, {
         method: "POST",
         headers: { Accept: "application/json" },
         body: new URLSearchParams(body),
