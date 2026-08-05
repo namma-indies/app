@@ -43,10 +43,25 @@ describe("takePhotoIfNative", () => {
     );
   });
 
-  it("returns null if the user cancels (no webPath)", async () => {
+  it("returns null if the user cancels the camera (rejection message contains 'cancelled')", async () => {
     isNativePlatform.mockReturnValue(true);
     getPhoto.mockRejectedValue(new Error("User cancelled photos app"));
 
     expect(await takePhotoIfNative()).toBeNull();
+  });
+
+  it("throws on a non-cancel Camera error (e.g. permission denied) so the caller can surface it", async () => {
+    isNativePlatform.mockReturnValue(true);
+    getPhoto.mockRejectedValue(new Error("Permission denied"));
+
+    await expect(takePhotoIfNative()).rejects.toThrow("Permission denied");
+  });
+
+  it("throws if the webPath fetch/blob conversion fails, instead of throwing out of the caller unhandled", async () => {
+    isNativePlatform.mockReturnValue(true);
+    getPhoto.mockResolvedValue({ webPath: "capacitor://blob/abc", format: "jpeg" });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network error")));
+
+    await expect(takePhotoIfNative()).rejects.toThrow("network error");
   });
 });

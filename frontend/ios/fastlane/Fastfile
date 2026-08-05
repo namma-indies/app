@@ -3,6 +3,7 @@ default_platform(:ios)
 platform :ios do
   desc "Fetch/sync signing certs via match"
   lane :certs do
+    setup_ci if is_ci
     app_store_connect_api_key(
       key_id: ENV["ASC_KEY_ID"],
       issuer_id: ENV["ASC_ISSUER_ID"],
@@ -10,6 +11,14 @@ platform :ios do
       is_key_content_base64: false,
     )
     match(type: "appstore", readonly: is_ci)
+    update_code_signing_settings(
+      use_automatic_signing: false,
+      path: "App/App.xcodeproj",
+      team_id: ENV["ASC_TEAM_ID"],
+      code_sign_identity: "Apple Distribution",
+      bundle_identifier: "org.nammaindies.app",
+      profile_name: ENV["sigh_org.nammaindies.app_appstore_profile-name"],
+    )
   end
 
   desc "Build and upload a release build to TestFlight"

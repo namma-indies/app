@@ -9,7 +9,12 @@ vi.mock("../offline/queue", () => ({
   flush: vi.fn(),
 }));
 
+vi.mock("../capture/takePhoto", () => ({
+  takePhotoIfNative: vi.fn(),
+}));
+
 import { enqueue, flush } from "../offline/queue";
+import { takePhotoIfNative } from "../capture/takePhoto";
 import Capture from "./Capture";
 
 afterEach(cleanup);
@@ -21,6 +26,9 @@ function makePhoto(name: string): File {
 beforeEach(() => {
   vi.mocked(enqueue).mockReset().mockResolvedValue(undefined);
   vi.mocked(flush).mockReset().mockResolvedValue(undefined);
+  // Default to the web/no-native-camera outcome so existing tests (which
+  // drive the hidden file input directly) are unaffected.
+  vi.mocked(takePhotoIfNative).mockReset().mockResolvedValue(null);
   // jsdom has no createObjectURL; keep it deterministic and traceable to the
   // source file so tests can assert on which photo a thumbnail renders.
   Object.defineProperty(URL, "createObjectURL", {
@@ -79,6 +87,33 @@ describe("burst photo capture", () => {
 
     expect(container.querySelectorAll(".filmstrip-thumb")).toHaveLength(0);
     expect(screen.getByText("Tap to open camera")).toBeInTheDocument();
+  });
+
+  it("clicking the shutter button falls through to the hidden file input on web", async () => {
+    render(<Capture />);
+    const input = screen.getByLabelText("capture photo") as HTMLInputElement;
+    const clickSpy = vi.spyOn(input, "click");
+
+    await userEvent.click(screen.getByLabelText("Spot a sighting"));
+
+    await waitFor(() => expect(clickSpy).toHaveBeenCalledTimes(1));
+
+    // The fallback path still works end to end: the input can still receive
+    // a file and have it flow into the filmstrip.
+    await userEvent.upload(input, makePhoto("shutter.jpg"));
+    expect(screen.getByAltText("captured dog")).toBeInTheDocument();
+  });
+
+  it("shows a toast and still falls back to the file input when the native camera errors (not a cancel)", async () => {
+    vi.mocked(takePhotoIfNative).mockRejectedValue(new Error("Permission denied"));
+    render(<Capture />);
+    const input = screen.getByLabelText("capture photo") as HTMLInputElement;
+    const clickSpy = vi.spyOn(input, "click");
+
+    await userEvent.click(screen.getByLabelText("Spot a sighting"));
+
+    expect(await screen.findByText("Couldn't open camera. Try again.")).toBeInTheDocument();
+    await waitFor(() => expect(clickSpy).toHaveBeenCalledTimes(1));
   });
 
   it("submits every captured photo, not just the first", async () => {

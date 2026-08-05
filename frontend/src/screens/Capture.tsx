@@ -94,10 +94,14 @@ export default function Capture() {
   }
 
   async function onShutterPress() {
-    const native = await takePhotoIfNative();
-    if (native) {
-      addPhoto(native);
-      return;
+    try {
+      const native = await takePhotoIfNative();
+      if (native) {
+        addPhoto(native);
+        return;
+      }
+    } catch {
+      showToast("Couldn't open camera. Try again.");
     }
     fileRef.current?.click();
   }

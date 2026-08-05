@@ -10,8 +10,6 @@ export async function takePhotoIfNative(): Promise<File | null> {
 
   const { Camera, CameraResultType, CameraSource } = await import("@capacitor/camera");
 
-  let webPath: string | undefined;
-  let format = "jpeg";
   try {
     const photo = await Camera.getPhoto({
       quality: 85,
@@ -19,15 +17,19 @@ export async function takePhotoIfNative(): Promise<File | null> {
       source: CameraSource.Camera,
       saveToGallery: true,
     });
-    webPath = photo.webPath;
-    format = photo.format || "jpeg";
-  } catch {
-    return null; // user cancelled
-  }
-  if (!webPath) return null;
+    const webPath = photo.webPath;
+    const format = photo.format || "jpeg";
+    if (!webPath) return null;
 
-  const blob = await fetch(webPath).then((r) => r.blob());
-  return new File([blob], `sighting-${Date.now()}.${format}`, {
-    type: blob.type || `image/${format}`,
-  });
+    const blob = await fetch(webPath).then((r) => r.blob());
+    return new File([blob], `sighting-${Date.now()}.${format}`, {
+      type: blob.type || `image/${format}`,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.toLowerCase().includes("cancelled")) {
+      return null; // user cancelled — expected UX, no error to surface
+    }
+    throw err; // real error — caller should catch and toast, then fall back
+  }
 }
