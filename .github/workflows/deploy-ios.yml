@@ -1,0 +1,48 @@
+name: Deploy iOS (TestFlight)
+
+# Manual only — an App Store build is a deliberate release, not something
+# that should fire on every merge like the web deploy does.
+on:
+  workflow_dispatch: {}
+
+concurrency:
+  group: ios-testflight-deploy
+  cancel-in-progress: false
+
+jobs:
+  build_and_upload:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install frontend deps and build web assets
+        run: |
+          npm ci
+          npm run build
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: frontend/ios
+
+      - name: Sync web build into the Capacitor iOS project
+        run: npx cap sync ios
+
+      - name: Build and upload to TestFlight
+        working-directory: frontend/ios
+        env:
+          ASC_API_KEY: ${{ secrets.ASC_API_KEY }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_TEAM_ID: ${{ secrets.ASC_TEAM_ID }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+        run: bundle exec fastlane build_and_upload
