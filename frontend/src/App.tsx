@@ -6,6 +6,7 @@ import { failedCount, flush, setOnFlushed, setOnUnauthorized } from "./offline/q
 import FailedSightings from "./components/FailedSightings";
 import { getDex, UnauthorizedError } from "./api";
 import { API_BASE } from "./apiBase";
+import { listenForAuthLinks } from "./deepLink";
 import mark from "./assets/mark.svg";
 
 type Tab = "capture" | "dex";
@@ -50,13 +51,27 @@ export default function App() {
 
   // One-time auth probe so the invite-needed state shows immediately on
   // load, rather than only after the user tries to submit or view the dex.
-  useEffect(() => {
+  function reprobeAuth() {
+    setCheckingAuth(true);
     getDex()
-      .then(() => setCheckingAuth(false))
+      .then(() => {
+        setUnauthorized(false);
+        setCheckingAuth(false);
+      })
       .catch((err) => {
         if (err instanceof UnauthorizedError) setUnauthorized(true);
         setCheckingAuth(false);
       });
+  }
+
+  useEffect(() => {
+    reprobeAuth();
+  }, []);
+
+  // A magic-link email opens directly in the app (Universal Links) instead
+  // of Safari -- the OS hands us the URL with nothing consumed yet.
+  useEffect(() => {
+    listenForAuthLinks(reprobeAuth);
   }, []);
 
   if (checkingAuth) {
@@ -66,20 +81,10 @@ export default function App() {
   if (unauthorized) {
     return (
       <div className="app">
-        <SignIn
-          onSignedIn={() => {
-            // Re-probe rather than trusting the POST: the server just set a
-            // session cookie, and getDex() succeeding is the only proof the
-            // app and server agree about who we are.
-            setCheckingAuth(true);
-            getDex()
-              .then(() => {
-                setUnauthorized(false);
-                setCheckingAuth(false);
-              })
-              .catch(() => setCheckingAuth(false));
-          }}
-        />
+        {/* Re-probe rather than trusting the POST: the server just set a
+            session cookie, and getDex() succeeding is the only proof the
+            app and server agree about who we are. */}
+        <SignIn onSignedIn={reprobeAuth} />
       </div>
     );
   }

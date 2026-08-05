@@ -4,6 +4,7 @@ from pathlib import Path
 
 import asyncpg
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -51,6 +52,27 @@ app.include_router(auth_router)
 app.include_router(join_router)
 app.include_router(dex_router)
 app.include_router(sighting_router)
+
+
+@app.get("/.well-known/apple-app-site-association")
+async def apple_app_site_association():
+    # Proves to iOS that this app owns this domain, so a magic-link email
+    # opens directly in the native app instead of Safari (which can't share
+    # the app's session cookie anyway -- separate cookie storage entirely).
+    # Scoped to /auth/* only: a shared sighting or dex link shouldn't yank
+    # someone with the app installed out of their browser.
+    return JSONResponse(
+        {
+            "applinks": {
+                "details": [
+                    {
+                        "appIDs": ["8365J7N4CZ.org.nammaindies.app"],
+                        "components": [{"/": "/auth/*"}],
+                    }
+                ]
+            }
+        }
+    )
 
 
 @app.exception_handler(RequestValidationError)
