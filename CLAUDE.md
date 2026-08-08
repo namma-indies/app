@@ -23,4 +23,10 @@ Do not narrate implementation mechanics unless asked. Trust is that the code is 
 
 See `build-foundations.md` (stack, guardrails, north star) and `docs/specs/` for design specs.
 Current build: **IndieDex MVP** — `docs/specs/2026-07-19-indiedex-mvp-design.md`.
-For what's **actually deployed and how to operate it** (deploy, testers, dog gate, flags) see `docs/OPERATIONS.md`.
+
+For what's **actually deployed and how to operate it** (deploy, testers, dog
+gate, flags, box IPs, keys) see `OPERATIONS.md` in
+[`namma-indies/ops`](https://github.com/namma-indies/ops) (private) — clone it
+as a sibling of this repo (`../ops`) and check there. It's a separate private
+repo, not a folder here, because this repo is public and that doc has real
+infra identifiers in it.
