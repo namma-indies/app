@@ -199,6 +199,49 @@ describe("photo storage owns its bytes", () => {
   });
 });
 
+describe("clip storage owns its bytes too", () => {
+  // A clip is the same purgeable camera File handle as a photo, only larger --
+  // so more likely to be evicted, not less. enqueue() originally destructured
+  // only `photos`, which left the clip stored as a live Blob reference.
+  it("stores raw bytes rather than the video File it was handed", async () => {
+    const { enqueue } = await freshQueue();
+    const clip = new File([new Uint8Array([4, 5, 6])], "c.mp4", { type: "video/mp4" });
+
+    await enqueue({ ...SAMPLE, photos: undefined, video: clip });
+
+    const idb = await import("idb");
+    const raw = await idb.openDB("indiedex-queue", 1);
+    const [stored] = await raw.getAll("pending");
+    raw.close();
+
+    expect(stored.video).toBeUndefined();
+    expect(new Uint8Array(stored.video_data.bytes)).toEqual(new Uint8Array([4, 5, 6]));
+    expect(stored.video_data.type).toBe("video/mp4");
+  });
+
+  // Guards the send path (toItem rebuilding the clip), NOT purge-safety: jsdom's
+  // IndexedDB structured-clones a Blob, so a stored live handle survives here
+  // even though it would not on a device. The storage test above is the one
+  // that fails if enqueue stops owning the bytes.
+  it("sends a readable clip even after the original File is dead", async () => {
+    const { enqueue, flush } = await freshQueue();
+    const clip = new File([new Uint8Array([1, 1, 2, 3])], "c.mp4", { type: "video/mp4" });
+    await enqueue({ ...SAMPLE, photos: undefined, video: clip });
+
+    clip.arrayBuffer = () => Promise.reject(new DOMException("not found", "NotFoundError"));
+
+    vi.mocked(postSighting).mockResolvedValue({ sighting_id: "s1", photo_ids: [] });
+    await flush();
+
+    const sent = vi.mocked(postSighting).mock.calls[0][0];
+    expect(sent.video).toBeDefined();
+    const roundTripped = new Uint8Array(await sent.video!.arrayBuffer());
+    expect(roundTripped).toEqual(new Uint8Array([1, 1, 2, 3]));
+    // A clip sighting must not also claim photos -- the server rejects both.
+    expect(sent.photos ?? []).toHaveLength(0);
+  });
+});
+
 describe("retryFailed / discardFailed", () => {
   it("moves a failed item back to pending on retry", async () => {
     const { enqueue, flush, failedCount, pendingCount, listFailed, retryFailed } =
