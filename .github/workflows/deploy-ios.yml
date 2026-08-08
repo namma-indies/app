@@ -20,7 +20,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # Capacitor 8's CLI requires Node >=22 (bumped from the plan's
+          # original 20 after Task 2 ended up on Capacitor 8 -- see
+          # docs/specs/2026-08-05-ios-app-design.md's final-review notes).
+          node-version: "22"
 
       - name: Install frontend deps and build web assets
         run: |
