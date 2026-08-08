@@ -4,6 +4,14 @@ from uuid import UUID
 import pytest
 from PIL import Image
 
+from app import detect_reid
+
+# The dog-confidence gate moved from YOLOv8n, whose 12 MB weights are committed,
+# to YOLO26x, whose 223 MB weights are gitignored. So anything asserting on a
+# real score now depends on a file a clean checkout does not have. Guarded the
+# same way test_detect_reid.py and test_embed.py already do.
+_HAS_DETECTOR = detect_reid._MODEL_PATH.exists()
+
 
 def _jpeg():
     b = io.BytesIO()
@@ -119,13 +127,19 @@ async def test_post_sighting_saves_when_no_dog_detected(authed_client):
         )
     from app.detect import DOG_CONF_THRESHOLD
 
-    # Scored, saved, and visible -- the low score is recorded, not acted on.
-    assert row["dog_confidence"] is not None
-    assert row["dog_confidence"] < DOG_CONF_THRESHOLD
+    # The point of this test -- a capture is never lost to the detector -- holds
+    # whether or not the detector exists, and is worth MORE without it: a
+    # missing model is exactly the failure this must survive. So the save is
+    # asserted unconditionally and only the score is guarded.
     assert row["review_status"] == "valid"
     assert n_photos == 1
+    if _HAS_DETECTOR:
+        # Scored, saved, and visible -- the low score is recorded, not acted on.
+        assert row["dog_confidence"] is not None
+        assert row["dog_confidence"] < DOG_CONF_THRESHOLD
 
 
+@pytest.mark.skipif(not _HAS_DETECTOR, reason="YOLO26x weights absent")
 @pytest.mark.asyncio
 async def test_post_sighting_records_dog_confidence(authed_client):
     """The label is persisted so we can tune the threshold from real captures
