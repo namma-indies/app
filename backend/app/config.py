@@ -89,6 +89,28 @@ class Settings(BaseSettings):
     #
     # Lower it to ~0.40 to trade precision for actually finding matches; the
     # numbers above are the exchange rate. Change it here, not in code.
+    #
+    # WHERE THIS NUMBER CAME FROM, AND WHY IT EXPIRES
+    # -----------------------------------------------
+    # Every figure above comes from the Dognosis v2 clips: 10 dogs filmed in a
+    # single indoor scent-detection room. Constant background, constant
+    # lighting, fixed camera positions, animals in harnesses, and a population
+    # skewed to a few breeds -- several beagles and several black labs, which is
+    # why look-alikes are so prominent in it.
+    #
+    # Street sightings share none of that. Backgrounds, lighting, distance,
+    # angle and weather all vary; free-roaming indies vary far more in coat,
+    # markings and size than a kennel of beagles; and the population is much
+    # larger, so genuine look-alikes are rarer per pair but more numerous
+    # overall. Those pull in opposite directions and neither is measured. The
+    # honest position is that 0.71 is a placeholder shaped by a lab dataset,
+    # not a property of MiewID or of dogs.
+    #
+    # So: recalibrate weekly against real verdicts as they arrive. The data is
+    # already being collected -- every row in `confirmations` is a labelled pair
+    # (sighting, verdict) and `match_proposals.score` holds what the model said
+    # about it. Fit the threshold to those two columns; do not port a number
+    # from the research repo, and do not treat this default as evidence.
 
     # Below this many embedded frames, a sighting is thin evidence: one photo
     # matches the right dog 37% of the time, eight frames 83%. When a candidate

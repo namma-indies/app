@@ -165,6 +165,20 @@ Change these only with new measurements, not intuition.
 
 ## Open questions
 
+**Every threshold number here came from a lab dataset and expires.** The
+measurements are all from the Dognosis v2 clips: 10 dogs, one indoor
+scent-detection room, constant background and lighting, fixed cameras, animals
+in harnesses, and a population skewed to a few breeds — which is exactly why
+look-alikes dominate it. Street sightings vary in background, light, distance
+and angle, and free-roaming indies vary far more in coat and size than a kennel
+of beagles, while the population is much larger. Those pull in opposite
+directions and neither is measured.
+
+**Recalibrate weekly as real verdicts arrive.** `confirmations` gives the label
+and `match_proposals.score` gives what the model said; fitting the threshold is
+a query over those two, not a new experiment. Treat `reid_propose_min` as a
+placeholder until it has been fitted at least once on real data.
+
 **Match thresholds are unset, deliberately**, and the measurements above suggest
 a *threshold* is the wrong control surface. At d′ ≈ 0.85 no cut-off separates
 same-dog from different-dog: 0.25 gave 18% proposal precision, and 0.50 gave 36%

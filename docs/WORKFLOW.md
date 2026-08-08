@@ -125,6 +125,33 @@ The pipeline is faithful to the offline research path — on identical frames th
 API scored **50%** top-1 against the offline path's **46.7%**. Gaps to benchmark
 numbers are the gallery, not the service.
 
+### These numbers came from a lab, and expire
+
+Everything above was measured on the **Dognosis v2** clips: 10 dogs in a single
+indoor scent-detection room — constant background, constant lighting, fixed
+camera positions, animals in harnesses, and a population skewed to a few breeds.
+That last part is why look-alikes dominate: several beagles, several black labs.
+
+Street sightings share none of it. Background, light, distance, angle and
+weather all vary; free-roaming indies vary far more in coat, markings and size
+than a kennel of beagles; and the population is far larger, so look-alikes are
+rarer per pair but more numerous overall. Those pull in opposite directions and
+**neither has been measured**.
+
+So `reid_propose_min = 0.71` is a placeholder shaped by a lab dataset, not a
+property of MiewID or of dogs. **Recalibrate weekly as real sightings arrive.**
+The inputs already exist and no new experiment is needed:
+
+| what | where |
+|---|---|
+| the label | `confirmations.verdict` (`same` / `different`) |
+| what the model said | `match_proposals.score` for that proposal |
+| how much evidence | count of `embeddings` per sighting |
+
+Join those, plot the two distributions, and pick the operating point you want on
+the precision/recall curve. Until that has been done at least once on real
+verdicts, treat the current default as a starting position rather than evidence.
+
 ---
 
 ## Video capture
