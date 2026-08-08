@@ -161,7 +161,19 @@ async def find_candidates(
     # and cut, which DISTINCT ON cannot do in the same pass.
     sql = f"SELECT * FROM ({sql}) ranked ORDER BY similarity DESC LIMIT {int(limit)}"
 
-    rows = await conn.fetch(sql, *params)
+    if has_geo:
+        # An HNSW scan walks ef_search candidates and *then* applies the WHERE
+        # clause, so a selective filter can return far fewer rows than LIMIT --
+        # or none -- because everything the index surfaced sat outside the
+        # radius. Tightening the radius makes that strictly worse, which is
+        # exactly the direction this went. Iterative scan keeps walking until
+        # enough rows survive the filter. `relaxed_order` is safe here because
+        # the shortlist is exact re-ranked and re-sorted afterwards anyway.
+        async with conn.transaction():
+            await conn.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
+            rows = await conn.fetch(sql, *params)
+    else:
+        rows = await conn.fetch(sql, *params)
     return [
         Candidate(
             sighting_id=r["sighting_id"],

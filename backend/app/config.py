@@ -37,7 +37,12 @@ class Settings(BaseSettings):
     # --- re-identification -------------------------------------------------
     # Candidate scope for a new sighting. Street dogs hold small territories,
     # so a wide radius mostly buys look-alike collisions.
-    reid_radius_m: float = 2000.0
+    # 1 km. A free-roaming street dog's range is typically a few hundred metres
+    # around a food source, so this is generous rather than tight, and every
+    # extra kilometre mostly buys look-alike collisions from dogs that cannot
+    # be the same animal. Narrow enough that the vector check is asked to
+    # separate neighbours, not strangers.
+    reid_radius_m: float = 1000.0
     reid_recent_days: int = 365
 
     # Two-threshold merge rule, on cosine similarity of L2-normalised
