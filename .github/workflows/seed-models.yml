@@ -114,10 +114,25 @@ jobs:
           trap 'rm -f "$key_file"' EXIT
           printf '%s\n' "$SSH_KEY" > "$key_file"
           chmod 600 "$key_file"
-          SSH="ssh -i $key_file -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          # BatchMode and ConnectTimeout are the whole point here. Without them
+          # ssh waits on a prompt nobody can answer -- a missing secret, an
+          # unknown host key, a box that never accepts the connection all look
+          # identical: a step that emits nothing and runs until the job timeout.
+          # Two runs were lost to exactly that. Fail in seconds instead.
+          COMMON="-o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes"
+          COMMON="$COMMON -o StrictHostKeyChecking=accept-new"
+          SSH="ssh -i $key_file $COMMON"
+
+          if [ -z "${SSH_TARGET:-}" ]; then
+            echo "::error::no SSH target for ${{ inputs.environment }} -- is the secret set?"
+            exit 1
+          fi
+
+          echo "==> checking we can reach $SSH_TARGET"
+          $SSH -n "$SSH_TARGET" 'echo connected as $(whoami) on $(hostname)'
 
           echo "==> copying weights (429 MB, this is the slow part)"
-          scp -i "$key_file" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
+          scp -i "$key_file" $COMMON \
             backend/app/ml/miewid_msv3.onnx backend/app/ml/yolo26x.onnx \
             "$SSH_TARGET:/tmp/"
 
