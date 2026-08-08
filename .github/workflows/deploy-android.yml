@@ -27,10 +27,13 @@ jobs:
           npm ci
           npm run build
 
+      # Capacitor 8's generated capacitor.build.gradle sets compileOptions to
+      # Java 21 (sourceCompatibility/targetCompatibility VERSION_21) — do not
+      # "helpfully" downgrade this back to 17, the build will fail to compile.
       - uses: actions/setup-java@v4
         with:
           distribution: "temurin"
-          java-version: "17"
+          java-version: "21"
 
       - uses: ruby/setup-ruby@v1
         with:
@@ -45,14 +48,16 @@ jobs:
         working-directory: frontend/android
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > app/upload-keystore.jks
+        run: echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > ${{ github.workspace }}/frontend/android/app/upload-keystore.jks
 
       - name: Build and upload to the internal testing track
         working-directory: frontend/android
         env:
-          ANDROID_KEYSTORE_PATH: app/upload-keystore.jks
+          ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/frontend/android/app/upload-keystore.jks
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          ANDROID_VERSION_CODE: ${{ github.run_number }}
+          ANDROID_VERSION_NAME: "1.0.${{ github.run_number }}"
         run: bundle exec fastlane build_and_upload
