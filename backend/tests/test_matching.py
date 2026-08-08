@@ -175,3 +175,58 @@ async def test_empty_query_returns_nothing(migrated_db):
     assert await find_candidates(
         migrated_db, [], lat=None, lng=None, radius_m=2000.0, limit=5
     ) == []
+
+
+@pytest.mark.asyncio
+async def test_thin_evidence_asks_for_a_clip_rather_than_a_verdict(migrated_db):
+    """A proposal raised on a single photo should ask for more evidence.
+
+    One photo identifies the right dog 37% of the time and eight frames 83%, so
+    when the contributor is probably still next to the animal, a clip is worth
+    more than a yes/no they cannot answer confidently.
+    """
+    from app.matching import resolve_sighting
+
+    obs = await _observer(migrated_db)
+    target = _unit(20)
+    await _sighting(migrated_db, obs, target, lat=12.9716, lng=77.5946)
+    thin = await _sighting(migrated_db, obs, target, lat=12.9717, lng=77.5947)
+
+    outcome = await resolve_sighting(
+        migrated_db, thin,
+        auto_merge_min=1.01, propose_min=0.5, radius_m=1000.0,
+        max_candidates=5, new_uuid=uuid7, thin_evidence_frames=4,
+    )
+    assert outcome.status == "proposed"
+    assert outcome.suggest_video is True, "one frame is thin evidence"
+
+
+@pytest.mark.asyncio
+async def test_a_clip_is_not_asked_for_another_clip(migrated_db):
+    from app.matching import resolve_sighting
+
+    obs = await _observer(migrated_db)
+    target = _unit(21)
+    await _sighting(migrated_db, obs, target, lat=12.9716, lng=77.5946)
+    rich = await _sighting(migrated_db, obs, target, lat=12.9717, lng=77.5947)
+    for extra in (22, 23, 24, 25):  # four more frames, as a clip would yield
+        pid, eid = uuid7(), uuid7()
+        await migrated_db.execute(
+            "INSERT INTO photos (id, sighting_id, s3_key) VALUES ($1,$2,$3)",
+            pid, rich, f"k/{pid}.webp",
+        )
+        v = _unit(extra)
+        await migrated_db.execute(
+            "INSERT INTO embeddings (id, photo_id, model, dim, vec_miew) "
+            "VALUES ($1,$2,$3,$4,$5::vector)",
+            eid, pid, MODEL_NAME, EMBED_DIM,
+            "[" + ",".join(f"{float(x):.7g}" for x in v) + "]",
+        )
+
+    outcome = await resolve_sighting(
+        migrated_db, rich,
+        auto_merge_min=1.01, propose_min=0.5, radius_m=1000.0,
+        max_candidates=5, new_uuid=uuid7, thin_evidence_frames=4,
+    )
+    assert outcome.status == "proposed"
+    assert outcome.suggest_video is False

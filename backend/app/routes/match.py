@@ -63,6 +63,7 @@ async def get_match(
         radius_m=settings.reid_radius_m,
         max_candidates=settings.reid_max_candidates,
         new_uuid=uuid7,
+        thin_evidence_frames=settings.reid_thin_evidence_frames,
     )
 
     proposals = await conn.fetch(
@@ -79,6 +80,9 @@ async def get_match(
     return {
         "status": outcome.status,
         "individual_id": str(outcome.individual_id) if outcome.individual_id else None,
+        # The client should ask for a short clip rather than a yes/no here: the
+        # score cleared the bar on too little evidence to answer confidently.
+        "suggest_video": outcome.suggest_video,
         "candidates": [
             {
                 "sighting_id": str(c.sighting_id),

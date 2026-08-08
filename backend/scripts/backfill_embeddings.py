@@ -164,6 +164,7 @@ async def main() -> int:
                         radius_m=settings.reid_radius_m,
                         max_candidates=settings.reid_max_candidates,
                         new_uuid=uuid7,
+                        thin_evidence_frames=settings.reid_thin_evidence_frames,
                     )
                 except Exception:
                     log.warning("sighting=%s: resolve failed", sid, exc_info=True)

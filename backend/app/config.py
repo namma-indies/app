@@ -56,8 +56,39 @@ class Settings(BaseSettings):
     # plausible match goes to a human instead of being silently merged.
     # Fit these to real verdicts in `confirmations` before lowering.
     reid_auto_merge_min: float = 1.01   # >= this: link automatically
-    reid_propose_min: float = 0.25      # >= this: ask a human
+    reid_propose_min: float = 0.71      # >= this: engage a human
     reid_max_candidates: int = 5
+
+    # WHY 0.71, AND WHAT IT COSTS
+    # ---------------------------
+    # 0.7122 is the highest score two *different* dogs reached in the 30-sighting
+    # run (brandi vs cheetah, twice, across sessions). The rule it encodes --
+    # below the look-alike ceiling you cannot claim sameness, so do not ask --
+    # is sound. What the same run also shows is that no genuine pair ever got
+    # near it: the best score between two sightings of the SAME dog was 0.5532.
+    #
+    #   threshold  prompts  true  false  precision   true matches found
+    #      0.30      130     25    105      19.2%      89.3%
+    #      0.40       75     18     57      24.0%      64.3%
+    #      0.50       22      8     14      36.4%      28.6%
+    #      0.55        8      2      6      25.0%       7.1%
+    #      0.71        2      0      2       0.0%       0.0%
+    #
+    # So at 0.71 this system raises two prompts, both wrong, and never links two
+    # sightings of the same dog. That is the deliberate setting: silence until
+    # the evidence is genuinely conclusive, rather than a stream of coin-flips.
+    # It also means re-ID contributes nothing until either the score
+    # distribution improves (more frames per sighting -- see below) or this
+    # number comes down against real verdicts in `confirmations`.
+    #
+    # Lower it to ~0.40 to trade precision for actually finding matches; the
+    # numbers above are the exchange rate. Change it here, not in code.
+
+    # Below this many embedded frames, a sighting is thin evidence: one photo
+    # matches the right dog 37% of the time, eight frames 83%. When a candidate
+    # clears propose_min on a thin sighting, asking for a short clip is worth
+    # more than asking for a yes/no the contributor cannot answer confidently.
+    reid_thin_evidence_frames: int = 4
     s3_bucket: str = "indiedex-dev"
     s3_access_key: str = "minio"
     s3_secret_key: str = "minio123"

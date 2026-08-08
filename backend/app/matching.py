@@ -196,6 +196,11 @@ class MatchOutcome:
     individual_id: UUID | None
     candidates: list[Candidate]
     proposal_ids: list[UUID]
+    # True when a candidate cleared the bar but this sighting is thin evidence
+    # (few frames). Asking for a short clip then beats asking for a yes/no: one
+    # photo identifies the right dog 37% of the time, eight frames 83%. The
+    # contributor is usually still standing next to the animal when this fires.
+    suggest_video: bool = False
 
 
 async def resolve_sighting(
@@ -207,6 +212,7 @@ async def resolve_sighting(
     radius_m: float,
     max_candidates: int,
     new_uuid,
+    thin_evidence_frames: int = 0,
 ) -> MatchOutcome:
     """Decide what a freshly embedded sighting is, and persist that decision.
 
@@ -325,4 +331,7 @@ async def resolve_sighting(
     await conn.execute(
         "UPDATE sightings SET match_status='proposed' WHERE id=$1", sighting_id
     )
-    return MatchOutcome("proposed", None, cands, proposal_ids)
+    # Thin evidence is judged on the query sighting, not the candidate: it is
+    # the contributor in front of us who can still go and film the animal.
+    thin = len(vecs) < thin_evidence_frames
+    return MatchOutcome("proposed", None, cands, proposal_ids, suggest_video=thin)
