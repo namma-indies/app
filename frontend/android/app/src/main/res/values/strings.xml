@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Namma Indies</string>
+    <string name="title_activity_main">Namma Indies</string>
+    <string name="package_name">org.nammaindies.app</string>
+    <string name="custom_url_scheme">org.nammaindies.app</string>
+</resources>
