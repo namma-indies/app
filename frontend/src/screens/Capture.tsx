@@ -234,18 +234,7 @@ export default function Capture() {
         onChange={onVideoChosen}
       />
 
-      {video ? (
-        <div className="shutter-wrap">
-          <span className="spot-label">CLIP READY</span>
-          <p className="hint">
-            We'll pick the clearest frames and keep those. The clip itself is
-            never stored.
-          </p>
-          <button type="button" className="link-btn" onClick={removeVideo}>
-            Remove clip
-          </button>
-        </div>
-      ) : photos.length === 0 ? (
+      {photos.length === 0 && !video ? (
         <div className="shutter-wrap">
           <span className="spot-label">SPOT AN INDIE</span>
           <button className="shutter" onClick={onShutterPress} aria-label="Spot a sighting">
@@ -264,35 +253,54 @@ export default function Capture() {
         </div>
       ) : (
         <>
-          <div className="filmstrip">
-            {previewUrls.map((url, i) => (
-              <div className="filmstrip-thumb" key={url}>
-                <img src={url} alt={`captured dog ${i + 1}`} />
-                <button
-                  type="button"
-                  className="thumb-remove"
-                  onClick={() => removePhoto(i)}
-                  aria-label={`Remove photo ${i + 1}`}
-                >
-                  ×
-                </button>
-              </div>
-            ))}
-            {photos.length < MAX_PHOTOS && (
-              <button
-                type="button"
-                className="filmstrip-add"
-                onClick={onShutterPress}
-                aria-label="Add another photo"
-              >
-                +
+          {/* A clip and photos are alternatives, but both are "evidence in
+              hand" and share everything below -- the note field and the save
+              button. Keeping the clip inside this branch is the whole point:
+              its own branch had no way to submit. */}
+          {video ? (
+            <div className="clip-ready">
+              <span className="spot-label">CLIP READY</span>
+              <p className="hint">
+                We'll keep the clearest frames from it. The clip itself is
+                never stored.
+              </p>
+              <button type="button" className="link-btn" onClick={removeVideo}>
+                Remove clip
               </button>
-            )}
-          </div>
-          {photos.length >= MAX_PHOTOS && (
-            <p className="hint">
-              {MAX_PHOTOS}/{MAX_PHOTOS} photos added
-            </p>
+            </div>
+          ) : (
+            <>
+              <div className="filmstrip">
+                {previewUrls.map((url, i) => (
+                  <div className="filmstrip-thumb" key={url}>
+                    <img src={url} alt={`captured dog ${i + 1}`} />
+                    <button
+                      type="button"
+                      className="thumb-remove"
+                      onClick={() => removePhoto(i)}
+                      aria-label={`Remove photo ${i + 1}`}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                {photos.length < MAX_PHOTOS && (
+                  <button
+                    type="button"
+                    className="filmstrip-add"
+                    onClick={onShutterPress}
+                    aria-label="Add another photo"
+                  >
+                    +
+                  </button>
+                )}
+              </div>
+              {photos.length >= MAX_PHOTOS && (
+                <p className="hint">
+                  {MAX_PHOTOS}/{MAX_PHOTOS} photos added
+                </p>
+              )}
+            </>
           )}
 
           <div className="note-field">

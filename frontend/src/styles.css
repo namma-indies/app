@@ -166,7 +166,8 @@ button { font-family: inherit; }
   image-rendering: pixelated;
 }
 
-.preview-frame img {
+.preview-frame img,
+.preview-frame video {
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -597,3 +598,7 @@ button { font-family: inherit; }
 @media (prefers-color-scheme: dark) {
   .maplibregl-canvas { filter: sepia(0.18) saturate(0.85) brightness(0.98); }
 }
+
+/* Clip chosen: stands in for the filmstrip, above the note field and save
+   button it shares with the photo path. */
+.clip-ready { display: flex; flex-direction: column; align-items: center; gap: 0.4rem; padding: 0.4rem 0; }
