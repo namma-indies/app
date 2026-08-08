@@ -194,7 +194,7 @@ describe("photo storage owns its bytes", () => {
 
     const sent = vi.mocked(postSighting).mock.calls[0][0];
     expect(sent.photos).toHaveLength(1);
-    const roundTripped = new Uint8Array(await sent.photos[0].arrayBuffer());
+    const roundTripped = new Uint8Array(await sent.photos![0].arrayBuffer());
     expect(roundTripped).toEqual(new Uint8Array([9, 8, 7]));
   });
 });

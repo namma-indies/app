@@ -211,7 +211,7 @@ async def create_sighting(
         }.items()
         if v
     }
-    if from_video:
+    if video is not None:
         attrs["source"] = "video"
 
     async with conn.transaction():

@@ -19,11 +19,14 @@ to `CLAUDE.md`.
 
 ```mermaid
 flowchart TD
-    A["📷 Capture<br/>(file input + GPS)"] --> B["IndexedDB queue<br/>(offline-first)"]
+    A["📷 Capture<br/>photo(s) <b>or</b> a clip + GPS"] --> B["IndexedDB queue<br/>(offline-first, owns the bytes)"]
     B --> C["POST /sighting<br/>multipart"]
 
     subgraph SYNC["synchronous — user is waiting"]
-        C --> D["process_photo<br/>EXIF strip · WebP q90 · thumb · phash"]
+        C --> C2{"clip?"}
+        C2 -- yes --> C3["extract_diverse_frames<br/>~2 fps · phash-diverse · ≤12<br/>clip never stored"]
+        C2 -- no --> D
+        C3 --> D["process_photo<br/>EXIF strip · WebP q90 · thumb · phash"]
         D --> E["S3: original + thumb"]
         E --> F["INSERT sighting + photos<br/>(one transaction)"]
         F --> G["201 {sighting_id, photo_ids}"]
@@ -184,10 +187,15 @@ angle when the top candidates cluster.
 **Cats.** `detect_reid` embeds dogs *and* cats (COCO 15+16). Whether cats are in
 scope is a product decision.
 
-**Video capture** (PR #3) is on hold. If revived: sample the middle 80% of a
-clip — detection is 93% mid-clip vs ~39% at the edges — and prefer
-embedding-space diversity over phash, which compares whole scenes rather than
-the animal.
+**Video capture is now in** — PR #3's two commits cherry-picked, its capture
+screen rebuilt on the current multi-photo component. **Do not try to merge
+`feat/video-capture`**: it predates the history rewrite and shares no common
+ancestor with `main`.
+
+Frame selection still uses phash, which compares whole scenes rather than the
+animal; embedding-space diversity would be better now that the embedder is
+in-tree, and sampling the middle 80% of a clip would help (detection is 93%
+mid-clip vs ~39% at the edges).
 
 ---
 

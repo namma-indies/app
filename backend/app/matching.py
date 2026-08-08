@@ -61,7 +61,7 @@ def _to_pgvector(vec: np.ndarray) -> str:
 
 async def find_candidates(
     conn: asyncpg.Connection,
-    vec: np.ndarray,
+    vecs: np.ndarray | list[np.ndarray],
     *,
     lat: float | None,
     lng: float | None,
@@ -69,48 +69,77 @@ async def find_candidates(
     exclude_sighting_id: UUID | None = None,
     limit: int = 10,
 ) -> list[Candidate]:
-    """Ranked candidate sightings for a query embedding, nearest first.
+    """Ranked candidate sightings for a query, nearest first.
 
-    `vec` must be L2-normalised (embed.py guarantees this), which is what makes
-    cosine distance and inner product interchangeable here.
+    `vecs` is every embedding the query sighting has -- one for a photo, several
+    for a clip. A candidate scores the **best** match against any query frame,
+    because the frames are the same animal from different angles and the
+    question is "have we seen this dog", not "have we seen this pose". Measured:
+    querying a 6-frame clip with one frame ranked the wrong dog first, while
+    max-over-frames put both sightings of the right dog at the top.
+
+    Each vector must be L2-normalised (embed.py guarantees this), which is what
+    makes cosine distance and inner product interchangeable here.
 
     With no location the vicinity filter is skipped rather than returning
     nothing: a sighting with GPS denied is still worth matching, just against a
     wider pool.
     """
-    q = _to_pgvector(vec)
+    if isinstance(vecs, np.ndarray) and vecs.ndim == 1:
+        vecs = [vecs]
+    if not len(vecs):
+        return []
+    qs = [_to_pgvector(v) for v in vecs]
     has_geo = lat is not None and lng is not None
 
     # The ANN ORDER BY must use the identical cast expression as the index
     # (ix_embeddings_vec_miew_hnsw) or Postgres silently falls back to a
-    # sequential scan -- correct results, quietly terrible performance.
+    # sequential scan -- correct results, quietly terrible performance. The
+    # LATERAL runs one indexed probe per query frame and unions the results,
+    # so recall grows with the number of frames instead of being decided by
+    # whichever frame happened to be first.
     sql = f"""
-        WITH shortlist AS (
-            SELECT e.photo_id,
-                   e.vec_miew,
-                   p.sighting_id
-            FROM embeddings e
-            JOIN photos p ON p.id = e.photo_id
-            JOIN sightings s ON s.id = p.sighting_id
-            WHERE e.model = $2
-              AND e.vec_miew IS NOT NULL
-              {"AND ($5::uuid IS NULL OR s.id <> $5::uuid)"}
-              {"AND s.geog IS NOT NULL AND ST_DWithin(s.geog, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $6)" if has_geo else ""}
-            ORDER BY e.vec_miew::halfvec({EMBED_DIM}) <=> $1::halfvec({EMBED_DIM})
-            LIMIT {ANN_SHORTLIST}
+        WITH q AS (
+            SELECT unnest($1::text[])::vector({EMBED_DIM}) AS v
+        ),
+        shortlist AS (
+            SELECT DISTINCT hits.photo_id, hits.vec_miew, hits.sighting_id
+            FROM q
+            CROSS JOIN LATERAL (
+                SELECT e.photo_id, e.vec_miew, p.sighting_id
+                FROM embeddings e
+                JOIN photos p ON p.id = e.photo_id
+                JOIN sightings s ON s.id = p.sighting_id
+                WHERE e.model = $2
+                  AND e.vec_miew IS NOT NULL
+                  {"AND ($5::uuid IS NULL OR s.id <> $5::uuid)"}
+                  {"AND s.geog IS NOT NULL AND ST_DWithin(s.geog, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $6)" if has_geo else ""}
+                ORDER BY e.vec_miew::halfvec({EMBED_DIM}) <=> q.v::halfvec({EMBED_DIM})
+                LIMIT {ANN_SHORTLIST}
+            ) AS hits
+        ),
+        scored AS (
+            SELECT sl.sighting_id,
+                   sl.photo_id,
+                   MAX(1 - (sl.vec_miew <=> q.v)) AS similarity
+            FROM shortlist sl CROSS JOIN q
+            GROUP BY sl.sighting_id, sl.photo_id
         )
-        SELECT sl.sighting_id,
-               sl.photo_id,
+        SELECT DISTINCT ON (sc.sighting_id)
+               sc.sighting_id,
+               sc.photo_id,
                s.individual_id,
-               1 - (sl.vec_miew <=> $1::vector({EMBED_DIM})) AS similarity,
+               sc.similarity,
                {"ST_Distance(s.geog, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography)" if has_geo else "NULL"} AS distance_m
-        FROM shortlist sl
-        JOIN sightings s ON s.id = sl.sighting_id
-        ORDER BY similarity DESC
-        LIMIT {int(limit)}
+        FROM scored sc
+        JOIN sightings s ON s.id = sc.sighting_id
+        ORDER BY sc.sighting_id, sc.similarity DESC
     """
+    # One row per candidate sighting (its best-matching photo); re-sort by score
+    # and cut, which DISTINCT ON cannot do in the same pass.
+    sql = f"SELECT * FROM ({sql}) ranked ORDER BY similarity DESC LIMIT {int(limit)}"
 
-    params: list = [q, MODEL_NAME]
+    params: list = [qs, MODEL_NAME]
     params += [lng, lat] if has_geo else [None, None]
     params.append(exclude_sighting_id)
     if has_geo:
@@ -169,7 +198,9 @@ async def resolve_sighting(
     proposals, so a re-embed after a model upgrade does not accumulate
     duplicates.
     """
-    row = await conn.fetchrow(
+    # Every frame of this sighting, not just the first. A clip contributes six
+    # or so; using one of them throws away the evidence the clip was for.
+    rows = await conn.fetch(
         """
         SELECT e.vec_miew::text AS vec,
                ST_Y(s.geog::geometry) AS lat,
@@ -179,21 +210,22 @@ async def resolve_sighting(
         JOIN embeddings e ON e.photo_id = p.id AND e.model = $2
         WHERE s.id = $1 AND e.vec_miew IS NOT NULL
         ORDER BY e.created_at
-        LIMIT 1
         """,
         sighting_id,
         MODEL_NAME,
     )
-    if row is None:
+    if not rows:
         # No embedding yet (or no animal found). Nothing to decide.
         return MatchOutcome("unmatched", None, [], [])
 
-    vec = np.array(
-        [float(x) for x in row["vec"].strip("[]").split(",")], dtype=np.float32
-    )
+    row = rows[0]  # lat/lng belong to the sighting, so any row carries them
+    vecs = [
+        np.array([float(x) for x in r["vec"].strip("[]").split(",")], dtype=np.float32)
+        for r in rows
+    ]
     cands = await find_candidates(
         conn,
-        vec,
+        vecs,
         lat=row["lat"],
         lng=row["lng"],
         radius_m=radius_m,

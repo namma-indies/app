@@ -126,4 +126,7 @@ async def test_video_not_stored_in_s3(authed_client):
     storage = get_storage()
     keys = await storage.list_keys(f"sightings/{sid}/")
     assert keys, "expected stored objects for the sighting"
-    assert all(k.endswith(".jpg") for k in keys)
+    # Frames go through the same process_photo as a still, so they land in
+    # whatever format that writes -- WebP since the compression sweep.
+    assert all(k.endswith(".webp") for k in keys)
+    assert not any(".mp4" in k for k in keys), "the clip itself must not be stored"

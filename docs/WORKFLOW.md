@@ -127,31 +127,53 @@ numbers are the gallery, not the service.
 
 ---
 
-## Why there is no video option in the UI
+## Video capture
 
-Because it was never merged. Video capture is **PR #3**
-(`feat/video-capture`, "Optional video capture → diverse frame extraction"),
-open since 2026-07-19 and untouched since. `main` — what you are running — has
-only ever had `accept="image/*"`, and the re-ID work did not touch the capture
-screen.
+For a long time there was no video option because PR #3 (`feat/video-capture`)
+was never merged — and **it cannot be merged**: that branch was cut before the
+repository's history was rewritten, so it shares no common ancestor with `main`
+(different root commit, and it carries only migration `0001`). GitHub will never
+offer a clean merge for it.
 
-The backend has no format allowlist either: it hands bytes straight to
-`process_photo`, so an uploaded video fails inside `Image.open` rather than
-returning a clean error.
+Its two commits are cherry-picked here instead. `app/video.py` decodes a clip
+with `imageio` + `imageio-ffmpeg` (a bundled static binary, so the slim
+container needs no apt package), subsamples to ~2 fps, runs each frame through
+the ordinary `process_photo`, and keeps a phash-diverse subset — up to 12
+frames. The clip itself is **never stored**; only the frames it yielded.
 
-The measurement above is the strongest argument yet for reviving it. Frames per
-individual is the largest lever available — 1 → 8 frames is +46 points, more
-than the model, the encoding and the thresholds combined. The original compute
-objection is also weaker than it looked: the gain saturates by ~8 frames, so a
-5-second clip sampled to 8 diverse frames costs 8 embeddings (~1.4 s CPU), not
-150. Extraction is the expense, not embedding.
+The capture screen's half of that branch was discarded rather than merged: it
+predates the multi-photo refactor from PR #6 and conflicted in eight places
+against a component that no longer exists in that shape. The video option was
+rebuilt on the current screen instead, including the offline queue, which now
+reads a clip's bytes at capture time exactly as it does for photos — a camera
+video File on iOS is the same purgeable handle, only larger.
 
-One correction to carry over if PR #3 is revived: it selects frames by **phash**,
-which compares whole scenes. Two frames of the same dog against the same wall
-look near-identical to phash while differing usefully in embedding space. Select
-on embedding diversity instead — the embedder is now in-tree. And sample the
-middle 80% of the clip: detection succeeds 93% mid-clip against ~39% at the
-edges.
+Measured live on a 2.8 s, 30 fps clip: 201 in 0.7 s, 6 diverse frames stored,
+5 embedded (one frame had no animal in it, correctly skipped),
+`dog_confidence` 0.969, `attrs.source = "video"`.
+
+**Matching had to change to make video worth anything.** `resolve_sighting`
+originally queried with a sighting's *first* embedding, so a six-frame clip
+searched with one frame and the other five were dead weight on the query side.
+On that live clip the single-frame query ranked the wrong dog first and the
+right dog fourth; querying with all six put the right dog first **and** second:
+
+| | top candidate | rank of the true dog |
+|---|---|---|
+| first frame only | cheetah 0.4158 | 4th (0.3052) |
+| max over 6 frames | **luna 0.5401** | **1st and 2nd** |
+
+`find_candidates` now takes every embedding of the query sighting, runs one
+indexed ANN probe per frame, and scores each candidate by its best match against
+any frame. A candidate is the same animal from a different angle; the question
+is "have we seen this dog", not "have we seen this pose".
+
+One correction still outstanding: frame selection uses **phash**, which compares
+whole scenes. Two frames of the same dog against the same wall look
+near-identical to phash while differing usefully in embedding space. Selecting on
+embedding diversity would be better now that the embedder is in-tree. Sampling
+the middle 80% of the clip would help too — detection succeeds 93% mid-clip
+against ~39% at the edges.
 
 ---
 

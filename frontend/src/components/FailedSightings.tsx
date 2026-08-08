@@ -16,7 +16,7 @@ export default function FailedSightings({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     const urls: Record<number, string> = {};
     for (const item of items) {
-      if (item.photos[0]) urls[item.id] = URL.createObjectURL(item.photos[0]);
+      if (item.photos?.[0]) urls[item.id] = URL.createObjectURL(item.photos[0]);
     }
     setThumbUrls(urls);
     return () => {
