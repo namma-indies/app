@@ -11,7 +11,8 @@ from starlette.responses import JSONResponse
 
 from app.auth.deps import require_observer
 from app.deps import get_conn, get_storage
-from app.detect import DOG_CONF_THRESHOLD, dog_confidence
+from app.detect import DOG_CONF_THRESHOLD
+from app.detect_reid import animal_confidence
 from app.ids import uuid7
 from app.photos import process_photo
 from app.storage.s3 import S3Storage
@@ -28,12 +29,69 @@ async def _max_dog_confidence(raws: list[bytes]) -> float | None:
     best: float | None = None
     for raw in raws:
         try:
-            conf = await run_in_threadpool(dog_confidence, raw)
+            # yolo26x, shared with the embedding path: the old yolov8n gate
+            # scored visible dogs as low as 0.02 (yolo26x: 0.80 on the same
+            # photo), and this task has never been on the user's wait path.
+            conf, _cat = await run_in_threadpool(animal_confidence, raw)
         except Exception:
             logger.warning("dog detection failed; saving unscored", exc_info=True)
             continue
         best = conf if best is None else max(best, conf)
     return best
+
+
+async def _embed_and_save(
+    pool: asyncpg.Pool, photo_ids: list[UUID], raws: list[bytes]
+) -> None:
+    """Embed each photo for re-identification, after the sighting is saved.
+
+    Same contract as dog-confidence scoring: this never gates the save. A photo
+    with no embedding is simply not yet matchable -- it can be re-embedded later
+    (the model is versioned in the row, so a re-run is an upsert). Losing the
+    sighting because an embedder hiccuped would be the far worse trade.
+
+    Photos with no dog detected are skipped rather than embedded whole-frame:
+    an embedding of mostly-street would pollute candidate search with a vector
+    that matches other streets.
+    """
+    from app.embed import EMBED_DIM, MODEL_NAME, embed_photo
+
+    for photo_id, raw in zip(photo_ids, raws):
+        try:
+            found = await run_in_threadpool(embed_photo, raw)
+        except Exception:
+            logger.warning(
+                "embedding failed for photo=%s; leaving unembedded",
+                photo_id,
+                exc_info=True,
+            )
+            continue
+        if found is None:
+            logger.info("no dog detected in photo=%s; not embedding", photo_id)
+            continue
+        vec, box = found
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, bbox)
+                    VALUES ($1, $2, $3, $4, $5::vector, $6::jsonb)
+                    ON CONFLICT (photo_id, model) DO UPDATE
+                        SET vec_miew = EXCLUDED.vec_miew,
+                            bbox = EXCLUDED.bbox,
+                            created_at = now()
+                    """,
+                    uuid7(),
+                    photo_id,
+                    MODEL_NAME,
+                    EMBED_DIM,
+                    "[" + ",".join(f"{float(v):.7g}" for v in vec) + "]",
+                    json.dumps({"x1": box[0], "y1": box[1], "x2": box[2], "y2": box[3]}),
+                )
+        except Exception:
+            logger.warning(
+                "failed to store embedding for photo=%s", photo_id, exc_info=True
+            )
 
 
 async def _score_and_save_dog_confidence(
@@ -100,10 +158,10 @@ async def create_sighting(
         photo_id = uuid7()
         if first_phash is None:
             first_phash = p.phash
-        orig_key = f"sightings/{sighting_id}/{photo_id}.jpg"
-        thumb_key = f"sightings/{sighting_id}/{photo_id}_thumb.jpg"
-        await storage.put(orig_key, p.original, "image/jpeg")
-        await storage.put(thumb_key, p.thumbnail, "image/jpeg")
+        orig_key = f"sightings/{sighting_id}/{photo_id}.webp"
+        thumb_key = f"sightings/{sighting_id}/{photo_id}_thumb.webp"
+        await storage.put(orig_key, p.original, p.content_type)
+        await storage.put(thumb_key, p.thumbnail, p.content_type)
         photo_rows.append(
             {
                 "id": photo_id,
@@ -189,6 +247,12 @@ async def create_sighting(
 
     background_tasks.add_task(
         _score_and_save_dog_confidence, request.app.state.pool, sighting_id, raws
+    )
+    background_tasks.add_task(
+        _embed_and_save,
+        request.app.state.pool,
+        [r["id"] for r in photo_rows],
+        raws,
     )
 
     return JSONResponse(

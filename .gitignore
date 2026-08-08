@@ -13,3 +13,17 @@ frontend/dist/
 # Operational runbook: deploy details, infra ids. Public repo — keep local.
 docs/OPERATIONS.md
 .worktrees/
+
+# Local-only dev port overrides (host 5432/9000 already in use on this machine)
+docker-compose.dev.local.yml
+
+# MiewID ONNX weights: 206 MB, and upstream (conservationxlabs/miewid-msv3)
+# declares no licence. Fetched/exported locally -- see scripts/export_miewid_onnx.py
+backend/app/ml/miewid_msv3.onnx
+
+# YOLO26x ONNX (223 MB) -- see scripts/export_yolo26x_onnx.py
+backend/app/ml/yolo26x.onnx
+
+# Local-only Vite config (host :8000 taken; API on :8099)
+frontend/vite.config.local.ts
+frontend/.certs/

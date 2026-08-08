@@ -174,10 +174,10 @@ async def test_post_sighting_dog_confidence_null_until_background_task_runs(
     def boom(_raw):
         raise RuntimeError("simulated detector failure")
 
-    # sighting.py does `from app.detect import dog_confidence`, which binds
-    # its own name in this module's namespace -- patch that name, not
-    # app.detect's, or the patch has no effect on the code under test.
-    monkeypatch.setattr(sighting_route, "dog_confidence", boom)
+    # sighting.py does `from app.detect_reid import animal_confidence`, which
+    # binds its own name in this module's namespace -- patch that name, not
+    # app.detect_reid's, or the patch has no effect on the code under test.
+    monkeypatch.setattr(sighting_route, "animal_confidence", boom)
 
     client, _ = authed_client
     r = await client.post(
