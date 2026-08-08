@@ -66,13 +66,20 @@ jobs:
       - name: Install export toolchain
         run: |
           python -m pip install --upgrade pip
-          pip install transformers timm onnx onnxscript ultralytics pillow numpy
+          # onnxruntime is not optional: export_miewid_onnx.py loads the export
+          # back and refuses to write one that drifts from the torch original.
+          pip install transformers timm onnx onnxruntime onnxscript ultralytics pillow numpy
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           python - <<'EOF'
           import torch, torchvision
           print(f"torch {torch.__version__} / torchvision {torchvision.__version__}")
           torch.ops.torchvision.nms  # resolves the op registry, or raises here
           print("torchvision ops registered OK")
+          # Import everything the two exporters touch, so a missing package
+          # fails here rather than part-way through a five-minute export.
+          import numpy, onnx, onnxruntime, timm, transformers, ultralytics
+          from PIL import Image
+          print("all export dependencies import OK")
           EOF
 
       - name: Export MiewID-msv3
