@@ -454,10 +454,23 @@ button { font-family: inherit; }
      sighting now read as the same kind of object at different scales. The
      circle also stops the pin competing with the rectangular map furniture. */
   border-radius: 50%;
-  overflow: hidden; cursor: pointer; position: relative;
+  /* No `position` here. MapLibre's .maplibregl-marker sets `position: absolute`
+     so its transform positions the pin from the map origin; overriding it to
+     `relative` put every pin in normal flow, stacking each one 42px (its own
+     height) below the last and offsetting it from that flow position instead.
+     The result was pins sitting progressively further from their coordinates,
+     and jumping whenever rotation added or removed a marker and reshuffled the
+     flow. Cluster bubbles were unaffected only because they never set position. */
+  overflow: hidden; cursor: pointer;
   box-shadow: 2px 2px 0 var(--shadow); image-rendering: pixelated;
 }
-.photo-pin:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0 var(--shadow); }
+/* No `transform` here, however tempting. MapLibre owns this element's transform:
+   Marker._update writes `translate(-50%,-50%) translate(Xpx,Ypx) rotateX() rotateZ()`
+   as an INLINE style on every `move` event. An inline style outranks any
+   stylesheet rule, so a transform here is silently dead -- and were it ever to
+   win (an `!important`, a future refactor that wraps the element), it would
+   detach the pin from its coordinates entirely. Press feedback uses shadow only. */
+.photo-pin:active { box-shadow: 1px 1px 0 var(--shadow); }
 .photo-pin img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .photo-pin-fallback { display: flex; align-items: center; justify-content: center; font-size: 1.2rem; }
 
@@ -469,7 +482,8 @@ button { font-family: inherit; }
   box-shadow: 2px 2px 0 var(--shadow); cursor: pointer; line-height: 1;
   font-family: "Silkscreen", monospace; color: var(--ink);
 }
-.cluster-pin:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0 var(--shadow); }
+/* Same rule as .photo-pin:active -- MapLibre owns transform on marker elements. */
+.cluster-pin:active { box-shadow: 1px 1px 0 var(--shadow); }
 .cluster-sm { width: 38px; height: 38px; }
 .cluster-md { width: 46px; height: 46px; }
 .cluster-lg { width: 56px; height: 56px; }

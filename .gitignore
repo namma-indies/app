@@ -27,3 +27,5 @@ backend/app/ml/yolo26x.onnx
 # Local-only Vite config (host :8000 taken; API on :8099)
 frontend/vite.config.local.ts
 frontend/.certs/
+.gstack/
+frontend/vite.config.plainhttp.ts
