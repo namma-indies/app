@@ -267,10 +267,14 @@ imported — a console script puts `.venv/bin` on `sys.path`, not the cwd.
 ## Before deploying
 
 **`main` deploys straight to production.** `.github/workflows/deploy.yml` fires
-on every push to `main`, SSHes to the box, `git pull` + `docker compose up
---build`, then checks the site returns 200. There is **no staging**, and the 200
-check proves the app boots, not that it works — `/health` now also reports
-whether re-ID is `ready` or `degraded`, which is the falsifiable part.
+on pushes to `main` that can affect the running app, SSHes to the box,
+`git pull` + `docker compose up --build`, then checks the site returns 200 —
+which proves the app boots, not that it works. `/health` also reports whether
+re-ID is `ready` or `degraded`, which is the falsifiable part.
+
+There **is** a staging box (`deploy-staging.yml`, manual dispatch). Use it for
+anything touching the ML path; production is one merge away and has no
+intermediate step.
 
 `ci.yml` runs pytest, vitest and tsc on pull requests and pushes to `main`, but
 it is **not a required gate**: nothing stops a red merge from deploying. Wiring
@@ -278,12 +282,15 @@ it into branch protection is a repo-settings decision.
 
 So merging is deploying. Before any merge touching the ML path:
 
-- [ ] **Model weights reach the box.** Handled automatically now —
-      `deploy/entrypoint.sh` runs `scripts/fetch_models.py`, which pulls the
-      ONNX from object storage onto a named volume. This needs the bucket
-      seeded once: `uv run python scripts/fetch_models.py --upload` from a
-      machine that has run the export scripts. Until that is done, `/health`
-      reports `reid: degraded` and every upload saves with no embedding.
+- [ ] **Model weights reach the box.** Run the **Seed model weights** workflow
+      (Actions → run manually, pick the environment). It exports both ONNX on a
+      runner, ships them over SSH, and has the box upload them to object storage
+      using its own credentials — so nothing is downloaded to a laptop and no S3
+      secret is added to GitHub. Once done, `entrypoint.sh` fetches them on every
+      future boot and this is never needed again.
+
+      Until then `/health` reports `"reid": "degraded"` and every upload saves
+      with no embedding: re-ID looks deployed and does nothing.
 - [ ] Box RAM fits ~430 MB of resident model weights plus runtime.
 - [ ] **Backfill existing photos** — `uv run python scripts/backfill_embeddings.py
       --resolve` from `/app/backend`. Nothing embeds them automatically, and
