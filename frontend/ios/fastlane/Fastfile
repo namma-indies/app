@@ -18,6 +18,10 @@ platform :ios do
       code_sign_identity: "Apple Distribution",
       bundle_identifier: "org.nammaindies.app",
       profile_name: ENV["sigh_org.nammaindies.app_appstore_profile-name"],
+      # Debug stays on automatic/dev signing -- it's what "Run" from Xcode
+      # onto a real device uses locally. Only Release (archive/CI builds)
+      # needs the distribution identity and match's App Store profile.
+      build_configurations: ["Release"],
     )
   end
 
