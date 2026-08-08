@@ -205,7 +205,17 @@ async def create_sighting(
         # b"", so `raws` has to be the single source for both the stored photo
         # and the background tasks.
         raws = [await f.read() for f in photos]
-        processed_frames = [process_photo(raw) for raw in raws]
+        # Off the event loop. process_photo is pure CPU -- EXIF strip, a
+        # full-resolution WebP encode, a thumbnail and a phash -- and running it
+        # inline blocks every other request for its duration. That is
+        # head-of-line blocking, not a deadlock, and it is what made concurrent
+        # uploads appear to hang: 16 at once, 11 returned in ~1.5s and 6 sat
+        # behind them until the client gave up at 90s. Every other heavy call
+        # here was already offloaded; this one was missed because it is the only
+        # one on the user's critical path rather than in a background task.
+        processed_frames = [
+            await run_in_threadpool(process_photo, raw) for raw in raws
+        ]
 
     photo_rows = []
     first_phash: str | None = None

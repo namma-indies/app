@@ -213,6 +213,30 @@ mid-clip vs ~39% at the edges).
 
 ---
 
+## The connection pool is shared with the background tasks
+
+`asyncpg.create_pool` defaults to `max_size=10`, and this pool has two very
+different consumers: request handlers, which hold a connection for the whole
+request through the `get_conn` dependency, and the background tasks that embed
+and match after the response. Concurrent uploads exhausted it.
+
+Measured: 16 uploads at once, **exactly 10 served and 6 never handed to the app
+at all** — they sat suspended on `pool.acquire()` until the client gave up at
+90 s. With `db_pool_max = 30`, all 16 return 201 in ~1.7 s.
+
+The reason this took so long to find: **a suspended coroutine has no thread
+stack**, so `faulthandler` dumps showed only idle worker threads and no
+application frames. Every observation said "the server is idle" while six
+requests hung, which reads like a deadlock and is not one. If something similar
+appears again, count the served requests first — a number that matches a pool or
+limiter size is the whole answer.
+
+`backend/sitecustomize.py` (untracked, local) registers a SIGUSR1 stack dump:
+`kill -USR1 <uvicorn pid>`. Start uvicorn with `PYTHONPATH=.` or it is never
+imported — a console script puts `.venv/bin` on `sys.path`, not the cwd.
+
+---
+
 ## Before deploying
 
 **`main` deploys straight to production.** `.github/workflows/deploy.yml` fires

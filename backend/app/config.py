@@ -117,6 +117,11 @@ class Settings(BaseSettings):
     # clears propose_min on a thin sighting, asking for a short clip is worth
     # more than asking for a yes/no the contributor cannot answer confidently.
     reid_thin_evidence_frames: int = 4
+    # Sized for request handlers plus the background tasks that run after the
+    # response; see the comment in main.py's lifespan.
+    db_pool_min: int = 5
+    db_pool_max: int = 30
+
     s3_bucket: str = "indiedex-dev"
 
     # Where the pre-exported ONNX models live, inside s3_bucket. They are
