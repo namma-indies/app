@@ -100,11 +100,38 @@ declares no licence at all**. Both are unresolved for a public launch.
 ## Local development
 
 The dev stack is `docker-compose.dev.yml` (Postgres+PostGIS+pgvector, MinIO).
-Ports collide on some machines — override in an untracked
-`docker-compose.dev.local.yml`, and note Compose **appends** `ports` lists, so
-the override needs `ports: !override` or the original binding remains.
 
-Two things that will waste an hour if you don't know them:
+**Every default port collides on some machines**, so the whole local stack is
+remappable through untracked overrides. The defaults are unchanged for everyone
+else; nothing here is committed. What one machine ended up using, as a worked
+example:
+
+| service | default | remapped to | why |
+|---|---|---|---|
+| Postgres | 5432 | **5433** | another Postgres already bound |
+| MinIO API | 9000 | **9002** | port in use |
+| MinIO console | 9001 | **9003** | port in use |
+| API | 8000 | **8099** | another app already bound |
+| Vite (HTTPS, phone) | 5173 | **5174** | 5173 in use |
+| Vite (plain HTTP) | — | **5175** | for a headless browser, which will not accept the self-signed cert |
+
+Where each override lives:
+
+- **`docker-compose.dev.local.yml`** — Postgres and MinIO. Compose **appends**
+  `ports` lists, so this needs `ports: !override` or the original binding stays
+  and still collides.
+- **`backend/.env`** — `DATABASE_URL`, `TEST_DATABASE_URL`, `S3_ENDPOINT` must
+  all follow the remapped ports, or the app and the tests quietly talk to
+  whatever else is on the default port.
+- **`frontend/vite.config.local.ts`** — dev server port, HTTPS cert, and the
+  proxy target for the moved API. The tracked `vite.config.ts` still points at
+  `localhost:8000`.
+
+Run the API on a non-default port with
+`uv run uvicorn app.main:app --port 8099`, and remember the frontend proxies to
+it server-side, so the port must match in the Vite config too.
+
+Two more things that will waste an hour if you don't know them:
 
 **Storage has two endpoints, on purpose.** `s3_endpoint` is where the server
 writes; `s3_public_endpoint` is what presigned URLs are signed against

@@ -64,10 +64,10 @@ flowchart TD
         N --> O[("embeddings.vec_miew")]
     end
 
-    O --> P["resolve_sighting<br/>PostGIS radius → HNSW → exact re-rank"]
+    O --> P["resolve_sighting<br/>PostGIS 1km → HNSW → exact re-rank<br/><i>runs here, once — GET /match is read-only</i>"]
     P --> Q{"top similarity"}
     Q -- "≥ 1.01 (unreachable)" --> R["auto-link"]
-    Q -- "≥ 0.25" --> S["match_proposals"]
+    Q -- "≥ 0.71 (look-alike ceiling)" --> S["match_proposals<br/>+ suggest_video on thin evidence"]
     Q -- else --> T["unmatched"]
     S --> U["human verdict<br/>POST /proposal/{id}"]
     U --> V[("individuals + confirmations")]
@@ -90,7 +90,7 @@ flowchart TD
 | S3 endpoint | one | **write vs presign split** | SigV4 signs the Host, so a URL signed for the internal host 403s in a browser |
 | Animal gate | YOLOv8n | **YOLO26x**, dog *and* cat | v8n scored a clearly visible dog at 0.021 where 26x gives 0.800 |
 | Embedding | none | **MiewID-msv3**, 2152-d, on the animal crop | Whole-frame embeddings match other streets, not other dogs |
-| Candidate search | none | PostGIS radius → HNSW → exact re-rank | HNSW caps at 2000 dims; MiewID is 2152, so ANN runs on a `halfvec` cast and the shortlist is re-scored at full precision |
+| Candidate search | none | PostGIS 1 km → HNSW → exact re-rank | HNSW caps at 2000 dims; MiewID is 2152, so ANN runs on a `halfvec` cast and the shortlist is re-scored at full precision |
 | Identity | none | human verdict only | See thresholds below |
 | Basemap | OSM raster | CARTO Positron / Dark Matter | Road-atlas detail competed with the sightings |
 | Pins | square | round | Matches the cluster bubbles |
@@ -240,9 +240,69 @@ YOLOv8n, new rows by YOLO26x, and the two disagree substantially (on 29 varied
 photos: dogs 14/17 vs 9/17, cats 10/12 vs 1/12). Any filter on that column will
 treat two different populations as one.
 
-**A failed migration takes the site down**, not merely un-updated:
+**A failed migration would take the site down**, not merely leave it un-updated:
 `entrypoint.sh` is `set -e`, so a migration error means uvicorn never starts and
 the replaced container is already gone. Both new migrations add `CHECK`
-constraints, which Postgres validates against existing rows. Both tables should
-be empty — no committed code ever wrote them — but `NOT VALID` would remove the
-risk entirely.
+constraints, which Postgres normally validates against every existing row. Both
+are therefore declared **`NOT VALID`**: new and updated rows are still enforced,
+the scan is skipped, and no pre-existing data can abort the boot. Validate them
+deliberately later, under a lock that does not block writes:
+
+```sql
+ALTER TABLE embeddings      VALIDATE CONSTRAINT ck_embeddings_miew_vec;
+ALTER TABLE match_proposals VALIDATE CONSTRAINT ck_match_proposals_has_target;
+```
+
+**The models are fetched on boot.** They are gitignored and not baked into the
+image, so `git pull` never brings them and a fresh container has none — in which
+case both ML tasks raise, get caught, and every upload saves with no embedding:
+re-ID looks deployed and does nothing. `entrypoint.sh` now runs
+`scripts/fetch_models.py` first, pulling the pre-exported ONNX from object
+storage onto a named volume, so it happens once per box rather than once per
+deploy. Deliberately non-fatal — a fetch failure should degrade re-ID, not take
+the site down — so the state is reported instead:
+
+```
+GET /health  →  {"status":"ok","reid":"ready"|"degraded","models":{...}}
+```
+
+Seed the bucket once from a machine that has run the export scripts:
+`uv run python scripts/fetch_models.py --upload`.
+
+Baking the weights into the image was rejected: ~430 MB on every deploy, and
+MiewID declares no upstream licence, which makes shipping it inside a
+distributable artifact an open question. Exporting on the box is impossible by
+design — that needs torch, which the runtime image deliberately excludes.
+
+---
+
+## Local development ports
+
+Every default port collided on the machine this was built on, so the local stack
+runs remapped. **No committed default changed** — see `AGENTS.md` for the table
+and where each override lives (`docker-compose.dev.local.yml`, `backend/.env`,
+`frontend/vite.config.local.ts`, all gitignored). In short: Postgres 5433, MinIO
+9002/9003, API 8099, Vite 5174 over HTTPS for phone testing.
+
+Two traps in there: Compose *appends* `ports` lists, so an override needs
+`ports: !override` or the original binding survives and still collides; and the
+API port has to match the Vite proxy target, because the frontend proxies
+server-side rather than from the browser.
+
+---
+
+## Concurrency
+
+The connection pool is shared by request handlers, which hold a connection for
+the whole request via the `get_conn` dependency, and by the background tasks
+that embed and match after the response. asyncpg defaults to `max_size=10`,
+which is not enough for both: 16 concurrent uploads produced exactly 10 served
+and 6 that were never handed to the app at all, suspended on `pool.acquire()`
+until the client gave up. `db_pool_max` now defaults to 30 and all 16 return
+201 in ~1.7 s.
+
+Worth remembering when something similar appears: a suspended coroutine has no
+thread stack, so a `faulthandler` dump shows only idle workers and no
+application frames. Every signal will say the server is doing nothing while
+requests hang. Count the requests that *did* succeed — a number matching a pool
+or limiter size is the answer.
