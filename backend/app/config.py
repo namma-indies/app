@@ -61,11 +61,17 @@ class Settings(BaseSettings):
 
     # WHY 0.71, AND WHAT IT COSTS
     # ---------------------------
-    # 0.7122 is the highest score two *different* dogs reached in the 30-sighting
-    # run (brandi vs cheetah, twice, across sessions). The rule it encodes --
-    # below the look-alike ceiling you cannot claim sameness, so do not ask --
-    # is sound. What the same run also shows is that no genuine pair ever got
-    # near it: the best score between two sightings of the SAME dog was 0.5532.
+    # 0.7122 is what two dogs who genuinely resemble each other score. Brandi
+    # and cheetah are different animals that look alike, and the number is not
+    # a fluke of shared lighting: the 0.7122 pair was photographed seven days
+    # apart (2026-06-08 and 2026-06-15), while a same-day pair of the same two
+    # dogs scored only 0.5625. The resemblance is stable across time, so this is
+    # a real look-alike ceiling rather than the highest noise we happened to see.
+    #
+    # The rule it encodes -- below the ceiling at which two look-alikes are
+    # indistinguishable, you cannot claim sameness, so do not ask -- is sound.
+    # What the same run also shows is that no genuine pair ever got near it: the
+    # best score between two sightings of the SAME dog was 0.5532.
     #
     #   threshold  prompts  true  false  precision   true matches found
     #      0.30      130     25    105      19.2%      89.3%
