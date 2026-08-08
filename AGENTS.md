@@ -268,15 +268,22 @@ imported — a console script puts `.venv/bin` on `sys.path`, not the cwd.
 
 **`main` deploys straight to production.** `.github/workflows/deploy.yml` fires
 on every push to `main`, SSHes to the box, `git pull` + `docker compose up
---build`, then checks the site returns 200. There is **no staging and no CI test
-run** — the 200 check proves the app boots, not that it works.
+--build`, then checks the site returns 200. There is **no staging**, and the 200
+check proves the app boots, not that it works — `/health` now also reports
+whether re-ID is `ready` or `degraded`, which is the falsifiable part.
+
+`ci.yml` runs pytest, vitest and tsc on pull requests and pushes to `main`, but
+it is **not a required gate**: nothing stops a red merge from deploying. Wiring
+it into branch protection is a repo-settings decision.
 
 So merging is deploying. Before any merge touching the ML path:
 
-- [ ] **Model weights reach the box.** They are gitignored and the Dockerfile
-      does not fetch them, so `git pull` will not bring them. Without this the
-      background tasks catch `ModelUnavailable` and every upload saves with no
-      embedding: re-ID appears deployed and does nothing.
+- [ ] **Model weights reach the box.** Handled automatically now —
+      `deploy/entrypoint.sh` runs `scripts/fetch_models.py`, which pulls the
+      ONNX from object storage onto a named volume. This needs the bucket
+      seeded once: `uv run python scripts/fetch_models.py --upload` from a
+      machine that has run the export scripts. Until that is done, `/health`
+      reports `reid: degraded` and every upload saves with no embedding.
 - [ ] Box RAM fits ~430 MB of resident model weights plus runtime.
 - [ ] **Backfill existing photos** — `uv run python scripts/backfill_embeddings.py
       --resolve` from `/app/backend`. Nothing embeds them automatically, and
