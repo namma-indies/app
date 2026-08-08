@@ -7,10 +7,31 @@ name: Deploy
 # Requires two repo secrets (Settings > Secrets and variables > Actions):
 #   DEPLOY_SSH_KEY    - private half of a CI-only keypair (see docs/OPERATIONS.md)
 #   DEPLOY_SSH_TARGET - e.g. "ubuntu@<box-ip>" (kept out of this public repo)
+#
+# paths-ignore (not paths) deliberately -- a whitelist risks silently
+# skipping a real deploy if a new prod-relevant path is added and never
+# listed here. An occasional needless deploy from a false negative on this
+# ignore list is cheap; a missed deploy from a false negative on a whitelist
+# is not.
 
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.github/workflows/deploy-staging.yml'
+      - '.github/workflows/deploy-ios.yml'
+      - '.github/workflows/deploy-android.yml'
+      - 'deploy/deploy-staging.sh'
+      - 'deploy/remote-staging.sh'
+      - 'docker-compose.dev.yml'
+      - 'frontend/ios/**'
+      - 'frontend/android/**'
+      - '.claude/**'
+      - '.superpowers/**'
 
 concurrency:
   group: production-deploy
