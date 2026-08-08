@@ -118,6 +118,12 @@ class Settings(BaseSettings):
     # more than asking for a yes/no the contributor cannot answer confidently.
     reid_thin_evidence_frames: int = 4
     s3_bucket: str = "indiedex-dev"
+
+    # Where the pre-exported ONNX models live, inside s3_bucket. They are
+    # gitignored and not baked into the image (~430 MB, and MiewID declares no
+    # upstream licence), so the container fetches them on boot instead --
+    # see scripts/fetch_models.py.
+    models_s3_prefix: str = "models/"
     s3_access_key: str = "minio"
     s3_secret_key: str = "minio123"
     s3_region: str = "ap-south-1"

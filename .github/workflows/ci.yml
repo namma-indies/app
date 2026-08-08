@@ -1,0 +1,86 @@
+name: CI
+# Runs the tests on every PR and every push to main.
+#
+# This did not exist before. `deploy.yml` fires on push to main, SSHes to the
+# box and rebuilds, then checks the site returns 200 -- which proves the app
+# booted, not that it works. Merging is deploying here, so an untested merge is
+# an untested production release.
+#
+# Deliberately not wired as a required gate on deploy: making deploy depend on
+# CI changes how the team ships, which is a repo-settings decision. This job
+# reports; turning it into branch protection is someone's call, not this PR's.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  # A newer commit on the same ref makes the older run pointless.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Built from docker/db rather than pulled: the tests need pgvector AND
+      # postgis in the same server (migration 0001 creates both extensions),
+      # and no public image ships both. Building here keeps the workflow
+      # self-contained and pins it to the same image production runs.
+      - name: Start Postgres with pgvector + postgis
+        run: |
+          docker build -t indiedex-test-db ./docker/db
+          docker run -d --name test-db \
+            -e POSTGRES_PASSWORD=dev \
+            -p 5432:5432 indiedex-test-db
+          for i in $(seq 1 40); do
+            docker exec test-db pg_isready -U postgres && exit 0
+            sleep 2
+          done
+          echo "postgres never became ready" >&2
+          docker logs test-db
+          exit 1
+
+      - uses: astral-sh/setup-uv@v3
+
+      - name: Install
+        working-directory: backend
+        run: uv sync --frozen
+
+      - name: Test
+        working-directory: backend
+        env:
+          # Matches the defaults in app/config.py, so conftest can create and
+          # migrate indiedex_test on the container started above.
+          TEST_DATABASE_URL: postgresql://postgres:dev@localhost:5432/indiedex_test
+          TEST_DATABASE_URL_SYNC: postgresql+psycopg://postgres:dev@localhost:5432/indiedex_test
+          # Without this, a developer .env pointing at a self-signed host makes
+          # test_storage fail on certificate verification.
+          S3_PUBLIC_ENDPOINT: ""
+        # -rs lists skipped tests. The ONNX weights are gitignored, so the
+        # model-dependent tests skip here -- printing them keeps a green run
+        # from implying the models were exercised.
+        run: uv run pytest -q -rs
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      # Typecheck separately from the build: `vite build` strips types with
+      # esbuild and does NOT typecheck, so a build-only job goes green with
+      # type errors in it.
+      - run: npx tsc --noEmit -p tsconfig.json
+      - run: npx vitest run
+      - run: npx vite build

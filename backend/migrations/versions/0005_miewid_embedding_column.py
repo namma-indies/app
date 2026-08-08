@@ -65,9 +65,19 @@ def upgrade() -> None:
     # possible to insert model='miewid-msv3' with both columns NULL, which
     # would silently drop the photo out of every candidate search while
     # looking like a successful embed.
+    #
+    # NOT VALID on purpose. Adding a validating CHECK scans every existing row,
+    # and a violation aborts the migration -- which on this deployment means
+    # uvicorn never starts and the site goes DOWN, because deploy/entrypoint.sh
+    # runs `alembic upgrade head` before exec'ing the server and the old
+    # container is already gone. NOT VALID enforces the rule on every new and
+    # updated row while skipping that scan, so the deploy cannot be taken down
+    # by pre-existing data. Validate later, at a time of your choosing:
+    #     ALTER TABLE embeddings VALIDATE CONSTRAINT ck_embeddings_miew_vec;
+    # which takes only a SHARE UPDATE EXCLUSIVE lock and does not block writes.
     op.execute(
         "ALTER TABLE embeddings ADD CONSTRAINT ck_embeddings_miew_vec "
-        f"CHECK (model <> '{MIEWID_MODEL}' OR vec_miew IS NOT NULL);"
+        f"CHECK (model <> '{MIEWID_MODEL}' OR vec_miew IS NOT NULL) NOT VALID;"
     )
 
     # Built on a halfvec cast: HNSW refuses >2000 dimensions and MiewID is

@@ -225,3 +225,43 @@ async def test_post_sighting_insert_does_not_call_detector_directly(
     assert r.status_code == 201
     sid = r.json()["sighting_id"]
     assert calls == [UUID(sid)]
+
+
+@pytest.mark.asyncio
+async def test_get_match_does_not_mutate_proposals(authed_client):
+    """GET /sighting/{id}/match must be a pure read.
+
+    It used to call resolve_sighting, which deletes and recreates pending
+    proposals -- so polling handed out a proposal ID and then invalidated it,
+    and acting on the ID you were just given returned 404. Resolution now runs
+    once in the background task that writes the embeddings.
+    """
+    from app.ids import uuid7
+
+    client, obs = authed_client
+    pool = client._transport.app.state.pool
+    sid, pid, eid = uuid7(), uuid7(), uuid7()
+    prop = uuid7()
+    async with pool.acquire() as c:
+        await c.execute(
+            "INSERT INTO sightings (id, observer_id, captured_at, match_status) "
+            "VALUES ($1,$2,now(),'proposed')", sid, obs)
+        await c.execute(
+            "INSERT INTO photos (id, sighting_id, s3_key) VALUES ($1,$2,'k.webp')", pid, sid)
+        await c.execute(
+            "INSERT INTO embeddings (id, photo_id, model, dim, vec_miew) "
+            "VALUES ($1,$2,'miewid-msv3',2152,$3::vector)",
+            eid, pid, "[" + ",".join(["0.01"] * 2152) + "]")
+        await c.execute(
+            "INSERT INTO match_proposals (id, sighting_id, candidate_sighting_id, "
+            "score, method, status) VALUES ($1,$2,$3,0.9,'miewid-msv3','pending')",
+            prop, sid, sid)
+
+    for _ in range(3):
+        r = await client.get(f"/sighting/{sid}/match")
+        assert r.status_code == 200, r.text
+
+    async with pool.acquire() as c:
+        still = await c.fetchval(
+            "SELECT id FROM match_proposals WHERE sighting_id=$1 AND status='pending'", sid)
+    assert still == prop, "polling must not replace the proposal it handed out"

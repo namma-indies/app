@@ -56,6 +56,32 @@ app.include_router(sighting_router)
 app.include_router(match_router)
 
 
+@app.get("/health")
+async def health():
+    """Liveness plus whether re-identification can actually run.
+
+    The deploy workflow's existing check is "does the site return 200", which
+    proves the app booted and nothing more. Both ML background tasks swallow a
+    missing model and let the sighting save, so a box without the ONNX files
+    serves perfectly good 200s while quietly embedding nothing. Reporting model
+    presence here gives that check something falsifiable to look at.
+    """
+    from pathlib import Path
+
+    ml = Path(__file__).resolve().parent / "ml"
+    models = {
+        name: (ml / name).exists()
+        for name in ("miewid_msv3.onnx", "yolo26x.onnx")
+    }
+    return {
+        "status": "ok",
+        "models": models,
+        # Explicit rather than inferred: "degraded" means the app is up but
+        # re-ID is silently off, which is exactly the state worth alerting on.
+        "reid": "ready" if all(models.values()) else "degraded",
+    }
+
+
 @app.get("/.well-known/apple-app-site-association")
 async def apple_app_site_association():
     # Proves to iOS that this app owns this domain, so a magic-link email

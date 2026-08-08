@@ -230,3 +230,26 @@ async def test_a_clip_is_not_asked_for_another_clip(migrated_db):
     )
     assert outcome.status == "proposed"
     assert outcome.suggest_video is False
+
+
+@pytest.mark.asyncio
+async def test_resolving_twice_does_not_accumulate_proposals(migrated_db):
+    """Re-running resolution replaces pending proposals rather than stacking
+    them, so a re-embed after a model upgrade does not multiply the queue."""
+    from app.matching import resolve_sighting
+
+    obs = await _observer(migrated_db)
+    target = _unit(30)
+    await _sighting(migrated_db, obs, target, lat=12.9716, lng=77.5946)
+    me = await _sighting(migrated_db, obs, target, lat=12.9717, lng=77.5947)
+
+    kw = dict(auto_merge_min=1.01, propose_min=0.5, radius_m=1000.0,
+              max_candidates=5, new_uuid=uuid7)
+    await resolve_sighting(migrated_db, me, **kw)
+    first = await migrated_db.fetch(
+        "SELECT id FROM match_proposals WHERE sighting_id=$1 AND status='pending'", me)
+    await resolve_sighting(migrated_db, me, **kw)
+    second = await migrated_db.fetch(
+        "SELECT id FROM match_proposals WHERE sighting_id=$1 AND status='pending'", me)
+
+    assert len(first) == len(second) == 1

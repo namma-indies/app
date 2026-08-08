@@ -22,6 +22,12 @@ services:
       # .env.example instead) when using a managed Postgres.
       DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/indiedex
       DATABASE_URL_SYNC: postgresql+psycopg://postgres:${POSTGRES_PASSWORD}@db:5432/indiedex
+    volumes:
+      # The ~430 MB of ONNX weights, fetched on boot by
+      # backend/scripts/fetch_models.py. On a volume so the download happens
+      # once per box rather than once per deploy -- `up --build` replaces the
+      # container on every push to main.
+      - models:/app/backend/app/ml
     depends_on:
       - db
 
@@ -44,3 +50,4 @@ volumes:
   pgdata:
   caddy_data:
   caddy_config:
+  models:

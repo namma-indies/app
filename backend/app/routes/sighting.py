@@ -42,7 +42,7 @@ async def _max_dog_confidence(raws: list[bytes]) -> float | None:
 
 
 async def _embed_and_save(
-    pool: asyncpg.Pool, photo_ids: list[UUID], raws: list[bytes]
+    pool: asyncpg.Pool, sighting_id: UUID, photo_ids: list[UUID], raws: list[bytes]
 ) -> None:
     """Embed each photo for re-identification, after the sighting is saved.
 
@@ -93,6 +93,33 @@ async def _embed_and_save(
             logger.warning(
                 "failed to store embedding for photo=%s", photo_id, exc_info=True
             )
+
+    # Decide the match once, now that the vectors exist. This used to run inside
+    # GET /sighting/{id}/match, which meant every read deleted and recreated the
+    # pending proposals -- so a client that polled and then acted on a proposal
+    # ID it had just been given got a 404. Resolving here makes the GET a pure
+    # read, and matches the shape of the other background task: the response
+    # already went out, nothing here can affect whether the sighting exists.
+    from app.config import settings
+    from app.matching import resolve_sighting
+
+    try:
+        async with pool.acquire() as conn:
+            await resolve_sighting(
+                conn,
+                sighting_id,
+                auto_merge_min=settings.reid_auto_merge_min,
+                propose_min=settings.reid_propose_min,
+                radius_m=settings.reid_radius_m,
+                max_candidates=settings.reid_max_candidates,
+                new_uuid=uuid7,
+                thin_evidence_frames=settings.reid_thin_evidence_frames,
+            )
+    except Exception:
+        logger.warning(
+            "matching failed for sighting=%s; it stays unmatched and can be "
+            "resolved by a re-run", sighting_id, exc_info=True
+        )
 
 
 async def _score_and_save_dog_confidence(
@@ -281,6 +308,7 @@ async def create_sighting(
     background_tasks.add_task(
         _embed_and_save,
         request.app.state.pool,
+        sighting_id,
         [r["id"] for r in photo_rows],
         raws,
     )

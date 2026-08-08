@@ -62,59 +62,6 @@ def _letterbox(img: Image.Image) -> np.ndarray:
     return arr.transpose(2, 0, 1)[None]  # (1, 3, H, W)
 
 
-def best_dog_box(image_bytes: bytes) -> tuple[tuple[int, int, int, int], float] | None:
-    """Box of the highest-confidence dog, as (x1, y1, x2, y2) in ORIGINAL image
-    pixels, plus that confidence. None when nothing clears the threshold.
-
-    The presence gate above deliberately skips box decoding because it only
-    needs a score. Re-ID needs the crop: embedding a whole frame with a small
-    dog in the corner mostly embeds the street. We take the single
-    highest-confidence anchor rather than running NMS -- with one subject per
-    capture the winner is the same either way, and NMS would be machinery
-    earning nothing.
-
-    Deviation worth knowing: the offline benchmark picked the *largest* box
-    among detections; this picks the *most confident*. They coincide on
-    single-dog frames, which is the capture flow, but they can disagree when
-    two dogs are in shot.
-    """
-    img = load_upright(image_bytes)
-    sess = _get_session()
-    out = sess.run(None, {sess.get_inputs()[0].name: _letterbox(img)})[0]
-    o = out[0]
-    if o.shape[0] == _NUM_ATTRS:
-        dog_scores, boxes = o[4 + _DOG_CLASS], o[:4]
-    elif o.shape[1] == _NUM_ATTRS:
-        dog_scores, boxes = o[:, 4 + _DOG_CLASS], o[:, :4].T
-    else:
-        raise ValueError(f"unexpected YOLO output shape {o.shape}")
-
-    i = int(np.argmax(dog_scores))
-    conf = float(dog_scores[i])
-    if conf < DOG_CONF_THRESHOLD:
-        return None
-
-    # Undo the letterbox: model coords -> original pixels.
-    w, h = img.size
-    scale = min(_INPUT / w, _INPUT / h)
-    nw, nh = max(1, round(w * scale)), max(1, round(h * scale))
-    pad_x, pad_y = (_INPUT - nw) // 2, (_INPUT - nh) // 2
-    cx, cy, bw, bh = (float(v) for v in boxes[:, i])
-    x1 = (cx - bw / 2 - pad_x) / scale
-    y1 = (cy - bh / 2 - pad_y) / scale
-    x2 = (cx + bw / 2 - pad_x) / scale
-    y2 = (cy + bh / 2 - pad_y) / scale
-
-    # 10% margin on each side, matching the validated offline recipe: a tight
-    # box clips ears and tail, which are exactly the identity cues.
-    mx, my = 0.10 * (x2 - x1), 0.10 * (y2 - y1)
-    x1, y1 = max(0, int(x1 - mx)), max(0, int(y1 - my))
-    x2, y2 = min(w, int(x2 + mx)), min(h, int(y2 + my))
-    if x2 <= x1 or y2 <= y1:
-        return None
-    return (x1, y1, x2, y2), conf
-
-
 def dog_confidence(image_bytes: bytes) -> float:
     """Max 'dog' confidence in the image, in [0, 1]. May raise on an
     unreadable image or model error -- callers should fail open (treat a

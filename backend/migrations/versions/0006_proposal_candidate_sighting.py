@@ -38,10 +38,18 @@ def upgrade() -> None:
     # A proposal must point at something reviewable: either a known individual
     # or the specific sighting it resembled. Without this a row can exist that
     # a human cannot act on.
+    #
+    # NOT VALID, for the same reason as 0005: a validating CHECK scans existing
+    # rows, and a failure here aborts the migration and therefore the boot,
+    # taking the site down rather than merely leaving it un-updated. This one is
+    # the likelier of the two to bite -- candidate_individual_id has always been
+    # nullable, so any legacy proposal without a candidate would fail the scan.
+    # New and updated rows are still enforced. Validate deliberately later:
+    #     ALTER TABLE match_proposals VALIDATE CONSTRAINT ck_match_proposals_has_target;
     op.execute(
         "ALTER TABLE match_proposals ADD CONSTRAINT ck_match_proposals_has_target "
         "CHECK (candidate_individual_id IS NOT NULL "
-        "       OR candidate_sighting_id IS NOT NULL);"
+        "       OR candidate_sighting_id IS NOT NULL) NOT VALID;"
     )
     # The review queue is "pending proposals for this sighting", and the
     # duplicate-suppression path looks up by sighting too.

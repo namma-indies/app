@@ -8,13 +8,15 @@ import logging
 from typing import Literal
 from uuid import UUID
 
+import numpy as np
 from fastapi import APIRouter, Depends, Form, HTTPException
 
 from app.auth.deps import require_observer
 from app.config import settings
 from app.deps import get_conn
+from app.embed import MODEL_NAME
 from app.ids import uuid7
-from app.matching import resolve_sighting
+from app.matching import find_candidates
 
 logger = logging.getLogger(__name__)
 
@@ -55,15 +57,39 @@ async def get_match(
         # client should keep polling for the former and stop for the latter.
         return {"status": "pending", "candidates": [], "proposals": []}
 
-    outcome = await resolve_sighting(
-        conn,
+    # Read-only from here. Resolution happens once, in the background task that
+    # writes the embeddings; running it here meant every poll deleted and
+    # recreated the pending proposals, so a client that read a proposal ID and
+    # then acted on it got a 404 for a row it had just been handed.
+    #
+    # Candidates are still computed live because ranking is a pure query -- it
+    # writes nothing, and recomputing keeps the list fresh as neighbours arrive.
+    rows = await conn.fetch(
+        """
+        SELECT e.vec_miew::text AS vec,
+               ST_Y(s.geog::geometry) AS lat,
+               ST_X(s.geog::geometry) AS lng
+        FROM sightings s
+        JOIN photos p ON p.sighting_id = s.id
+        JOIN embeddings e ON e.photo_id = p.id AND e.model = $2
+        WHERE s.id = $1 AND e.vec_miew IS NOT NULL
+        ORDER BY e.created_at
+        """,
         sighting_id,
-        auto_merge_min=settings.reid_auto_merge_min,
-        propose_min=settings.reid_propose_min,
+        MODEL_NAME,
+    )
+    vecs = [
+        np.array([float(x) for x in r["vec"].strip("[]").split(",")], dtype=np.float32)
+        for r in rows
+    ]
+    candidates = await find_candidates(
+        conn,
+        vecs,
+        lat=rows[0]["lat"],
+        lng=rows[0]["lng"],
         radius_m=settings.reid_radius_m,
-        max_candidates=settings.reid_max_candidates,
-        new_uuid=uuid7,
-        thin_evidence_frames=settings.reid_thin_evidence_frames,
+        exclude_sighting_id=sighting_id,
+        limit=settings.reid_max_candidates,
     )
 
     proposals = await conn.fetch(
@@ -78,11 +104,13 @@ async def get_match(
     )
 
     return {
-        "status": outcome.status,
-        "individual_id": str(outcome.individual_id) if outcome.individual_id else None,
-        # The client should ask for a short clip rather than a yes/no here: the
-        # score cleared the bar on too little evidence to answer confidently.
-        "suggest_video": outcome.suggest_video,
+        # Straight from the row the background task wrote, rather than a
+        # decision recomputed per request.
+        "status": row["match_status"] or "unmatched",
+        "individual_id": str(row["individual_id"]) if row["individual_id"] else None,
+        # Ask for a short clip rather than a yes/no: something cleared the bar
+        # on too little evidence for the contributor to answer confidently.
+        "suggest_video": bool(proposals) and len(vecs) < settings.reid_thin_evidence_frames,
         "candidates": [
             {
                 "sighting_id": str(c.sighting_id),
@@ -91,7 +119,7 @@ async def get_match(
                 "similarity": round(c.similarity, 4),
                 "distance_m": round(c.distance_m) if c.distance_m is not None else None,
             }
-            for c in outcome.candidates
+            for c in candidates
         ],
         "proposals": [
             {
