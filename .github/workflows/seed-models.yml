@@ -48,11 +48,32 @@ jobs:
 
       # Only the exporters need torch; the service must never have it. This
       # runs on a throwaway runner precisely so that stays true.
+      # torch and torchvision must come from the SAME index in one command.
+      # Installing torch from the CPU index and letting a later package pull
+      # torchvision from PyPI gets a torchvision built against a different torch,
+      # and its C++ ops fail to register:
+      #     RuntimeError: operator torchvision::nms does not exist
+      # which surfaces as an import error inside transformers, nowhere near the
+      # actual cause.
+      # torch and torchvision must come from the SAME build. Installing torch
+      # from the CPU index and then letting another package pull torchvision
+      # from PyPI gets one built against a different torch, whose C++ ops never
+      # register:
+      #     RuntimeError: operator torchvision::nms does not exist
+      # It surfaces as an import failure deep inside transformers, nowhere near
+      # the cause. So everything else goes in first and the CPU index gets the
+      # last word, then the pair is checked before any export runs.
       - name: Install export toolchain
         run: |
           python -m pip install --upgrade pip
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install transformers timm onnx onnxscript ultralytics pillow numpy
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          python - <<'EOF'
+          import torch, torchvision
+          print(f"torch {torch.__version__} / torchvision {torchvision.__version__}")
+          torch.ops.torchvision.nms  # resolves the op registry, or raises here
+          print("torchvision ops registered OK")
+          EOF
 
       - name: Export MiewID-msv3
         run: python scripts/export_miewid_onnx.py
