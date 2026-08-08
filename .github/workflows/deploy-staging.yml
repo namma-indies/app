@@ -1,0 +1,47 @@
+name: Deploy Staging
+
+# Manual only, and dispatched against whatever branch you pick in the
+# Actions UI (GITHUB_REF_NAME below is that branch) -- unlike deploy.yml,
+# staging isn't tied to `main`, it's for testing work before it merges.
+# Requires two repo secrets distinct from the prod ones:
+#   STAGING_SSH_KEY    - private half of a CI-only keypair for the staging box
+#   STAGING_SSH_TARGET - e.g. "ubuntu@<staging-box-ip>"
+
+on:
+  workflow_dispatch: {}
+
+concurrency:
+  group: staging-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to staging
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          DEPLOY_SSH_TARGET: ${{ secrets.STAGING_SSH_TARGET }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          key_file="$(mktemp)"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$key_file"
+          chmod 600 "$key_file"
+
+          ssh -i "$key_file" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_SSH_TARGET" "BRANCH=$BRANCH bash -s" < deploy/remote-staging.sh
+
+      - name: Wait for the app to answer
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' https://staging.nammaindies.org/ || true)
+            if [ "$code" = "200" ]; then echo "==> live (HTTP $code)"; exit 0; fi
+            sleep 3
+          done
+          echo "!! app did not return 200 after 90s" >&2
+          exit 1
