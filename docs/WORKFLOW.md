@@ -42,11 +42,14 @@ no notion of an individual animal.
 
 ```mermaid
 flowchart TD
-    A["Capture — photo only<br/>accept=image/* (unchanged)"] --> B["IndexedDB queue"]
+    A["Capture — photo(s) <b>or</b> a clip"] --> B["IndexedDB queue<br/>owns the bytes, clips included"]
     B --> C["POST /sighting<br/>multipart"]
+    C --> C2{"clip?"}
+    C2 -- yes --> C3["extract_diverse_frames<br/>~2 fps · phash-diverse · ≤12<br/>clip never stored"]
 
     subgraph SYNC["synchronous — user is waiting"]
-        C --> D["process_photo<br/>EXIF strip · <b>WebP q90</b> · thumb q80 · phash"]
+        C2 -- no --> D
+        C3 --> D["process_photo<br/>EXIF strip · <b>WebP q90</b> · thumb q80 · phash<br/><i>off the event loop</i>"]
         D --> E["S3: original + thumb<br/><b>.webp</b> keys · <b>write vs presign endpoints</b>"]
         E --> F["INSERT sighting + photos"]
         F --> G["201"]
@@ -84,7 +87,7 @@ flowchart TD
 
 | Stage | Before | Now | Why |
 |---|---|---|---|
-| Capture | `accept="image/*"` | **unchanged** | Video is PR #3, unmerged — see below |
+| Capture | `accept="image/*"` | **photo(s) or a short clip** | Frames per individual is the biggest measured lever: 1 → 8 frames takes top-1 from 37% to 83% |
 | Encode | JPEG q95 / thumb q80 | **WebP q90** / thumb q80 | −0.2 accuracy points, 66% smaller (674 kB vs 2001 kB on a 12 MP capture) |
 | S3 keys | `.jpg` | `.webp` | Old objects keep their keys and formats; both coexist |
 | S3 endpoint | one | **write vs presign split** | SigV4 signs the Host, so a URL signed for the internal host 403s in a browser |
