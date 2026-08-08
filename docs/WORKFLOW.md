@@ -187,12 +187,26 @@ new columns are nullable.
 **S3 needs nothing.** Format is per-object and the key lives in `photos.s3_key`.
 Existing `.jpg` objects keep serving; only new uploads are `.webp`.
 
-**Nothing backfills.** Every existing photo has no `vec_miew`, and
-`find_candidates` filters on `vec_miew IS NOT NULL` — so the existing corpus is
-invisible to matching until something re-embeds it. Given that accuracy *is*
-gallery density, deploying without a backfill starts the system at the
-1-photo-per-dog end of the table above while the photos that would make it work
-sit unread in S3.
+**Existing photos need a backfill, and there is now a script for it:**
+`backend/scripts/backfill_embeddings.py`. Nothing embeds them automatically, and
+`find_candidates` filters on `vec_miew IS NOT NULL`, so until it runs the whole
+existing corpus is invisible to matching — which, given that accuracy *is*
+gallery density, starts the system at the 1-photo-per-dog end of the table above
+while the photos that would fix it sit unread in S3.
+
+```
+uv run python scripts/backfill_embeddings.py --dry-run   # count first
+uv run python scripts/backfill_embeddings.py --resolve   # embed, then match
+```
+
+Serial by design: embedding is CPU-bound ONNX on the same box that serves
+requests, so a parallel backfill would compete with live uploads for cores
+(`--sleep` throttles it further). Resumable — it only selects photos with no
+vector and upserts on `(photo_id, model)`, so interrupting it loses at most the
+photo in flight. One quirk: a photo with no detectable animal gets no row at all
+(a whole-frame vector would pollute candidate search), so it is re-examined on
+every run and the pending count never reaches zero on a corpus with dogless
+photos. That is deliberate — those should be retried after a detector upgrade.
 
 **`dog_confidence` becomes incomparable across the deploy** — old rows scored by
 YOLOv8n, new rows by YOLO26x, and the two disagree substantially (on 29 varied

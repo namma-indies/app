@@ -66,6 +66,16 @@ class S3Storage:
                 ContentType=content_type,
             )
 
+    async def get(self, key: str) -> bytes:
+        """Read an object back. Used by the embedding backfill, which has to
+        re-derive vectors from photos that were stored before the model
+        existed. Reads against the internal endpoint -- this is the server
+        fetching its own bytes, not a browser following a presigned URL."""
+        async with self._client() as client:
+            obj = await client.get_object(Bucket=self.bucket, Key=key)
+            async with obj["Body"] as body:
+                return await body.read()
+
     async def list_keys(self, prefix: str) -> list[str]:
         async with self._client() as client:
             keys: list[str] = []

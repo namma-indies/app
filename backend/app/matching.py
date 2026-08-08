@@ -98,9 +98,31 @@ async def find_candidates(
     # LATERAL runs one indexed probe per query frame and unions the results,
     # so recall grows with the number of frames instead of being decided by
     # whichever frame happened to be first.
+    # Placeholders are numbered as they are appended rather than fixed, because
+    # a parameter that appears in the parameter list but nowhere in the SQL has
+    # no inferable type -- Postgres raises IndeterminateDatatypeError. That is
+    # exactly what happened to sightings with no GPS, the case this function
+    # claims to support: the geo predicates vanished and $3/$4 became untypeable.
+    params: list = [qs, MODEL_NAME, exclude_sighting_id]
+    p_vecs, p_model, p_excl = "$1", "$2", "$3"
+    if has_geo:
+        params += [lng, lat, radius_m]
+        p_lng, p_lat, p_radius = "$4", "$5", "$6"
+        geo_filter = (
+            f"AND s.geog IS NOT NULL AND ST_DWithin(s.geog, "
+            f"ST_SetSRID(ST_MakePoint({p_lng}, {p_lat}), 4326)::geography, {p_radius})"
+        )
+        distance = (
+            f"ST_Distance(s.geog, ST_SetSRID("
+            f"ST_MakePoint({p_lng}, {p_lat}), 4326)::geography)"
+        )
+    else:
+        geo_filter = ""
+        distance = "NULL::double precision"
+
     sql = f"""
         WITH q AS (
-            SELECT unnest($1::text[])::vector({EMBED_DIM}) AS v
+            SELECT unnest({p_vecs}::text[])::vector({EMBED_DIM}) AS v
         ),
         shortlist AS (
             SELECT DISTINCT hits.photo_id, hits.vec_miew, hits.sighting_id
@@ -110,10 +132,10 @@ async def find_candidates(
                 FROM embeddings e
                 JOIN photos p ON p.id = e.photo_id
                 JOIN sightings s ON s.id = p.sighting_id
-                WHERE e.model = $2
+                WHERE e.model = {p_model}
                   AND e.vec_miew IS NOT NULL
-                  {"AND ($5::uuid IS NULL OR s.id <> $5::uuid)"}
-                  {"AND s.geog IS NOT NULL AND ST_DWithin(s.geog, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $6)" if has_geo else ""}
+                  AND ({p_excl}::uuid IS NULL OR s.id <> {p_excl}::uuid)
+                  {geo_filter}
                 ORDER BY e.vec_miew::halfvec({EMBED_DIM}) <=> q.v::halfvec({EMBED_DIM})
                 LIMIT {ANN_SHORTLIST}
             ) AS hits
@@ -130,7 +152,7 @@ async def find_candidates(
                sc.photo_id,
                s.individual_id,
                sc.similarity,
-               {"ST_Distance(s.geog, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography)" if has_geo else "NULL"} AS distance_m
+               {distance} AS distance_m
         FROM scored sc
         JOIN sightings s ON s.id = sc.sighting_id
         ORDER BY sc.sighting_id, sc.similarity DESC
@@ -138,12 +160,6 @@ async def find_candidates(
     # One row per candidate sighting (its best-matching photo); re-sort by score
     # and cut, which DISTINCT ON cannot do in the same pass.
     sql = f"SELECT * FROM ({sql}) ranked ORDER BY similarity DESC LIMIT {int(limit)}"
-
-    params: list = [qs, MODEL_NAME]
-    params += [lng, lat] if has_geo else [None, None]
-    params.append(exclude_sighting_id)
-    if has_geo:
-        params.append(radius_m)
 
     rows = await conn.fetch(sql, *params)
     return [

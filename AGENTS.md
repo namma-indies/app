@@ -208,11 +208,20 @@ run** — the 200 check proves the app boots, not that it works.
 
 So merging is deploying. Before any merge touching the ML path:
 
-- [ ] Model weights reach the box (they are gitignored and the Dockerfile does
-      not fetch them). Without this, `dog_confidence` silently stops being written.
+- [ ] **Model weights reach the box.** They are gitignored and the Dockerfile
+      does not fetch them, so `git pull` will not bring them. Without this the
+      background tasks catch `ModelUnavailable` and every upload saves with no
+      embedding: re-ID appears deployed and does nothing.
 - [ ] Box RAM fits ~430 MB of resident model weights plus runtime.
+- [ ] **Backfill existing photos** — `uv run python scripts/backfill_embeddings.py
+      --resolve` from `/app/backend`. Nothing embeds them automatically, and
+      `find_candidates` filters on `vec_miew IS NOT NULL`, so until this runs the
+      whole existing corpus is invisible to matching. Given that accuracy tracks
+      gallery density, skipping it starts the system at its worst point.
 - [ ] Licence position settled for anything shipped in a public artifact.
 - [ ] `S3_PUBLIC_ENDPOINT` correct for the environment.
+- [ ] Note that `dog_confidence` is not comparable across this deploy: existing
+      rows were scored by YOLOv8n, new ones by YOLO26x.
 
 ---
 
