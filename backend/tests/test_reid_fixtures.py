@@ -21,6 +21,16 @@ on, unlike anything from a controlled setting.
 Skips when the directory is empty or the ONNX weights are absent, so it never
 blocks CI. That means a green CI run does NOT include this check; it runs on a
 machine with weights and fixtures.
+
+Current fixtures are three street dogs photographed on a phone, EXIF stripped
+(every one carried GPS). Two of the three are beagle-types, which is the point:
+the check is not "light dog versus dark dog". Measured:
+
+    lemon_0   vs lemon_1       0.6109   same dog
+    lemon_1   vs tricolour_0   0.4028   different, and the hardest pair
+    brindle_0 vs anything      ~0.147   different
+
+    margin +0.2082
 """
 
 import itertools
