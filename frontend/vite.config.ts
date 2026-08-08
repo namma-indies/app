@@ -35,6 +35,7 @@ export default defineConfig({
     proxy: {
       "/sighting": { target: "http://localhost:8000", changeOrigin: true },
       "/dex": { target: "http://localhost:8000", changeOrigin: true },
+      "/proposal": { target: "http://localhost:8000", changeOrigin: true },
       "/auth": { target: "http://localhost:8000", changeOrigin: true },
     },
   },

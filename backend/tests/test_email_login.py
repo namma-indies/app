@@ -160,8 +160,11 @@ async def test_moves_every_observer_reference_not_just_sightings(migrated_db):
     await migrated_db.execute(
         "INSERT INTO individuals (id, named_by, created_by_observer) VALUES ($1,$2,$2)", ind, old)
     await migrated_db.execute(
-        "INSERT INTO match_proposals (id, sighting_id, resolved_by) VALUES ($1,$2,$3)",
-        prop, sid, old)
+        # candidate_individual_id is required by ck_match_proposals_has_target:
+        # a proposal must name something a human can act on.
+        "INSERT INTO match_proposals (id, sighting_id, candidate_individual_id, resolved_by) "
+        "VALUES ($1,$2,$3,$4)",
+        prop, sid, ind, old)
     await migrated_db.execute(
         "INSERT INTO confirmations (id, sighting_id, observer_id, verdict) "
         "VALUES ($1,$2,$3,'same')", conf, sid, old)

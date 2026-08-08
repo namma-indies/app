@@ -10,19 +10,34 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from app.config import settings
 from app.db import effective_dsn
 from app.deps import get_storage
 from app.routes.auth import router as auth_router
 from app.routes.dex import router as dex_router
 from app.routes.join import router as join_router
 from app.routes.sighting import router as sighting_router
+from app.routes.match import router as match_router
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.pool = await asyncpg.create_pool(effective_dsn())
+    # asyncpg defaults to max_size=10, and this pool is shared by two very
+    # different consumers: request handlers (which hold a connection for the
+    # whole request via the get_conn dependency) and the background tasks that
+    # embed and match afterwards. Concurrent uploads exhaust it silently --
+    # measured at 16 at once, exactly 10 were served and 6 were never handed to
+    # the app at all, sitting suspended on pool.acquire() until the client gave
+    # up. They do not appear in a faulthandler dump either, because a suspended
+    # coroutine has no thread stack, which is what made this look like a hang
+    # with no cause.
+    app.state.pool = await asyncpg.create_pool(
+        effective_dsn(),
+        min_size=settings.db_pool_min,
+        max_size=settings.db_pool_max,
+    )
     # ensure_bucket talks to S3 (or a bogus/unreachable endpoint in some
     # deployments). Storage isn't touched again until a request actually
     # needs it, so a failure here shouldn't block the app from booting --
@@ -52,6 +67,33 @@ app.include_router(auth_router)
 app.include_router(join_router)
 app.include_router(dex_router)
 app.include_router(sighting_router)
+app.include_router(match_router)
+
+
+@app.get("/health")
+async def health():
+    """Liveness plus whether re-identification can actually run.
+
+    The deploy workflow's existing check is "does the site return 200", which
+    proves the app booted and nothing more. Both ML background tasks swallow a
+    missing model and let the sighting save, so a box without the ONNX files
+    serves perfectly good 200s while quietly embedding nothing. Reporting model
+    presence here gives that check something falsifiable to look at.
+    """
+    from pathlib import Path
+
+    ml = Path(__file__).resolve().parent / "ml"
+    models = {
+        name: (ml / name).exists()
+        for name in ("miewid_msv3.onnx", "yolo26x.onnx")
+    }
+    return {
+        "status": "ok",
+        "models": models,
+        # Explicit rather than inferred: "degraded" means the app is up but
+        # re-ID is silently off, which is exactly the state worth alerting on.
+        "reid": "ready" if all(models.values()) else "degraded",
+    }
 
 
 @app.get("/.well-known/apple-app-site-association")

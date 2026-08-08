@@ -35,7 +35,8 @@ export interface DexResponse {
 }
 
 export interface PostSightingInput {
-  photos: Blob[];
+  photos?: Blob[];
+  video?: Blob;
   lat?: number;
   lng?: number;
   geo_accuracy_m?: number;
@@ -81,7 +82,11 @@ export async function getDex(): Promise<DexResponse> {
 
 export function buildSightingForm(input: PostSightingInput): FormData {
   const form = new FormData();
-  input.photos.forEach((p, i) => form.append("photos", p, `photo-${i}.jpg`));
+  if (input.video) {
+    form.append("video", input.video, "clip.mp4");
+  } else {
+    (input.photos ?? []).forEach((p, i) => form.append("photos", p, `photo-${i}.jpg`));
+  }
   if (input.lat !== undefined) form.append("lat", String(input.lat));
   if (input.lng !== undefined) form.append("lng", String(input.lng));
   if (input.geo_accuracy_m !== undefined)

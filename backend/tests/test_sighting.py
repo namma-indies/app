@@ -4,6 +4,14 @@ from uuid import UUID
 import pytest
 from PIL import Image
 
+from app import detect_reid
+
+# The dog-confidence gate moved from YOLOv8n, whose 12 MB weights are committed,
+# to YOLO26x, whose 223 MB weights are gitignored. So anything asserting on a
+# real score now depends on a file a clean checkout does not have. Guarded the
+# same way test_detect_reid.py and test_embed.py already do.
+_HAS_DETECTOR = detect_reid._MODEL_PATH.exists()
+
 
 def _jpeg():
     b = io.BytesIO()
@@ -119,13 +127,19 @@ async def test_post_sighting_saves_when_no_dog_detected(authed_client):
         )
     from app.detect import DOG_CONF_THRESHOLD
 
-    # Scored, saved, and visible -- the low score is recorded, not acted on.
-    assert row["dog_confidence"] is not None
-    assert row["dog_confidence"] < DOG_CONF_THRESHOLD
+    # The point of this test -- a capture is never lost to the detector -- holds
+    # whether or not the detector exists, and is worth MORE without it: a
+    # missing model is exactly the failure this must survive. So the save is
+    # asserted unconditionally and only the score is guarded.
     assert row["review_status"] == "valid"
     assert n_photos == 1
+    if _HAS_DETECTOR:
+        # Scored, saved, and visible -- the low score is recorded, not acted on.
+        assert row["dog_confidence"] is not None
+        assert row["dog_confidence"] < DOG_CONF_THRESHOLD
 
 
+@pytest.mark.skipif(not _HAS_DETECTOR, reason="YOLO26x weights absent")
 @pytest.mark.asyncio
 async def test_post_sighting_records_dog_confidence(authed_client):
     """The label is persisted so we can tune the threshold from real captures
@@ -174,10 +188,10 @@ async def test_post_sighting_dog_confidence_null_until_background_task_runs(
     def boom(_raw):
         raise RuntimeError("simulated detector failure")
 
-    # sighting.py does `from app.detect import dog_confidence`, which binds
-    # its own name in this module's namespace -- patch that name, not
-    # app.detect's, or the patch has no effect on the code under test.
-    monkeypatch.setattr(sighting_route, "dog_confidence", boom)
+    # sighting.py does `from app.detect_reid import animal_confidence`, which
+    # binds its own name in this module's namespace -- patch that name, not
+    # app.detect_reid's, or the patch has no effect on the code under test.
+    monkeypatch.setattr(sighting_route, "animal_confidence", boom)
 
     client, _ = authed_client
     r = await client.post(
@@ -225,3 +239,43 @@ async def test_post_sighting_insert_does_not_call_detector_directly(
     assert r.status_code == 201
     sid = r.json()["sighting_id"]
     assert calls == [UUID(sid)]
+
+
+@pytest.mark.asyncio
+async def test_get_match_does_not_mutate_proposals(authed_client):
+    """GET /sighting/{id}/match must be a pure read.
+
+    It used to call resolve_sighting, which deletes and recreates pending
+    proposals -- so polling handed out a proposal ID and then invalidated it,
+    and acting on the ID you were just given returned 404. Resolution now runs
+    once in the background task that writes the embeddings.
+    """
+    from app.ids import uuid7
+
+    client, obs = authed_client
+    pool = client._transport.app.state.pool
+    sid, pid, eid = uuid7(), uuid7(), uuid7()
+    prop = uuid7()
+    async with pool.acquire() as c:
+        await c.execute(
+            "INSERT INTO sightings (id, observer_id, captured_at, match_status) "
+            "VALUES ($1,$2,now(),'proposed')", sid, obs)
+        await c.execute(
+            "INSERT INTO photos (id, sighting_id, s3_key) VALUES ($1,$2,'k.webp')", pid, sid)
+        await c.execute(
+            "INSERT INTO embeddings (id, photo_id, model, dim, vec_miew) "
+            "VALUES ($1,$2,'miewid-msv3',2152,$3::vector)",
+            eid, pid, "[" + ",".join(["0.01"] * 2152) + "]")
+        await c.execute(
+            "INSERT INTO match_proposals (id, sighting_id, candidate_sighting_id, "
+            "score, method, status) VALUES ($1,$2,$3,0.9,'miewid-msv3','pending')",
+            prop, sid, sid)
+
+    for _ in range(3):
+        r = await client.get(f"/sighting/{sid}/match")
+        assert r.status_code == 200, r.text
+
+    async with pool.acquire() as c:
+        still = await c.fetchval(
+            "SELECT id FROM match_proposals WHERE sighting_id=$1 AND status='pending'", sid)
+    assert still == prop, "polling must not replace the proposal it handed out"

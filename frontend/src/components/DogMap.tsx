@@ -6,21 +6,24 @@ import type { Sighting } from "../api";
 const BANGALORE: [number, number] = [77.59, 12.97];
 const SOURCE_ID = "sightings";
 
-// NOTE: OSM raster tiles are a placeholder basemap only, not licensed for
-// production traffic. Swap for a proper tile provider before shipping
-// beyond this MVP — tracked in GitHub issue #2.
-const OSM_STYLE: maplibregl.StyleSpecification = {
-  version: 8,
-  sources: {
-    osm: {
-      type: "raster",
-      tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-      tileSize: 256,
-      attribution: "© OpenStreetMap contributors",
-    },
-  },
-  layers: [{ id: "osm", type: "raster", source: "osm" }],
-};
+// CARTO basemaps: vector, no API key, free with attribution. Replaces the raw
+// OSM raster tiles, which carried full road-atlas detail in colours that fought
+// the warm paper palette -- the map competed with the sightings instead of
+// sitting behind them. Positron/Dark Matter are deliberately desaturated so the
+// data reads first; `.map-canvas` warms them toward the cream palette.
+//
+// Still not a production licence decision: CARTO's free tier has usage limits.
+// A self-hosted Protomaps .pmtiles removes the third party entirely if that
+// matters later -- tracked in GitHub issue #2.
+const BASEMAP_LIGHT = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
+const BASEMAP_DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+
+function basemapStyle(): string {
+  const dark =
+    typeof window !== "undefined" &&
+    window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+  return dark ? BASEMAP_DARK : BASEMAP_LIGHT;
+}
 
 const TAG_LABELS: Record<string, string> = {
   male: "♂ male",
@@ -119,7 +122,7 @@ export default function DogMap({ sightings }: { sightings: Sighting[] }) {
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: OSM_STYLE,
+      style: basemapStyle(),
       center: BANGALORE,
       zoom: 11,
       attributionControl: { compact: true },
