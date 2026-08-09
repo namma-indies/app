@@ -68,6 +68,8 @@
 	<string>Namma Indies uses your camera to photograph indie dogs you spot.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Namma Indies saves a copy of each sighting photo to your camera roll.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Namma Indies may need to read a photo you choose when logging a sighting.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Namma Indies uses your location to record where you spotted the dog.</string>
 </dict>
