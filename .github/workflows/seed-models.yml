@@ -1,0 +1,117 @@
+name: Seed model weights
+# Exports the ONNX models and puts them where the app can find them, without
+# anyone downloading 429 MB to a laptop or handling production credentials by
+# hand.
+#
+# The weights are gitignored, so a fresh box has none and re-ID runs inert:
+# both background tasks catch the missing model, every upload saves with no
+# embedding, and /health reports "reid": "degraded". This is the job that fixes
+# that, and it should need running roughly never -- once per environment, and
+# again only if a model is re-exported.
+#
+# Deliberately manual. It costs several minutes of runner time and rewrites what
+# production infers identity with; that is not something to trigger on a push.
+#
+# Uses only secrets this repo already has (DEPLOY_SSH_* / STAGING_SSH_*). The
+# box holds its own S3 credentials in its .env, so they are never copied into
+# GitHub: the runner ships the files over SSH and the box uploads them itself.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Which box to seed
+        type: choice
+        options: [staging, production]
+        default: staging
+      upload_to_s3:
+        description: >-
+          Also push to object storage, so future boxes and rebuilds fetch them
+          automatically instead of needing this job again
+        type: boolean
+        default: true
+
+concurrency:
+  group: seed-models-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Only the exporters need torch; the service must never have it. This
+      # runs on a throwaway runner precisely so that stays true.
+      - name: Install export toolchain
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install transformers timm onnx onnxscript ultralytics pillow numpy
+
+      - name: Export MiewID-msv3
+        run: python scripts/export_miewid_onnx.py
+
+      - name: Export YOLO26x
+        run: python scripts/export_yolo26x_onnx.py
+
+      # export_miewid_onnx.py already refuses to write an export that drifts
+      # from the torch original (cosine < 0.9999). This only catches the cruder
+      # failure of a file that is present but truncated.
+      - name: Verify exports
+        run: |
+          set -e
+          for f in backend/app/ml/miewid_msv3.onnx backend/app/ml/yolo26x.onnx; do
+            test -f "$f" || { echo "::error::$f was not produced"; exit 1; }
+            size=$(stat -c%s "$f")
+            echo "$f: $((size / 1000000)) MB"
+            [ "$size" -gt 150000000 ] || { echo "::error::$f is implausibly small"; exit 1; }
+          done
+
+      - name: Ship to the box
+        env:
+          SSH_KEY: ${{ inputs.environment == 'production'
+            && secrets.DEPLOY_SSH_KEY || secrets.STAGING_SSH_KEY }}
+          SSH_TARGET: ${{ inputs.environment == 'production'
+            && secrets.DEPLOY_SSH_TARGET || secrets.STAGING_SSH_TARGET }}
+          UPLOAD: ${{ inputs.upload_to_s3 }}
+        run: |
+          set -euo pipefail
+          key_file="$(mktemp)"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s\n' "$SSH_KEY" > "$key_file"
+          chmod 600 "$key_file"
+          SSH="ssh -i $key_file -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+
+          echo "==> copying weights (429 MB, this is the slow part)"
+          scp -i "$key_file" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
+            backend/app/ml/miewid_msv3.onnx backend/app/ml/yolo26x.onnx \
+            "$SSH_TARGET:/tmp/"
+
+          echo "==> seeding on the box"
+          $SSH "$SSH_TARGET" "UPLOAD=$UPLOAD bash -s" < deploy/remote-seed-models.sh
+
+      - name: Confirm re-ID came up ready
+        env:
+          BASE: ${{ inputs.environment == 'production'
+            && 'https://app.nammaindies.org' || '' }}
+        run: |
+          if [ -z "$BASE" ]; then
+            echo "::notice::no public URL for ${{ inputs.environment }}; check /health on the box"
+            exit 0
+          fi
+          for i in $(seq 1 30); do
+            body=$(curl -s "$BASE/health" || true)
+            echo "$body"
+            case "$body" in
+              *'"reid":"ready"'*) echo "::notice::re-ID is ready"; exit 0 ;;
+            esac
+            sleep 4
+          done
+          echo "::error::/health never reported reid: ready"
+          exit 1

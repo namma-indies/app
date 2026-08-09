@@ -17,11 +17,15 @@ type StoredPhoto = { bytes: ArrayBuffer; type: string };
 
 /** The on-disk record. `photo_data` is the current shape; `photos` is the
  * legacy one, kept readable so captures queued by an older build still sync. */
-type StoredItem = Omit<PostSightingInput, "photos"> & {
+type StoredItem = Omit<PostSightingInput, "photos" | "video"> & {
   id: number;
   status?: QueueStatus;
   photo_data?: StoredPhoto[];
   photos?: Blob[];
+  // A clip gets the same treatment as a photo, and needs it more: it is the
+  // same purgeable camera File handle, only larger.
+  video_data?: StoredPhoto;
+  video?: Blob;
 };
 
 /** Rebuild the in-memory item a caller expects from whichever shape is on disk.
@@ -35,11 +39,19 @@ type StoredItem = Omit<PostSightingInput, "photos"> & {
  * Owning the bytes at capture time is what makes the queue durable.
  */
 function toItem(stored: StoredItem): QueuedItem {
-  const { photo_data, photos, ...rest } = stored;
+  const { photo_data, photos, video_data, video, ...rest } = stored;
   const rebuilt = photo_data
     ? photo_data.map((p) => new Blob([p.bytes], { type: p.type }))
     : (photos ?? []);
-  return { ...rest, photos: rebuilt, status: stored.status ?? "pending" } as QueuedItem;
+  const rebuiltVideo = video_data
+    ? new Blob([video_data.bytes], { type: video_data.type })
+    : video;
+  return {
+    ...rest,
+    photos: rebuilt,
+    video: rebuiltVideo,
+    status: stored.status ?? "pending",
+  } as QueuedItem;
 }
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
@@ -57,13 +69,24 @@ function getDb() {
 
 export async function enqueue(input: PostSightingInput): Promise<void> {
   const db = await getDb();
-  const { photos, ...rest } = input;
+  const { photos, video, ...rest } = input;
   // Read the bytes now, while the camera's file is still alive. Deferring this
   // to send time is what stranded every capture on iOS.
   const photo_data: StoredPhoto[] = await Promise.all(
-    photos.map(async (p) => ({ bytes: await p.arrayBuffer(), type: p.type || "image/jpeg" })),
+    (photos ?? []).map(async (p) => ({
+      bytes: await p.arrayBuffer(),
+      type: p.type || "image/jpeg",
+    })),
   );
-  await db.add(STORE, { ...rest, photo_data, status: "pending" as QueueStatus });
+  const video_data: StoredPhoto | undefined = video
+    ? { bytes: await video.arrayBuffer(), type: video.type || "video/mp4" }
+    : undefined;
+  await db.add(STORE, {
+    ...rest,
+    photo_data,
+    video_data,
+    status: "pending" as QueueStatus,
+  });
 }
 
 async function countByStatus(status: QueueStatus): Promise<number> {
