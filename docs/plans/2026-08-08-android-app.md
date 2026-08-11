@@ -94,14 +94,19 @@ This step registers it with the Android project and merges its own
 Gradle's manifest merger — no manual manifest edit needed for the permission
 itself.
 
-- [ ] **Step 5: Verify it builds and the camera permission merged in**
+- [ ] **Step 5: Verify it builds, if a local JDK + Android SDK are available**
+
+```bash
+java -version && echo "$ANDROID_HOME"
+```
+
+If both print a real value, run the actual build:
 
 ```bash
 cd android && ./gradlew assembleDebug
 ```
 
-Expected: `BUILD SUCCESSFUL`. Then confirm the camera permission actually
-merged in:
+Expected: `BUILD SUCCESSFUL`. Then confirm the camera permission merged in:
 
 ```bash
 find app/build/intermediates -iname "AndroidManifest.xml" \
@@ -117,6 +122,19 @@ before the closing `</manifest>`:
 ```
 
 and re-run `./gradlew assembleDebug`.
+
+**If `java -version` fails (no local JDK) — the case in this environment as
+of this plan's writing** — skip the Gradle build itself. Do a static check
+instead: confirm `frontend/android/app/build.gradle` has `applicationId
+"org.nammaindies.app"` and that `frontend/android/app/src/main/AndroidManifest.xml`
+exists and is well-formed XML (`python3 -c "import xml.etree.ElementTree as ET; ET.parse('app/src/main/AndroidManifest.xml')"`,
+expect no output/error). Note in your report that the actual Gradle build is
+unverified locally and that Task 3's CI run (which runs on a GitHub-hosted
+runner with a JDK and the Android SDK preinstalled) is the first real build
+of this project — this is expected, not a gap to fix in this task.
+
+_(Already satisfied for this project — see the Task 1 completion note in the
+SDD ledger. This step is recorded here for anyone re-reading the plan.)_
 
 - [ ] **Step 6: Commit**
 
