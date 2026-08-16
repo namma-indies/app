@@ -4,7 +4,7 @@
 Run this on a machine with torch; the service itself has no torch and never
 needs it. Output goes to backend/app/ml/miewid_msv3.onnx (gitignored, 206 MB).
 
-    pip install torch transformers timm onnx onnxscript
+    pip install torch torchvision transformers timm onnx onnxruntime onnxscript
     python scripts/export_miewid_onnx.py
 
 Two things this script does that a bare torch.onnx.export does not:
