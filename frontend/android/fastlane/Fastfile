@@ -22,6 +22,7 @@ platform :android do
   lane :build_and_upload do
     build
     upload_to_play_store(
+      package_name: "org.nammaindies.app",
       track: "internal",
       aab: "app/build/outputs/bundle/release/app-release.aab",
       json_key_data: ENV["PLAY_SERVICE_ACCOUNT_JSON"],
