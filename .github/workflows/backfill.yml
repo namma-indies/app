@@ -1,0 +1,63 @@
+name: Backfill embeddings
+# Embeds photos that predate re-identification, for people without SSH access
+# to the box.
+#
+# Deliberately modelled on deploy.yml rather than seed-models.yml: deploy.yml's
+# SSH step runs successfully on every merge, so that invocation is proven. The
+# only thing seed-models.yml added on top was an scp of 429 MB, which is the
+# more likely candidate for the hang that lost two runs there. This transfers
+# nothing -- it pipes a script over stdin, exactly as deploy.yml does.
+#
+# Manual only. It is CPU-bound work on the box that serves live traffic, and it
+# writes to production data.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Count what would be embedded, write nothing
+        type: boolean
+        default: true
+      sleep:
+        description: >-
+          Seconds to pause between photos. Leave at 0 unless running during the
+          day -- embedding competes with live uploads for the same cores.
+        type: string
+        default: "0"
+
+concurrency:
+  # Two backfills at once would fight for CPU and duplicate work. They are
+  # idempotent, so this is about the box, not correctness.
+  group: backfill-production
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360   # unknown corpus size; a large one legitimately takes hours
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Backfill on argos
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_TARGET: ${{ secrets.DEPLOY_SSH_TARGET }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          SLEEP: ${{ inputs.sleep }}
+        run: |
+          set -euo pipefail
+          key_file="$(mktemp)"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$key_file"
+          chmod 600 "$key_file"
+          extra=""
+          [ "${SLEEP:-0}" != "0" ] && extra="--sleep $SLEEP"
+          ssh -i "$key_file" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_SSH_TARGET" "DRY_RUN=$DRY_RUN EXTRA_ARGS='$extra' bash -s" \
+            < deploy/remote-backfill.sh
+
+      - name: Report matching state
+        if: ${{ inputs.dry_run == false }}
+        run: |
+          echo "::notice::backfill finished -- check /health and the dex for candidates"
+          curl -s https://app.nammaindies.org/health || true
