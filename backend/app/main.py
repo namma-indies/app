@@ -18,6 +18,7 @@ from app.routes.dex import router as dex_router
 from app.routes.join import router as join_router
 from app.routes.sighting import router as sighting_router
 from app.routes.match import router as match_router
+from app.routes.photo_metadata import router as photo_metadata_router
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,7 @@ app.include_router(join_router)
 app.include_router(dex_router)
 app.include_router(sighting_router)
 app.include_router(match_router)
+app.include_router(photo_metadata_router)
 
 
 @app.get("/health")
