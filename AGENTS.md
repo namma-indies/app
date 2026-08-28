@@ -20,6 +20,12 @@ to `CLAUDE.md`.
 ```mermaid
 flowchart TD
     A["📷 Capture<br/>photo(s) <b>or</b> a clip + GPS"] --> B["IndexedDB queue<br/>(offline-first, owns the bytes)"]
+    A2["🖼 Camera roll<br/>a photo taken earlier"] --> A3["POST /photo/metadata<br/>first 128KB only"]
+    A3 --> A4{"EXIF has<br/>date + GPS?"}
+    A4 -- yes --> A5["geo_source=exif<br/>the file's own date &amp; place"]
+    A4 -- no --> A6["ask the person<br/>geo_source=pin or none"]
+    A5 --> B
+    A6 --> B
     B --> C["POST /sighting<br/>multipart"]
 
     subgraph SYNC["synchronous — user is waiting"]
@@ -28,7 +34,7 @@ flowchart TD
         C2 -- no --> D
         C3 --> D["process_photo<br/>EXIF strip · WebP q90 · thumb · phash"]
         D --> E["S3: original + thumb"]
-        E --> F["INSERT sighting + photos<br/>(one transaction)"]
+        E --> F["INSERT sighting + photos<br/>(one transaction, orig key only)"]
         F --> G["201 {sighting_id, photo_ids}"]
     end
 
@@ -183,6 +189,16 @@ Change these only with new measurements, not intuition.
   every gallery size above (genuine ≈0.35, impostor ≈0.245). Proposal precision
   stayed 18–36% at *every* cut-off from 0.20 to 0.50. Collecting more data will
   not rescue a fixed threshold — only a human looking at a ranked candidate will.
+- **Presign in batches, not per URL.** `storage.url()` opens an aioboto3 client
+  per call. Signing is a local HMAC, but client construction is not: 2.86 ms per
+  presign that way against 0.20 ms sharing one. Use `storage.urls()` in any
+  route that signs more than a couple of keys — at `/map`'s default limit of
+  2000 the difference is ~5.7 s against ~0.4 s of CPU per request.
+- **Thumbnails are derived, never stored.** Only the original's key lives on
+  `photos`; readers call `photos.thumb_key()`. It is extension-agnostic on
+  purpose — the previous `.replace(".jpg", …)` was a silent no-op on `.webp`
+  keys, so `thumb_url` served the full-resolution original for months. Measured
+  cost of that bug: **8 kB vs 555 kB, 64× per tile.**
 - **This pipeline is faithful to the research one.** On identical frames, this
   API (WebP q90 + YOLO26x) scored 50% top-1 against the offline path's 46.7%
   (lossless PNG + YOLOv8n box). Gaps to benchmark numbers are the gallery, not

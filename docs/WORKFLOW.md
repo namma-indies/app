@@ -43,6 +43,12 @@ no notion of an individual animal.
 ```mermaid
 flowchart TD
     A["Capture — photo(s) <b>or</b> a clip"] --> B["IndexedDB queue<br/>owns the bytes, clips included"]
+    A2["Camera roll — a photo taken earlier"] --> A3["POST /photo/metadata<br/>reads EXIF from the first 128KB"]
+    A3 --> A4{"date + GPS<br/>in the file?"}
+    A4 -- yes --> A5["geo_source=exif"]
+    A4 -- no --> A6["ask the person<br/>pin, or none"]
+    A5 --> B
+    A6 --> B
     B --> C["POST /sighting<br/>multipart"]
     C --> C2{"clip?"}
     C2 -- yes --> C3["extract_diverse_frames<br/>~2 fps · phash-diverse · ≤12<br/>clip never stored"]
