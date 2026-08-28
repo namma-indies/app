@@ -17,6 +17,7 @@ from app.routes.auth import router as auth_router
 from app.routes.dex import router as dex_router
 from app.routes.join import router as join_router
 from app.routes.sighting import router as sighting_router
+from app.routes.map import router as map_router
 from app.routes.match import router as match_router
 from app.routes.photo_metadata import router as photo_metadata_router
 
@@ -68,6 +69,7 @@ app.include_router(auth_router)
 app.include_router(join_router)
 app.include_router(dex_router)
 app.include_router(sighting_router)
+app.include_router(map_router)
 app.include_router(match_router)
 app.include_router(photo_metadata_router)
 
