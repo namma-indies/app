@@ -28,6 +28,19 @@ platform :ios do
   desc "Build and upload a release build to TestFlight"
   lane :build_and_upload do
     certs
+
+    # The marketing version (CFBundleShortVersionString) comes from the release
+    # tag when there is one. Empty on a manual dispatch, and left alone in that
+    # case on purpose: App Store Connect turns each distinct marketing version
+    # into a version record, so a throwaway build should not mint one.
+    version = ENV["RELEASE_VERSION_NAME"].to_s.strip
+    unless version.empty?
+      increment_version_number(xcodeproj: "App/App.xcodeproj", version_number: version)
+    end
+
+    # The build number is separate and must simply keep climbing -- App Store
+    # Connect rejects a duplicate for the same version. Asking TestFlight what
+    # it already has is more reliable than any counter we could keep.
     latest = latest_testflight_build_number(app_identifier: "org.nammaindies.app")
     increment_build_number(xcodeproj: "App/App.xcodeproj", build_number: latest + 1)
     build_app(
