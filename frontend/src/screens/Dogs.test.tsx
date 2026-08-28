@@ -23,6 +23,7 @@ function dog(over: Partial<Dog> = {}): Dog {
     sighting_count: 3,
     observer_count: 1,
     seen_by_me: true,
+    observers: [],
     photos: ["https://example.test/a_thumb.webp"],
     lat: 12.9716,
     lng: 77.5946,
@@ -51,10 +52,32 @@ describe("Dogs", () => {
     );
   });
 
-  it("says when several people know the same dog", async () => {
-    vi.mocked(getDogs).mockResolvedValue(resp([dog({ observer_count: 4 })]));
+  it("names who else logged it, as the map popup does", async () => {
+    vi.mocked(getDogs).mockResolvedValue(
+      resp([dog({ observer_count: 3, observers: ["Priya", "Aswin"] })]),
+    );
     render(<Dogs onUnauthorized={() => {}} />);
-    await waitFor(() => expect(screen.getByText(/4 PEOPLE/)).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText(/logged by Priya, Aswin/)).toBeInTheDocument());
+  });
+
+  it("does not name you to yourself", async () => {
+    vi.mocked(getDogs).mockResolvedValue(resp([dog({ observers: [] })]));
+    render(<Dogs onUnauthorized={() => {}} />);
+    await waitFor(() => expect(screen.getByText(/NO\. 001/)).toBeInTheDocument());
+    expect(screen.queryByText(/logged by/)).not.toBeInTheDocument();
+  });
+
+  it("renders a display name as text -- observers type their own at /join", async () => {
+    // The same threat the map popup escapes for. React escapes by
+    // construction; this pins that the name never reaches innerHTML.
+    vi.mocked(getDogs).mockResolvedValue(
+      resp([dog({ observers: ["<img src=x onerror=alert(1)>"] })]),
+    );
+    render(<Dogs onUnauthorized={() => {}} />);
+    await waitFor(() =>
+      expect(screen.getByText(/<img src=x/)).toBeInTheDocument());
+    expect(document.querySelector("img[onerror]")).toBeNull();
   });
 
   it("falls back to an identity number while naming does not exist", async () => {

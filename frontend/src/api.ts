@@ -219,6 +219,10 @@ export interface Dog {
   /** How many different people have logged this animal. */
   observer_count: number;
   seen_by_me: boolean;
+  /** Display names of everyone else who logged this dog. Empty when only the
+   * viewer has seen it, matching how `/map` omits attribution on your own
+   * sightings. User-supplied at /join, so treat as untrusted text. */
+  observers: string[];
   photos: string[];
   lat: number | null;
   lng: number | null;

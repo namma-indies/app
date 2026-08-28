@@ -710,3 +710,11 @@ button { font-family: inherit; }
 /* Above the configured propose threshold. Emphasis only — the app still
    refuses to call it a match, and so should this. */
 .lookalike .score-high { color: var(--accent); font-weight: 700; }
+
+/* Attribution on a dog card. Mirrors .map-popup .popup-by -- the map already
+   says "logged by X" in a sighting's popup, and the two surfaces should read
+   as one system rather than two conventions. */
+.dog-by {
+  font-family: "Silkscreen", monospace; font-size: 0.48rem;
+  color: var(--accent); margin-top: 0.35rem;
+}

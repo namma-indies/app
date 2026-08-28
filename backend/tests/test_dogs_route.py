@@ -48,11 +48,12 @@ async def _make_individual(client, sighting_ids, *, name=None, merged_into=None,
     return iid
 
 
-async def _second_observer(client):
+async def _second_observer(client, name="B"):
     oid = uuid7()
     async with (await _pool(client)).acquire() as c:
         await c.execute(
-            "INSERT INTO observers (id, display_name, created_via) VALUES ($1,'B','test')", oid)
+            "INSERT INTO observers (id, display_name, created_via) VALUES ($1,$2,'test')",
+            oid, name)
     return oid
 
 
@@ -143,6 +144,33 @@ async def test_counts_how_many_people_have_seen_it(authed_client):
     d = (await client.get("/dogs")).json()["dogs"][0]
     assert d["observer_count"] == 2
     assert d["seen_by_me"] is True
+
+
+@pytest.mark.asyncio
+async def test_names_who_logged_it_the_way_the_map_does(authed_client):
+    """`/map` names the observer on every sighting that is not your own
+    (routes/map.py, "logged by X" in the popup). A dog card that only reported
+    a count would be less informative than tapping any one of that dog's pins,
+    so it carries the same names under the same rule."""
+    client, oid_a = authed_client
+    a = await _post(client)
+    oid_b = await _second_observer(client, name="Priya")
+    client.cookies.set("session", issue_session(oid_b))
+    b = await _post(client)
+    await _make_individual(client, [a, b])
+
+    client.cookies.set("session", issue_session(oid_a))
+    d = (await client.get("/dogs")).json()["dogs"][0]
+    assert d["observers"] == ["Priya"]
+
+
+@pytest.mark.asyncio
+async def test_does_not_name_you_to_yourself(authed_client):
+    """The map omits attribution on your own sightings; so does this."""
+    client, _ = authed_client
+    a = await _post(client)
+    await _make_individual(client, [a, await _post(client)])
+    assert (await client.get("/dogs")).json()["dogs"][0]["observers"] == []
 
 
 @pytest.mark.asyncio

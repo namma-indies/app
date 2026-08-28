@@ -152,9 +152,16 @@ async def get_dogs(
             max(s.captured_at) AS last_seen,
             count(*) AS sighting_count,
             count(DISTINCT s.observer_id) AS observer_count,
-            bool_or(s.observer_id = $1) AS seen_by_me
+            bool_or(s.observer_id = $1) AS seen_by_me,
+            -- Who logged it, excluding the viewer. `/map` names the observer on
+            -- every sighting that is not your own, so a dog card that only ever
+            -- said "4 PEOPLE" would be strictly less informative than tapping
+            -- any one of that dog's pins. Same rule, same phrasing.
+            array_remove(array_agg(DISTINCT o.display_name)
+                         FILTER (WHERE s.observer_id <> $1), NULL) AS observers
         FROM individuals i
         JOIN sightings s ON s.individual_id = i.id
+        JOIN observers o ON o.id = s.observer_id
         -- A merged individual is a duplicate that lost; its sightings already
         -- hang off the survivor, so listing it would show the same dog twice.
         WHERE i.merged_into IS NULL
@@ -258,6 +265,10 @@ async def get_dogs(
                 "sighting_count": d["sighting_count"],
                 "observer_count": d["observer_count"],
                 "seen_by_me": d["seen_by_me"],
+                # Names, not just a count -- see the query. Display names are
+                # typed by observers at /join, so they are user-supplied and get
+                # escaped on the way out; React does that by construction.
+                "observers": list(d["observers"] or []),
                 "photos": photos.get(d["id"], []),
                 "lat": lat,
                 "lng": lng,

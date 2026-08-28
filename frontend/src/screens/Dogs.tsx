@@ -28,12 +28,20 @@ function day(iso: string): string {
 }
 
 function seenLine(d: Dog): string {
-  const times = `${d.sighting_count} SIGHTING${d.sighting_count === 1 ? "" : "S"}`;
-  // Worth distinguishing: a dog several people know is a different kind of
-  // record from one person's repeated walk past the same gate.
-  const who =
-    d.observer_count > 1 ? ` · ${d.observer_count} PEOPLE` : d.seen_by_me ? " · YOU" : "";
-  return times + who;
+  return `${d.sighting_count} SIGHTING${d.sighting_count === 1 ? "" : "S"}`;
+}
+
+/** Who logged it, other than you.
+ *
+ * The map names the observer in a sighting's popup and never on the pin, so
+ * attribution belongs on the detail surface -- which is what a dog card is.
+ * Same phrasing as the popup's "logged by X" so the two read as one system.
+ * Names are typed by observers at /join; React escapes them on render, which
+ * is why this returns a string rather than building markup. */
+function byLine(d: Dog): string {
+  if (d.observers.length === 0) return "";
+  if (d.observers.length <= 3) return `logged by ${d.observers.join(", ")}`;
+  return `logged by ${d.observers.slice(0, 3).join(", ")} +${d.observers.length - 3} more`;
 }
 
 function whereLine(d: Dog): string {
@@ -98,6 +106,7 @@ export default function Dogs({ onUnauthorized }: { onUnauthorized: () => void })
               <br />
               {whereLine(d)}
             </div>
+            {byLine(d) && <div className="dog-by">{byLine(d)}</div>}
             {d.tags.length > 0 && (
               <div className="marks">
                 {d.tags.map((t) => (
