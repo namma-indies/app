@@ -137,7 +137,14 @@ jobs:
             "$SSH_TARGET:/tmp/"
 
           echo "==> seeding on the box"
-          $SSH "$SSH_TARGET" "UPLOAD=$UPLOAD bash -s" < deploy/remote-seed-models.sh
+          # Settings via stdin, not an env prefix -- the deploy key is pinned in
+          # authorized_keys with `command="bash -s"`, and a forced command drops
+          # the client's command string, so UPLOAD never arrived and the script
+          # silently used its default. Same fix as backfill.yml.
+          {
+            printf 'UPLOAD=%s\n' "$UPLOAD"
+            cat deploy/remote-seed-models.sh
+          } | $SSH "$SSH_TARGET" 'bash -s'
 
       - name: Confirm re-ID came up ready
         env:

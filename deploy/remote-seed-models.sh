@@ -1,5 +1,6 @@
 # What happens on the box when seeding model weights. Fed over SSH via
-# `ssh "$HOST" "UPLOAD=$UPLOAD bash -s" < deploy/remote-seed-models.sh` --
+# `{ echo "UPLOAD=$UPLOAD"; cat deploy/remote-seed-models.sh; } | ssh "$HOST" 'bash -s'`
+# -- settings via stdin, since a forced command drops an env prefix.
 # see .github/workflows/seed-models.yml. Same shape as remote.sh and
 # remote-staging.sh, and the same compose file and path as both.
 #

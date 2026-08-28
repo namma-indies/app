@@ -52,9 +52,20 @@ jobs:
           chmod 600 "$key_file"
           extra=""
           [ "${SLEEP:-0}" != "0" ] && extra="--sleep $SLEEP"
-          ssh -i "$key_file" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
-            "$DEPLOY_SSH_TARGET" "DRY_RUN=$DRY_RUN EXTRA_ARGS='$extra' bash -s" \
-            < deploy/remote-backfill.sh
+
+          # The settings go through stdin, prepended to the script, NOT as an
+          # env prefix on the ssh command. The deploy key is pinned in the box's
+          # authorized_keys with `command="bash -s"`, and a forced command
+          # discards the client's command string entirely -- so the env prefix
+          # never arrived, DRY_RUN was always unset, and a real run would have
+          # quietly executed as --dry-run and reported success.
+          {
+            printf 'DRY_RUN=%s\n' "$DRY_RUN"
+            printf "EXTRA_ARGS='%s'\n" "$extra"
+            cat deploy/remote-backfill.sh
+          } | ssh -i "$key_file" -o IdentitiesOnly=yes \
+                -o StrictHostKeyChecking=accept-new \
+                "$DEPLOY_SSH_TARGET" 'bash -s'
 
       - name: Report matching state
         if: ${{ inputs.dry_run == false }}

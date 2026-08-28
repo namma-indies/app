@@ -1,6 +1,13 @@
-# Embed photos that predate re-identification, on the box. Fed over SSH via
-# `ssh "$HOST" "DRY_RUN=$DRY_RUN bash -s" < deploy/remote-backfill.sh` -- the
-# same shape as remote.sh and remote-seed-models.sh.
+# Embed photos that predate re-identification, on the box. Fed over SSH by
+# prepending the settings to stdin, NOT by an env prefix on the command:
+#
+#   { echo "DRY_RUN=false"; cat deploy/remote-backfill.sh; } | ssh "$HOST" 'bash -s'
+#
+# The CI deploy key is restricted in the box's authorized_keys with
+# `command="bash -s"`. A forced command discards whatever the client sends, so
+# `ssh host "DRY_RUN=false bash -s"` silently loses the assignment and this
+# script falls back to its --dry-run default -- a real run that reports success
+# and writes nothing. stdin is the one channel a forced command cannot drop.
 #
 # Nothing embeds existing photos automatically, and find_candidates filters on
 # vec_miew IS NOT NULL, so until this runs the whole existing corpus is
@@ -15,8 +22,12 @@ cd ~/app
 # Refuse rather than write nothing. Without the models the embedder raises for
 # every photo, the script dutifully reports "no animal detected" on all of them,
 # and you get a clean-looking run that accomplished nothing.
+# urllib, not curl: the runtime image is python:3.12-slim, which ships no curl.
+# The previous version failed here on every invocation with "sh: 1: curl: not
+# found", so the backfill could never run at all.
 health=$(sudo docker compose -f "$COMPOSE" exec -T app \
-  sh -c 'curl -sf http://localhost:8000/health' || true)
+  python -c 'import urllib.request,sys; sys.stdout.write(urllib.request.urlopen("http://localhost:8000/health", timeout=10).read().decode())' \
+  || true)
 case "$health" in
   *'"reid":"ready"'*) ;;
   *) echo "!! /health does not report reid: ready -- models are not loaded" >&2
