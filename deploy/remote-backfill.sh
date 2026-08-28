@@ -9,6 +9,14 @@
 # script falls back to its --dry-run default -- a real run that reports success
 # and writes nothing. stdin is the one channel a forced command cannot drop.
 #
+# Which creates the trap below: when the script IS stdin, any command that reads
+# stdin eats the rest of the script. `docker compose exec -T` does exactly that,
+# so bash reached the health check, lost everything after it, and exited 0 --
+# a green run that never invoked the backfill at all. Hence `< /dev/null` on
+# every `exec -T` here. It is not decoration; without it this file silently
+# truncates itself, and how much it loses depends on bash's read buffering,
+# which is why the failure looked intermittent.
+#
 # Nothing embeds existing photos automatically, and find_candidates filters on
 # vec_miew IS NOT NULL, so until this runs the whole existing corpus is
 # invisible to matching. That matters more than it sounds: measured accuracy
@@ -27,7 +35,7 @@ cd ~/app
 # found", so the backfill could never run at all.
 health=$(sudo docker compose -f "$COMPOSE" exec -T app \
   python -c 'import urllib.request,sys; sys.stdout.write(urllib.request.urlopen("http://localhost:8000/health", timeout=10).read().decode())' \
-  || true)
+  < /dev/null || true)
 case "$health" in
   *'"reid":"ready"'*) ;;
   *) echo "!! /health does not report reid: ready -- models are not loaded" >&2
@@ -42,4 +50,5 @@ echo "==> backfill_embeddings.py $ARGS"
 # Serial by design: embedding is CPU-bound ONNX on the same box that serves
 # requests. -T because there is no TTY on the far side of an SSH pipe.
 sudo docker compose -f "$COMPOSE" exec -T app \
-  sh -c "cd /app/backend && uv run python scripts/backfill_embeddings.py $ARGS"
+  sh -c "cd /app/backend && uv run python scripts/backfill_embeddings.py $ARGS" \
+  < /dev/null

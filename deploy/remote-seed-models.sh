@@ -27,8 +27,12 @@ if [ "${UPLOAD:-true}" = "true" ]; then
   # Uploaded BY the box, using the S3 credentials already in its .env, so those
   # never have to exist as GitHub secrets. Once this has run, any future box
   # fetches the weights on boot by itself and this job is not needed again.
+  # `< /dev/null` because this script is itself piped over stdin, and
+  # `exec -T` without it consumes the remainder -- silently skipping the
+  # `restart app` below. See remote-backfill.sh's header.
   sudo docker compose -f "$COMPOSE" exec -T app \
-    sh -c 'cd /app/backend && uv run python scripts/fetch_models.py --upload'
+    sh -c 'cd /app/backend && uv run python scripts/fetch_models.py --upload' \
+    < /dev/null
 fi
 
 # The fetch only runs at boot, so a running container will not pick up files
