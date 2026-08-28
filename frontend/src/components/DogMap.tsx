@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { Sighting } from "../api";
+import type { MappableSighting } from "../api";
 
 const BANGALORE: [number, number] = [77.59, 12.97];
 const SOURCE_ID = "sightings";
@@ -47,7 +47,7 @@ export function esc(s: string): string {
 /** GeoJSON properties must be flat primitives -- anything nested is stringified
  * on the way through the tile pipeline, so the tags are flattened here rather
  * than passing `attrs` through as an object. */
-function toFeature(s: Sighting): GeoJSON.Feature<GeoJSON.Point> {
+function toFeature(s: MappableSighting): GeoJSON.Feature<GeoJSON.Point> {
   const attrs = s.attrs || {};
   const tags = ([attrs.sex, attrs.ear_notch, attrs.condition] as (string | undefined)[])
     .filter((v): v is string => !!v && v !== "unsure" && v !== "none")
@@ -61,6 +61,10 @@ function toFeature(s: Sighting): GeoJSON.Feature<GeoJSON.Point> {
       time: new Date(s.captured_at).toLocaleString(),
       note: attrs.note ?? "",
       tags: tags.join("|"),
+      // Who logged it, shown on tapping a sighting and never on the pin
+      // itself. Empty for the viewer's own sightings and for /dex responses,
+      // where "who" is never in question.
+      observer: s.mine === false && s.observer ? s.observer : "",
     },
   };
 }
@@ -71,6 +75,7 @@ export function popupHtml(p: Record<string, string>): string {
     <div class="map-popup">
       ${p.thumb ? `<img src="${esc(p.thumb)}" alt="dog sighting" />` : ""}
       <div class="time">${esc(p.time)}</div>
+      ${p.observer ? `<div class="popup-by">logged by ${esc(p.observer)}</div>` : ""}
       ${p.note ? `<div class="popup-note">${esc(p.note)}</div>` : ""}
       ${
         tags.length
@@ -109,7 +114,7 @@ function clusterEl(count: number): HTMLElement {
   return el;
 }
 
-export default function DogMap({ sightings }: { sightings: Sighting[] }) {
+export default function DogMap({ sightings }: { sightings: MappableSighting[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   // Read inside map callbacks, which are registered once and would otherwise
@@ -227,7 +232,7 @@ export default function DogMap({ sightings }: { sightings: Sighting[] }) {
 /** Push the current sightings into the source, and on first load frame them.
  * Fitting only once is deliberate: re-framing on every refresh would yank the
  * map out from under someone who had panned somewhere deliberately. */
-function applyData(map: maplibregl.Map, sightings: Sighting[], fit: boolean): void {
+function applyData(map: maplibregl.Map, sightings: MappableSighting[], fit: boolean): void {
   const geoed = sightings.filter((s) => s.lat != null && s.lng != null);
   const src = map.getSource(SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
   if (!src) return;

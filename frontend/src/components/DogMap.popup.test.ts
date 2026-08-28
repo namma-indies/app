@@ -40,3 +40,37 @@ describe("popup escaping", () => {
     expect(html).not.toContain("popup-tags");
   });
 });
+
+// Attribution: Akash's call is that who logged a sighting appears on tapping
+// it, never on the pin. So the name lives in the popup only.
+describe("popup attribution", () => {
+  it("names who logged someone else's sighting", () => {
+    const html = popupHtml({
+      thumb: "",
+      time: "1 Aug",
+      note: "",
+      tags: "",
+      observer: "Aswin",
+    });
+    expect(html).toContain("logged by Aswin");
+  });
+
+  it("says nothing about the observer on your own sightings", () => {
+    const html = popupHtml({ thumb: "", time: "1 Aug", note: "", tags: "", observer: "" });
+    expect(html).not.toContain("popup-by");
+  });
+
+  it("escapes a display name — it is user-supplied at /join", () => {
+    // Observers type their own name into the passcode form, so this string is
+    // no more trustworthy than the note.
+    const html = popupHtml({
+      thumb: "",
+      time: "1 Aug",
+      note: "",
+      tags: "",
+      observer: '<img src=x onerror=alert(1)>',
+    });
+    expect(html).not.toContain("<img src=x");
+    expect(html).toContain("&lt;img src=x");
+  });
+})

@@ -626,3 +626,25 @@ button { font-family: inherit; }
   font-family: "Silkscreen", monospace; font-size: 0.55rem;
   color: var(--muted); text-align: center;
 }
+
+/* --- Cohort map: MINE / EVERYONE ---
+   Visually subordinate to .dex-toggle above it: MAP/JOURNAL picks the view,
+   this narrows what's in it, and the sizes should say so. */
+.scope-toggle {
+  display: flex; gap: 0.4rem; margin: -0.35rem 0 0.6rem; justify-content: center;
+}
+.scope-toggle button {
+  font-family: "Silkscreen", "Courier New", monospace;
+  font-size: 0.55rem; letter-spacing: 0.02em;
+  border: 2px solid var(--line); background: var(--panel);
+  border-radius: 3px; padding: 0.3rem 0.7rem;
+  color: var(--muted); cursor: pointer;
+}
+.scope-toggle button.active { background: var(--accent); color: #fff; }
+
+/* Who logged it. Popup only, never on the pin -- a shared map shouldn't read
+   as a leaderboard at a glance. */
+.map-popup .popup-by {
+  font-family: "Silkscreen", monospace; font-size: 0.48rem;
+  color: var(--accent); margin-top: 0.2rem;
+}
