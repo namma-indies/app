@@ -17,6 +17,14 @@ class Settings(BaseSettings):
     email_allowlist_domains: str = "dognosis.tech"
     email_allowlist_addresses: str = ""
 
+    # Stage 2 of the rollout ladder: anyone with a working address can sign in,
+    # no allowlist. A flag of its own rather than "empty allowlist means
+    # everyone", because `is_allowed` fails closed on purpose -- inverting that
+    # would make deleting a line in `.env` a silent public launch. Opening the
+    # door should take a deliberate act. Requires SES production access, granted
+    # 2026-08-01 (50k/day, any recipient).
+    email_open_signup: bool = False
+
     # "console" (default) prints the link to the log; "ses" actually sends.
     # Fails safe: any other value means console.
     email_sender: str = "console"

@@ -16,10 +16,17 @@ def _split(csv: str) -> set[str]:
 
 
 def is_allowed(email: str) -> bool:
-    """True if the address is on the pilot allowlist. An empty allowlist
-    allows nobody -- a misconfigured env var must not open the door."""
-    if not email:
+    """True if the address may be sent a login link.
+
+    An empty allowlist allows nobody -- a misconfigured env var must not open
+    the door. `email_open_signup` is the deliberate way to open it, and it still
+    requires a plausible address: these strings are handed to SES as recipients,
+    and open signup is not unvalidated signup.
+    """
+    if not email or not normalize_email(email):
         return False
+    if settings.email_open_signup:
+        return True
     domain = email.rpartition("@")[2]
     return (
         email in _split(settings.email_allowlist_addresses)
