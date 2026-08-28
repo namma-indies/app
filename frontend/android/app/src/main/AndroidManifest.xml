@@ -32,4 +32,29 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!--
+      Camera-roll import needs no permission on Android 10+ (API 29): Capacitor
+      Camera 8's chooseFromGallery goes through the system Photo Picker
+      (ActivityResultContracts.PickVisualMedia), which hands back a single URI
+      the user chose and grants nothing else. READ_MEDIA_IMAGES is therefore
+      NOT required, despite being the usual answer for API 33+.
+
+      Android 9 and below is the exception. minSdkVersion here is 24, so those
+      devices are in scope, and the plugin's own logic (IonCameraFlow, the
+      SDK_INT < Q branch) requires the legacy storage permissions there: for
+      chooseFromGallery always, and for takePhoto whenever saveToGallery is
+      true, which is what our capture path already passes.
+
+      Capped at maxSdkVersion 28 so modern installs never see a broad storage
+      permission, and Play's listing doesn't advertise one. Both READ and WRITE
+      are declared because the plugin's `saveGallery` alias covers the pair and
+      its isPermissionDeclared check is per-alias.
+    -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
 </manifest>

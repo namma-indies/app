@@ -62,3 +62,49 @@ def test_phash_stable_and_discriminating():
     b = process_photo(_jpeg_with_gps(color=(10, 200, 10))).phash
     assert a1 == a2
     assert a1 != b
+
+
+# --- thumbnail key derivation ------------------------------------------------
+# Regression: dex.py derived the thumbnail key with
+# `s3_key.replace(".jpg", "_thumb.jpg")`, which is a silent no-op on the .webp
+# keys the pipeline has written since the WebP switch -- every gallery cell and
+# map popup served the full-resolution original. Extension-agnostic by design:
+# photos captured before that switch still have .jpg keys on prod, and their
+# thumbnails are .jpg too.
+
+
+def test_thumb_key_webp():
+    from app.photos import thumb_key
+
+    assert (
+        thumb_key("sightings/abc/def.webp") == "sightings/abc/def_thumb.webp"
+    )
+
+
+def test_thumb_key_legacy_jpg():
+    from app.photos import thumb_key
+
+    assert thumb_key("sightings/abc/def.jpg") == "sightings/abc/def_thumb.jpg"
+
+
+def test_thumb_key_never_returns_the_original():
+    """The bug's signature: a derivation that quietly returns its input."""
+    from app.photos import thumb_key
+
+    for key in ("sightings/a/b.webp", "sightings/a/b.jpg", "sightings/a/b.png"):
+        assert thumb_key(key) != key
+
+
+def test_thumb_key_only_touches_the_final_extension():
+    """A dot in a directory name must not be mistaken for the extension."""
+    from app.photos import thumb_key
+
+    assert (
+        thumb_key("sightings/v1.2/photo.webp") == "sightings/v1.2/photo_thumb.webp"
+    )
+
+
+def test_thumb_key_extensionless_key():
+    from app.photos import thumb_key
+
+    assert thumb_key("sightings/a/b") == "sightings/a/b_thumb"

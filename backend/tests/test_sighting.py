@@ -279,3 +279,42 @@ async def test_get_match_does_not_mutate_proposals(authed_client):
         still = await c.fetchval(
             "SELECT id FROM match_proposals WHERE sighting_id=$1 AND status='pending'", sid)
     assert still == prop, "polling must not replace the proposal it handed out"
+
+
+@pytest.mark.asyncio
+async def test_import_from_camera_roll_keeps_its_own_date_and_place(authed_client):
+    """A photo taken three weeks ago in another neighbourhood must land as
+    then-and-there. `captured_at` and `geog` are the two inputs to
+    `resolve_sighting`'s 1km candidate search, so recording an import as
+    here-and-now inserts a phantom into the spatial prior for wherever the
+    phone happens to be standing."""
+    client, _ = authed_client
+    r = await client.post(
+        "/sighting",
+        files={"photos": ("old.jpg", _jpeg(), "image/jpeg")},
+        data={
+            "geo_source": "exif",
+            "captured_at": "2026-08-05T13:12:11Z",
+            "lat": "12.9352",
+            "lng": "77.6245",
+        },
+    )
+    assert r.status_code == 201
+    sid = r.json()["sighting_id"]
+
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as c:
+        row = await c.fetchrow(
+            "SELECT geo_source, geo_accuracy_m, captured_at, "
+            "ST_Y(geog::geometry) AS lat, ST_X(geog::geometry) AS lng "
+            "FROM sightings WHERE id=$1",
+            UUID(sid),
+        )
+    assert row["geo_source"] == "exif"
+    assert row["captured_at"].year == 2026 and row["captured_at"].month == 8
+    assert row["captured_at"].day == 5
+    assert row["lat"] == pytest.approx(12.9352, abs=1e-5)
+    assert row["lng"] == pytest.approx(77.6245, abs=1e-5)
+    # EXIF carries no accuracy estimate worth trusting, so this stays NULL
+    # rather than borrowing a number from a live fix that never happened.
+    assert row["geo_accuracy_m"] is None

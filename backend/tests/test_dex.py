@@ -50,5 +50,11 @@ async def test_dex_returns_only_own_sightings(authed_client):
     assert b1 not in ids
     # photos carry presigned urls
     s0 = r.json()["sightings"][0]
-    assert s0["photos"][0]["url"].startswith("http")
-    assert s0["photos"][0]["thumb_url"].startswith("http")
+    photo = s0["photos"][0]
+    assert photo["url"].startswith("http")
+    assert photo["thumb_url"].startswith("http")
+    # Regression: the thumbnail key was derived with a .jpg string replace,
+    # a no-op on .webp keys, so thumb_url silently pointed at the
+    # full-resolution original. Asserting "starts with http" passed throughout.
+    assert "_thumb.webp" in photo["thumb_url"]
+    assert photo["thumb_url"].split("?")[0] != photo["url"].split("?")[0]

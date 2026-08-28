@@ -11,6 +11,10 @@ vi.mock("../offline/queue", () => ({
 
 vi.mock("../capture/takePhoto", () => ({
   takePhotoIfNative: vi.fn(),
+  chooseFromGalleryIfNative: vi.fn(),
+  // These tests exercise the web path, where the component drives the hidden
+  // file inputs directly.
+  isNative: () => false,
 }));
 
 import { enqueue, flush } from "../offline/queue";

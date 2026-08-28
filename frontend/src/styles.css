@@ -602,3 +602,49 @@ button { font-family: inherit; }
 /* Clip chosen: stands in for the filmstrip, above the note field and save
    button it shares with the photo path. */
 .clip-ready { display: flex; flex-direction: column; align-items: center; gap: 0.4rem; padding: 0.4rem 0; }
+
+/* --- Camera-roll import: the "when and where" prompt ---
+   Follows .failed-sheet rather than the plain .viewer-overlay > div, since this
+   is a form in a sheet, not a photo. Deliberately plain: a placeholder until
+   the interaction is designed properly. */
+.viewer-overlay > .import-prompt {
+  background: var(--panel); border: 3px solid var(--line); border-radius: 6px;
+  padding: 1rem; max-width: 90vw; width: 22rem;
+  display: flex; flex-direction: column; gap: 0.7rem; align-items: stretch;
+}
+.import-prompt .spot-label { text-align: center; }
+.import-prompt input[type="datetime-local"] {
+  font-family: inherit; font-size: 0.95rem; width: 100%;
+  padding: 0.5rem; border: 2px solid var(--line); border-radius: 3px;
+  background: var(--frame); color: var(--ink);
+}
+.import-prompt .actions-row { margin-top: 0.2rem; }
+.import-error { color: var(--accent); }
+/* Marks a staged photo as an import, with the date it actually carries -- so
+   it's visible that this won't be logged as here-and-now. */
+.import-badge {
+  font-family: "Silkscreen", monospace; font-size: 0.55rem;
+  color: var(--muted); text-align: center;
+}
+
+/* --- Cohort map: MINE / EVERYONE ---
+   Visually subordinate to .dex-toggle above it: MAP/JOURNAL picks the view,
+   this narrows what's in it, and the sizes should say so. */
+.scope-toggle {
+  display: flex; gap: 0.4rem; margin: -0.35rem 0 0.6rem; justify-content: center;
+}
+.scope-toggle button {
+  font-family: "Silkscreen", "Courier New", monospace;
+  font-size: 0.55rem; letter-spacing: 0.02em;
+  border: 2px solid var(--line); background: var(--panel);
+  border-radius: 3px; padding: 0.3rem 0.7rem;
+  color: var(--muted); cursor: pointer;
+}
+.scope-toggle button.active { background: var(--accent); color: #fff; }
+
+/* Who logged it. Popup only, never on the pin -- a shared map shouldn't read
+   as a leaderboard at a glance. */
+.map-popup .popup-by {
+  font-family: "Silkscreen", monospace; font-size: 0.48rem;
+  color: var(--accent); margin-top: 0.2rem;
+}

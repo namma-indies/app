@@ -69,3 +69,41 @@ async def test_login_tokens_cascade_on_observer_delete(migrated_db):
         "VALUES ('deadbeef', $1, now() + interval '1 hour')", oid)
     await migrated_db.execute("DELETE FROM observers WHERE id = $1", oid)
     assert await migrated_db.fetchval("SELECT count(*) FROM login_tokens") == 0
+
+
+@pytest.mark.asyncio
+async def test_geo_source_accepts_exif(migrated_db):
+    """Camera-roll imports carry coordinates read from the file, which is
+    neither a live device fix nor a human-placed pin."""
+    from app.ids import uuid7
+
+    oid = uuid7()
+    await migrated_db.execute(
+        "INSERT INTO observers (id, display_name, created_via) VALUES ($1,'T','test')", oid
+    )
+    await migrated_db.execute(
+        """
+        INSERT INTO sightings (id, observer_id, captured_at, geog, geo_source)
+        VALUES ($1, $2, now(), ST_SetSRID(ST_MakePoint(77.6, 12.9), 4326)::geography, 'exif')
+        """,
+        uuid7(),
+        oid,
+    )
+
+
+@pytest.mark.asyncio
+async def test_geo_source_still_rejects_junk(migrated_db):
+    """Widening the constraint must not have dropped it."""
+    from app.ids import uuid7
+
+    oid = uuid7()
+    await migrated_db.execute(
+        "INSERT INTO observers (id, display_name, created_via) VALUES ($1,'T','test')", oid
+    )
+    with pytest.raises(asyncpg.exceptions.CheckViolationError):
+        await migrated_db.execute(
+            "INSERT INTO sightings (id, observer_id, captured_at, geo_source) "
+            "VALUES ($1, $2, now(), 'telepathy')",
+            uuid7(),
+            oid,
+        )

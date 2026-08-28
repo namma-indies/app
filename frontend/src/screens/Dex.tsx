@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { getDex, UnauthorizedError, type Sighting } from "../api";
+import {
+  getDex,
+  getMap,
+  UnauthorizedError,
+  type MapSighting,
+  type Sighting,
+} from "../api";
 import DogMap from "../components/DogMap";
 
 const TAG_LABELS: Record<string, string> = {
@@ -35,6 +41,13 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
   const [sightings, setSightings] = useState<Sighting[] | null>(null);
   const [view, setView] = useState<"map" | "journal">("map");
   const [selected, setSelected] = useState<Sighting | null>(null);
+  // The map can show the whole cohort's sightings, not just the viewer's.
+  // Defaults to MINE: that renders straight from the /dex data already loaded
+  // for the journal, so the common case costs no extra request. /map is fetched
+  // once, lazily, the first time someone flips to EVERYONE.
+  const [scope, setScope] = useState<"mine" | "everyone">("mine");
+  const [everyone, setEveryone] = useState<MapSighting[] | null>(null);
+  const [everyoneError, setEveryoneError] = useState(false);
 
   useEffect(() => {
     getDex()
@@ -45,6 +58,17 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (scope !== "everyone" || everyone !== null) return;
+    getMap()
+      .then((res) => setEveryone(res.sightings))
+      .catch((err) => {
+        if (err instanceof UnauthorizedError) onUnauthorized();
+        else setEveryoneError(true);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope, everyone]);
 
   // Catalog numbers are assigned in the order sightings were first logged —
   // a life-list. Displayed newest-first.
@@ -62,8 +86,52 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
     return <div className="empty-state">FETCHING YOUR GUIDE…</div>;
   }
 
+  // MINE renders the /dex data already in hand. EVERYONE renders the cohort
+  // response, whose sightings each carry `mine`, so a pin names an observer
+  // only when it isn't the viewer's own.
+  let mapBody;
+  let showingMap = false;
+  if (scope === "mine") {
+    mapBody =
+      sightings.length === 0 ? (
+        // Reachable, and worth reaching: a brand-new tester has nothing of
+        // their own yet, and pointing them at EVERYONE is far better than a
+        // dead end. This used to short-circuit the whole view.
+        <div className="empty-state">
+          <span className="big">🐾</span>
+          NO SIGHTINGS YET —<br />
+          GO SPOT YOUR FIRST INDIE
+          <button className="link-btn" onClick={() => setScope("everyone")}>
+            or see everyone else's
+          </button>
+        </div>
+      ) : (
+        <DogMap sightings={sightings} />
+      );
+    showingMap = sightings.length > 0;
+  } else if (everyoneError) {
+    // Falls back to the viewer's own map rather than an error page: their
+    // sightings are already loaded, so there is no reason to show nothing.
+    mapBody = (
+      <>
+        <p className="hint">Couldn't load the shared map — showing yours.</p>
+        <DogMap sightings={sightings} />
+      </>
+    );
+    showingMap = true;
+  } else if (everyone === null) {
+    mapBody = <div className="empty-state">LOADING EVERYONE'S SIGHTINGS…</div>;
+  } else if (everyone.length === 0) {
+    mapBody = <div className="empty-state">NO SIGHTINGS ANYWHERE YET</div>;
+  } else {
+    mapBody = <DogMap sightings={everyone} />;
+    showingMap = true;
+  }
+
   return (
-    <div className={view === "map" && sightings.length > 0 ? "dex dex-map-view" : "dex"}>
+    // The map-view layout applies whenever a map is actually on screen, which
+    // now includes a viewer with no sightings of their own looking at EVERYONE.
+    <div className={view === "map" && showingMap ? "dex dex-map-view" : "dex"}>
       <div className="dex-toggle">
         <button className={view === "map" ? "active" : ""} onClick={() => setView("map")}>
           MAP
@@ -73,14 +141,30 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
         </button>
       </div>
 
-      {sightings.length === 0 ? (
+      {view === "map" ? (
+        <>
+          <div className="scope-toggle">
+            <button
+              className={scope === "mine" ? "active" : ""}
+              onClick={() => setScope("mine")}
+            >
+              MINE
+            </button>
+            <button
+              className={scope === "everyone" ? "active" : ""}
+              onClick={() => setScope("everyone")}
+            >
+              EVERYONE
+            </button>
+          </div>
+          {mapBody}
+        </>
+      ) : sightings.length === 0 ? (
         <div className="empty-state">
           <span className="big">🐾</span>
           NO SIGHTINGS YET —<br />
           GO SPOT YOUR FIRST INDIE
         </div>
-      ) : view === "map" ? (
-        <DogMap sightings={sightings} />
       ) : (
         <div className="journal">
           <div className="journal-head">

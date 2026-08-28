@@ -14,7 +14,7 @@ from app.deps import get_conn, get_storage
 from app.detect import DOG_CONF_THRESHOLD
 from app.detect_reid import animal_confidence
 from app.ids import uuid7
-from app.photos import process_photo, ProcessedPhoto
+from app.photos import process_photo, ProcessedPhoto, thumb_key
 from app.storage.s3 import S3Storage
 from app.video import extract_diverse_frames
 
@@ -158,7 +158,11 @@ async def create_sighting(
     lat: float | None = Form(None),
     lng: float | None = Form(None),
     geo_accuracy_m: float | None = Form(None),
-    geo_source: Literal["device_gps", "pin", "none"] = Form(...),
+    # "exif" is a camera-roll import: coordinates read from the file rather
+    # than observed live. Trusted at the same level as "device_gps" -- the
+    # client supplies lat/lng in both cases, and in this one it got them from
+    # this server's own /photo/metadata parse.
+    geo_source: Literal["device_gps", "pin", "none", "exif"] = Form(...),
     captured_at: datetime = Form(...),
     reported_at: datetime | None = Form(None),
     note: str | None = Form(None),
@@ -224,9 +228,8 @@ async def create_sighting(
         if first_phash is None:
             first_phash = p.phash
         orig_key = f"sightings/{sighting_id}/{photo_id}.webp"
-        thumb_key = f"sightings/{sighting_id}/{photo_id}_thumb.webp"
         await storage.put(orig_key, p.original, p.content_type)
-        await storage.put(thumb_key, p.thumbnail, p.content_type)
+        await storage.put(thumb_key(orig_key), p.thumbnail, p.content_type)
         photo_rows.append(
             {
                 "id": photo_id,

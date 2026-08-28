@@ -23,6 +23,34 @@ from PIL import Image, ImageOps
 
 THUMBNAIL_MAX = 512  # longest edge of the thumbnail, px
 
+THUMB_SUFFIX = "_thumb"
+
+
+def thumb_key(original_key: str) -> str:
+    """The object key of a photo's thumbnail, given the original's key.
+
+    The pair is written together in `routes/sighting.py`; only the original's
+    key is stored on `photos`, so readers derive the other side by convention.
+    That convention lives here so there is exactly one of it.
+
+    Extension-agnostic on purpose. The previous derivation was
+    `key.replace(".jpg", "_thumb.jpg")`, which silently returned the input
+    unchanged once the pipeline switched to WebP -- so `thumb_url` pointed at
+    the full-resolution original and every gallery cell downloaded megabytes to
+    render a 512px tile. Splitting on the final separator cannot fail that way:
+    an unrecognised extension still yields a distinct key.
+
+    Photos captured before the WebP switch still have `.jpg` keys on
+    production, and their thumbnails are `.jpg`, so the extension must be
+    carried through rather than assumed.
+    """
+    stem, dot, ext = original_key.rpartition(".")
+    if not dot or "/" in ext:
+        # No extension (or the only dot is inside a directory name).
+        return original_key + THUMB_SUFFIX
+    return f"{stem}{THUMB_SUFFIX}{dot}{ext}"
+
+
 
 @dataclass
 class ProcessedPhoto:
