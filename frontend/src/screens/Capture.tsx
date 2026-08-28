@@ -1,8 +1,23 @@
 import { useRef, useState } from "react";
-import { type Condition, type EarNotch, type GeoSource, type Sex } from "../api";
+import {
+  readPhotoMetadata,
+  UnauthorizedError,
+  type Condition,
+  type EarNotch,
+  type GeoSource,
+  type PhotoMetadata,
+  type Sex,
+} from "../api";
 import { enqueue, flush } from "../offline/queue";
 import DogSprite from "../components/DogSprite";
-import { takePhotoIfNative } from "../capture/takePhoto";
+import ImportOriginPrompt from "../components/ImportOriginPrompt";
+import { chooseFromGalleryIfNative, isNative, takePhotoIfNative } from "../capture/takePhoto";
+import {
+  originFromExif,
+  originFromPerson,
+  resolveCapturedAt,
+  type ImportOrigin,
+} from "../capture/importOrigin";
 
 const MAX_PHOTOS = 5;
 
@@ -52,7 +67,10 @@ function Chips<T extends string>({
 
 function getLocation(): Promise<GeolocationPosition | null> {
   return new Promise((resolve) => {
-    if (!("geolocation" in navigator)) return resolve(null);
+    // Checks the value, not just the key. Some webviews expose the property as
+    // undefined, where an `in` test passes and the call below then throws --
+    // which would reject out of submit() and lose the sighting.
+    if (!navigator.geolocation) return resolve(null);
     navigator.geolocation.getCurrentPosition(
       (pos) => resolve(pos),
       () => resolve(null),
@@ -64,6 +82,9 @@ function getLocation(): Promise<GeolocationPosition | null> {
 export default function Capture() {
   const fileRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLInputElement>(null);
+  // Separate from fileRef because this one must NOT carry `capture`, which
+  // forces the camera and hides the gallery.
+  const importRef = useRef<HTMLInputElement>(null);
   const [photos, setPhotos] = useState<File[]>([]);
   const [previewUrls, setPreviewUrls] = useState<string[]>([]);
   // A sighting is photos or a clip, never both: the server extracts frames from
@@ -78,6 +99,11 @@ export default function Capture() {
   const [moreOpen, setMoreOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  // Set only for a camera-roll import: where and when the photo says it was
+  // taken, which overrides the live clock and GPS fix in submit().
+  const [origin, setOrigin] = useState<ImportOrigin | null>(null);
+  // Non-null while we're asking the person for what the file didn't say.
+  const [asking, setAsking] = useState<{ file: File; md: PhotoMetadata } | null>(null);
 
   function showToast(msg: string) {
     setToast(msg);
@@ -109,6 +135,8 @@ export default function Capture() {
     if (videoUrl) URL.revokeObjectURL(videoUrl);
     setVideo(f);
     setVideoUrl(URL.createObjectURL(f));
+    // A clip is a live capture; it must not inherit an import's date and place.
+    setOrigin(null);
   }
 
   function removeVideo() {
@@ -116,6 +144,71 @@ export default function Capture() {
     setVideo(null);
     setVideoUrl(null);
     if (videoRef.current) videoRef.current.value = "";
+  }
+
+  /** Replace whatever is staged with a single imported photo.
+   *
+   * One photo per import, not a multi-select: each carries its own capture date
+   * and place, and photos chosen together aren't necessarily from the same
+   * evening or street. Batching them would have to ask per photo or cluster by
+   * EXIF -- deliberately left to the follow-up issue.
+   */
+  function stageImport(f: File, o: ImportOrigin) {
+    previewUrls.forEach((url) => URL.revokeObjectURL(url));
+    if (videoUrl) URL.revokeObjectURL(videoUrl);
+    setVideo(null);
+    setVideoUrl(null);
+    setPhotos([f]);
+    setPreviewUrls([URL.createObjectURL(f)]);
+    setOrigin(o);
+  }
+
+  async function onImportFile(f: File) {
+    let md: PhotoMetadata;
+    try {
+      md = await readPhotoMetadata(f);
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        showToast("Session expired. Sign in again.");
+        return;
+      }
+      throw err;
+    }
+
+    const capturedAt = resolveCapturedAt(md.captured_at_local, md.utc_offset_minutes);
+    if (capturedAt && md.has_location && md.lat != null && md.lng != null) {
+      // The file knew both. Nothing to ask.
+      stageImport(f, originFromExif(capturedAt, md.lat, md.lng));
+      return;
+    }
+    // Stripped of one or both -- the common case for forwards and screenshots,
+    // and also what an offline preflight looks like. Ask rather than default to
+    // here-and-now, which would poison the 1km prior re-ID matches against.
+    setAsking({ file: f, md });
+  }
+
+  async function onImportPress() {
+    if (isNative()) {
+      try {
+        const picked = await chooseFromGalleryIfNative();
+        // null here means the user dismissed the picker. Falling through to the
+        // web file input would reopen a chooser the instant they backed out.
+        if (picked) await onImportFile(picked);
+      } catch {
+        showToast("Couldn't open your photos. Try again.");
+      }
+      return;
+    }
+    // Web: a file input with no `capture` attribute, so the OS itself offers
+    // the gallery alongside the camera.
+    importRef.current?.click();
+  }
+
+  function onImportChosen(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (importRef.current) importRef.current.value = "";
+    if (!f) return;
+    void onImportFile(f);
   }
 
   async function onShutterPress() {
@@ -147,6 +240,9 @@ export default function Capture() {
     setVideo(null);
     setVideoUrl(null);
     if (videoRef.current) videoRef.current.value = "";
+    if (importRef.current) importRef.current.value = "";
+    setOrigin(null);
+    setAsking(null);
     setNote("");
     setSex(null);
     setEarNotch(null);
@@ -158,16 +254,34 @@ export default function Capture() {
   async function submit() {
     if (photos.length === 0 && !video) return;
     setSubmitting(true);
-    const capturedAt = new Date().toISOString();
-    const position = await getLocation();
 
-    const geoSource: GeoSource = position ? "device_gps" : "none";
+    // An imported photo brought its own when and where. Asking the device again
+    // would overwrite them with here-and-now -- and `captured_at`/`geog` are
+    // the two inputs to the 1km candidate search, so that inserts a phantom
+    // into the spatial prior for wherever this phone is standing.
+    let capturedAt: string;
+    let lat: number | undefined;
+    let lng: number | undefined;
+    let accuracy: number | undefined;
+    let geoSource: GeoSource;
+    if (origin) {
+      ({ captured_at: capturedAt, lat, lng, geo_accuracy_m: accuracy } = origin);
+      geoSource = origin.geo_source;
+    } else {
+      capturedAt = new Date().toISOString();
+      const position = await getLocation();
+      lat = position?.coords.latitude;
+      lng = position?.coords.longitude;
+      accuracy = position?.coords.accuracy;
+      geoSource = position ? "device_gps" : "none";
+    }
+
     const input = {
       photos: video ? undefined : photos,
       video: video ?? undefined,
-      lat: position?.coords.latitude,
-      lng: position?.coords.longitude,
-      geo_accuracy_m: position?.coords.accuracy,
+      lat,
+      lng,
+      geo_accuracy_m: accuracy,
       geo_source: geoSource,
       captured_at: capturedAt,
       note: note || undefined,
@@ -233,6 +347,16 @@ export default function Capture() {
         style={{ display: "none" }}
         onChange={onVideoChosen}
       />
+      {/* No `capture` attribute, unlike the two above: that attribute forces
+          the camera and hides the gallery, which is the whole point here. */}
+      <input
+        ref={importRef}
+        type="file"
+        accept="image/*"
+        aria-label="choose from photos"
+        style={{ display: "none" }}
+        onChange={onImportChosen}
+      />
 
       {photos.length === 0 && !video ? (
         <div className="shutter-wrap">
@@ -249,6 +373,11 @@ export default function Capture() {
             onClick={() => videoRef.current?.click()}
           >
             or record a short clip
+          </button>
+          {/* For a dog you photographed before you had the app. The photo keeps
+              its own date and place rather than being logged as here-and-now. */}
+          <button type="button" className="link-btn" onClick={onImportPress}>
+            or add one from your photos
           </button>
         </div>
       ) : (
@@ -284,7 +413,11 @@ export default function Capture() {
                     </button>
                   </div>
                 ))}
-                {photos.length < MAX_PHOTOS && (
+                {/* Not offered for an import: the staged photo carries its own
+                    date and place, and a live camera photo added beside it
+                    would be from a different time and street. One import is
+                    one sighting. */}
+                {photos.length < MAX_PHOTOS && !origin && (
                   <button
                     type="button"
                     className="filmstrip-add"
@@ -301,6 +434,14 @@ export default function Capture() {
                 </p>
               )}
             </>
+          )}
+
+          {origin && (
+            <p className="hint import-badge">
+              from your photos ·{" "}
+              {new Date(origin.captured_at).toLocaleString()}
+              {origin.geo_source === "none" ? " · no place" : ""}
+            </p>
           )}
 
           <div className="note-field">
@@ -350,6 +491,23 @@ export default function Capture() {
             </button>
           </div>
         </>
+      )}
+
+      {asking && (
+        <ImportOriginPrompt
+          md={asking.md}
+          getPosition={async () => {
+            const pos = await getLocation();
+            return pos
+              ? { lat: pos.coords.latitude, lng: pos.coords.longitude }
+              : null;
+          }}
+          onConfirm={(o) => {
+            stageImport(asking.file, o);
+            setAsking(null);
+          }}
+          onCancel={() => setAsking(null)}
+        />
       )}
 
       {toast && <div className="toast">{toast}</div>}
