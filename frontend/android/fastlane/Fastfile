@@ -11,8 +11,12 @@ platform :android do
         "android.injected.signing.store.password" => ENV["ANDROID_KEYSTORE_PASSWORD"],
         "android.injected.signing.key.alias" => ENV["ANDROID_KEY_ALIAS"],
         "android.injected.signing.key.password" => ENV["ANDROID_KEY_PASSWORD"],
-        "android.injected.version.code" => ENV["ANDROID_VERSION_CODE"],
-        "android.injected.version.name" => ENV["ANDROID_VERSION_NAME"],
+        # Plain -P properties read by app/build.gradle, NOT
+        # `android.injected.version.*`. AGP ignores those when the DSL sets a
+        # versionCode, which it did -- so the injected values were silently
+        # dropped and every build shipped as versionCode 1.
+        "niVersionCode" => ENV["ANDROID_VERSION_CODE"],
+        "niVersionName" => ENV["ANDROID_VERSION_NAME"],
       },
       print_command: false,
     )

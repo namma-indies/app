@@ -7,8 +7,18 @@ android {
         applicationId "org.nammaindies.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        // Read from -P properties, with the Capacitor template's values as the
+        // fallback for a local build.
+        //
+        // These were hardcoded, and `android.injected.version.code` -- which
+        // the Fastfile passed -- did not override them: AGP honours that
+        // injected property only where the DSL has not set one, so every AAB
+        // shipped as versionCode 1. The very first Play upload succeeded
+        // because nothing had been uploaded yet; the second failed with
+        // "Version code 1 has already been used", which reads like a Play
+        // problem and is actually this line.
+        versionCode Integer.parseInt(project.findProperty("niVersionCode") ?: "1")
+        versionName project.findProperty("niVersionName") ?: "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
