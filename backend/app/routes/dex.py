@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 
 from app.auth.deps import require_observer
 from app.deps import get_conn, get_storage
+from app.photos import thumb_key
 from app.storage.s3 import S3Storage
 
 router = APIRouter()
@@ -55,7 +56,7 @@ async def get_dex(
         if row["photo_id"] is not None:
             s3_key = row["s3_key"]
             url = await storage.url(s3_key)
-            thumb_url = await storage.url(s3_key.replace(".jpg", "_thumb.jpg"))
+            thumb_url = await storage.url(thumb_key(s3_key))
             sightings[sid]["photos"].append({"url": url, "thumb_url": thumb_url})
 
     return {"sightings": [sightings[sid] for sid in order]}
