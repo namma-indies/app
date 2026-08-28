@@ -217,3 +217,52 @@ async def test_one_row_per_sighting_not_per_photo(authed_client):
     sightings = (await client.get("/map")).json()["sightings"]
     assert len(sightings) == 1
     assert len(sightings[0]["photos"]) == 1, "the map needs one thumbnail, not all of them"
+
+
+@pytest.mark.asyncio
+async def test_the_thumbnail_choice_is_deterministic(authed_client):
+    """Which of a sighting's photos becomes its pin must not be left to the plan.
+
+    Every photo of a sighting is inserted in one transaction, and Postgres holds
+    now() constant across it, so they all carry an identical created_at
+    (measured: 22 of 22 multi-photo sightings in a dev corpus). Ordering on
+    created_at alone leaves the winner to whatever plan Postgres picks, so a
+    video sighting's pin can show a different frame on each load.
+
+    Note that asserting "two calls agree" does NOT catch this -- a small table
+    is returned in stable physical order, and that version of the test passed
+    with the bug still present. So this inserts a second photo whose id sorts
+    *below* the first while lying physically after it: the two orderings then
+    disagree about the answer, and only the tiebreak gives the low id.
+    """
+    from uuid import UUID
+
+    client, _ = authed_client
+    pool = client._transport.app.state.pool
+    r = await client.post(
+        "/sighting",
+        files={"photos": ("a.jpg", _jpeg(), "image/jpeg")},
+        data={
+            "geo_source": "device_gps",
+            "captured_at": "2026-07-19T10:00:00Z",
+            "lat": "12.97",
+            "lng": "77.59",
+        },
+    )
+    assert r.status_code == 201
+    sid = r.json()["sighting_id"]
+
+    async with pool.acquire() as c:
+        created_at = await c.fetchval(
+            "SELECT created_at FROM photos WHERE sighting_id = $1::uuid", sid)
+        await c.execute(
+            "INSERT INTO photos (id, sighting_id, s3_key, created_at) "
+            "VALUES ($1, $2::uuid, $3, $4)",
+            UUID(int=1),  # sorts below every uuid7
+            sid,
+            "sightings/x/aaa-lowest.webp",
+            created_at,
+        )
+
+    url = (await client.get("/map")).json()["sightings"][0]["photos"][0]["thumb_url"]
+    assert "aaa-lowest_thumb.webp" in url

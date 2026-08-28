@@ -205,3 +205,45 @@ export async function postSighting(
   });
   return handle<PostSightingResponse>(res);
 }
+
+/** A named, identified animal -- the thing a sighting is evidence *of*.
+ * Produced only when a human confirms two sightings are the same dog, so a
+ * dog with a single sighting cannot exist. */
+export interface Dog {
+  id: string;
+  /** Null until naming ships (issue #4); the card falls back to a number. */
+  name: string | null;
+  first_seen: string;
+  last_seen: string;
+  sighting_count: number;
+  /** How many different people have logged this animal. */
+  observer_count: number;
+  seen_by_me: boolean;
+  photos: string[];
+  lat: number | null;
+  lng: number | null;
+  tags: string[];
+  /** Nearest visual neighbours, best first. A ranked shortlist for a human to
+   * review -- explicitly NOT a claim that these are the same animal. On this
+   * population look-alikes outscore genuine matches, so no cut-off separates
+   * them; the ordering is the part that holds. */
+  looks_like: LookAlike[];
+}
+
+export interface LookAlike {
+  /** Another dog's id, resolvable against the same `dogs` list. */
+  id: string;
+  /** Cosine similarity in [-1, 1]. Shown, not thresholded on. */
+  similarity: number;
+}
+
+export interface DogsResponse {
+  dogs: Dog[];
+  /** Where the system would engage a human. A review hint, never a verdict. */
+  propose_min: number;
+}
+
+export async function getDogs(): Promise<DogsResponse> {
+  const res = await fetch(`${API_BASE}/dogs`, { credentials: "include" });
+  return handle<DogsResponse>(res);
+}

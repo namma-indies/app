@@ -648,3 +648,65 @@ button { font-family: inherit; }
   font-family: "Silkscreen", monospace; font-size: 0.48rem;
   color: var(--accent); margin-top: 0.2rem;
 }
+
+/* --- Dogs: the catalogue of identified individuals ----------------------
+   Deliberately not the journal card. A journal entry is one moment, so it
+   leads with a single photo; a dog is an animal seen repeatedly, so it leads
+   with a strip of them — the evidence that these sightings are one individual
+   is precisely that they look like each other. */
+.dogs { display: flex; flex-direction: column; gap: 0.85rem; margin-top: 0.25rem; }
+
+.dog-card {
+  background: var(--panel); border: 3px solid var(--line); border-radius: 4px;
+  box-shadow: 3px 3px 0 var(--shadow); padding: 0.6rem;
+  display: flex; flex-direction: column; gap: 0.55rem;
+}
+
+.dog-strip {
+  display: flex; gap: 0.35rem; overflow-x: auto;
+  /* Never wraps: a second row of thumbnails reads as a second dog. */
+  flex-wrap: nowrap;
+}
+.dog-strip img {
+  width: 76px; height: 76px; flex: 0 0 auto; object-fit: cover;
+  border: 3px solid var(--line); background: var(--frame); border-radius: 3px;
+}
+
+.dog-meta .name {
+  font-family: "Silkscreen", monospace; font-size: 0.72rem; color: var(--ink);
+  margin-bottom: 0.25rem;
+}
+.dog-meta .name.anon { color: var(--muted); }
+.dog-meta .line {
+  font-size: 0.8rem; line-height: 1.55; color: var(--muted);
+}
+.dog-meta .marks { display: flex; flex-wrap: wrap; gap: 0.28rem; margin-top: 0.4rem; }
+.dog-meta .mk {
+  font-family: "Silkscreen", monospace; font-size: 0.46rem;
+  background: var(--dust); color: var(--ink); border: 2px solid var(--line);
+  padding: 2px 5px;
+}
+
+/* Look-alikes: a review queue, styled as a question rather than a result.
+   Deliberately quieter than the card it sits in — these are candidates, and
+   giving them equal visual weight would read as "we found this dog again". */
+.lookalikes { margin-top: 0.55rem; border-top: 2px dashed var(--line); padding-top: 0.45rem; }
+.lookalike-head {
+  font-family: "Silkscreen", monospace; font-size: 0.46rem;
+  color: var(--muted); margin-bottom: 0.35rem;
+}
+.lookalike-row { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.lookalike { position: relative; width: 52px; }
+.lookalike img,
+.lookalike-blank {
+  width: 52px; height: 52px; object-fit: cover; display: block;
+  border: 2px solid var(--line); border-radius: 3px; background: var(--frame);
+}
+.lookalike-blank { display: flex; align-items: center; justify-content: center; font-size: 1rem; }
+.lookalike .score {
+  display: block; text-align: center; font-family: "Silkscreen", monospace;
+  font-size: 0.46rem; color: var(--muted); margin-top: 2px;
+}
+/* Above the configured propose threshold. Emphasis only — the app still
+   refuses to call it a match, and so should this. */
+.lookalike .score-high { color: var(--accent); font-weight: 700; }
