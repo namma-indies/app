@@ -33,8 +33,14 @@ export default defineConfig({
   ],
   server: {
     proxy: {
+      // Every path api.ts calls has to be listed here, or `npm run dev` serves
+      // the SPA shell for it and the call 404s. Production never shows this --
+      // Caddy fronts the API and the built assets on one origin -- so a missing
+      // entry only ever costs a developer an afternoon.
       "/sighting": { target: "http://localhost:8000", changeOrigin: true },
       "/dex": { target: "http://localhost:8000", changeOrigin: true },
+      "/map": { target: "http://localhost:8000", changeOrigin: true },
+      "/photo": { target: "http://localhost:8000", changeOrigin: true },
       "/dogs": { target: "http://localhost:8000", changeOrigin: true },
       "/proposal": { target: "http://localhost:8000", changeOrigin: true },
       "/auth": { target: "http://localhost:8000", changeOrigin: true },
