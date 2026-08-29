@@ -10,6 +10,26 @@ import { API_BASE } from "../apiBase";
  * The endpoints are the same ones /join uses; they answer JSON when asked,
  * so there is one implementation of the flow rather than two.
  */
+/** The Namma Indies mark -- a curled tail, the same path as the site's
+ *  favicon and the iOS app icon. This screen is the app's face for anyone
+ *  who hasn't signed in yet, so it should carry the mark rather than a
+ *  stock emoji: the guide-dog glyph that used to sit here read as a service
+ *  animal in a harness, which is the opposite of an indie on the street. */
+function Mark() {
+  return (
+    <svg className="brand-mark" viewBox="0 0 32 32" role="img" aria-label="Namma Indies">
+      <path
+        d="M9 25 C9 16 13 12 19 12 C24 12 27 15 27 19.5 C27 23.5 23.5 25.5 20.5 24 C18.3 22.9 18 20 20 18.7"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="3.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   const [mode, setMode] = useState<"email" | "passcode">("email");
   const [email, setEmail] = useState("");
@@ -78,10 +98,11 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
 
   return (
     <div className="screen gate">
-      <div className="big-paw">🐕‍🦺</div>
+      <Mark />
       <h2>Sign in to start</h2>
       <p className="hint">
-        indiedex, by Namma Indies, is invite-only while we pilot it.
+        indiedex, by Namma Indies. Log the street dogs you meet; we'll work out
+        who's who. Early days — anyone's welcome to join.
       </p>
 
       {error && <p className="signin-error" role="alert">{error}</p>}
@@ -89,13 +110,13 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
       {mode === "email" ? (
         <>
           <form className="signin-form" onSubmit={submitEmail}>
-            <label htmlFor="signin-email">Work email</label>
+            <label htmlFor="signin-email">Email</label>
             <input
               id="signin-email"
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@dognosis.tech"
+              placeholder="you@example.com"
               autoComplete="email"
               required
               disabled={busy}
@@ -117,7 +138,7 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
               id="signin-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="your work email works best"
+              placeholder="your email works best"
               autoComplete="name"
               required
               disabled={busy}
@@ -138,8 +159,8 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
             </button>
           </form>
           <p className="hint">
-            Using your work email as your name means your sightings follow you
-            when you later sign in properly.
+            Using your email as your name means your sightings follow you when
+            you later sign in properly.
           </p>
           <div className="signin-or">or</div>
           <button className="btn btn-secondary" onClick={() => { setMode("email"); setError(null); }}>

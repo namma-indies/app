@@ -354,6 +354,7 @@ button { font-family: inherit; }
   text-align: center; gap: 0.6rem; padding-top: 3rem;
 }
 .gate .big-paw { font-size: 3rem; }
+.gate .brand-mark { width: 3.5rem; height: 3.5rem; color: var(--accent); }
 .gate h2 { color: var(--accent); font-size: 1rem; }
 
 /* --- IndieDex screen --- */
