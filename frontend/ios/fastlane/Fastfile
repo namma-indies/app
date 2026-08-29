@@ -1,5 +1,16 @@
 default_platform(:ios)
 
+APP_ID = "org.nammaindies.app"
+
+# Apple takes 10-30 minutes to process a build. 40 attempts a minute apart
+# gives a generous margin without letting a genuinely stuck release hang a
+# runner indefinitely.
+MAX_DISTRIBUTE_ATTEMPTS = 40
+DISTRIBUTE_POLL_SECONDS = 60
+
+# App Store Connect's cap on "What to Test".
+MAX_CHANGELOG = 4000
+
 platform :ios do
   desc "Fetch/sync signing certs via match"
   lane :certs do
@@ -41,13 +52,102 @@ platform :ios do
     # The build number is separate and must simply keep climbing -- App Store
     # Connect rejects a duplicate for the same version. Asking TestFlight what
     # it already has is more reliable than any counter we could keep.
-    latest = latest_testflight_build_number(app_identifier: "org.nammaindies.app")
-    increment_build_number(xcodeproj: "App/App.xcodeproj", build_number: latest + 1)
+    latest = latest_testflight_build_number(app_identifier: APP_ID)
+    build_number = latest + 1
+    increment_build_number(xcodeproj: "App/App.xcodeproj", build_number: build_number)
+
+    # Hand the exact build number to the workflow. Without it the distribute
+    # job can only ask for "the latest build of version X", which is a
+    # different build than this one the moment two releases overlap or a
+    # dispatched build lands in between.
+    if ENV["GITHUB_OUTPUT"]
+      File.open(ENV["GITHUB_OUTPUT"], "a") { |f| f.puts("build_number=#{build_number}") }
+    end
     build_app(
       workspace: "App/App.xcworkspace",
       scheme: "App",
       export_method: "app-store",
     )
+    # Uploads and returns immediately. Waiting here would park a macOS runner
+    # -- billed at 10x -- for the 10-30 minutes Apple takes to process a
+    # build, so handing the build to testers is a separate lane on a cheap
+    # runner instead. See `distribute`.
     upload_to_testflight(skip_waiting_for_build_processing: true)
+  end
+
+  desc "Hand an already-uploaded build to the external testers"
+  lane :distribute do
+    # Uploading a build does NOT put it in front of anyone. Until 2026-08-29
+    # nothing did this step, so every tagged release since 2026-08-08 sat
+    # unassigned in App Store Connect while the external group kept serving
+    # the build from 2026-08-09.
+    #
+    # There is no console setting that fixes this: "Enable automatic
+    # distribution" is an *internal* group feature. External groups have to be
+    # given each build, by hand or through this API.
+    app_store_connect_api_key(
+      key_id: ENV["ASC_KEY_ID"],
+      issuer_id: ENV["ASC_ISSUER_ID"],
+      key_content: ENV["ASC_API_KEY"],
+      is_key_content_base64: false,
+    )
+
+    version = ENV["RELEASE_VERSION_NAME"].to_s.strip
+    raise "distribute needs RELEASE_VERSION_NAME" if version.empty?
+    build_number = ENV["RELEASE_BUILD_NUMBER"].to_s.strip
+    raise "distribute needs RELEASE_BUILD_NUMBER" if build_number.empty?
+
+    groups = ENV.fetch("TESTFLIGHT_GROUPS", "dognosis").split(",").map(&:strip)
+
+    # Fail fast on a bad API key, so the retry loop below cannot spend half an
+    # hour re-attempting an auth error and then report it as a timeout.
+    latest_testflight_build_number(app_identifier: APP_ID)
+
+    # App Store Connect caps "What to Test" at 4000 characters and rejects the
+    # whole call over it. Our tag annotations are real release notes and can
+    # run long, so trim rather than fail the release on a formatting limit.
+    notes = ENV["RELEASE_CHANGELOG"].to_s.strip
+    notes = "Release #{version}." if notes.empty?
+    if notes.length > MAX_CHANGELOG
+      notes = notes[0, MAX_CHANGELOG - 4].rstrip + "\n..."
+    end
+
+    # `distribute_only` does NOT poll: pilot's processing wait lives in the
+    # upload path, which we deliberately skip so the macOS runner can exit. So
+    # this job starts while Apple is still processing, and the first attempts
+    # are expected to fail. Retrying the call is used rather than inspecting
+    # the build's state because it does not depend on spaceship's internal
+    # predicate names staying put.
+    attempts = 0
+    begin
+      distribute_build(version: version, build_number: build_number,
+                       groups: groups, notes: notes)
+    rescue StandardError => e
+      attempts += 1
+      raise if attempts >= MAX_DISTRIBUTE_ATTEMPTS
+      UI.important("Not distributable yet (attempt #{attempts}/#{MAX_DISTRIBUTE_ATTEMPTS}): " \
+                   "#{e.message.to_s.lines.first.to_s.strip}")
+      sleep(DISTRIBUTE_POLL_SECONDS)
+      retry
+    end
+  end
+
+  private_lane :distribute_build do |options|
+    upload_to_testflight(
+      app_identifier: APP_ID,
+      # No binary in hand: this only flips an already-uploaded build over to a
+      # group. `distribute_external` is incompatible with
+      # skip_waiting_for_build_processing, which is exactly why it could never
+      # have lived in the upload lane above.
+      distribute_only: true,
+      distribute_external: true,
+      groups: options[:groups],
+      # Both, not just the version: Build.all filters on each, and version
+      # alone would happily match a neighbouring build.
+      app_version: options[:version],
+      build_number: options[:build_number],
+      notify_external_testers: true,
+      changelog: options[:notes],
+    )
   end
 end
