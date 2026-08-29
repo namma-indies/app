@@ -22,6 +22,9 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.name }}
       changelog: ${{ steps.version.outputs.changelog }}
+      # The exact build this job produced. Distributing by version alone would
+      # let a neighbouring build be picked up instead.
+      build_number: ${{ steps.upload.outputs.build_number }}
     defaults:
       run:
         working-directory: frontend
@@ -108,6 +111,7 @@ jobs:
         run: npx cap sync ios
 
       - name: Build and upload to TestFlight
+        id: upload
         working-directory: frontend/ios
         env:
           ASC_API_KEY: ${{ secrets.ASC_API_KEY }}
@@ -142,6 +146,9 @@ jobs:
     needs: build_and_upload
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
+    # Apple's processing wait is 10-30 minutes and the lane polls through it.
+    # This is the backstop for a build that never becomes distributable.
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
 
@@ -158,6 +165,7 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           RELEASE_VERSION_NAME: ${{ needs.build_and_upload.outputs.version }}
+          RELEASE_BUILD_NUMBER: ${{ needs.build_and_upload.outputs.build_number }}
           # Shown to testers as "What to Test". The tag's annotation is what a
           # release note already is, so use it rather than inventing a second
           # place to write one.
