@@ -12,9 +12,11 @@
 
 **Namma Indies** *("our indies" — `namma` is "ours" in Kannada; *indies* are India's street/community dogs)* is an open, community-built system for photographing street dogs, estimating dog **populations** over time, and — the hard part — re-identifying **individual** dogs across sightings so a photo history can become a longitudinal health record.
 
-This repository is the **IndieDex** — the capture-and-collect app that feeds that system. It's a mobile **PWA**: you photograph a street dog, it records where and when, and you browse your sightings on a map and in a gallery. Every sighting is stored against an individual "slot" that starts empty and can be filled later — by hand or, eventually, by re-identification.
+This repository is the **IndieDex** — the capture-and-collect app that feeds that system. It's a mobile **PWA** (with native iOS and Android wrappers): you photograph a street dog, it records where and when, and you browse sightings on a map and in a gallery. Every sighting is stored against an individual "slot" that starts empty and gets filled by re-identification plus a human confirming it.
 
-> **Status: MVP.** Capture and browse work end-to-end. Individual re-identification (the ML core) is deliberately **not** built yet — the schema is designed so it drops in with no migration. See the [roadmap](#roadmap).
+> **Status: pilot.** Capture, browse and **re-identification** all run in production. A photo is detected, cropped, embedded, and matched against nearby sightings; a human confirms or rejects the proposal, and a confirmed match mints an individual. Naming those individuals is the next piece — see the [roadmap](#roadmap).
+>
+> **On re-ID accuracy, honestly:** it is governed by how many photos of that dog are already stored — measured **37% top-1 with one prior photo, 83% with eight**. And on this population look-alikes *outscore* genuine matches, so no similarity cut-off separates them. The system therefore proposes a ranked shortlist and never asserts a match; a person decides. Numbers and method are in [`AGENTS.md`](AGENTS.md).
 
 ## Principles
 
@@ -24,12 +26,15 @@ This repository is the **IndieDex** — the capture-and-collect app that feeds t
 
 ## Features (what works today)
 
-- 📷 **Mobile capture** — snap a street dog; automatic GPS + timestamp; installable as a home-screen PWA.
-- 🗺️ **IndieDex** — browse your sightings as photo pins on a map and as a gallery, per contributor.
+- 📷 **Mobile capture** — snap a street dog; automatic GPS + timestamp; installable as a home-screen PWA, and shipped as native iOS and Android apps against the same API.
+- 🎥 **Or record a clip** — frames are extracted server-side and kept as one multi-view sighting; the video itself is never stored. Eight views of a dog beat one by a wide margin at matching time.
+- 🖼️ **Import from your camera roll** — for a dog you photographed before you had the app. It keeps the photo's *own* date and place, read from EXIF; where a file has been stripped, it asks rather than assuming here-and-now.
+- 🐕 **Re-identification** — YOLO26x finds the animal, MiewID embeds the crop, and candidates are retrieved within 1 km via PostGIS → HNSW → an exact re-rank. Proposals go to a human; a confirmed verdict mints an individual.
+- 🗂️ **Dogs** — the identified animals, one card each, with their photos, how many people have seen them, and a ranked shortlist of look-alikes for review.
+- 🗺️ **Map** — sightings as photo pins, clustered; yours by default, or the whole contributor cohort's.
 - 🏷️ **Optional structured fields** — sex, ear-notch (sterilization marker), condition, notes — all optional, stored flexibly.
-- 🔐 **Passwordless auth** — magic-link sign-in behind a pluggable provider seam (social login drops in later).
-- 🖼️ **Privacy-aware photos** — EXIF/GPS metadata stripped on upload; a full-fidelity original is kept for future re-ID plus a thumbnail for the gallery.
-- 🧱 **Re-ID-ready schema** — the full data model (individuals, embeddings, match proposals, confirmations) ships from day one, empty, waiting.
+- 🔐 **Passwordless auth** — magic-link sign-in behind a pluggable provider seam, with a shared-passcode door for closed pilots.
+- 🔒 **Privacy-aware photos** — capture metadata is read once, then stripped: stored images carry no EXIF, no embedded GPS. A full-fidelity WebP original is kept for the vision models, plus a thumbnail for the gallery.
 
 ## Tech stack
 
@@ -52,6 +57,7 @@ backend/          FastAPI app, migrations, tests (uv project)
   migrations/     Alembic — 0001 is the full schema
   tests/          pytest (unit + integration against Postgres/MinIO)
 frontend/         React + Vite PWA (capture + IndieDex screens)
+  ios/ android/  Capacitor wrappers — same web build, shipped to TestFlight / Play
 docker/db/        Postgres + PostGIS + pgvector image
 deploy/           Caddyfile, entrypoint, provisioning notes
 docs/             design specs and build notes
@@ -120,12 +126,12 @@ Caddy provisions TLS automatically for `$APP_DOMAIN` (HTTPS is required — the 
 
 ## Roadmap
 
-The MVP collects data; these light up the tables that already exist:
-
-- [ ] **Individuals & manual identity** — group sightings into named dogs by hand.
-- [ ] **Re-identification** — an embedding worker + geo/time-priored candidate matching (the core research bet).
-- [ ] **Video capture** — record a clip → extract diverse frames as one multi-view sighting *(in review: [#3](https://github.com/namma-indies/app/pull/3))*.
-- [ ] **Public heatmap + population estimates** with honest confidence intervals.
+- [x] **Re-identification** — embedding + geo/time-priored candidate matching, the core research bet. Live.
+- [x] **Video capture** — record a clip → diverse frames as one multi-view sighting.
+- [x] **Individuals** — confirmed matches mint an identity, browsable in the Dogs tab.
+- [ ] **Naming** — a name is a claim of relationship, not a field, so it needs rules about who may name and what happens when two people disagree ([#4](https://github.com/namma-indies/app/issues/4)). Individuals show a number until then.
+- [ ] **A public surface** — individual profiles public, but never a named animal's precise *and* current *and* predictable location ([#5](https://github.com/namma-indies/app/issues/5)).
+- [ ] **Population estimates** with honest confidence intervals.
 - [ ] **WhatsApp intake** for public contribution.
 
 Design details live in [`docs/`](docs/) and [`build-foundations.md`](build-foundations.md).
