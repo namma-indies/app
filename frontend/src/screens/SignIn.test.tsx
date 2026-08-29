@@ -33,12 +33,35 @@ describe("SignIn", () => {
 
   it("sends credentials on the email submit too", async () => {
     render(<SignIn onSignedIn={vi.fn()} />);
-    await userEvent.type(screen.getByLabelText("Work email"), "a@b.com");
+    await userEvent.type(screen.getByLabelText("Email"), "a@b.com");
     await userEvent.click(screen.getByText("Email me a link"));
 
     expect(fetch).toHaveBeenCalledWith(
       expect.stringContaining("/auth/email"),
       expect.objectContaining({ credentials: "include" }),
     );
+  });
+
+  it("does not tell a curious stranger the pilot is invite-only", async () => {
+    // EMAIL_OPEN_SIGNUP is on in production -- any address is accepted. The
+    // copy said "invite-only" for weeks after that flipped, which turns the
+    // one link we hand to everyone into a door that reads as shut.
+    render(<SignIn onSignedIn={vi.fn()} />);
+    expect(screen.queryByText(/invite-only/i)).not.toBeInTheDocument();
+  });
+
+  it("does not ask for a Dognosis address -- Namma Indies is its own thing", async () => {
+    render(<SignIn onSignedIn={vi.fn()} />);
+    expect(screen.getByLabelText("Email")).not.toHaveAttribute(
+      "placeholder",
+      expect.stringContaining("dognosis"),
+    );
+    expect(screen.queryByText(/work email/i)).not.toBeInTheDocument();
+  });
+
+  it("leads with the Namma Indies mark, not a stock emoji", async () => {
+    // The sign-in screen is the app's face before anyone is signed in.
+    render(<SignIn onSignedIn={vi.fn()} />);
+    expect(screen.getByRole("img", { name: "Namma Indies" })).toBeInTheDocument();
   });
 });
