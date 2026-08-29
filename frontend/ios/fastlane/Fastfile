@@ -48,6 +48,57 @@ platform :ios do
       scheme: "App",
       export_method: "app-store",
     )
+    # Uploads and returns immediately. Waiting here would park a macOS runner
+    # -- billed at 10x -- for the 10-30 minutes Apple takes to process a
+    # build, so handing the build to testers is a separate lane on a cheap
+    # runner instead. See `distribute`.
     upload_to_testflight(skip_waiting_for_build_processing: true)
+  end
+
+  desc "Hand an already-uploaded build to the external testers"
+  lane :distribute do
+    # Uploading a build does NOT put it in front of anyone. Until 2026-08-29
+    # nothing did this step, so every tagged release since 2026-08-08 sat
+    # unassigned in App Store Connect while the external group kept serving
+    # the build from 2026-08-09.
+    #
+    # There is no console setting that fixes this: "Enable automatic
+    # distribution" is an *internal* group feature. External groups have to be
+    # given each build, by hand or through this API.
+    app_store_connect_api_key(
+      key_id: ENV["ASC_KEY_ID"],
+      issuer_id: ENV["ASC_ISSUER_ID"],
+      key_content: ENV["ASC_API_KEY"],
+      is_key_content_base64: false,
+    )
+
+    version = ENV["RELEASE_VERSION_NAME"].to_s.strip
+    raise "distribute needs RELEASE_VERSION_NAME" if version.empty?
+
+    groups = ENV.fetch("TESTFLIGHT_GROUPS", "dognosis").split(",").map(&:strip)
+
+    # App Store Connect caps "What to Test" at 4000 characters and rejects the
+    # whole call over it. Our tag annotations are real release notes and can
+    # run long, so trim rather than fail the release on a formatting limit.
+    MAX_CHANGELOG = 4000
+    notes = ENV["RELEASE_CHANGELOG"].to_s.strip
+    notes = "Release #{version}." if notes.empty?
+    if notes.length > MAX_CHANGELOG
+      notes = notes[0, MAX_CHANGELOG - 4].rstrip + "\n..."
+    end
+
+    upload_to_testflight(
+      app_identifier: "org.nammaindies.app",
+      # No binary in hand: this only flips an already-uploaded build over to a
+      # group. `distribute_external` is incompatible with
+      # skip_waiting_for_build_processing, which is exactly why it could never
+      # have lived in the upload lane above.
+      distribute_only: true,
+      distribute_external: true,
+      groups: groups,
+      app_version: version,
+      notify_external_testers: true,
+      changelog: notes,
+    )
   end
 end
