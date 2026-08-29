@@ -80,6 +80,7 @@ flowchart TD
     Q -- else --> T["unmatched"]
     S --> U["human verdict<br/>POST /proposal/{id}"]
     U --> V[("individuals + confirmations")]
+    V --> W["GET /dogs — the identities, read back"]
 
     style SYNC fill:#0b3d2e22,stroke:#2d7a5f
     style BG fill:#3d2e0b22,stroke:#7a5f2d

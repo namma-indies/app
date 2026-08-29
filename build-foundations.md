@@ -125,6 +125,12 @@ Cold-start the embedding without waiting for feeders:
 - No GPU provisioning, no real-time embedding.
 - No Elasticsearch, Redis, microservices, or separate API tier.
 - No public per-dog profile/location pages.
+  > **Status, 2026-08-29:** still held. Per-dog cards *do* exist now (the Dogs
+  > tab, `GET /dogs`), but behind `require_observer` over a passcode- and
+  > allowlist-gated cohort — they are internal, not public, so this non-goal is
+  > intact rather than superseded. Issue #5 proposes relaxing it deliberately
+  > (individual profiles public; precise-current-predictable location gated),
+  > which would be a decision to record here, not a drift to discover.
 - No admin console beyond what's needed to run the pilot.
 - No gait/video signal (future).
 - No nose-print pipeline for the street (only potentially relevant in-clinic; ~99% accuracy figures are close-range controlled-capture, irrelevant to street photos).
@@ -132,6 +138,15 @@ Cold-start the embedding without waiting for feeders:
 ## 10. Guardrails as code
 
 - **Aggregate-only public surface.** Individual-level location data is internal/clinic-facing only, access-controlled.
+  > **Status, 2026-08-29:** held, and currently trivially so — there is no
+  > unauthenticated *data* surface. Every route that returns a sighting, a
+  > photo or an individual sits behind `require_observer`. What is open carries
+  > no data: the sign-in doors (`/join`, `/auth/*`), `/health`, and the static
+  > `/.well-known/apple-app-site-association` the native apps need.
+  > Note that *within* the cohort, `/map` and `/dogs` both show full precision;
+  > that is a deliberate trade that holds only while the cohort is vetted, and
+  > it is what issue #5's `resolve_precision` exists to replace before anything
+  > opens up.
 - **Phone-backed identity** (store `phone_hash`, not raw numbers).
 - **Privacy**: strip/avoid persisting people's faces, plates, house numbers where feasible; documented position.
 - **Estimates carry uncertainty** — API never returns a point population number without its CI.

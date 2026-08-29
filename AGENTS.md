@@ -57,6 +57,7 @@ flowchart TD
     R -- else --> U["unmatched"]
     T --> V["POST /proposal/{id}<br/>same | different"]
     V --> W[("individuals + confirmations<br/>the only path that mints an identity")]
+    W --> X["GET /dogs<br/>one card per animal · look-alikes ranked, never thresholded"]
 
     style SYNC fill:#0b3d2e22,stroke:#2d7a5f
     style BG fill:#3d2e0b22,stroke:#7a5f2d
@@ -72,6 +73,27 @@ Verified end to end on real uploads: two sightings of the same dog scored
 deliberately unreachable — so every identity comes from a human verdict. The
 measurements below say that is not conservatism, it is the only defensible
 setting at this data density.
+
+---
+
+## Routes
+
+| route | what it answers |
+|---|---|
+| `POST /sighting` | a capture: photo(s) or a clip, plus where and when |
+| `POST /photo/metadata` | camera-roll preflight — what does this file say about itself? Takes only the first 128KB |
+| `GET /dex` | **my** sightings, with full-resolution originals for the gallery |
+| `GET /map` | the **cohort's** sightings as pins, thumbnails only, optional `bbox` |
+| `GET /dogs` | identified individuals, one card each, with ranked look-alikes |
+| `GET /sighting/{id}/match` · `POST /proposal/{id}` | candidates, and the human verdict on them |
+
+`/dex` and `/map` differ deliberately: `/dex` means "mine" and is the ownership
+semantics `resolve_sighting` reads, while `/map` is cohort-wide and carries
+`mine` per sighting so a client filters rather than refetches. `/map` and
+`/dogs` both show **full precision to any signed-in observer**, which is safe
+only while the cohort stays passcode- and allowlist-gated. Issue #5's
+`resolve_precision` has to land on both at once — a coarsened map beside a
+precise dog card protects nothing.
 
 ---
 
