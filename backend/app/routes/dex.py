@@ -31,7 +31,10 @@ async def get_dex(
         FROM sightings s
         LEFT JOIN photos p ON p.sighting_id = s.id
         WHERE s.observer_id = $1
-        ORDER BY s.captured_at DESC, p.created_at ASC
+        -- p.id breaks the tie: photos of one sighting share created_at exactly
+        -- (single transaction, constant now()), so without it the order of a
+        -- sighting's photos is arbitrary and can differ between requests.
+        ORDER BY s.captured_at DESC, p.created_at ASC, p.id ASC
         """,
         observer_id,
     )

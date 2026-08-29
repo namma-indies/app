@@ -105,8 +105,15 @@ async def get_map(
     # The DISTINCT ON key leads the sort, as Postgres requires; the ordering
     # that actually matters (newest first) is applied to the collapsed set
     # below, since DISTINCT ON dictates this one.
+    #
+    # p.id breaks the tie, and it is not decorative. Every photo of a sighting
+    # is inserted in one transaction and Postgres holds now() constant across
+    # it, so they all carry an identical created_at -- measured at 22 of 22
+    # multi-photo sightings. With created_at alone the winner is left to the
+    # plan, so the pin for a video sighting can show a different frame on each
+    # load. p.id is uuid7, so it tiebreaks by real insertion order.
     sql += f"""
-        ORDER BY s.id, p.created_at ASC
+        ORDER BY s.id, p.created_at ASC, p.id ASC
         LIMIT ${len(args) + 1}
     """
     args.append(limit)

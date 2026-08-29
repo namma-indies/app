@@ -7,6 +7,7 @@ import {
   type Sighting,
 } from "../api";
 import DogMap from "../components/DogMap";
+import Dogs from "./Dogs";
 
 const TAG_LABELS: Record<string, string> = {
   male: "♂ MALE",
@@ -39,7 +40,7 @@ function where(s: Sighting): string {
 
 export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [sightings, setSightings] = useState<Sighting[] | null>(null);
-  const [view, setView] = useState<"map" | "journal">("map");
+  const [view, setView] = useState<"map" | "journal" | "dogs">("map");
   const [selected, setSelected] = useState<Sighting | null>(null);
   // The map can show the whole cohort's sightings, not just the viewer's.
   // Defaults to MINE: that renders straight from the /dex data already loaded
@@ -139,9 +140,14 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
         <button className={view === "journal" ? "active" : ""} onClick={() => setView("journal")}>
           JOURNAL
         </button>
+        <button className={view === "dogs" ? "active" : ""} onClick={() => setView("dogs")}>
+          DOGS
+        </button>
       </div>
 
-      {view === "map" ? (
+      {view === "dogs" ? (
+        <Dogs onUnauthorized={onUnauthorized} />
+      ) : view === "map" ? (
         <>
           <div className="scope-toggle">
             <button

@@ -41,6 +41,7 @@ export default defineConfig({
       "/dex": { target: "http://localhost:8000", changeOrigin: true },
       "/map": { target: "http://localhost:8000", changeOrigin: true },
       "/photo": { target: "http://localhost:8000", changeOrigin: true },
+      "/dogs": { target: "http://localhost:8000", changeOrigin: true },
       "/proposal": { target: "http://localhost:8000", changeOrigin: true },
       "/auth": { target: "http://localhost:8000", changeOrigin: true },
     },
