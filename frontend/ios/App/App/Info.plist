@@ -64,6 +64,13 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+	<!-- Export compliance. IndieDex uses only HTTPS/TLS to reach its own API,
+	     which is exempt under Apple's standard-encryption carve-out. Declaring
+	     it here answers the question at build time; without it every upload
+	     lands in App Store Connect as "Missing Compliance" and cannot be
+	     distributed to testers until someone clicks through the prompt. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSCameraUsageDescription</key>
 	<string>Namma Indies uses your camera to photograph indie dogs you spot.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
