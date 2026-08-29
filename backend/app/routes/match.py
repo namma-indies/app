@@ -13,10 +13,12 @@ from fastapi import APIRouter, Depends, Form, HTTPException
 
 from app.auth.deps import require_observer
 from app.config import settings
-from app.deps import get_conn
+from app.deps import get_conn, get_storage
 from app.embed import MODEL_NAME
 from app.ids import uuid7
 from app.matching import find_candidates
+from app.photos import thumb_key
+from app.storage.s3 import S3Storage
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +137,95 @@ async def get_match(
     }
 
 
+MAX_REVIEW = 100
+
+
+@router.get("/proposals")
+async def list_proposals(
+    observer_id: UUID = Depends(require_observer),
+    conn=Depends(get_conn),
+    storage: S3Storage = Depends(get_storage),
+):
+    """Matches this observer can decide: both sightings are their own.
+
+    Separate from `GET /sighting/{id}/match`, which answers "what about this
+    one sighting" and needs the caller to already know which sighting to ask
+    about. Nothing knows that -- proposals are written by a background task
+    minutes after the upload, long after the contributor has put the phone
+    away. Without a list they are unreachable, which is why `individuals` is
+    empty in production despite the pipeline running end to end.
+
+    Returns both sides with a thumbnail each, because the question is "are
+    these the same dog" and it cannot be answered from ids and a score.
+
+    Cross-observer proposals are excluded rather than shown read-only: an
+    entry you cannot act on, with no route to anyone who can, is a dead end
+    that teaches people the queue is broken. They wait for the adjudication
+    path in issue #29.
+    """
+    rows = await conn.fetch(
+        """
+        SELECT mp.id, mp.score,
+               a.id AS a_id, a.captured_at AS a_when, pa.s3_key AS a_key,
+               b.id AS b_id, b.captured_at AS b_when, pb.s3_key AS b_key
+        FROM match_proposals mp
+        JOIN sightings a ON a.id = mp.sighting_id
+        JOIN sightings b ON b.id = mp.candidate_sighting_id
+        -- One representative photo per side. DISTINCT ON inside a lateral
+        -- rather than a join, or a sighting with several frames multiplies the
+        -- proposal into several rows.
+        LEFT JOIN LATERAL (
+            SELECT s3_key FROM photos WHERE sighting_id = a.id
+            ORDER BY created_at, id LIMIT 1
+        ) pa ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT s3_key FROM photos WHERE sighting_id = b.id
+            ORDER BY created_at, id LIMIT 1
+        ) pb ON TRUE
+        WHERE mp.status = 'pending'
+          AND a.observer_id = $1
+          AND b.observer_id = $1
+          AND a.review_status <> 'rejected'
+          AND b.review_status <> 'rejected'
+        ORDER BY mp.score DESC
+        LIMIT $2
+        """,
+        observer_id,
+        MAX_REVIEW,
+    )
+    if not rows:
+        return {"proposals": [], "propose_min": settings.reid_propose_min}
+
+    keys, index = [], {}
+    for i, r in enumerate(rows):
+        for side in ("a", "b"):
+            if r[f"{side}_key"]:
+                index[(i, side)] = len(keys)
+                keys.append(thumb_key(r[f"{side}_key"]))
+    urls = await storage.urls(keys)
+
+    def thumb(i, side):
+        j = index.get((i, side))
+        return urls[j] if j is not None else None
+
+    return {
+        "propose_min": settings.reid_propose_min,
+        "proposals": [
+            {
+                "id": str(r["id"]),
+                "score": round(float(r["score"]), 4),
+                "a": {"sighting_id": str(r["a_id"]),
+                      "date": r["a_when"].date().isoformat(),
+                      "thumb_url": thumb(i, "a")},
+                "b": {"sighting_id": str(r["b_id"]),
+                      "date": r["b_when"].date().isoformat(),
+                      "thumb_url": thumb(i, "b")},
+            }
+            for i, r in enumerate(rows)
+        ],
+    }
+
+
 @router.post("/proposal/{proposal_id}")
 async def resolve_proposal(
     proposal_id: UUID,
@@ -154,14 +245,57 @@ async def resolve_proposal(
     set for the thresholds in settings, which currently rest on almost no data.
     """
     p = await conn.fetchrow(
-        "SELECT sighting_id, candidate_individual_id, candidate_sighting_id, status "
-        "FROM match_proposals WHERE id=$1",
+        """
+        SELECT mp.sighting_id, mp.candidate_individual_id, mp.candidate_sighting_id,
+               mp.status,
+               s.observer_id AS sighting_observer,
+               cs.observer_id AS candidate_observer
+        FROM match_proposals mp
+        JOIN sightings s ON s.id = mp.sighting_id
+        LEFT JOIN sightings cs ON cs.id = mp.candidate_sighting_id
+        WHERE mp.id = $1
+        """,
         proposal_id,
     )
     if p is None:
         raise HTTPException(status_code=404, detail="no such proposal")
     if p["status"] != "pending":
         raise HTTPException(status_code=409, detail=f"already {p['status']}")
+
+    # WHO MAY SAY TWO SIGHTINGS ARE ONE DOG
+    # -------------------------------------
+    # You may decide about photographs you took. That is standing earned by
+    # contribution rather than granted by a form, which is the model issue #5
+    # describes, and it needs no new schema -- observer_id has always been on
+    # the row.
+    #
+    # It is also the case where the judgement is actually sound: the person who
+    # took both photographs remembers the animal, the street and the day. A
+    # stranger has only the pixels, and MiewID's own numbers say pixels are not
+    # enough -- two different dogs that resemble each other score 0.7122 while
+    # the best score between two sightings of the SAME dog was 0.5532.
+    #
+    # Cross-observer merges are deliberately NOT refused outright: they are the
+    # ones that unify the population, and forbidding them would leave every
+    # observer with a private dex that never joins up. They stay `pending` for
+    # an adjudicator instead -- see issue #29. Until that lands this is a 403,
+    # which leaves the proposal untouched and re-decidable rather than
+    # consuming it with a verdict nobody was entitled to give.
+    #
+    # A proposal against an existing individual (candidate_sighting_id NULL) is
+    # not ownable in this sense -- an individual belongs to no one -- so it
+    # takes the same route.
+    both_mine = (
+        p["sighting_observer"] == observer_id
+        and p["candidate_observer"] is not None
+        and p["candidate_observer"] == observer_id
+    )
+    if not both_mine:
+        raise HTTPException(
+            status_code=403,
+            detail="only the observer who logged both sightings can decide this "
+                   "match; it stays open for review",
+        )
 
     sighting_id = p["sighting_id"]
     individual_id = p["candidate_individual_id"]

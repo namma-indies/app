@@ -251,3 +251,47 @@ export async function getDogs(): Promise<DogsResponse> {
   const res = await fetch(`${API_BASE}/dogs`, { credentials: "include" });
   return handle<DogsResponse>(res);
 }
+
+/** One side of a proposed match. */
+export interface MatchSide {
+  sighting_id: string;
+  date: string;
+  thumb_url: string | null;
+}
+
+/** A pair the model thinks might be one dog, awaiting a human. */
+export interface Proposal {
+  id: string;
+  /** Cosine similarity. Shown so a reviewer can calibrate their own eye --
+   * never used by the UI to decide anything. */
+  score: number;
+  a: MatchSide;
+  b: MatchSide;
+}
+
+export interface ProposalsResponse {
+  proposals: Proposal[];
+  propose_min: number;
+}
+
+export async function getProposals(): Promise<ProposalsResponse> {
+  const res = await fetch(`${API_BASE}/proposals`, { credentials: "include" });
+  return handle<ProposalsResponse>(res);
+}
+
+/** Record a verdict. `same` merges the two sightings into one individual --
+ * minting it if neither had an identity yet -- and is not undoable through the
+ * app, which is why the caller confirms first. */
+export async function resolveProposal(
+  id: string,
+  verdict: "same" | "different",
+): Promise<void> {
+  const form = new FormData();
+  form.append("verdict", verdict);
+  const res = await fetch(`${API_BASE}/proposal/${id}`, {
+    method: "POST",
+    credentials: "include",
+    body: form,
+  });
+  await handle<unknown>(res);
+}
