@@ -267,6 +267,30 @@ async def resolve_sighting(
         limit=max_candidates,
     )
 
+    # A human verdict outranks the model, permanently.
+    #
+    # Re-running resolution used to overwrite whatever it found. For a sighting
+    # someone had already confirmed, where the model no longer proposes anything
+    # above the bar, the UPDATEs below set individual_id = NULL and
+    # match_status = 'unmatched' -- silently erasing the verdict.
+    #
+    # Reachable, not theoretical: `backfill_embeddings.py --resolve` calls this
+    # over existing sightings, and it is exactly what you run after a model or
+    # threshold change -- both of which move scores, which is the case that
+    # triggers it. Since auto_merge_min is deliberately unreachable, a human
+    # verdict is the ONLY way a sighting becomes 'confirmed', so this destroyed
+    # the scarcest data in the system: the labelled pairs the thresholds are
+    # meant to be fitted against.
+    #
+    # `confirmations` keeps the audit trail, so the loss is recoverable in
+    # principle -- but nothing reads it back, and the dog quietly loses the
+    # sighting in the meantime.
+    settled = await conn.fetchrow(
+        "SELECT individual_id, match_status FROM sightings WHERE id = $1", sighting_id
+    )
+    if settled is not None and settled["match_status"] == "confirmed":
+        return MatchOutcome("confirmed", settled["individual_id"], [], [])
+
     # Clear any previous pending proposals for this sighting before rewriting.
     await conn.execute(
         "DELETE FROM match_proposals WHERE sighting_id = $1 AND status = 'pending'",
@@ -275,8 +299,10 @@ async def resolve_sighting(
 
     if not cands:
         await conn.execute(
+            # Belt-and-braces against the early return above: an unlink
+            # must never touch a human-confirmed row.
             "UPDATE sightings SET match_status='unmatched', individual_id=NULL "
-            "WHERE id=$1",
+            "WHERE id=$1 AND match_status <> 'confirmed'",
             sighting_id,
         )
         return MatchOutcome("unmatched", None, [], [])
@@ -303,8 +329,10 @@ async def resolve_sighting(
     proposable = [c for c in cands if c.similarity >= propose_min]
     if not proposable:
         await conn.execute(
+            # Belt-and-braces against the early return above: an unlink
+            # must never touch a human-confirmed row.
             "UPDATE sightings SET match_status='unmatched', individual_id=NULL "
-            "WHERE id=$1",
+            "WHERE id=$1 AND match_status <> 'confirmed'",
             sighting_id,
         )
         return MatchOutcome("unmatched", None, cands, [])
