@@ -389,9 +389,14 @@ export default function Capture() {
           {video ? (
             <div className="clip-ready">
               <span className="spot-label">CLIP READY</span>
+              {/* This used to promise the clip was never stored, which is no
+                  longer true: it is kept so a better model can re-read the
+                  original footage later. Saying so plainly matters more than
+                  the reassurance did -- a clip records more of a street than a
+                  still does. */}
               <p className="hint">
-                We'll keep the clearest frames from it. The clip itself is
-                never stored.
+                We'll keep the clearest frames, and the clip itself, so we can
+                re-check it as our matching improves.
               </p>
               <button type="button" className="link-btn" onClick={removeVideo}>
                 Remove clip

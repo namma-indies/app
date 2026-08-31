@@ -232,22 +232,38 @@ async def resolve_sighting(
     proposals, so a re-embed after a model upgrade does not accumulate
     duplicates.
     """
-    # Every frame of this sighting, not just the first. A clip contributes six
-    # or so; using one of them throws away the evidence the clip was for.
-    rows = await conn.fetch(
+    # Prefer the sighting's own mean vector when it has one: the frames of a
+    # clip are one view sampled repeatedly, so their average is that view with
+    # the per-frame noise taken out, and it is a single cleaner probe rather
+    # than several noisy ones. Falls back to per-frame vectors for sightings
+    # embedded before the mean existed, and for any whose mean could not be
+    # computed -- so this needs no backfill to be correct, only to be optimal.
+    mean = await conn.fetchrow(
         """
-        SELECT e.vec_miew::text AS vec,
-               ST_Y(s.geog::geometry) AS lat,
-               ST_X(s.geog::geometry) AS lng
-        FROM sightings s
-        JOIN photos p ON p.sighting_id = s.id
-        JOIN embeddings e ON e.photo_id = p.id AND e.model = $2
-        WHERE s.id = $1 AND e.vec_miew IS NOT NULL
-        ORDER BY e.created_at
+        SELECT vec_miew::text AS vec,
+               ST_Y(geog::geometry) AS lat,
+               ST_X(geog::geometry) AS lng
+        FROM sightings WHERE id = $1 AND vec_miew IS NOT NULL
         """,
         sighting_id,
-        MODEL_NAME,
     )
+    if mean is not None:
+        rows = [mean]
+    else:
+        rows = await conn.fetch(
+            """
+            SELECT e.vec_miew::text AS vec,
+                   ST_Y(s.geog::geometry) AS lat,
+                   ST_X(s.geog::geometry) AS lng
+            FROM sightings s
+            JOIN photos p ON p.sighting_id = s.id
+            JOIN embeddings e ON e.photo_id = p.id AND e.model = $2
+            WHERE s.id = $1 AND e.vec_miew IS NOT NULL
+            ORDER BY e.created_at
+            """,
+            sighting_id,
+            MODEL_NAME,
+        )
     if not rows:
         # No embedding yet (or no animal found). Nothing to decide.
         return MatchOutcome("unmatched", None, [], [])
