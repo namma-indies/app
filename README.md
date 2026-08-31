@@ -99,6 +99,49 @@ uv run python -m app.auth.magiclink mint "Your Name"
 
 Open the printed link (it works over `localhost`, a secure origin, so the camera and geolocation work), snap a photo, and watch it appear in the IndieDex.
 
+### Testing from a phone
+
+`localhost` is a secure origin, so the steps above give you the camera and GPS
+on the desktop. A phone on the LAN is not localhost, and three things then bite
+at once — each of which fails silently:
+
+- **The session cookie is `Secure`.** Over plain http a browser declines to
+  store it, so sign-in bounces you straight back to the gate with no error
+  anywhere. The dev server therefore serves HTTPS whenever `frontend/.certs/`
+  holds a `dev.crt` / `dev.key` pair. Generate one for your LAN IP with any
+  self-signed recipe; the directory is gitignored. Expect a certificate warning
+  once, and click through it.
+- **Camera and geolocation need a secure context**, so LAN testing cannot work
+  over http at all.
+- **Photos come from MinIO**, which is http. Loaded from an https page they are
+  blocked as mixed content — an empty map with no useful console message. The
+  dev server proxies the bucket path so the whole app is one origin.
+
+The port is pinned to **5174** deliberately: the backend signs photo URLs and
+magic links against `PUBLIC_BASE_URL` / `S3_PUBLIC_ENDPOINT`, so a dev server
+that drifted to 5173 would break every image and every sign-in link with no
+visible cause.
+
+Point both at the dev server, and start it with whatever ports you actually
+have free:
+
+```bash
+# backend -- 8000 is often already taken
+S3_PUBLIC_ENDPOINT=https://192.168.1.42:5174 \
+PUBLIC_BASE_URL=https://192.168.1.42:5174 \
+  uv run uvicorn app.main:app --reload --port 8300
+
+# frontend, in another terminal
+VITE_API_TARGET=http://localhost:8300 \
+VITE_S3_TARGET=http://localhost:9002 \
+  npm run dev
+```
+
+Keep `--reload` on the backend. Without it the process serves whatever code it
+started with, and a branch switch leaves the API answering with an old response
+shape while the hot-reloaded frontend expects the new one — which surfaces as a
+blank screen rather than an error.
+
 ## Testing
 
 ```bash
