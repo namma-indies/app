@@ -51,13 +51,15 @@ flowchart TD
     A6 --> B
     B --> C["POST /sighting<br/>multipart"]
     C --> C2{"clip?"}
-    C2 -- yes --> C3["extract_diverse_frames<br/>1 fps · phash-diverse · ≤12<br/>clip stored to S3"]
+    C2 -- yes --> C3["extract_diverse_frames<br/>1 fps · every sample kept · ≤12<br/>clip stored to S3"]
 
     subgraph SYNC["synchronous — user is waiting"]
-        C2 -- no --> D
+        C2 -- no --> CV{"lat/lng in range?<br/>photo decodable?"}
+        CV -- no --> CX["422 — never a 500<br/><i>5xx is retryable, and the<br/>queue drain breaks on it</i>"]
+        CV -- yes --> D
         C3 --> D["process_photo<br/>EXIF strip · <b>WebP q90</b> · thumb q80 · phash<br/><i>off the event loop</i>"]
-        D --> E["S3: original + thumb<br/><b>.webp</b> keys · <b>write vs presign endpoints</b>"]
-        E --> F["INSERT sighting + photos"]
+        D --> E["S3: original + thumb + clip<br/><b>.webp</b> keys · <b>write vs presign endpoints</b>"]
+        E --> F["INSERT sighting + photos<br/>+ clip_s3_key"]
         F --> G["201"]
     end
 
@@ -70,15 +72,19 @@ flowchart TD
         K -- no --> L["no row written<br/>sighting stays unmatchable"]
         K -- yes --> M["crop +10% margin"]
         M --> N["MiewID-msv3<br/>2152-d, L2-normalised"]
-        N --> O[("embeddings.vec_miew")]
+        N --> O[("embeddings.vec_miew<br/>one row per frame")]
+        O --> O2["mean of the frame vectors<br/>re-normalised to unit length"]
+        O2 --> O3[("sightings.vec_miew")]
     end
 
-    O --> P["resolve_sighting<br/>PostGIS 1km → HNSW → exact re-rank<br/><i>runs here, once — GET /match is read-only</i>"]
-    P --> Q{"top similarity"}
+    O3 --> P["resolve_sighting<br/>PostGIS 1km → HNSW → exact re-rank<br/><i>runs here, once — GET /match is read-only</i>"]
+    P --> PC{"already<br/>confirmed?"}
+    PC -- yes --> PZ["left alone<br/><i>a human verdict outranks the model</i>"]
+    PC -- no --> Q{"top similarity"}
     Q -- "≥ 1.01 (unreachable)" --> R["auto-link"]
-    Q -- "≥ 0.71 (look-alike ceiling)" --> S["match_proposals<br/>+ suggest_video on thin evidence"]
+    Q -- "≥ 0.50" --> S["match_proposals<br/>+ suggest_video if < 4 frames"]
     Q -- else --> T["unmatched"]
-    S --> U["human verdict<br/>POST /proposal/{id}"]
+    S --> U["human verdict — <b>your own sightings only</b><br/>POST /proposal/{id}"]
     U --> V[("individuals + confirmations")]
     V --> W["GET /dogs — the identities, read back"]
 
@@ -86,6 +92,8 @@ flowchart TD
     style BG fill:#3d2e0b22,stroke:#7a5f2d
     style L stroke:#b91c1c
     style V stroke:#2d7a5f
+    style CX stroke:#b91c1c
+    style PZ stroke:#2d7a5f
 ```
 
 ---
@@ -101,7 +109,12 @@ flowchart TD
 | Animal gate | YOLOv8n | **YOLO26x**, dog *and* cat | v8n scored a clearly visible dog at 0.021 where 26x gives 0.800 |
 | Embedding | none | **MiewID-msv3**, 2152-d, on the animal crop | Whole-frame embeddings match other streets, not other dogs |
 | Candidate search | none | PostGIS 1 km → HNSW → exact re-rank | HNSW caps at 2000 dims; MiewID is 2152, so ANN runs on a `halfvec` cast and the shortlist is re-scored at full precision |
-| Identity | none | human verdict only | See thresholds below |
+| Identity | none | human verdict only, **on your own sightings** | You decide about photographs you took; a stranger has only the pixels. Cross-observer pairs stay pending for an adjudicator (#29) |
+| Clip | discarded after extraction | **kept in S3** (`sightings.clip_s3_key`) | Once the frames were chosen the clip was gone, so a better model could never re-read the footage |
+| Frame sampling | 2 fps, phash-diverse | **1 fps, every sample kept** | Dedup at hamming 8 discarded frames a second apart: a 5s clip of a sitting dog yielded ONE frame, so "average of five" averaged one vector |
+| Query vector | every frame, max over them | **mean of the frames**, per sighting | Frames from one clip are one view sampled repeatedly; their mean is that view with the noise averaged out |
+| Bad input | 500 | **422** | The offline queue treats 5xx as retryable and *breaks* its drain — one corrupt photo stopped every sighting behind it syncing, forever |
+| Coordinates | stored as given | **range-checked** | `geography(Point,4326)` wraps rather than rejects: lat=999 was silently stored as −81.0, a real place in Antarctica |
 | Basemap | OSM raster | CARTO Positron / Dark Matter | Road-atlas detail competed with the sightings |
 | Pins | square | round | Matches the cluster bubbles |
 
@@ -148,8 +161,19 @@ than a kennel of beagles; and the population is far larger, so look-alikes are
 rarer per pair but more numerous overall. Those pull in opposite directions and
 **neither has been measured**.
 
-So `reid_propose_min = 0.71` is a placeholder shaped by a lab dataset, not a
-property of MiewID or of dogs. **Recalibrate weekly as real sightings arrive.**
+So `reid_propose_min` is a placeholder shaped by a lab dataset, not a property
+of MiewID or of dogs. **Recalibrate as real verdicts arrive.**
+
+It now sits at **0.50**, lowered from 0.71 once merging had a surface. 0.71 was
+not conservative, it was off: it sat *above* the best score any genuine pair
+ever reached (0.5532), so no true match could clear it and the review queue was
+empty by construction. 0.50 is the best precision on the measured curve — 22
+prompts at 36.4% — and still surfaces about two wrong pairs for every right one,
+which is why the reviewer is asked *"same dog?"* rather than told.
+
+A test pins the property that made 0.71 useless: `propose_min` must stay below
+the best observed true match, so the same mistake fails loudly instead of
+presenting as a queue nobody can explain the emptiness of.
 The inputs already exist and no new experiment is needed:
 
 | what | where |
@@ -164,6 +188,61 @@ verdicts, treat the current default as a starting position rather than evidence.
 
 ---
 
+## What a photo becomes
+
+The synchronous half runs while the contributor waits, so it does only what the
+201 depends on. Everything that can be deferred is.
+
+| step | where | notes |
+|---|---|---|
+| range-check lat/lng | `routes/sighting.py` | before PostGIS, which **wraps** rather than rejects — lat=999 was stored as −81.0, a real place in Antarctica |
+| decode + strip EXIF | `process_photo`, off the event loop | an unreadable file is a **422, never a 500** — see below |
+| WebP q90 + 512px thumb + phash | same | one full-resolution original, one tile |
+| upload both | S3 | write endpoint; presigning uses the public one, since SigV4 signs the Host |
+| INSERT sighting + photos | Postgres | 201 returns here |
+| `animal_confidence` | background | YOLO26x, a label not a gate |
+| `_embed_and_save` | background | crop → MiewID → `embeddings`, then the mean |
+| `resolve_sighting` | background | once, here — `GET /match` stays a pure read |
+
+### Why a bad photo must not 500
+
+`offline/queue.ts` classifies 4xx as permanent and 5xx as retryable, and its
+drain **breaks** on a retryable failure rather than skipping the item:
+
+```js
+// Retryable (network failure or 5xx): stop here, try the rest later.
+break;
+```
+
+So an unhandled `UnidentifiedImageError` — a truncated file, an odd format —
+did not merely produce an ugly error. It **stopped the whole queue**, and every
+sighting behind it never synced, on every retry, indefinitely. In the field that
+is silent data loss presented to the user as "couldn't sync".
+
+A 422 is a permanent failure the queue sets aside so it can move past. That is
+also why a multi-photo post with one bad file is rejected whole rather than
+half-stored: a sighting is one observation, and a partial save leaves a record
+whose evidence is missing without saying so.
+
+### Why a human verdict is never overwritten
+
+`resolve_sighting` returns early for a sighting whose `match_status` is already
+`confirmed`. It used to rewrite whatever it found, so a re-run that no longer
+proposed anything set `individual_id = NULL` and `match_status = 'unmatched'` —
+silently erasing the decision.
+
+That is reachable, not theoretical: `backfill_embeddings.py --resolve` re-runs
+resolution over existing sightings, and it is exactly what you run after a model
+or threshold change — both of which move scores, which is the trigger. Since
+`auto_merge_min` is deliberately unreachable, a human verdict is the *only* way
+a sighting becomes `confirmed`, so this destroyed the scarcest data in the
+system: the labelled pairs the thresholds are meant to be fitted against.
+
+Only `confirmed` is frozen. A pending proposal is still the model's opinion, and
+re-running is how it gets updated.
+
+---
+
 ## Video capture
 
 For a long time there was no video option because PR #3 (`feat/video-capture`)
@@ -174,11 +253,21 @@ offer a clean merge for it.
 
 Its two commits are cherry-picked here instead. `app/video.py` decodes a clip
 with `imageio` + `imageio-ffmpeg` (a bundled static binary, so the slim
-container needs no apt package), subsamples to ~2 fps, runs each frame through
-the ordinary `process_photo`, and keeps a phash-diverse subset — up to 12
-frames. The clip is **kept in S3** alongside them, so a better detector or a
-newer embedding model can be re-run over the original footage. Its key lives
-on `sightings.clip_s3_key`.
+container needs no apt package), subsamples to **1 fps**, runs each frame
+through the ordinary `process_photo`, and keeps **every sample**, capped at 12.
+The clip is **kept in S3** alongside them, so a better detector or a newer
+embedding model can be re-run over the original footage. Its key lives on
+`sightings.clip_s3_key`.
+
+Both of those defaults were changed once frames started being averaged, and the
+dedup one is the non-obvious half. `phash_hamming_min` was 8, which discarded
+any frame within 8 hamming of one already kept — and frames a second apart from
+a steady clip are far closer than that. Measured: **a 5-second clip of a sitting
+dog yielded exactly one frame**, so "the average of five" averaged one vector.
+That filter was right when frames were only ever stored as separate photos and
+near-duplicates were waste; it is wrong when they feed a mean, where repeated
+samples of the same instant are precisely what cancels the noise. The parameter
+survives for any path that wants distinct views instead.
 
 The capture screen's half of that branch was discarded rather than merged: it
 predates the multi-photo refactor from PR #6 and conflicted in eight places
@@ -216,17 +305,55 @@ against ~39% at the edges.
 
 ---
 
+### What a clip becomes
+
+For a 5-second recording, end to end:
+
+| step | result |
+|---|---|
+| sampled at 1 Hz | 5 frames |
+| `process_photo` each | 5 WebP originals + thumbs in S3 |
+| clip itself | `sightings/<id>/clip.mp4`, key on the row |
+| `best_animal_box` per frame | frames with no animal are skipped, not embedded whole |
+| MiewID per surviving frame | 5 × 2152-d unit vectors in `embeddings` |
+| mean, re-normalised | one vector on `sightings.vec_miew` |
+| `resolve_sighting` | queries with the mean, falls back to per-frame if absent |
+
+Verified live: 5 frames, 5 vectors, clip present in S3, mean at unit norm
+matching a recomputed mean to 1.000000, each frame 0.986–0.993 from it. That
+last spread is the per-frame noise the average removes.
+
+Two things the mean is **not**. It is not equivalent to five photos — the
+37%→83% top-1 gain comes from more independent *views* in the gallery, and five
+frames a second apart are one view sampled five times. And it is not the right
+operation one level up: two sightings days apart are genuinely different views,
+so `routes/dogs.py` compares two dogs by the **max** over their photo pairs and
+carries a test that fails if anyone switches it to a centroid. Same arithmetic,
+opposite conclusion, because the scope differs.
+
+Averaging also cost one thing that had to be fixed separately: `suggest_video`
+counted the *query* vectors to decide whether evidence was thin, and the mean
+reduces five frames to one — so every clip looked thin and the app would have
+asked someone who had just filmed five seconds of a dog to film a clip. It now
+counts the sighting's embedded frames.
+
+---
+
 ## What existing data does on deploy
 
 **Schema migrates itself.** `deploy/entrypoint.sh` runs `alembic upgrade head`
-before uvicorn, so `0005` and `0006` apply on the next deploy. pgvector comes
-from the `pgvector/pgvector:pg16` image (0.8.6; `halfvec` needs ≥0.7.0). Both
-new columns are nullable.
+before uvicorn, and it is `set -e` — so a migration failure means the app never
+starts rather than starting against the wrong schema. pgvector comes from the
+`pgvector/pgvector:pg16` image (0.8.6; `halfvec` needs ≥0.7.0). Head is
+currently `0008`, which adds `sightings.clip_s3_key` and `sightings.vec_miew`.
+Every added column is nullable, so no backfill is needed for correctness.
 
 **S3 needs nothing.** Format is per-object and the key lives in `photos.s3_key`.
 Existing `.jpg` objects keep serving; only new uploads are `.webp`.
 
-**Existing photos need a backfill, and there is now a script for it:**
+**Existing photos need a backfill, and there is a script and a workflow for
+it.** Run it from the *Backfill embeddings* workflow (manual dispatch,
+`dry_run` defaults true) or directly:
 `backend/scripts/backfill_embeddings.py`. Nothing embeds them automatically, and
 `find_candidates` filters on `vec_miew IS NOT NULL`, so until it runs the whole
 existing corpus is invisible to matching — which, given that accuracy *is*
@@ -246,6 +373,16 @@ photo in flight. One quirk: a photo with no detectable animal gets no row at all
 (a whole-frame vector would pollute candidate search), so it is re-examined on
 every run and the pending count never reaches zero on a corpus with dogless
 photos. That is deliberate — those should be retried after a detector upgrade.
+
+Run on production 2026-08-31 after the re-ID deploy: **19 photos pending,
+embedded 0, no animal 19, 0 sightings affected**. The corpus was already fully
+embedded — every remaining candidate is a photo YOLO26x sees no animal in, which
+is exactly the case that never clears. Nothing to recover.
+
+A real run passes `--resolve`, so it re-decides matching as well as embedding.
+That was unsafe until the guard described under *Why a human verdict is never
+overwritten* landed: on a corpus with confirmed dogs it would have unlinked
+them.
 
 **`dog_confidence` becomes incomparable across the deploy** — old rows scored by
 YOLOv8n, new rows by YOLO26x, and the two disagree substantially (on 29 varied
