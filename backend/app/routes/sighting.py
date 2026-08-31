@@ -181,6 +181,19 @@ async def create_sighting(
         raise HTTPException(
             status_code=422, detail="at least one photo or a video is required"
         )
+    # Range-check before PostGIS sees it. `geography(Point,4326)` does not
+    # reject an out-of-range latitude -- it wraps it. A GPS glitch or a client
+    # bug sending lat=999 was silently stored as -81.0, a real coordinate in
+    # Antarctica, and rendered on the map like any other pin. Silent relocation
+    # is worse than a rejection, because nothing downstream can tell it happened.
+    if lat is not None and not (-90.0 <= lat <= 90.0):
+        raise HTTPException(status_code=422, detail="lat must be between -90 and 90")
+    if lng is not None and not (-180.0 <= lng <= 180.0):
+        raise HTTPException(status_code=422, detail="lng must be between -180 and 180")
+    # Negative accuracy is not a smaller error, it is a malformed one.
+    if geo_accuracy_m is not None and geo_accuracy_m < 0:
+        raise HTTPException(status_code=422, detail="geo_accuracy_m cannot be negative")
+
     if photos and video is not None:
         raise HTTPException(
             status_code=422, detail="provide either photos or a video, not both"
@@ -217,9 +230,27 @@ async def create_sighting(
         # behind them until the client gave up at 90s. Every other heavy call
         # here was already offloaded; this one was missed because it is the only
         # one on the user's critical path rather than in a background task.
-        processed_frames = [
-            await run_in_threadpool(process_photo, raw) for raw in raws
-        ]
+        try:
+            processed_frames = [
+                await run_in_threadpool(process_photo, raw) for raw in raws
+            ]
+        except Exception:
+            # An unreadable upload -- truncated by a flaky camera, an odd
+            # format, bytes that are not an image at all -- used to escape as a
+            # 500. That is not merely an ugly error: the offline queue treats
+            # 4xx as permanent and 5xx as retryable, and its drain *breaks* on a
+            # retryable failure. So one corrupt photo stopped the whole queue,
+            # and every sighting behind it never synced, on every pass, forever.
+            #
+            # 422 makes it a permanent failure the queue can set aside and move
+            # past, which is exactly how the video path already treats a clip it
+            # cannot decode.
+            logger.warning(
+                "unreadable photo upload from observer=%s", observer_id, exc_info=True
+            )
+            raise HTTPException(
+                status_code=422, detail="could not read one of the photos"
+            )
 
     photo_rows = []
     first_phash: str | None = None
