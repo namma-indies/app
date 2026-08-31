@@ -11,7 +11,9 @@ import {
 import { enqueue, flush } from "../offline/queue";
 import DogSprite from "../components/DogSprite";
 import ImportOriginPrompt from "../components/ImportOriginPrompt";
-import { chooseFromGalleryIfNative, isNative, takePhotoIfNative } from "../capture/takePhoto";
+import { chooseFromGalleryIfNative, isNative, takePhotoIfNative,
+  recordVideoIfNative,
+} from "../capture/takePhoto";
 import {
   originFromExif,
   originFromPerson,
@@ -125,10 +127,7 @@ export default function Capture() {
     addPhoto(f);
   }
 
-  function onVideoChosen(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0];
-    if (videoRef.current) videoRef.current.value = "";
-    if (!f) return;
+  function acceptVideo(f: File) {
     previewUrls.forEach((url) => URL.revokeObjectURL(url));
     setPhotos([]);
     setPreviewUrls([]);
@@ -137,6 +136,38 @@ export default function Capture() {
     setVideoUrl(URL.createObjectURL(f));
     // A clip is a live capture; it must not inherit an import's date and place.
     setOrigin(null);
+  }
+
+  function onVideoChosen(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (videoRef.current) videoRef.current.value = "";
+    if (!f) return;
+    acceptVideo(f);
+  }
+
+  /** Native camera first, file input only as the web fallback.
+   *
+   * Video was the one capture path still going straight to a hidden file
+   * input, while photos and camera-roll imports had both been moved onto the
+   * Camera plugin. Inside a WebView that input depends on platform
+   * file-provider behaviour rather than on anything we control, so the clip
+   * button could do nothing with no error to show. Same shape as
+   * onShutterPress, deliberately. */
+  async function onRecordPress() {
+    try {
+      const native = await recordVideoIfNative();
+      if (native) {
+        acceptVideo(native);
+        return;
+      }
+      // Null from a native platform means the user cancelled -- falling through
+      // to the file input would reopen a chooser the instant they backed out.
+      if (isNative()) return;
+    } catch {
+      showToast("Couldn't open the camera. Try again.");
+      return;
+    }
+    videoRef.current?.click();
   }
 
   function removeVideo() {
@@ -370,7 +401,7 @@ export default function Capture() {
           <button
             type="button"
             className="link-btn"
-            onClick={() => videoRef.current?.click()}
+            onClick={onRecordPress}
           >
             or record a short clip
           </button>
