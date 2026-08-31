@@ -247,6 +247,15 @@ async def resolve_sighting(
         """,
         sighting_id,
     )
+    frame_count = await conn.fetchval(
+        """
+        SELECT count(*) FROM photos p
+        JOIN embeddings e ON e.photo_id = p.id AND e.model = $2
+        WHERE p.sighting_id = $1 AND e.vec_miew IS NOT NULL
+        """,
+        sighting_id,
+        MODEL_NAME,
+    )
     if mean is not None:
         rows = [mean]
     else:
@@ -349,5 +358,10 @@ async def resolve_sighting(
     )
     # Thin evidence is judged on the query sighting, not the candidate: it is
     # the contributor in front of us who can still go and film the animal.
-    thin = len(vecs) < thin_evidence_frames
+    # Counted from the frames, NOT from len(vecs). On the mean path vecs holds a
+    # single averaged vector, so len(vecs) is always 1 and every clip would be
+    # judged thin -- the app would ask someone who had just filmed five seconds
+    # of a dog to go and film a clip. That is backwards: a clip is the strongest
+    # evidence the system gets.
+    thin = (frame_count or len(vecs)) < thin_evidence_frames
     return MatchOutcome("proposed", None, cands, proposal_ids, suggest_video=thin)

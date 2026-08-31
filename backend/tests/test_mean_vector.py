@@ -123,3 +123,60 @@ async def test_exactly_cancelling_frames_store_nothing(app_client):
     v = _unit(31)
     await _save_mean_vector(pool, sid, [v, -v])
     assert await _stored(pool, sid) is None
+
+
+# --- thin evidence, on the mean path ------------------------------------
+#
+# `suggest_video` asks the contributor for a clip when a proposal rests on too
+# few frames. On the mean path the query is a single averaged vector, so
+# counting the query vectors would make every clip look thin -- and the app
+# would ask someone who had just filmed five seconds of a dog to film a clip.
+
+@pytest.mark.asyncio
+async def test_a_clip_is_not_thin_evidence(app_client):
+    """The whole point of a clip is that it carries more evidence than a still.
+    Judging it by the number of query vectors inverts that, because averaging
+    reduces five frames to one."""
+    from app.embed import MODEL_NAME
+    from app.matching import resolve_sighting
+
+    pool = app_client._transport.app.state.pool
+    async with pool.acquire() as conn:
+        oid = uuid7()
+        await conn.execute(
+            "INSERT INTO observers (id, display_name, created_via) VALUES ($1,'T','t')", oid)
+        # Two sightings that will match each other, each backed by five frames.
+        ids = []
+        base = _unit(41)
+        for n in range(2):
+            sid = uuid7()
+            await conn.execute(
+                "INSERT INTO sightings (id, observer_id, captured_at, geo_source) "
+                "VALUES ($1,$2,now(),'none')", sid, oid)
+            vecs = []
+            for f in range(5):
+                pid = uuid7()
+                await conn.execute(
+                    "INSERT INTO photos (id, sighting_id, s3_key) VALUES ($1,$2,$3)",
+                    pid, sid, f"k{n}-{f}.webp")
+                v = base + _unit(100 + n * 10 + f) * 0.2
+                v = v / np.linalg.norm(v)
+                vecs.append(v)
+                await conn.execute(
+                    f"INSERT INTO embeddings (id, photo_id, model, dim, vec_miew) "
+                    f"VALUES ($1,$2,$3,$4,$5::vector({EMBED_DIM}))",
+                    uuid7(), pid, MODEL_NAME, EMBED_DIM,
+                    "[" + ",".join(f"{float(x):.7g}" for x in v) + "]")
+            await _save_mean_vector(pool, sid, vecs)
+            ids.append(sid)
+
+        out = await resolve_sighting(conn, ids[1], auto_merge_min=1.01,
+                                     propose_min=0.4, radius_m=1000,
+                                     max_candidates=5, new_uuid=uuid7,
+                                     thin_evidence_frames=4)
+
+    assert out.status == "proposed", f"expected a proposal, got {out.status}"
+    assert out.suggest_video is False, (
+        "five embedded frames is not thin evidence -- asking for a clip here "
+        "asks the contributor to redo what they just did"
+    )
