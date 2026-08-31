@@ -64,11 +64,29 @@ class Settings(BaseSettings):
     # plausible match goes to a human instead of being silently merged.
     # Fit these to real verdicts in `confirmations` before lowering.
     reid_auto_merge_min: float = 1.01   # >= this: link automatically
-    reid_propose_min: float = 0.71      # >= this: engage a human
+    reid_propose_min: float = 0.50      # >= this: engage a human
     reid_max_candidates: int = 5
 
-    # WHY 0.71, AND WHAT IT COSTS
+    # WHY 0.50, AND WHAT IT COSTS
     # ---------------------------
+    # Lowered from 0.71 once merging had a surface (#29, #30). At 0.71 this
+    # system raises almost nothing -- two prompts in the measured run, both
+    # wrong -- so a review queue built on it is empty on the first day and every
+    # day after. A threshold nothing reaches is not conservative, it is off.
+    #
+    # 0.50 is the point where the exchange below stops being a coin flip: 22
+    # prompts at 36.4% precision, the best precision anywhere on the curve. It
+    # finds 28.6% of true matches rather than 89.3%, which is the deliberate
+    # half of the trade -- a queue people trust and work through beats a longer
+    # one they learn to ignore.
+    #
+    # This is expected to move again, and downward, once real verdicts exist.
+    # The circularity is the whole problem: the numbers below come from lab
+    # footage, fitting them properly needs street verdicts, and street verdicts
+    # need a queue with something in it. 0.50 breaks that loop by accepting a
+    # known-imperfect number long enough to collect the data that replaces it.
+    # Refit against `confirmations` once a few hundred rows exist.
+    #
     # 0.7122 is what two dogs who genuinely resemble each other score. Brandi
     # and cheetah are different animals that look alike, and the number is not
     # a fluke of shared lighting: the 0.7122 pair was photographed seven days
@@ -88,15 +106,16 @@ class Settings(BaseSettings):
     #      0.55        8      2      6      25.0%       7.1%
     #      0.71        2      0      2       0.0%       0.0%
     #
-    # So at 0.71 this system raises two prompts, both wrong, and never links two
-    # sightings of the same dog. That is the deliberate setting: silence until
-    # the evidence is genuinely conclusive, rather than a stream of coin-flips.
-    # It also means re-ID contributes nothing until either the score
-    # distribution improves (more frames per sighting -- see below) or this
-    # number comes down against real verdicts in `confirmations`.
+    # At 0.71 this system raised two prompts, both wrong, and never linked two
+    # sightings of the same dog -- re-ID contributed nothing at all. That was
+    # defensible while there was no way to act on a proposal; it stopped being
+    # defensible once there was.
     #
-    # Lower it to ~0.40 to trade precision for actually finding matches; the
-    # numbers above are the exchange rate. Change it here, not in code.
+    # At 0.50 roughly two thirds of what surfaces is still wrong. That is the
+    # cost, and it is why the reviewer is asked "same dog?" rather than told.
+    # Move to ~0.40 to trade precision for recall (64.3% of true matches at
+    # 24.0% precision); the table above is the exchange rate. Change it here,
+    # not in code.
     #
     # WHERE THIS NUMBER CAME FROM, AND WHY IT EXPIRES
     # -----------------------------------------------
