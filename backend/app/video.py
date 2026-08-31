@@ -1,4 +1,4 @@
-"""Video -> phash-diverse frame extraction.
+"""Video -> phash-diverse frame extraction, at one frame per second.
 
 Decodes a short video clip via imageio (backed by imageio-ffmpeg's bundled
 static ffmpeg binary -- no system ffmpeg / apt dependency needed, works in
@@ -6,9 +6,16 @@ the slim container too), subsamples to roughly `target_fps`, runs each
 sampled frame through the existing `process_photo` pipeline, and greedily
 keeps a visually diverse subset by perceptual-hash hamming distance.
 
-The raw video bytes are never persisted -- only the resulting frame
-`ProcessedPhoto`s are returned; callers store those as ordinary sighting
-photos and discard the video.
+`target_fps` is 1.0: a five-second clip yields about five frames, each a
+second apart. Denser sampling mostly produced near-duplicates that the phash
+filter then discarded anyway, and the frames are now averaged into one vector
+per sighting, where samples of the same instant add nothing.
+
+This module returns frames and nothing else. The caller
+(`routes/sighting.py`) also stores the clip itself now, so a better detector
+or a newer embedding model can be re-run over the original footage -- under
+the old discard-after-extraction design every frame not chosen was gone for
+good.
 """
 
 import io
@@ -25,10 +32,19 @@ from app.photos import process_photo, ProcessedPhoto
 def extract_diverse_frames(
     raw_video: bytes,
     *,
-    target_fps: float = 2.0,  # sample ~2 frames/sec
+    target_fps: float = 1.0,  # one frame per second
+
     max_raw: int = 20,  # never decode more than this many sampled frames
     keep: int = 12,  # final cap of diverse frames
-    phash_hamming_min: int = 8,  # keep a frame only if >= this hamming distance from all kept frames
+    # Keep every sampled frame by default. This was 8, which discarded any
+    # frame within 8 hamming of one already kept -- and frames a second apart
+    # from a steady clip are far closer than that, so a five-second clip of a
+    # sitting dog yielded ONE frame (measured). That was right when frames were
+    # only ever stored as separate photos and near-duplicates were waste. It is
+    # wrong now that they are averaged into one vector per sighting, where
+    # repeated samples of the same instant are exactly what cancels the noise.
+    # Raise it again for a path that wants distinct views rather than a mean.
+    phash_hamming_min: int = 0,
 ) -> list[ProcessedPhoto]:
     """Decode -> subsample to ~target_fps -> process each -> greedily keep
     visually diverse frames by phash hamming distance -> cap at `keep`.

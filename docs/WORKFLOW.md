@@ -51,7 +51,7 @@ flowchart TD
     A6 --> B
     B --> C["POST /sighting<br/>multipart"]
     C --> C2{"clip?"}
-    C2 -- yes --> C3["extract_diverse_frames<br/>~2 fps · phash-diverse · ≤12<br/>clip never stored"]
+    C2 -- yes --> C3["extract_diverse_frames<br/>1 fps · phash-diverse · ≤12<br/>clip stored to S3"]
 
     subgraph SYNC["synchronous — user is waiting"]
         C2 -- no --> D
@@ -176,7 +176,9 @@ Its two commits are cherry-picked here instead. `app/video.py` decodes a clip
 with `imageio` + `imageio-ffmpeg` (a bundled static binary, so the slim
 container needs no apt package), subsamples to ~2 fps, runs each frame through
 the ordinary `process_photo`, and keeps a phash-diverse subset — up to 12
-frames. The clip itself is **never stored**; only the frames it yielded.
+frames. The clip is **kept in S3** alongside them, so a better detector or a
+newer embedding model can be re-run over the original footage. Its key lives
+on `sightings.clip_s3_key`.
 
 The capture screen's half of that branch was discarded rather than merged: it
 predates the multi-photo refactor from PR #6 and conflicted in eight places
