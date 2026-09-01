@@ -129,6 +129,12 @@ export async function readPhotoMetadata(file: Blob): Promise<PhotoMetadata> {
 }
 
 export interface PostSightingInput {
+  /** Identifies the capture, not the attempt. Minted once when the sighting is
+   * queued and resent unchanged on every retry, so the server can recognise a
+   * repeat of a request that already landed. Without it a lost *response* --
+   * ordinary on mobile data mid-upload -- makes the queue post the same capture
+   * again and the server create a second sighting. */
+  client_token?: string;
   photos?: Blob[];
   video?: Blob;
   lat?: number;
@@ -146,6 +152,9 @@ export interface PostSightingInput {
 export interface PostSightingResponse {
   sighting_id: string;
   photo_ids: string[];
+  /** True when the server recognised this as a repeat and returned the
+   * sighting the first attempt created, rather than making another. */
+  duplicate?: boolean;
 }
 
 export class UnauthorizedError extends Error {
@@ -185,6 +194,7 @@ export function buildSightingForm(input: PostSightingInput): FormData {
   if (input.lng !== undefined) form.append("lng", String(input.lng));
   if (input.geo_accuracy_m !== undefined)
     form.append("geo_accuracy_m", String(input.geo_accuracy_m));
+  if (input.client_token) form.append("client_token", input.client_token);
   form.append("geo_source", input.geo_source);
   form.append("captured_at", input.captured_at);
   if (input.reported_at) form.append("reported_at", input.reported_at);
