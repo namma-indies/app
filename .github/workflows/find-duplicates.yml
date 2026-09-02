@@ -1,0 +1,41 @@
+name: Find duplicate sightings
+# Reports captures that were stored twice, from the window before migration
+# 0009 added idempotency to POST /sighting.
+#
+# Read-only: the script issues one SELECT and prints. It writes nothing and
+# deletes nothing, so unlike the backfill there is no dry-run flag to forget --
+# every run is a dry run.
+#
+# Modelled on backfill.yml, which is modelled on deploy.yml: deploy.yml's SSH
+# step succeeds on every merge, so that invocation is the one worth copying.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: production-diagnostics
+  cancel-in-progress: false
+
+jobs:
+  find:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Report duplicates on argos
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_TARGET: ${{ secrets.DEPLOY_SSH_TARGET }}
+        run: |
+          set -euo pipefail
+          key_file="$(mktemp)"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$key_file"
+          chmod 600 "$key_file"
+          # BatchMode and ConnectTimeout so a missing secret or an unreachable
+          # box fails in seconds with a name, rather than hanging on a prompt
+          # nobody can answer until the job times out.
+          ssh -i "$key_file" -o BatchMode=yes -o ConnectTimeout=15 \
+              -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_SSH_TARGET" 'bash -s' < deploy/remote-find-duplicates.sh
