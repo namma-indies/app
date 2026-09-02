@@ -195,6 +195,7 @@ The synchronous half runs while the contributor waits, so it does only what the
 
 | step | where | notes |
 |---|---|---|
+| recognise a retry | `routes/sighting.py` | `client_token` — a repeat returns the original sighting, see below |
 | range-check lat/lng | `routes/sighting.py` | before PostGIS, which **wraps** rather than rejects — lat=999 was stored as −81.0, a real place in Antarctica |
 | decode + strip EXIF | `process_photo`, off the event loop | an unreadable file is a **422, never a 500** — see below |
 | WebP q90 + 512px thumb + phash | same | one full-resolution original, one tile |
@@ -203,6 +204,42 @@ The synchronous half runs while the contributor waits, so it does only what the
 | `animal_confidence` | background | YOLO26x, a label not a gate |
 | `_embed_and_save` | background | crop → MiewID → `embeddings`, then the mean |
 | `resolve_sighting` | background | once, here — `GET /match` stays a pure read |
+
+### Why one capture cannot become two sightings
+
+`POST /sighting` takes a `client_token`, minted once when the capture is queued
+and resent unchanged on every attempt. A repeat returns the original sighting
+instead of creating another.
+
+Without it, duplicates were routine rather than rare. The offline queue deletes
+a queued item only *after* the response arrives, so a request that landed but
+whose response was lost — signal dropped mid-upload, phone asleep — stayed
+pending and was posted again. Measured on production before the fix: **12
+duplicated captures across 47 sightings, 22 extra rows.** The copies arrived
+3–17 hours after the originals, which is a queued item waiting for signal, not
+a double tap.
+
+Two details that matter:
+
+**Unique per observer, not globally.** The index is
+`(observer_id, client_token)`, matching the lookup, which is scoped by observer
+so a guessed or replayed token cannot return someone else's sighting. A global
+index with a scoped lookup disagrees with itself and 500s.
+
+**Not deduplicated on `phash`.** Identical bytes are not the same event — two
+frames of one clip share almost everything, and a person may legitimately log
+the same photo twice. What must be caught is "this is a retry of *that
+request*", a property of the request rather than of the pixels.
+
+The pre-check is an optimisation; the unique index is the guarantee. Two flushes
+racing — an installed PWA and a browser tab over one shared IndexedDB — can both
+pass the pre-check, and the `UniqueViolationError` path is where the loser
+returns the winner's sighting.
+
+`scripts/find_duplicate_sightings.py` reports what the gap already left behind.
+Read-only, and dispatchable as the *Find duplicate sightings* workflow.
+
+---
 
 ### Why a bad photo must not 500
 
@@ -345,7 +382,8 @@ counts the sighting's embedded frames.
 before uvicorn, and it is `set -e` — so a migration failure means the app never
 starts rather than starting against the wrong schema. pgvector comes from the
 `pgvector/pgvector:pg16` image (0.8.6; `halfvec` needs ≥0.7.0). Head is
-currently `0008`, which adds `sightings.clip_s3_key` and `sightings.vec_miew`.
+currently `0009`: `0008` adds `sightings.clip_s3_key` and `sightings.vec_miew`,
+`0009` adds `sightings.client_token` with a per-observer unique index.
 Every added column is nullable, so no backfill is needed for correctness.
 
 **S3 needs nothing.** Format is per-object and the key lives in `photos.s3_key`.
