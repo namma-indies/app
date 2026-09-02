@@ -217,6 +217,10 @@ async def create_sighting(
     lat: float | None = Form(None),
     lng: float | None = Form(None),
     geo_accuracy_m: float | None = Form(None),
+    # Minted once when the capture is queued and resent on every attempt, so
+    # all attempts at one capture carry the same value. Optional: an older
+    # client, or a direct API caller, simply gets no protection.
+    client_token: str | None = Form(None),
     # "exif" is a camera-roll import: coordinates read from the file rather
     # than observed live. Trusted at the same level as "device_gps" -- the
     # client supplies lat/lng in both cases, and in this one it got them from
@@ -240,6 +244,36 @@ async def create_sighting(
         raise HTTPException(
             status_code=422, detail="at least one photo or a video is required"
         )
+    # A retry of a capture that already landed returns the original rather than
+    # creating a second sighting. Checked up front so a repeat costs one query
+    # instead of a decode, two S3 uploads and an embedding.
+    #
+    # The unique index is what actually guarantees this -- two attempts racing
+    # (an installed PWA and a browser tab flushing the same IndexedDB rows at
+    # once) can both pass this check, and the INSERT below is where one of them
+    # loses. This is the cheap path, not the correctness one.
+    if client_token:
+        existing = await conn.fetchrow(
+            "SELECT s.id, array_agg(p.id ORDER BY p.created_at, p.id) AS photo_ids "
+            "FROM sightings s LEFT JOIN photos p ON p.sighting_id = s.id "
+            "WHERE s.client_token = $1 AND s.observer_id = $2 "
+            "GROUP BY s.id",
+            client_token, observer_id,
+        )
+        if existing is not None:
+            logger.info(
+                "duplicate submission for client_token=%s; returning sighting=%s",
+                client_token, existing["id"],
+            )
+            return JSONResponse(
+                status_code=201,
+                content={
+                    "sighting_id": str(existing["id"]),
+                    "photo_ids": [str(i) for i in (existing["photo_ids"] or []) if i],
+                    "duplicate": True,
+                },
+            )
+
     # Range-check before PostGIS sees it. `geography(Point,4326)` does not
     # reject an out-of-range latitude -- it wraps it. A GPS glitch or a client
     # bug sending lat=999 was silently stored as -81.0, a real coordinate in
@@ -370,66 +404,95 @@ async def create_sighting(
     if video is not None:
         attrs["source"] = "video"
 
-    async with conn.transaction():
-        if geog_present:
-            await conn.execute(
-                """
-                INSERT INTO sightings
-                    (id, observer_id, captured_at, reported_at, geog, geo_source,
-                     geo_accuracy_m, individual_id, match_status, review_status,
-                     phash, attrs, dog_confidence)
-                VALUES
-                    ($1, $2, $3, $4,
-                     ST_SetSRID(ST_MakePoint($5, $6), 4326)::geography,
-                     $7, $8, NULL, 'unmatched', 'valid', $9, $10::jsonb, $11)
-                """,
-                sighting_id,
-                observer_id,
-                captured_at,
-                reported_at,
-                lng,
-                lat,
-                geo_source,
-                geo_accuracy_m,
-                first_phash,
-                json.dumps(attrs),
-                None,
-            )
-        else:
-            await conn.execute(
-                """
-                INSERT INTO sightings
-                    (id, observer_id, captured_at, reported_at, geog, geo_source,
-                     geo_accuracy_m, individual_id, match_status, review_status,
-                     phash, attrs, dog_confidence)
-                VALUES
-                    ($1, $2, $3, $4, NULL, $5, $6, NULL, 'unmatched', 'valid',
-                     $7, $8::jsonb, $9)
-                """,
-                sighting_id,
-                observer_id,
-                captured_at,
-                reported_at,
-                geo_source,
-                geo_accuracy_m,
-                first_phash,
-                json.dumps(attrs),
-                None,
-            )
+    try:
+      async with conn.transaction():
+          if geog_present:
+              await conn.execute(
+                  """
+                  INSERT INTO sightings
+                      (id, observer_id, captured_at, reported_at, geog, geo_source,
+                       geo_accuracy_m, individual_id, match_status, review_status,
+                       phash, attrs, dog_confidence, client_token)
+                  VALUES
+                      ($1, $2, $3, $4,
+                       ST_SetSRID(ST_MakePoint($5, $6), 4326)::geography,
+                       $7, $8, NULL, 'unmatched', 'valid', $9, $10::jsonb, $11, $12)
+                  """,
+                  sighting_id,
+                  observer_id,
+                  captured_at,
+                  reported_at,
+                  lng,
+                  lat,
+                  geo_source,
+                  geo_accuracy_m,
+                  first_phash,
+                  json.dumps(attrs),
+                  None,
+                  client_token,
+              )
+          else:
+              await conn.execute(
+                  """
+                  INSERT INTO sightings
+                      (id, observer_id, captured_at, reported_at, geog, geo_source,
+                       geo_accuracy_m, individual_id, match_status, review_status,
+                       phash, attrs, dog_confidence, client_token)
+                  VALUES
+                      ($1, $2, $3, $4, NULL, $5, $6, NULL, 'unmatched', 'valid',
+                       $7, $8::jsonb, $9, $10)
+                  """,
+                  sighting_id,
+                  observer_id,
+                  captured_at,
+                  reported_at,
+                  geo_source,
+                  geo_accuracy_m,
+                  first_phash,
+                  json.dumps(attrs),
+                  None,
+                  client_token,
+              )
 
-        for row in photo_rows:
-            await conn.execute(
-                """
-                INSERT INTO photos (id, sighting_id, s3_key, width, height, phash)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                """,
-                row["id"],
-                sighting_id,
-                row["s3_key"],
-                row["width"],
-                row["height"],
-                row["phash"],
-            )
+          for row in photo_rows:
+              await conn.execute(
+                  """
+                  INSERT INTO photos (id, sighting_id, s3_key, width, height, phash)
+                  VALUES ($1, $2, $3, $4, $5, $6)
+                  """,
+                  row["id"],
+                  sighting_id,
+                  row["s3_key"],
+                  row["width"],
+                  row["height"],
+                  row["phash"],
+              )
+    except asyncpg.exceptions.UniqueViolationError:
+        # Two attempts at one capture raced past the pre-check -- an installed
+        # PWA and a browser tab flushing the same IndexedDB rows at the same
+        # moment. The unique index is what makes that safe; this is where the
+        # loser finds out. Return the winner's sighting, exactly as the
+        # pre-check would have.
+        winner = await conn.fetchrow(
+            "SELECT s.id, array_agg(p.id ORDER BY p.created_at, p.id) AS photo_ids "
+            "FROM sightings s LEFT JOIN photos p ON p.sighting_id = s.id "
+            "WHERE s.client_token = $1 AND s.observer_id = $2 GROUP BY s.id",
+            client_token, observer_id,
+        )
+        if winner is None:
+            raise
+        logger.info(
+            "concurrent duplicate for client_token=%s; returning sighting=%s",
+            client_token, winner["id"],
+        )
+        return JSONResponse(
+            status_code=201,
+            content={
+                "sighting_id": str(winner["id"]),
+                "photo_ids": [str(i) for i in (winner["photo_ids"] or []) if i],
+                "duplicate": True,
+            },
+        )
 
     background_tasks.add_task(
         _score_and_save_dog_confidence, request.app.state.pool, sighting_id, raws
