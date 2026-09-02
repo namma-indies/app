@@ -42,7 +42,12 @@ jobs:
           # BatchMode and ConnectTimeout so a missing secret or an unreachable
           # box fails in seconds with a name, rather than hanging on a prompt
           # nobody can answer until the job times out.
-          ssh -i "$key_file" -o BatchMode=yes -o ConnectTimeout=15 \
-              -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
-            "$DEPLOY_SSH_TARGET" "DETAIL='$DETAIL' bash -s" \
-              < deploy/remote-find-duplicates.sh
+          # Settings go in via stdin, prepended to the script. The box's
+          # authorized_keys forces command="bash -s", which discards whatever
+          # the client sends -- so an env prefix on the ssh command is silently
+          # dropped and the script runs its default. Same shape as
+          # backfill.yml, which learned this the hard way.
+          { echo "DETAIL='$DETAIL'"; cat deploy/remote-find-duplicates.sh; } \
+            | ssh -i "$key_file" -o BatchMode=yes -o ConnectTimeout=15 \
+                  -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
+              "$DEPLOY_SSH_TARGET" 'bash -s' 
