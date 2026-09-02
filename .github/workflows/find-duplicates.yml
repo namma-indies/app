@@ -11,6 +11,11 @@ name: Find duplicate sightings
 
 on:
   workflow_dispatch:
+    inputs:
+      detail:
+        description: Compare every field between copies, to show how they were made
+        type: boolean
+        default: false
 
 concurrency:
   group: production-diagnostics
@@ -27,6 +32,7 @@ jobs:
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_SSH_TARGET: ${{ secrets.DEPLOY_SSH_TARGET }}
+          DETAIL: ${{ inputs.detail && '--detail' || '' }}
         run: |
           set -euo pipefail
           key_file="$(mktemp)"
@@ -38,4 +44,5 @@ jobs:
           # nobody can answer until the job times out.
           ssh -i "$key_file" -o BatchMode=yes -o ConnectTimeout=15 \
               -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
-            "$DEPLOY_SSH_TARGET" 'bash -s' < deploy/remote-find-duplicates.sh
+            "$DEPLOY_SSH_TARGET" "DETAIL='$DETAIL' bash -s" \
+              < deploy/remote-find-duplicates.sh

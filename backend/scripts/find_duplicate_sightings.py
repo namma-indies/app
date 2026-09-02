@@ -61,15 +61,50 @@ ORDER BY count(DISTINCT s.id) DESC, min(s.created_at)
 """
 
 
+# Field-by-field comparison within each duplicate group.
+#
+# This is the decisive test for *how* the duplicates were made. `captured_at` is
+# stamped by the client at submit time (`new Date().toISOString()` for a live
+# capture), so two separate submissions of the same dog carry different values,
+# down to the millisecond. Groups here share it by construction, which already
+# points at one queued item being sent twice rather than a person pressing LOG
+# IT again.
+#
+# If every other field also matches -- the GPS fix to full precision, the
+# accuracy radius, the attrs blob -- then the two rows were built from the same
+# stored bytes, which only the offline queue can do. A second capture would have
+# taken a fresh GPS reading and almost certainly landed a few metres away.
+DETAIL_SQL = """
+SELECT s.observer_id, s.captured_at, p.phash,
+       count(DISTINCT s.id)                                     AS copies,
+       count(DISTINCT ST_AsText(s.geog::geometry))              AS distinct_places,
+       count(DISTINCT s.geo_accuracy_m)                         AS distinct_accuracy,
+       count(DISTINCT s.attrs::text)                            AS distinct_attrs,
+       count(DISTINCT s.geo_source)                             AS distinct_geo_source,
+       array_agg(s.created_at ORDER BY s.created_at)             AS stored_at,
+       array_agg(DISTINCT s.match_status)                        AS statuses
+FROM sightings s
+JOIN photos p ON p.sighting_id = s.id
+GROUP BY s.observer_id, s.captured_at, p.phash
+HAVING count(DISTINCT s.id) > 1
+ORDER BY min(s.created_at)
+"""
+
+
 async def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--dsn", default=settings.database_url)
+    ap.add_argument("--detail", action="store_true",
+                    help="compare every field between copies, to establish "
+                         "whether they came from one queued item or two "
+                         "separate submissions")
     args = ap.parse_args()
 
     conn = await asyncpg.connect(args.dsn)
     try:
         rows = await conn.fetch(SQL)
         total = await conn.fetchval("SELECT count(*) FROM sightings")
+        detail = await conn.fetch(DETAIL_SQL) if args.detail else []
     finally:
         await conn.close()
 
@@ -92,6 +127,30 @@ async def main() -> int:
         for sid in r["sighting_ids"]:
             print(f"      {sid}")
         print()
+
+    if detail:
+        print("=" * 62)
+        print("HOW THEY WERE MADE\n")
+        identical = 0
+        for r in detail:
+            same = (r["distinct_places"] <= 1 and r["distinct_accuracy"] <= 1
+                    and r["distinct_attrs"] <= 1 and r["distinct_geo_source"] <= 1)
+            identical += 1 if same else 0
+            gaps = [
+                (b - a).total_seconds()
+                for a, b in zip(r["stored_at"], r["stored_at"][1:])
+            ]
+            verdict = "one queued item, sent twice" if same else "FIELDS DIFFER"
+            print(f"  {r['copies']}x  {verdict}")
+            print(f"      places={r['distinct_places']} accuracy={r['distinct_accuracy']} "
+                  f"attrs={r['distinct_attrs']} geo_source={r['distinct_geo_source']}")
+            print(f"      gaps between copies: "
+                  f"{', '.join(f'{g/3600:.1f}h' for g in gaps)}")
+            print(f"      match_status: {r['statuses']}")
+        print(f"\n  {identical}/{len(detail)} groups are byte-identical apart from the id.")
+        print("  A second capture would have taken a fresh GPS reading, so identical")
+        print("  coordinates to full precision mean the same stored bytes were sent")
+        print("  twice -- which only the offline queue does.\n")
 
     print("Nothing was changed. To resolve these, merge each pair through the")
     print("MATCHES tab -- it is the same question, and it is reversible.")
