@@ -12,4 +12,4 @@ COMPOSE="docker-compose.prod.yml"
 cd ~/app
 
 sudo docker compose -f "$COMPOSE" exec -T app \
-  sh -c "cd /app/backend && uv run python scripts/find_duplicate_sightings.py"
+  sh -c "cd /app/backend && uv run python scripts/find_duplicate_sightings.py ${DETAIL:-}"
