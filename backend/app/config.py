@@ -149,6 +149,18 @@ class Settings(BaseSettings):
     db_pool_min: int = 5
     db_pool_max: int = 30
 
+    # How coarse another observer's sightings look on the map and on a dog
+    # card. Full precision is reserved for animals you photographed yourself.
+    #
+    # 1 km is a neighbourhood in Bangalore: enough to show where dogs are and
+    # how varied they are, not enough to find one. The number is a product
+    # judgement rather than a derived one, and it is here so it can move
+    # without a code change. See app/precision.py for why this is a grid cell
+    # and not a jittered point -- jitter averages away under refresh, and leaks
+    # further the more sightings a dog has, which protects the best-documented
+    # animals least.
+    map_coarsen_cell_m: float = 1000.0
+
     s3_bucket: str = "indiedex-dev"
 
     # Where the pre-exported ONNX models live, inside s3_bucket. They are

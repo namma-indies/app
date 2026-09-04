@@ -65,16 +65,30 @@ function toFeature(s: MappableSighting): GeoJSON.Feature<GeoJSON.Point> {
       // itself. Empty for the viewer's own sightings and for /dex responses,
       // where "who" is never in question.
       observer: s.mine === false && s.observer ? s.observer : "",
+      // "area" means the server collapsed this to a grid cell because the
+      // viewer did not photograph this animal. Carried through so the pin can
+      // look different and the popup can say so -- a coarse point drawn as a
+      // confident pin is a claim the server never made.
+      precision: s.precision ?? "exact",
+      approx_km: s.cell_m ? (s.cell_m / 1000).toFixed(s.cell_m % 1000 === 0 ? 0 : 1) : "",
     },
   };
 }
 
 export function popupHtml(p: Record<string, string>): string {
   const tags = p.tags ? p.tags.split("|") : [];
+  // Said plainly rather than implied by a softer pin. Someone reading this map
+  // is deciding whether they can go and find this dog, and the honest answer
+  // for another person's sighting is "not from here".
+  const approx =
+    p.precision === "area"
+      ? `<div class="popup-approx">somewhere in this ~${esc(p.approx_km || "1")} km area</div>`
+      : "";
   return `
     <div class="map-popup">
       ${p.thumb ? `<img src="${esc(p.thumb)}" alt="dog sighting" />` : ""}
       <div class="time">${esc(p.time)}</div>
+      ${approx}
       ${p.observer ? `<div class="popup-by">logged by ${esc(p.observer)}</div>` : ""}
       ${p.note ? `<div class="popup-note">${esc(p.note)}</div>` : ""}
       ${
@@ -89,7 +103,9 @@ export function popupHtml(p: Record<string, string>): string {
 
 function pinEl(p: Record<string, string>): HTMLElement {
   const el = document.createElement("div");
-  el.className = "photo-pin";
+  // A coarsened sighting gets a soft, dashed edge so the map reads as "roughly
+  // here" at a glance, before anyone taps. The popup says it in words too.
+  el.className = p.precision === "area" ? "photo-pin photo-pin-approx" : "photo-pin";
   if (p.thumb) {
     const img = document.createElement("img");
     img.src = p.thumb;
