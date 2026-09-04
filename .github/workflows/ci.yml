@@ -83,6 +83,45 @@ jobs:
         # from implying the models were exercised.
         run: uv run pytest -q -rs
 
+  # The Java in frontend/android is not covered by any other job: the release
+  # workflow only runs on a tag, so a broken plugin would be found by whoever
+  # cut the release rather than by whoever wrote it. This compiles it on every
+  # PR. It does not run it -- that needs a phone, and the frame rate this is
+  # for cannot be measured in CI at all.
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          # Capacitor 8's generated capacitor.build.gradle pins Java 21. Do not
+          # "helpfully" raise this; the build will fail to compile.
+          java-version: "21"
+      - name: Install and build the web assets
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+      - name: Placeholder model asset
+        # assembleDebug only packages this file, it never loads it, so a compile
+        # check does not need the real 6 MB export -- and pulling tensorflow in
+        # to produce one would add minutes to every PR. The release workflow
+        # exports the real thing.
+        run: |
+          mkdir -p frontend/android/app/src/main/assets
+          : > frontend/android/app/src/main/assets/yolo26n_seg_320_fp16.tflite
+      - name: Sync and compile the Android project
+        working-directory: frontend
+        run: |
+          npx cap sync android
+          cd android && ./gradlew --no-daemon assembleDebug
+
   frontend:
     runs-on: ubuntu-latest
     defaults:
