@@ -2,12 +2,15 @@ import { useEffect, useMemo, useState } from "react";
 import {
   getDex,
   getMap,
+  getMe,
   UnauthorizedError,
   type MapSighting,
   type Sighting,
 } from "../api";
 import DogMap from "../components/DogMap";
+import ReportSheet from "../components/ReportSheet";
 import Dogs from "./Dogs";
+import Moderation from "./Moderation";
 import Review from "./Review";
 
 const TAG_LABELS: Record<string, string> = {
@@ -41,7 +44,7 @@ function where(s: Sighting): string {
 
 export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [sightings, setSightings] = useState<Sighting[] | null>(null);
-  const [view, setView] = useState<"map" | "journal" | "dogs" | "review">("map");
+  const [view, setView] = useState<"map" | "journal" | "dogs" | "review" | "flags">("map");
   const [selected, setSelected] = useState<Sighting | null>(null);
   // The map can show the whole cohort's sightings, not just the viewer's.
   // Defaults to MINE: that renders straight from the /dex data already loaded
@@ -50,6 +53,11 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
   const [scope, setScope] = useState<"mine" | "everyone">("mine");
   const [everyone, setEveryone] = useState<MapSighting[] | null>(null);
   const [everyoneError, setEveryoneError] = useState(false);
+  // Set while someone is reporting a sighting from a map popup.
+  const [reporting, setReporting] = useState<string | null>(null);
+  // Only decides whether the FLAGS tab renders. The endpoints behind it check
+  // the tier themselves -- a client-side flag is a suggestion.
+  const [isModerator, setIsModerator] = useState(false);
 
   useEffect(() => {
     getDex()
@@ -59,6 +67,14 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
         else setSightings([]);
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    // Failure is not surfaced: not being a moderator and the call failing look
+    // the same from here, and both mean "do not show the tab".
+    getMe()
+      .then((me) => setIsModerator(me.is_moderator))
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -126,7 +142,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
   } else if (everyone.length === 0) {
     mapBody = <div className="empty-state">NO SIGHTINGS ANYWHERE YET</div>;
   } else {
-    mapBody = <DogMap sightings={everyone} />;
+    mapBody = <DogMap sightings={everyone} onReport={setReporting} />;
     showingMap = true;
   }
 
@@ -147,9 +163,16 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
         <button className={view === "review" ? "active" : ""} onClick={() => setView("review")}>
           MATCHES
         </button>
+        {isModerator && (
+          <button className={view === "flags" ? "active" : ""} onClick={() => setView("flags")}>
+            FLAGS
+          </button>
+        )}
       </div>
 
-      {view === "review" ? (
+      {view === "flags" ? (
+        <Moderation onUnauthorized={onUnauthorized} />
+      ) : view === "review" ? (
         <Review onUnauthorized={onUnauthorized} />
       ) : view === "dogs" ? (
         <Dogs onUnauthorized={onUnauthorized} />
@@ -190,6 +213,16 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
               </div>
               <div className="meta">
                 <div className="name anon">— UNIDENTIFIED —</div>
+                {s.review_status && s.review_status !== "valid" && (
+                  // Yours stays in your dex whatever its status. Being told is
+                  // the point: otherwise it is simply missing from the shared
+                  // map with no explanation anywhere.
+                  <div className="under-review">
+                    {s.review_status === "pending"
+                      ? "REPORTED · UNDER REVIEW"
+                      : "HIDDEN BY A MODERATOR"}
+                  </div>
+                )}
                 <div className="line">
                   spotted {when(s.captured_at)}
                   <br />
@@ -208,6 +241,21 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
             </div>
           ))}
         </div>
+      )}
+
+      {reporting && (
+        <ReportSheet
+          sightingId={reporting}
+          onClose={() => setReporting(null)}
+          onReported={() => {
+            setReporting(null);
+            // Drop it from the loaded cohort map immediately. It is hidden
+            // server-side now, and leaving the pin up until a refetch says
+            // the button did nothing.
+            setEveryone((cur) => (cur ?? []).filter((x) => x.id !== reporting));
+          }}
+          onUnauthorized={onUnauthorized}
+        />
       )}
 
       {selected && (

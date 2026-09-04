@@ -166,7 +166,7 @@ async def get_dogs(
         -- hang off the survivor, so listing it would show the same dog twice.
         WHERE i.merged_into IS NULL
           AND i.status IS DISTINCT FROM 'merged'
-          AND s.review_status <> 'rejected'
+          AND s.review_status = 'valid'
         GROUP BY i.id, i.name
         ORDER BY max(s.captured_at) DESC
         LIMIT $2

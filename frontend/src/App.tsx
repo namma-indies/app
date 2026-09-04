@@ -119,6 +119,17 @@ export default function App() {
           sign out
         </button>
       </div>
+      {/* Apple 5.1.1 wants the privacy policy reachable *inside* the app, not
+          only in the store listing, and 1.2 wants published contact details for
+          a UGC app. Both live on one line rather than behind a settings screen
+          this app does not have. */}
+      <div className="legal-row">
+        <a href="https://nammaindies.org/privacy" target="_blank" rel="noreferrer">
+          privacy
+        </a>
+        <span aria-hidden="true"> · </span>
+        <a href="mailto:nammaindies@gmail.com">contact us</a>
+      </div>
       <div className="screen">
         {tab === "capture" ? (
           <Capture />

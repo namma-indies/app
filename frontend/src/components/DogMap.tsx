@@ -84,6 +84,15 @@ export function popupHtml(p: Record<string, string>): string {
               .join("")}</div>`
           : ""
       }
+      ${
+        // Only on someone else's sighting -- reporting your own is not a thing
+        // anyone wants, and deleting it is a different feature. `p.id` is
+        // required too: the button carries the id it would report, so without
+        // one there is nothing for the delegated handler to act on.
+        p.observer && p.id
+          ? `<button type="button" class="popup-report" data-report="${esc(p.id)}">report</button>`
+          : ""
+      }
     </div>`;
 }
 
@@ -114,9 +123,21 @@ function clusterEl(count: number): HTMLElement {
   return el;
 }
 
-export default function DogMap({ sightings }: { sightings: MappableSighting[] }) {
+export default function DogMap({
+  sightings,
+  onReport,
+}: {
+  sightings: MappableSighting[];
+  /** Called with a sighting id when someone taps `report` in its popup.
+   * Omitted on surfaces where reporting makes no sense (your own dex). */
+  onReport?: (sightingId: string) => void;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
+  // Read inside a listener registered once, which would otherwise close over
+  // the first render's handler forever.
+  const onReportRef = useRef(onReport);
+  onReportRef.current = onReport;
   // Read inside map callbacks, which are registered once and would otherwise
   // close over the first render's sightings forever.
   const sightingsRef = useRef(sightings);
@@ -134,6 +155,17 @@ export default function DogMap({ sightings }: { sightings: MappableSighting[] })
     });
     mapRef.current = map;
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+
+    // One delegated listener on the container rather than wiring each popup as
+    // it opens. Popups are created and destroyed constantly as markers come in
+    // and out of view, and per-popup listeners leak with them.
+    const container = containerRef.current;
+    const onClick = (e: MouseEvent) => {
+      const target = (e.target as HTMLElement | null)?.closest?.("[data-report]");
+      const id = target?.getAttribute("data-report");
+      if (id) onReportRef.current?.(id);
+    };
+    container.addEventListener("click", onClick);
 
     map.on("load", () => {
       map.addSource(SOURCE_ID, {
@@ -214,6 +246,7 @@ export default function DogMap({ sightings }: { sightings: MappableSighting[] })
     });
 
     return () => {
+      container.removeEventListener("click", onClick);
       map.remove();
       mapRef.current = null;
     };
