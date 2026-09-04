@@ -1,0 +1,14 @@
+[Unit]
+Description=Nightly IndieDex database backup
+
+[Timer]
+# 01:00 IST. The box is 2 vCPU and also serves live uploads; pg_dump plus an
+# upload is small but not free, so it runs when nobody is out photographing.
+OnCalendar=*-*-* 19:30:00 UTC
+# Fire on boot if the box was down when it should have run. A backup skipped
+# because of an outage is precisely when the next one matters most.
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
