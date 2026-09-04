@@ -36,6 +36,24 @@ the server: it is the part of YOLO post-processing most likely to be subtly
 wrong, and reimplementing it in Kotlin inside a 33 ms budget is how that goes
 wrong quietly.
 
+QUANTISATION: FP16, AND NOT STATIC INT8
+---------------------------------------
+FP16 by default, and static INT8 is deliberately not the default even though it
+is a third of the size.
+
+Ultralytics' own exporter carries the reason, in a comment next to the flag:
+`enable_batchmatmul_unfold=not use_int8,  # fix lower no. of detected objects on
+GPU delegate`. Static INT8 keeps a BatchMatMul the GPU delegate accepts and then
+computes wrong, so the failure is *fewer detections*, silently -- exactly the
+failure this feature exists to fix, reintroduced one layer down. Measured
+elsewhere at roughly -6.5 mAP for YOLOv8n, and naive A8W8 has produced zero
+detections.
+
+There is also no speed argument for going below FP16: the GPU delegate computes
+in FP16 internally whatever the file says, and INT8 has measured *slower* than
+FP32 on it. At 3 M parameters the difference is a few megabytes of APK either
+way, which is not worth a silent accuracy cliff.
+
 RESOLUTION IS THE KNOB THAT DECIDES THE FRAME RATE
 --------------------------------------------------
 Exported at several sizes on purpose. Cost scales with pixels, so 320 is about
@@ -96,10 +114,14 @@ def main() -> int:
     ap.add_argument("--sizes", type=int, nargs="+", default=list(SIZES))
     ap.add_argument("--formats", nargs="+", default=["tflite", "onnx"],
                     help="tflite for Android; onnx to verify shapes on this machine")
-    ap.add_argument("--int8", action="store_true",
-                    help="also emit an int8 tflite. Needs a calibration set to be "
-                         "meaningful; without --data it uses ultralytics' default "
-                         "and the accuracy cost is UNMEASURED on street dogs.")
+    # `quantize` is the parameter this version of ultralytics actually takes for
+    # tflite (16 = FP16, 8 = static INT8, "w8a16", 32/None = FP32). `half=` and
+    # `int8=` are derived from it internally and are not the public knob.
+    ap.add_argument("--quantize", default="16", choices=["16", "32", "8"],
+                    help="16 (default) = FP16. 32 = FP32, four times the size for "
+                         "nothing: the GPU delegate computes in FP16 internally "
+                         "either way. 8 = static INT8, which is a TRAP on the GPU "
+                         "delegate -- see the note in the module docstring.")
     args = ap.parse_args()
 
     from ultralytics import YOLO
@@ -112,14 +134,12 @@ def main() -> int:
         for fmt in args.formats:
             model = YOLO(args.weights)
             try:
-                # nms=True: the phone must not reimplement NMS inside a 33 ms
-                # budget. half=True for tflite -- fp16 is the format the GPU
-                # delegate actually wants, and int8 is a separate, measured
-                # decision rather than a default.
+                # nms=True: the phone must not reimplement NMS inside a
+                # 33 ms budget. Quantisation is FP16 by default, see the
+                # module docstring on why static INT8 is not.
                 kwargs = dict(format=fmt, imgsz=size, nms=True)
                 if fmt == "tflite":
-                    kwargs["half"] = not args.int8
-                    kwargs["int8"] = args.int8
+                    kwargs["quantize"] = int(args.quantize)
                 elif fmt == "onnx":
                     kwargs["opset"] = 17
                     kwargs["simplify"] = False
@@ -129,7 +149,7 @@ def main() -> int:
                 failures += 1
                 continue
 
-            suffix = "int8" if (fmt == "tflite" and args.int8) else "fp16"
+            suffix = {"16": "fp16", "32": "fp32", "8": "int8"}[args.quantize]
             tag = f"{size}_{suffix}" if fmt == "tflite" else str(size)
             dest = args.out / f"yolo26n_seg_{tag}{produced.suffix}"
             if produced.is_dir():
@@ -153,8 +173,10 @@ def main() -> int:
         print(f"\n{failures} export(s) failed", file=sys.stderr)
         return 1
     print(f"\nwrote to {args.out}")
-    print("These ship inside the APK. Keep them small: this is added to every "
-          "install, on connections where the app already asks a lot.")
+    print("These ship inside the APK. At ~6 MB that is not a size problem -- but "
+          "note that putting AGPL-3.0 weights into a distributed APK is the "
+          "redistribution act itself, which gitignoring them does not avoid. "
+          "See backend/app/ml/NOTICE.md.")
     return 0
 
 

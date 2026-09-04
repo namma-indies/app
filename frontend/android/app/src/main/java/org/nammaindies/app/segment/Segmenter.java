@@ -129,7 +129,30 @@ public final class Segmenter implements AutoCloseable {
         CompatibilityList compat = new CompatibilityList();
         if (compat.isDelegateSupportedOnThisDevice()) {
             try {
-                gpuDelegate = new GpuDelegate(compat.getBestOptionsForThisDevice());
+                // setPrecisionLossAllowed is set EXPLICITLY, and true is a
+                // decision rather than a default. The Java delegate defaults to
+                // true where the C and iOS APIs default to false, so
+                // `new GpuDelegate()` computes in fp16 on Android only and says
+                // nothing about it. Reported divergences from that are large:
+                // one TFLite issue measures mean error 0.39 on the GPU against
+                // 5.5e-06 on the CPU for the same graph, and fp16's 65504
+                // ceiling has turned finite CPU outputs into Infinity.
+                //
+                // It is acceptable here because the outputs are boxes and mask
+                // coverage: a box a pixel out and a mask edge a pixel soft cost
+                // nothing a person would notice in a viewfinder.
+                //
+                // It would NOT be acceptable for an identity embedding, and
+                // that is the whole reason MiewID stays on the server. A
+                // reported case of exactly this — an ArcFace face-embedding
+                // model on a Pixel 3 XL — diverges between GPU and CPU with the
+                // error growing in the number of delegated ops, unresolved. A
+                // vector whose value depends on which phone and driver computed
+                // it cannot be compared by cosine against a corpus computed in
+                // fp32 somewhere else.
+                GpuDelegate.Options gpuOptions = compat.getBestOptionsForThisDevice();
+                gpuOptions.setPrecisionLossAllowed(true);
+                gpuDelegate = new GpuDelegate(gpuOptions);
                 options.addDelegate(gpuDelegate);
                 useGpu = true;
             } catch (Throwable t) {

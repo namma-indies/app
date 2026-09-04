@@ -52,9 +52,11 @@ import java.util.concurrent.Executors;
  * <h3>What it does not do</h3>
  * It does not capture, upload or embed anything. The existing capture path is
  * untouched; this is a viewfinder that can see. Embedding on-device is a
- * separate question with its own answer (MiewID at fp16 preserves the server's
- * similarities to within 0.0004, measured — but the model is ~106 MB and does
- * not belong in an APK).
+ * separate question whose answer is no. fp16 preserves the server's
+ * similarities to within 0.0004 when measured in torch, but that is not the
+ * risk: the Android GPU delegate is non-deterministic across vendors and
+ * drivers, so a phone-computed identity vector cannot be compared by cosine
+ * against a corpus computed in fp32 on the server. See Segmenter's note.
  */
 @CapacitorPlugin(
         name = "DogSegmenter",
@@ -88,6 +90,7 @@ public class DogSegmenterPlugin extends Plugin {
     private PreviewView previewView;
     private SegmentOverlay overlay;
     private ByteBuffer inputBuffer;
+    private FrameConverter converter;
 
     private volatile boolean running = false;
     private long lastEventAt = 0;
@@ -137,6 +140,7 @@ public class DogSegmenterPlugin extends Plugin {
                 if (segmenter == null) {
                     segmenter = new Segmenter(getContext(), asset);
                     inputBuffer = segmenter.newInputBuffer();
+                    converter = new FrameConverter(segmenter.inputSize());
                 }
                 attachViews();
                 bindCamera();
@@ -215,8 +219,8 @@ public class DogSegmenterPlugin extends Plugin {
 
     private void analyze(@NonNull ImageProxy image) {
         try {
-            if (!running || segmenter == null) return;
-            FrameConverter.convert(image, segmenter.inputSize(), inputBuffer);
+            if (!running || segmenter == null || converter == null) return;
+            converter.convert(image, inputBuffer);
             List<Segmenter.Instance> found = segmenter.run(inputBuffer);
 
             long now = System.nanoTime();
@@ -307,6 +311,10 @@ public class DogSegmenterPlugin extends Plugin {
         if (segmenter != null) {
             segmenter.close();
             segmenter = null;
+        }
+        if (converter != null) {
+            converter.close();
+            converter = null;
         }
         super.handleOnDestroy();
     }

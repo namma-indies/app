@@ -23,6 +23,20 @@ import type { PluginListenerHandle } from "@capacitor/core";
  * would fork the one part of the app that must not have two implementations.
  * What it is for is the moment before the shutter — knowing there are two dogs
  * in front of you, and that the app has noticed both.
+ *
+ * TWO FRAME RATES, AND ONLY ONE OF THEM IS 30
+ * -------------------------------------------
+ * The camera preview runs at the sensor's own rate because CameraX renders it
+ * straight to a SurfaceView, untouched by any of this. The *outlines* update at
+ * whatever inference manages, which published measurements for this model put
+ * at 15-25 fps on a 2025 flagship and 8-15 on mid-range hardware — and that is
+ * at 640; this runs at 320. So the picture never stutters and the outlines lag
+ * slightly behind a moving dog.
+ *
+ * That is the right way round, and it is worth not "fixing": dropping the
+ * preview to the inference rate would make the whole screen judder to keep the
+ * outlines glued on. `STRATEGY_KEEP_ONLY_LATEST` on the analyser is what keeps
+ * the lag from accumulating into seconds.
  */
 export default function LiveView({ onClose }: { onClose: () => void }) {
   const [state, setState] = useState<AnimalsEvent | null>(null);
