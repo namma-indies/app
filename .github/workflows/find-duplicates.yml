@@ -47,7 +47,14 @@ jobs:
           # the client sends -- so an env prefix on the ssh command is silently
           # dropped and the script runs its default. Same shape as
           # backfill.yml, which learned this the hard way.
+          [ -n "$DETAIL" ] && action="find-duplicates detail" || action="find-duplicates"
+          # The command string names an ACTION, while the script is still piped
+          # on stdin. That is what makes this safe to merge before the box is
+          # switched over: with the old `command="bash -s"` pinning the action
+          # name is discarded and stdin runs, exactly as before; with
+          # deploy/authorized-command.sh installed the action is honoured and
+          # stdin is drained and dropped. Both work, in either order.
           { echo "DETAIL='$DETAIL'"; cat deploy/remote-find-duplicates.sh; } \
             | ssh -i "$key_file" -o BatchMode=yes -o ConnectTimeout=15 \
                   -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
-              "$DEPLOY_SSH_TARGET" 'bash -s' 
+              "$DEPLOY_SSH_TARGET" "$action" 
