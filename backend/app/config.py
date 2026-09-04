@@ -161,4 +161,95 @@ class Settings(BaseSettings):
     s3_region: str = "ap-south-1"
 
 
+# --- fail closed on unset secrets ---------------------------------------
+#
+# Every secret below has a working dev default, which is what makes `uv run
+# uvicorn app.main:app` work on a fresh clone. It is also the failure this
+# guards: a missing line in the box's `.env` does not crash, it silently falls
+# back to a value published in this public repo. `session_secret` is the one
+# that matters most -- the session cookie is nothing but a signed observer id,
+# so anyone who knows the default can mint a valid session for any observer in
+# the database and read or write as them.
+#
+# There is no env var to remember, deliberately. Requiring `APP_ENV=prod` to
+# arm this would reproduce the original bug one level up: forget that line and
+# the guard silently disarms. Instead production is inferred from
+# `public_base_url`, which must already be correct in production -- it is what
+# magic links and photo URLs are signed against, and a wrong one is the
+# documented "dangerous one" in the runbook. An app that believes it is
+# reachable at a public URL is not a dev box.
+#
+# Fails at import, so it stops `alembic upgrade head` in the entrypoint before
+# uvicorn is ever exec'd, rather than serving forgeable sessions.
+
+_DEV_SECRETS = {
+    "session_secret": "dev-session-secret",
+    "magic_link_secret": "dev-magic-secret",
+    "phone_hash_secret": "dev-phone-secret",
+    "join_passcode": "dev-join",
+}
+
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "[::1]", "testserver")
+
+
+class InsecureDefaultSecret(RuntimeError):
+    """A public deployment is still using a secret published in this repo."""
+
+
+def is_public_deployment(public_base_url: str) -> bool:
+    """True when the app believes the public internet can reach it.
+
+    Empty or unparseable counts as local: this guard should refuse to boot a
+    real deployment, not a malformed string.
+
+    A private or loopback address is local too, and that case is not
+    hypothetical -- README's phone-testing flow sets PUBLIC_BASE_URL to the
+    developer's LAN IP so the handset can load photos and magic links. Treating
+    192.168.x.x as "public" would refuse to start on exactly the setup the docs
+    tell people to use, which is how a safety check gets deleted.
+    """
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    host = urlsplit(public_base_url.strip()).hostname
+    if not host:
+        return False
+    host = host.lower()
+    if host in _LOCAL_HOSTS or host.endswith(".local"):
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return True  # a real hostname
+    return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved)
+
+
+def check_secrets(s: "Settings") -> None:
+    """Refuse to run a public deployment on the dev defaults.
+
+    Raises rather than warning. A warning in a container log is a thing nobody
+    reads until after the incident, and the whole point of this check is that
+    the insecure state is indistinguishable from the secure one at runtime.
+    """
+    if not is_public_deployment(s.public_base_url):
+        return
+    unset = sorted(
+        name for name, dev_value in _DEV_SECRETS.items()
+        if getattr(s, name) == dev_value
+    )
+    if not unset:
+        return
+    raise InsecureDefaultSecret(
+        "refusing to start: "
+        + ", ".join(n.upper() for n in unset)
+        + f" still {'has' if len(unset) == 1 else 'have'} the dev default from "
+        "app/config.py, and PUBLIC_BASE_URL="
+        + s.public_base_url
+        + " says this is a public deployment. Those defaults are published in a "
+        "public repo; with SESSION_SECRET among them anyone can forge a session "
+        "for any observer. Set them in the box's .env and redeploy."
+    )
+
+
 settings = Settings()
+check_secrets(settings)
