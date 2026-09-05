@@ -70,6 +70,13 @@ dependencies {
     // 6 fps on the CPU looks broken with no way to diagnose it.
     implementation "org.tensorflow:tensorflow-lite:$tfliteVersion"
     implementation "org.tensorflow:tensorflow-lite-gpu:$tfliteVersion"
+    // The -api artifact is separate and NOT pulled in transitively.
+    // GpuDelegate.Options extends GpuDelegateFactory.Options, so calling
+    // setPrecisionLossAllowed without this fails at compile time with
+    // "cannot access GpuDelegateFactory" -- which names a class the source
+    // never mentions, and so reads as a dependency-resolution bug rather than
+    // a missing dependency.
+    implementation "org.tensorflow:tensorflow-lite-gpu-api:$tfliteVersion"
     implementation "org.tensorflow:tensorflow-lite-gpu-delegate-plugin:$tfliteGpuPluginVersion"
 }
 
