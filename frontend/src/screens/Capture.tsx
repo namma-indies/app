@@ -20,6 +20,8 @@ import {
   resolveCapturedAt,
   type ImportOrigin,
 } from "../capture/importOrigin";
+import { locate } from "../capture/geolocate";
+import LocationPicker, { type PickedPlace } from "../components/LocationPicker";
 
 const MAX_PHOTOS = 5;
 
@@ -67,18 +69,10 @@ function Chips<T extends string>({
   );
 }
 
-function getLocation(): Promise<GeolocationPosition | null> {
-  return new Promise((resolve) => {
-    // Checks the value, not just the key. Some webviews expose the property as
-    // undefined, where an `in` test passes and the call below then throws --
-    // which would reject out of submit() and lose the sighting.
-    if (!navigator.geolocation) return resolve(null);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => resolve(pos),
-      () => resolve(null),
-      { timeout: 8000, enableHighAccuracy: true },
-    );
-  });
+/** A position for the import prompt, which only wants coordinates or nothing. */
+async function getLocation(): Promise<{ lat: number; lng: number } | null> {
+  const got = await locate();
+  return got.ok ? { lat: got.lat, lng: got.lng } : null;
 }
 
 export default function Capture() {
@@ -106,13 +100,47 @@ export default function Capture() {
   const [origin, setOrigin] = useState<ImportOrigin | null>(null);
   // Non-null while we're asking the person for what the file didn't say.
   const [asking, setAsking] = useState<{ file: File; md: PhotoMetadata } | null>(null);
+  // Where this sighting happened, resolved BEFORE submit rather than during it.
+  // The old code called for a fix inside submit(), so a slow lock looked like
+  // the save had hung -- and when it timed out the sighting saved with no
+  // coordinate and silently never appeared on the map.
+  const [place, setPlace] = useState<PickedPlace | null>(null);
+  const [locating, setLocating] = useState(false);
+  const [geoFailed, setGeoFailed] = useState(false);
+  const [picking, setPicking] = useState(false);
 
   function showToast(msg: string) {
     setToast(msg);
     setTimeout(() => setToast(null), 2600);
   }
 
+  /** Start looking as soon as there is evidence in hand.
+   *
+   * The fix takes as long as it takes, and doing it here means the wait happens
+   * while someone is framing the shot or typing a note instead of after they
+   * press LOG IT. It also means a failure is visible and fixable before saving,
+   * rather than becoming a sighting with no place that quietly never shows up. */
+  function beginLocating() {
+    if (place || locating) return;
+    setLocating(true);
+    setGeoFailed(false);
+    locate().then((got) => {
+      setLocating(false);
+      if (got.ok) {
+        setPlace({
+          lat: got.lat,
+          lng: got.lng,
+          source: "device_gps",
+          accuracy: got.accuracy ?? undefined,
+        });
+      } else {
+        setGeoFailed(true);
+      }
+    });
+  }
+
   function addPhoto(f: File) {
+    beginLocating();
     setPhotos((prev) => (prev.length >= MAX_PHOTOS ? prev : [...prev, f]));
     setPreviewUrls((prev) =>
       prev.length >= MAX_PHOTOS ? prev : [...prev, URL.createObjectURL(f)],
@@ -128,6 +156,7 @@ export default function Capture() {
   }
 
   function acceptVideo(f: File) {
+    beginLocating();
     previewUrls.forEach((url) => URL.revokeObjectURL(url));
     setPhotos([]);
     setPreviewUrls([]);
@@ -274,6 +303,9 @@ export default function Capture() {
     if (importRef.current) importRef.current.value = "";
     setOrigin(null);
     setAsking(null);
+    setPlace(null);
+    setGeoFailed(false);
+    setPicking(false);
     setNote("");
     setSex(null);
     setEarNotch(null);
@@ -300,11 +332,13 @@ export default function Capture() {
       geoSource = origin.geo_source;
     } else {
       capturedAt = new Date().toISOString();
-      const position = await getLocation();
-      lat = position?.coords.latitude;
-      lng = position?.coords.longitude;
-      accuracy = position?.coords.accuracy;
-      geoSource = position ? "device_gps" : "none";
+      // Already resolved, or deliberately left empty. Never acquired here:
+      // that is what made LOG IT appear to hang for eight seconds and then
+      // save something invisible.
+      lat = place?.lat;
+      lng = place?.lng;
+      accuracy = place?.accuracy;
+      geoSource = place ? place.source : "none";
     }
 
     const input = {
@@ -480,6 +514,40 @@ export default function Capture() {
             </p>
           )}
 
+          {/* Shown before saving, never after. A sighting whose place failed is
+              the one case a person can still fix while standing there, and the
+              old flow gave them no sign anything was wrong until it had already
+              saved something that never appeared on the map. Hidden for an
+              import, which carries its own place from the file. */}
+          {!origin && (
+            <button
+              type="button"
+              className={"place-row" + (place ? "" : " place-row-empty")}
+              onClick={() => setPicking(true)}
+            >
+              <span className="place-icon" aria-hidden="true">📍</span>
+              <span className="place-text">
+                {locating
+                  ? "finding where you are…"
+                  : place
+                    ? place.source === "device_gps"
+                      ? `your location${place.accuracy ? ` · ±${Math.round(place.accuracy)} m` : ""}`
+                      : `${place.lat.toFixed(4)}, ${place.lng.toFixed(4)} · you set this`
+                    : geoFailed
+                      ? "no location — tap to set one"
+                      : "no location — tap to set one"}
+              </span>
+              <span className="place-action">{place ? "change" : "set"}</span>
+            </button>
+          )}
+          {!origin && !place && !locating && (
+            /* Said plainly, because the consequence is invisible otherwise: it
+               saves fine and then is missing from every map with no error. */
+            <p className="hint place-warning">
+              Without a place this sighting won't appear on the map.
+            </p>
+          )}
+
           <div className="note-field">
             <textarea
               rows={2}
@@ -529,15 +597,22 @@ export default function Capture() {
         </>
       )}
 
+      {picking && (
+        <LocationPicker
+          initial={place ? { lat: place.lat, lng: place.lng } : null}
+          onPick={(p) => {
+            setPlace(p);
+            setGeoFailed(false);
+            setPicking(false);
+          }}
+          onClose={() => setPicking(false)}
+        />
+      )}
+
       {asking && (
         <ImportOriginPrompt
           md={asking.md}
-          getPosition={async () => {
-            const pos = await getLocation();
-            return pos
-              ? { lat: pos.coords.latitude, lng: pos.coords.longitude }
-              : null;
-          }}
+          getPosition={getLocation}
           onConfirm={(o) => {
             stageImport(asking.file, o);
             setAsking(null);
