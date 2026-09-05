@@ -1,0 +1,10 @@
+[Unit]
+Description=IndieDex database backup to object storage
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/app
+ExecStart=/usr/bin/env bash /home/ubuntu/app/deploy/remote-backup-db.sh
