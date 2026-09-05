@@ -111,11 +111,22 @@ re-reporting reaches a human without reaching past one. Moderators are
 
 `/dex` and `/map` differ deliberately: `/dex` means "mine" and is the ownership
 semantics `resolve_sighting` reads, while `/map` is cohort-wide and carries
-`mine` per sighting so a client filters rather than refetches. `/map` and
-`/dogs` both show **full precision to any signed-in observer**, which is safe
-only while the cohort stays passcode- and allowlist-gated. Issue #5's
-`resolve_precision` has to land on both at once — a coarsened map beside a
-precise dog card protects nothing.
+`mine` per sighting so a client filters rather than refetches.
+
+`/map` and `/dogs` show **full precision only for animals you photographed**;
+everyone else's collapse to the centre of a ~1 km grid cell (`app/precision.py`,
+`settings.map_coarsen_cell_m`). Both apply the identical rule, because the
+looser of the two would decide what is actually protected. They used to show
+full precision to any signed-in observer, justified by the cohort being
+passcode-gated — but the passcode is shared and mints an anonymous observer on
+the spot, so anyone holding it could read the exact position of every dog.
+
+A grid cell rather than a jittered point, and that is the whole design: jitter
+averages away under repeated fetches, and leaks further the more sightings a dog
+has, so the best-documented animals end up the least protected. Snapping is a
+function of the input alone, so refreshing and aggregating both reveal nothing.
+Still to come from issue #5: a named `area` polygon instead of a cell centre,
+plus the delay and marking-suppression dials.
 
 ---
 

@@ -476,6 +476,22 @@ button { font-family: inherit; }
 .photo-pin img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .photo-pin-fallback { display: flex; align-items: center; justify-content: center; font-size: 1.2rem; }
 
+/* Another observer's sighting, collapsed to a grid cell by the server. The
+   dashed, softened edge says "roughly here" before anyone taps -- a crisp pin
+   would assert a precision the payload explicitly does not carry. */
+.photo-pin-approx {
+  border-style: dashed;
+  opacity: 0.82;
+  filter: saturate(0.85);
+}
+.popup-approx {
+  margin-top: 2px;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  color: var(--muted, #6b5844);
+  font-style: italic;
+}
+
 /* Cluster bubbles: same stamped-card language as the pins, so a group reads
    as "several of these" rather than as a different kind of thing. */
 .cluster-pin {

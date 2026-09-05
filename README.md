@@ -31,7 +31,10 @@ This repository is the **IndieDex** — the capture-and-collect app that feeds t
 - 🖼️ **Import from your camera roll** — for a dog you photographed before you had the app. It keeps the photo's *own* date and place, read from EXIF; where a file has been stripped, it asks rather than assuming here-and-now.
 - 🐕 **Re-identification** — YOLO26x finds the animal, MiewID embeds the crop, and candidates are retrieved within 1 km via PostGIS → HNSW → an exact re-rank. Proposals go to a human; a confirmed verdict mints an individual.
 - 🗂️ **Dogs** — the identified animals, one card each, with their photos, how many people have seen them, and a ranked shortlist of look-alikes for review.
-- 🗺️ **Map** — sightings as photo pins, clustered; yours by default, or the whole contributor cohort's.
+- 🗺️ **Map** — sightings as photo pins, clustered; yours by default, or the whole
+  contributor cohort's. Your own pins are exact; everyone else's are shown as a
+  ~1 km area, because a map that resolves a specific street dog to a specific
+  street is useful to someone who means it harm.
 - 🏷️ **Optional structured fields** — sex, ear-notch (sterilization marker), condition, notes — all optional, stored flexibly.
 - 🚩 **Report and review** — anyone can flag a sighting from the map; it leaves the
   shared surfaces immediately and waits for a moderator, who can restore it or

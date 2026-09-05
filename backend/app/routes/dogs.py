@@ -19,17 +19,24 @@ Two things this deliberately does not do:
 
 LOCATION
 --------
-Full precision, matching `/map`. Both are gated on `require_observer`, and the
-cohort is passcode- and allowlist-gated, so this shows vetted testers what they
-could already see on the map -- it adds no reach.
+Full precision for animals this viewer has photographed; a grid cell for
+everyone else's. `app/precision.py` holds the rule and the reasoning, including
+why a fixed cell rather than a jittered point.
 
-It does not coarsen, deliberately. Issue #5 settled that a public surface
-resolves an individual to a named `area` polygon and never to a jittered point,
-because a fuzzed point leaks under aggregation while an area label cannot. That
-work is not built yet, and a dog card is exactly the artefact it exists for: a
-named animal with a last-known location. So when `resolve_precision` lands,
-this endpoint needs it at the same time `/map` does -- the two should coarsen
-together or the stricter one is pointless.
+A dog card is the artefact this matters most for. `/map` shows scattered
+sightings; a card gathers one animal, its history and its last known place onto
+a single screen, which is the shape a person would want if they meant it harm.
+So this endpoint and `/map` coarsen on the same rule at the same time -- a
+precise card beside a coarse map protects nothing, and it was previously the
+looser of the two.
+
+The standing test is `seen_by_me`: contribution, not a role. The thing that
+makes full precision safe is that the viewer was already standing next to the
+animal, which no permission granted by a form can reproduce.
+
+Still to come from issue #5: resolving to a named `area` polygon rather than a
+cell centre, which needs area data that does not exist yet, plus the other two
+dials -- delaying recent sightings, and withholding identifying markings.
 """
 
 import json
@@ -42,6 +49,7 @@ from app.config import settings
 from app.deps import get_conn, get_storage
 from app.embed import EMBED_DIM, MODEL_NAME
 from app.photos import thumb_key
+from app.precision import resolve_precision
 from app.storage.s3 import S3Storage
 
 router = APIRouter()
@@ -253,9 +261,22 @@ async def get_dogs(
     out = []
     for d in dogs:
         loc = locations.get(d["id"])
-        lat = lng = None
-        if loc is not None:
-            lat, lng = loc["lat"], loc["lng"]
+        # Coarsened unless this viewer has photographed this animal. Standing
+        # by contribution, the same rule `/map` and `POST /proposal/{id}` use.
+        # These two endpoints must coarsen together: a dog card is exactly the
+        # artefact -- one animal, its last known place -- that issue #5 exists
+        # to protect, so a precise card beside a coarse map protects nothing.
+        where = (
+            resolve_precision(
+                loc["lat"], loc["lng"],
+                viewer_contributed=bool(d["seen_by_me"]),
+                cell_m=settings.map_coarsen_cell_m,
+            )
+            if loc is not None
+            else None
+        )
+        lat = where.lat if where else None
+        lng = where.lng if where else None
         out.append(
             {
                 "id": str(d["id"]),
@@ -272,6 +293,8 @@ async def get_dogs(
                 "photos": photos.get(d["id"], []),
                 "lat": lat,
                 "lng": lng,
+                "precision": where.precision if where else "none",
+                "cell_m": where.cell_m if where else None,
                 "tags": [
                     max(vals.items(), key=lambda kv: kv[1])[0]
                     for key in _TAG_KEYS
