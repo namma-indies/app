@@ -53,12 +53,28 @@ export interface MappableSighting {
   /** Absent on /dex responses, where every sighting is the viewer's. */
   observer?: string;
   mine?: boolean;
+  /** What the coordinate above actually means. "exact" for animals you
+   * photographed; "area" for everyone else's, where the server has collapsed
+   * the point to the centre of a `cell_m`-wide grid cell. Absent on /dex,
+   * where every sighting is your own and therefore exact.
+   *
+   * The map must not draw an "area" point as a pin: the cell centre is the one
+   * place in the cell the dog demonstrably is not. */
+  precision?: Precision;
+  cell_m?: number | null;
 }
 
+export type Precision = "exact" | "area" | "none";
+
 export interface MapSighting extends MappableSighting {
+  /** Null for another observer's sighting: a 6 m accuracy beside a
+   * kilometre-wide cell is a contradiction, and the sharper of the two is the
+   * one a reader would believe. */
   geo_accuracy_m: number | null;
   observer: string;
   mine: boolean;
+  precision: Precision;
+  cell_m: number | null;
 }
 
 export interface MapResponse {
@@ -236,6 +252,9 @@ export interface Dog {
   photos: string[];
   lat: number | null;
   lng: number | null;
+  /** Exact only for a dog you have photographed yourself. */
+  precision: Precision;
+  cell_m: number | null;
   tags: string[];
   /** Nearest visual neighbours, best first. A ranked shortlist for a human to
    * review -- explicitly NOT a claim that these are the same animal. On this

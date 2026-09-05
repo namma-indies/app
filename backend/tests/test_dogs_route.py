@@ -314,3 +314,105 @@ async def test_response_carries_the_review_threshold(authed_client):
     await _make_individual(client, [a])
     from app.config import settings
     assert (await client.get("/dogs")).json()["propose_min"] == settings.reid_propose_min
+
+
+# --- precision ---------------------------------------------------------------
+# A dog card is the artefact issue #5 exists for: one animal, its history and
+# its last known place, gathered onto a single screen. That is the shape someone
+# would want if they meant it harm, so this endpoint and `/map` coarsen on the
+# same rule -- a precise card beside a coarse map protects nothing.
+
+
+@pytest.mark.asyncio
+async def test_a_dog_you_photographed_keeps_full_precision(authed_client):
+    client, _ = authed_client
+    a = await _post(client, lat=12.9716, lng=77.5946)
+    b = await _post(client, lat=12.9716, lng=77.5946, when="2026-07-20T09:00:00Z")
+    await _make_individual(client, [a, b])
+
+    d = (await client.get("/dogs")).json()["dogs"][0]
+
+    assert d["seen_by_me"] is True
+    assert (d["lat"], d["lng"]) == (12.9716, 77.5946)
+    assert d["precision"] == "exact"
+    assert d["cell_m"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_dog_only_others_have_seen_is_coarsened(authed_client):
+    client, oid_a = authed_client
+    oid_b = await _second_observer(client)
+    client.cookies.set("session", issue_session(oid_b))
+    s = await _post(client, lat=12.9716, lng=77.5946)
+    t = await _post(client, lat=12.9716, lng=77.5946, when="2026-07-20T09:00:00Z")
+    await _make_individual(client, [s, t])
+
+    client.cookies.set("session", issue_session(oid_a))
+    d = (await client.get("/dogs")).json()["dogs"][0]
+
+    assert d["seen_by_me"] is False
+    assert d["precision"] == "area"
+    assert d["cell_m"] == 1000.0
+    assert (d["lat"], d["lng"]) != (12.9716, 77.5946)
+
+
+@pytest.mark.asyncio
+async def test_contributing_one_sighting_is_enough_to_earn_precision(authed_client):
+    """Standing is by contribution, and a shared dog is the case it exists for:
+    you were beside this animal, so you already know where it lives."""
+    client, oid_a = authed_client
+    mine = await _post(client, lat=12.9716, lng=77.5946)
+    oid_b = await _second_observer(client)
+    client.cookies.set("session", issue_session(oid_b))
+    theirs = await _post(client, lat=12.9716, lng=77.5946, when="2026-07-20T09:00:00Z")
+    await _make_individual(client, [mine, theirs])
+
+    client.cookies.set("session", issue_session(oid_a))
+    d = (await client.get("/dogs")).json()["dogs"][0]
+
+    assert d["precision"] == "exact"
+
+
+@pytest.mark.asyncio
+async def test_the_card_and_the_map_agree_on_the_same_dog(authed_client):
+    """The two endpoints must coarsen together. If they ever disagree, the
+    looser one decides what is actually protected."""
+    client, oid_a = authed_client
+    oid_b = await _second_observer(client)
+    client.cookies.set("session", issue_session(oid_b))
+    s = await _post(client, lat=12.9716, lng=77.5946)
+    t = await _post(client, lat=12.9716, lng=77.5946, when="2026-07-20T09:00:00Z")
+    await _make_individual(client, [s, t])
+
+    client.cookies.set("session", issue_session(oid_a))
+    dog = (await client.get("/dogs")).json()["dogs"][0]
+    pins = {
+        (x["lat"], x["lng"])
+        for x in (await client.get("/map")).json()["sightings"]
+        if x["id"] in (s, t)
+    }
+
+    assert pins == {(dog["lat"], dog["lng"])}
+
+
+@pytest.mark.asyncio
+async def test_a_dog_with_no_located_sighting_gets_no_invented_one(authed_client):
+    """Coarsening must not turn 'nowhere' into the centre of cell (0,0), which
+    is in the Gulf of Guinea."""
+    client, _ = authed_client
+    data = {"geo_source": "none", "captured_at": "2026-07-19T09:00:00Z"}
+    ids = []
+    for when in ("2026-07-19T09:00:00Z", "2026-07-20T09:00:00Z"):
+        r = await client.post(
+            "/sighting",
+            files={"photos": ("d.jpg", _jpeg(), "image/jpeg")},
+            data={**data, "captured_at": when},
+        )
+        assert r.status_code == 201
+        ids.append(r.json()["sighting_id"])
+    await _make_individual(client, ids)
+
+    d = (await client.get("/dogs")).json()["dogs"][0]
+
+    assert d["lat"] is None and d["lng"] is None
+    assert d["precision"] == "none"

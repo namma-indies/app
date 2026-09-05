@@ -6,12 +6,19 @@ the standing model in issue #5 both read, and overloading it would blur that.
 The payload differs too: the grid wants full-resolution originals, a map wants
 thumbnails and nothing else.
 
-**Visibility.** The whole authenticated cohort, at full precision. That is safe
-today only because the cohort is passcode- and allowlist-gated -- these are
-vetted testers, not the public. A *public* map needs issue #5's
-`resolve_precision` coarsening (resolve to an area label, never a fuzzed point)
-before it can show a stranger where a named dog is. That is not built here, and
-this endpoint is where it would go.
+**Visibility.** The whole authenticated cohort, but not at the same precision.
+Your own sightings come back exactly; everyone else's collapse to a grid cell.
+
+It used to be full precision for everybody, justified by the cohort being
+passcode- and allowlist-gated. That justification does not hold: the passcode is
+shared, typed into a form, and mints an anonymous observer on the spot, so
+"vetted tester" is a description of how we hope it is used rather than anything
+the system checks. Anyone holding the passcode could read the exact position of
+every dog in the database -- which is the specific thing this project's own
+threat model is about.
+
+`app/precision.py` holds the rule and why it is a fixed cell rather than
+jitter. `/dogs` applies the identical rule; the two must move together.
 
 One request serves both sides of the Mine/Everyone toggle: each sighting
 carries `mine`, so flipping the toggle filters what the client already has.
@@ -25,8 +32,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth.deps import require_observer
+from app.config import settings
 from app.deps import get_conn, get_storage
 from app.photos import thumb_key
+from app.precision import resolve_precision
 from app.storage.s3 import S3Storage
 
 router = APIRouter()
@@ -137,16 +146,33 @@ async def get_map(
         raw_attrs = row["attrs"]
         attrs = json.loads(raw_attrs) if isinstance(raw_attrs, str) else (raw_attrs or {})
         thumb_url = thumb_by_row.get(i)
+        mine = row["observer_id"] == observer_id
+        # Full precision only for animals this viewer photographed. Everyone
+        # else's collapse to a grid cell -- see app/precision.py, and note that
+        # `/dogs` has to coarsen on the same rule at the same time, because a
+        # precise dog card beside a coarse map protects nothing.
+        where = resolve_precision(
+            row["lat"], row["lng"],
+            viewer_contributed=mine,
+            cell_m=settings.map_coarsen_cell_m,
+        )
         sightings.append(
             {
                 "id": str(row["id"]),
                 "captured_at": row["captured_at"],
-                "lat": row["lat"],
-                "lng": row["lng"],
-                "geo_accuracy_m": row["geo_accuracy_m"],
+                "lat": where.lat if where else None,
+                "lng": where.lng if where else None,
+                # Withheld along with the coordinate. A 6 m accuracy beside a
+                # kilometre-wide cell is a contradiction, and the honest of the
+                # two is the cell.
+                "geo_accuracy_m": row["geo_accuracy_m"] if mine else None,
+                # So the client can draw an area rather than a pin. A pin at the
+                # cell centre asserts the one point in the cell the dog is not.
+                "precision": where.precision if where else "none",
+                "cell_m": where.cell_m if where else None,
                 "attrs": attrs,
                 "observer": row["observer"],
-                "mine": row["observer_id"] == observer_id,
+                "mine": mine,
                 "photos": [{"thumb_url": thumb_url}] if thumb_url else [],
             }
         )
