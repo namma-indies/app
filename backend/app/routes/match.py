@@ -185,8 +185,12 @@ async def list_proposals(
         WHERE mp.status = 'pending'
           AND a.observer_id = $1
           AND b.observer_id = $1
-          AND a.review_status <> 'rejected'
-          AND b.review_status <> 'rejected'
+          -- Both sides must be showing. A pair where one photo is hidden
+          -- pending review is not a question anyone should be answering: a
+          -- `same` verdict on it would fold content under review into an
+          -- identity, which no moderator decision afterwards can unpick.
+          AND a.review_status = 'valid'
+          AND b.review_status = 'valid'
         ORDER BY mp.score DESC
         LIMIT $2
         """,

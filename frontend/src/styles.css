@@ -777,3 +777,75 @@ button { font-family: inherit; }
    animals into one record. */
 .btn-different { background: var(--panel); color: var(--ink); }
 .btn-same { background: var(--accent); color: var(--panel); }
+
+
+/* --- reporting & moderation ------------------------------------------------ */
+
+/* In the map popup, on other people's sightings only. Deliberately quiet: it
+   should be findable when wanted and never compete with the photo. */
+.popup-report {
+  margin-top: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--terra-dark, #a44a2b);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.report-sheet {
+  width: min(420px, 92vw);
+  background: var(--card, #fffdf8);
+  border: 1px solid var(--line, #d8c4a6);
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 8px 30px rgba(46, 32, 22, 0.18);
+}
+.report-sheet h2 { margin: 0 0 4px; font-size: 1.1rem; }
+.report-reasons { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 16px; }
+.report-note-label { display: block; font-size: 0.78rem; font-weight: 600; margin-bottom: 6px; }
+.report-sheet textarea {
+  width: 100%;
+  border: 1px solid var(--line, #d8c4a6);
+  border-radius: 10px;
+  padding: 10px;
+  font: inherit;
+  resize: vertical;
+}
+
+/* One of your own, taken off the shared map. You keep seeing it; you are also
+   told why, rather than left wondering where it went. */
+.under-review {
+  margin: 4px 0;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  color: var(--terra-dark, #a44a2b);
+  font-weight: 700;
+}
+
+.mod-head { display: flex; gap: 12px; align-items: flex-start; }
+.mod-thumb {
+  width: 92px; height: 92px; object-fit: cover;
+  border-radius: 10px; flex: 0 0 auto;
+}
+.mod-meta { min-width: 0; }
+.mod-notes {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  font-size: 0.85rem;
+  color: var(--ink, #2e2016);
+}
+.mod-notes li { margin-bottom: 4px; overflow-wrap: anywhere; }
+
+/* Required in-app by Apple 5.1.1 (privacy policy) and 1.2 (contact details). */
+.legal-row {
+  padding: 10px 0 14px;
+  text-align: center;
+  font-size: 0.72rem;
+  color: var(--muted, #6b5844);
+}
+.legal-row a { color: inherit; text-decoration: underline; }

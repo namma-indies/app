@@ -134,6 +134,13 @@ async def find_candidates(
                 JOIN sightings s ON s.id = p.sighting_id
                 WHERE e.model = {p_model}
                   AND e.vec_miew IS NOT NULL
+                  -- Rejected content must not seed identities. A moderator
+                  -- taking a sighting down and it still being the reason two
+                  -- other sightings got merged is the decision not sticking.
+                  -- `pending` stays matchable on purpose: it is a temporary
+                  -- state, and dropping candidates on every report would make
+                  -- re-ID quality depend on who tapped what.
+                  AND s.review_status <> 'rejected'
                   AND ({p_excl}::uuid IS NULL OR s.id <> {p_excl}::uuid)
                   {geo_filter}
                 ORDER BY e.vec_miew::halfvec({EMBED_DIM}) <=> q.v::halfvec({EMBED_DIM})

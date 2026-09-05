@@ -130,3 +130,34 @@ describe("precision", () => {
     expect(html).not.toContain("<img src=x>");
   });
 });
+
+// --- reporting --------------------------------------------------------------
+// The report affordance lives in the popup because that is where a sighting
+// that is not yours is actually looked at. It carries the id it would report,
+// and one delegated listener on the map container reads it back -- popups are
+// created and destroyed as markers scroll in and out of view, so per-popup
+// listeners would leak with them.
+describe("report button", () => {
+  const base = { thumb: "", time: "1 Aug", note: "", tags: "" };
+
+  it("offers reporting on someone else's sighting", () => {
+    const html = popupHtml({ ...base, observer: "Priya", id: "abc-123" });
+    expect(html).toContain('data-report="abc-123"');
+  });
+
+  it("does not offer it on your own", () => {
+    const html = popupHtml({ ...base, observer: "", id: "abc-123" });
+    expect(html).not.toContain("popup-report");
+  });
+
+  it("omits it when there is no id to report", () => {
+    const html = popupHtml({ ...base, observer: "Priya" });
+    expect(html).not.toContain("popup-report");
+  });
+
+  it("does not let a sighting id break out of the attribute", () => {
+    const html = popupHtml({ ...base, observer: "Priya", id: '" onclick="alert(1)' });
+    expect(html).not.toContain('onclick="alert(1)"');
+    expect(html).toContain("&quot; onclick=&quot;alert(1)");
+  });
+});

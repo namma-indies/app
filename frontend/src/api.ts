@@ -25,9 +25,18 @@ export interface SightingAttrs {
   condition?: Condition;
 }
 
+/** Where a sighting stands with the shared surfaces. `pending` means someone
+ * reported it and no moderator has looked yet; `rejected` means one has. Only
+ * `valid` sightings appear on /map, /dogs and /proposals -- but all of them
+ * stay in your own dex, because it is your photograph. */
+export type ReviewStatus = "valid" | "pending" | "rejected";
+
 export interface Sighting {
   id: string;
   captured_at: string;
+  /** Present on /dex only, so you can be told when one of yours has been taken
+   * off the shared map rather than wondering why nobody can see it. */
+  review_status?: ReviewStatus;
   lat: number | null;
   lng: number | null;
   geo_accuracy_m: number | null;
@@ -318,6 +327,101 @@ export async function resolveProposal(
   const form = new FormData();
   form.append("verdict", verdict);
   const res = await fetch(`${API_BASE}/proposal/${id}`, {
+    method: "POST",
+    credentials: "include",
+    body: form,
+  });
+  await handle<unknown>(res);
+}
+
+
+// --- who am I ---------------------------------------------------------------
+
+export interface Me {
+  id: string;
+  display_name: string | null;
+  is_moderator: boolean;
+}
+
+/** Used only to decide whether to render the moderation tab. Every moderation
+ * endpoint checks the tier itself -- a client-side flag is a suggestion. */
+export async function getMe(): Promise<Me> {
+  const res = await fetch(`${API_BASE}/me`, { credentials: "include" });
+  return handle<Me>(res);
+}
+
+// --- reporting --------------------------------------------------------------
+
+/** Why someone is flagging a sighting. `endangers_dog` is first because it is
+ * the one this app exists to take seriously: a photo that shows where a
+ * specific animal sleeps is a different kind of problem from a blurry cat. */
+export type ReportReason =
+  | "endangers_dog"
+  | "not_a_dog"
+  | "wrong_place"
+  | "offensive"
+  | "other";
+
+export const REPORT_REASONS: { value: ReportReason; label: string }[] = [
+  { value: "endangers_dog", label: "Puts this dog at risk" },
+  { value: "offensive", label: "Offensive or abusive" },
+  { value: "not_a_dog", label: "Not a dog" },
+  { value: "wrong_place", label: "Wrong place or time" },
+  { value: "other", label: "Something else" },
+];
+
+export const MAX_REPORT_NOTE = 500;
+
+/** Flag a sighting. Idempotent per person per sighting on the server, so a
+ * double tap on a slow connection cannot inflate the count a moderator reads. */
+export async function reportSighting(
+  sightingId: string,
+  reason: ReportReason,
+  note?: string,
+): Promise<void> {
+  const form = new FormData();
+  form.append("reason", reason);
+  if (note) form.append("note", note);
+  const res = await fetch(`${API_BASE}/sighting/${sightingId}/report`, {
+    method: "POST",
+    credentials: "include",
+    body: form,
+  });
+  await handle<unknown>(res);
+}
+
+// --- moderation -------------------------------------------------------------
+
+export interface ModerationItem {
+  sighting_id: string;
+  captured_at: string;
+  review_status: ReviewStatus;
+  /** Who logged it. User-supplied at /join, so untrusted text. */
+  observer: string | null;
+  report_count: number;
+  reasons: ReportReason[];
+  /** Written by whoever reported it. Untrusted text; React escapes on render. */
+  notes: string[];
+  thumb_url: string | null;
+}
+
+/** Moderators only. Answers 404 for everyone else, so a non-moderator sees the
+ * same thing they would for a route that does not exist. */
+export async function getModerationQueue(): Promise<{ items: ModerationItem[] }> {
+  const res = await fetch(`${API_BASE}/moderation/queue`, { credentials: "include" });
+  return handle<{ items: ModerationItem[] }>(res);
+}
+
+/** `rejected` hides the sighting everywhere shared and stops it seeding
+ * identities. It deletes nothing -- the photograph is evidence of something
+ * that happened, and this decision should be reversible. */
+export async function reviewSighting(
+  sightingId: string,
+  verdict: "valid" | "rejected",
+): Promise<void> {
+  const form = new FormData();
+  form.append("verdict", verdict);
+  const res = await fetch(`${API_BASE}/sighting/${sightingId}/review`, {
     method: "POST",
     credentials: "include",
     body: form,

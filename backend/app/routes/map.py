@@ -100,7 +100,10 @@ async def get_map(
         JOIN observers o ON o.id = s.observer_id
         LEFT JOIN photos p ON p.sighting_id = s.id
         WHERE s.geog IS NOT NULL
-          AND s.review_status <> 'rejected'
+          -- `= 'valid'`, not `<> 'rejected'`. `pending` means someone reported
+          -- this and no human has looked yet; the whole point of that state is
+          -- that it is off the map while it waits.
+          AND s.review_status = 'valid'
     """
     args: list = []
     if envelope is not None:

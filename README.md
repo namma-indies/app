@@ -36,6 +36,10 @@ This repository is the **IndieDex** — the capture-and-collect app that feeds t
   ~1 km area, because a map that resolves a specific street dog to a specific
   street is useful to someone who means it harm.
 - 🏷️ **Optional structured fields** — sex, ear-notch (sterilization marker), condition, notes — all optional, stored flexibly.
+- 🚩 **Report and review** — anyone can flag a sighting from the map; it leaves the
+  shared surfaces immediately and waits for a moderator, who can restore it or
+  keep it down. Nothing is deleted: a photograph is evidence of something that
+  happened, and hiding is reversible where deleting is not.
 - 🔐 **Passwordless auth** — magic-link sign-in behind a pluggable provider seam, with a shared-passcode door for closed pilots.
 - 🔒 **Privacy-aware photos** — capture metadata is read once, then stripped: stored images carry no EXIF, no embedded GPS. A full-fidelity WebP original is kept for the vision models, plus a thumbnail for the gallery.
 

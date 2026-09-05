@@ -86,6 +86,28 @@ setting at this data density.
 | `GET /map` | the **cohort's** sightings as pins, thumbnails only, optional `bbox` |
 | `GET /dogs` | identified individuals, one card each, with ranked look-alikes |
 | `GET /sighting/{id}/match` · `POST /proposal/{id}` | candidates, and the human verdict on them |
+| `GET /me` | who the session is, and whether they moderate |
+| `POST /sighting/{id}/report` | flag a sighting; it leaves the shared surfaces at once |
+| `GET /moderation/queue` · `POST /sighting/{id}/review` | what needs a human, and the ruling |
+
+### review_status finally has a writer
+
+`sightings.review_status` has carried `pending`/`valid`/`rejected` since
+migration 0001, and `/map` filtered on it from the day it was written. Nothing
+ever set anything but `valid`, so that filter was unreachable code and no path
+in the product could take a photo off the shared map.
+
+`POST /sighting/{id}/report` is that writer. One report hides the sighting
+(`valid` → `pending`) and a moderator rules on it. Every shared surface now
+requires `review_status = 'valid'` — `/map`, `/dogs` and `/proposals` — while
+`/dex` still shows you your own whatever its status, and says which status.
+Candidate search excludes only `rejected`, so a moderator's takedown cannot
+keep seeding identities, while a merely-reported sighting stays matchable.
+
+A moderator's decision is sticky: `reviewed_at` is what stops the next report
+quietly overturning it. Reports after a review still surface in the queue, so
+re-reporting reaches a human without reaching past one. Moderators are
+`observers.trust_tier = 'moderator'`, set by hand.
 
 `/dex` and `/map` differ deliberately: `/dex` means "mine" and is the ownership
 semantics `resolve_sighting` reads, while `/map` is cohort-wide and carries
