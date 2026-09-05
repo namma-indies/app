@@ -18,7 +18,7 @@ const SOURCE_ID = "sightings";
 const BASEMAP_LIGHT = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 const BASEMAP_DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
 
-function basemapStyle(): string {
+export function basemapStyle(): string {
   const dark =
     typeof window !== "undefined" &&
     window.matchMedia?.("(prefers-color-scheme: dark)").matches;
