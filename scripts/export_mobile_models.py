@@ -36,10 +36,13 @@ the server: it is the part of YOLO post-processing most likely to be subtly
 wrong, and reimplementing it in Kotlin inside a 33 ms budget is how that goes
 wrong quietly.
 
-QUANTISATION: FP16, AND NOT STATIC INT8
----------------------------------------
-FP16 by default, and static INT8 is deliberately not the default even though it
-is a third of the size.
+QUANTISATION: w8a32, AND NOT STATIC INT8
+----------------------------------------
+w8a32 -- dynamic INT8 weights with FP32 activations -- by default.
+
+Note FP16 is not on the menu: the exporter refuses `quantize=16` for this
+format outright ("supports quantize=8, 'w8a16', 'w8a32', 32"). The choice is
+between w8a32 and static INT8, and static INT8 is a trap.
 
 Ultralytics' own exporter carries the reason, in a comment next to the flag:
 `enable_batchmatmul_unfold=not use_int8,  # fix lower no. of detected objects on
@@ -49,10 +52,13 @@ failure this feature exists to fix, reintroduced one layer down. Measured
 elsewhere at roughly -6.5 mAP for YOLOv8n, and naive A8W8 has produced zero
 detections.
 
-There is also no speed argument for going below FP16: the GPU delegate computes
-in FP16 internally whatever the file says, and INT8 has measured *slower* than
-FP32 on it. At 3 M parameters the difference is a few megabytes of APK either
-way, which is not worth a silent accuracy cliff.
+w8a32 escapes that by construction: the exporter derives `int8 = quantize in
+{8, "w8a16"}`, so w8a32 leaves the unfold enabled and keeps the workaround.
+It also costs ~0.2 mAP against FP32 and lands around 3 MB.
+
+There is no speed argument for anything heavier either: the GPU delegate
+computes in FP16 internally whatever the file says, and static INT8 has
+measured *slower* than FP32 on it.
 
 RESOLUTION IS THE KNOB THAT DECIDES THE FRAME RATE
 --------------------------------------------------
@@ -117,11 +123,11 @@ def main() -> int:
     # `quantize` is the parameter this version of ultralytics actually takes for
     # tflite (16 = FP16, 8 = static INT8, "w8a16", 32/None = FP32). `half=` and
     # `int8=` are derived from it internally and are not the public knob.
-    ap.add_argument("--quantize", default="16", choices=["16", "32", "8"],
-                    help="16 (default) = FP16. 32 = FP32, four times the size for "
-                         "nothing: the GPU delegate computes in FP16 internally "
-                         "either way. 8 = static INT8, which is a TRAP on the GPU "
-                         "delegate -- see the note in the module docstring.")
+    ap.add_argument("--quantize", default="w8a32", choices=["w8a32", "32", "w8a16", "8"],
+                    help="w8a32 (default) = dynamic INT8 weights, FP32 activations. "
+                         "32 = FP32. 8 = static INT8, a TRAP on the GPU delegate; "
+                         "w8a16 is NPU-only. See the module docstring. Note FP16 is "
+                         "not offered by the exporter for this format at all.")
     args = ap.parse_args()
 
     from ultralytics import YOLO
@@ -134,12 +140,14 @@ def main() -> int:
         for fmt in args.formats:
             model = YOLO(args.weights)
             try:
-                # nms=True: the phone must not reimplement NMS inside a
-                # 33 ms budget. Quantisation is FP16 by default, see the
-                # module docstring on why static INT8 is not.
-                kwargs = dict(format=fmt, imgsz=size, nms=True)
+                # No nms= flag: YOLO26 is end2end/NMS-free by design, so the
+                # exporter warns and forces it off. The 300-row head already
+                # comes out deduplicated, which is the property that matters --
+                # the phone never reimplements NMS inside a 33 ms budget.
+                kwargs = dict(format=fmt, imgsz=size)
                 if fmt == "tflite":
-                    kwargs["quantize"] = int(args.quantize)
+                    q = args.quantize
+                    kwargs["quantize"] = int(q) if q.isdigit() else q
                 elif fmt == "onnx":
                     kwargs["opset"] = 17
                     kwargs["simplify"] = False
@@ -149,7 +157,7 @@ def main() -> int:
                 failures += 1
                 continue
 
-            suffix = {"16": "fp16", "32": "fp32", "8": "int8"}[args.quantize]
+            suffix = {"w8a32": "w8a32", "32": "fp32", "8": "int8", "w8a16": "w8a16"}[args.quantize]
             tag = f"{size}_{suffix}" if fmt == "tflite" else str(size)
             dest = args.out / f"yolo26n_seg_{tag}{produced.suffix}"
             if produced.is_dir():

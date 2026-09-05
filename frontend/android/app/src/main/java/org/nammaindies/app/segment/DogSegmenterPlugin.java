@@ -127,9 +127,47 @@ public class DogSegmenterPlugin extends Plugin {
         launch(call);
     }
 
+    /**
+     * Quantisations to look for, best first.
+     *
+     * Which one exists depends on what the export toolchain managed, and that
+     * is not stable: the exporter refuses FP16 for this format outright, and
+     * the w8a32 path can fail on a torch/torchao version clash. Hardcoding one
+     * filename means a working model sitting in assets that the app refuses to
+     * load because it is spelled differently.
+     */
+    private static final String[] QUANTISATIONS = {"w8a32", "fp32", "int8", "w8a16"};
+
+    /** First model present for this size, or null. */
+    private String resolveAsset(int size) {
+        java.util.Set<String> present = new java.util.HashSet<>();
+        try {
+            String[] names = getContext().getAssets().list("");
+            if (names != null) present.addAll(java.util.Arrays.asList(names));
+        } catch (Exception e) {
+            Log.w(TAG, "could not list assets", e);
+            return null;
+        }
+        for (String q : QUANTISATIONS) {
+            String name = "yolo26n_seg_" + size + "_" + q + ".tflite";
+            if (present.contains(name)) return name;
+        }
+        return null;
+    }
+
     private void launch(PluginCall call) {
         int requested = call.getInt("size", DEFAULT_SIZE);
-        String asset = call.getString("model", "yolo26n_seg_" + requested + "_fp16.tflite");
+        String asset = call.getString("model");
+        if (asset == null) asset = resolveAsset(requested);
+        if (asset == null) {
+            // Named explicitly. "model failed to load" sends someone looking at
+            // the model; "no model in assets" sends them to the export script,
+            // which is where the problem actually is.
+            call.reject("no segmentation model in assets for size " + requested
+                    + " -- run scripts/export_mobile_models.py");
+            return;
+        }
+        final String assetName = asset;
 
         getActivity().runOnUiThread(() -> {
             try {
@@ -138,7 +176,7 @@ public class DogSegmenterPlugin extends Plugin {
                     return;
                 }
                 if (segmenter == null) {
-                    segmenter = new Segmenter(getContext(), asset);
+                    segmenter = new Segmenter(getContext(), assetName);
                     inputBuffer = segmenter.newInputBuffer();
                     converter = new FrameConverter(segmenter.inputSize());
                 }
