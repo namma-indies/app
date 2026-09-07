@@ -849,3 +849,67 @@ button { font-family: inherit; }
   color: var(--muted, #6b5844);
 }
 .legal-row a { color: inherit; text-decoration: underline; }
+
+/* --- saying where a sighting happened -------------------------------------- */
+
+/* A row, not a label: the whole thing is the tap target. A tester who lost
+   their fix had nothing to press, and the sighting saved placeless in silence. */
+.place-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin: 4px 0 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--line, #d8c4a6);
+  border-radius: 12px;
+  background: #fffdf8;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink, #2e2016);
+  text-align: left;
+  cursor: pointer;
+}
+.place-row-empty { border-style: dashed; color: var(--terra-dark, #a44a2b); }
+.place-text { flex: 1; min-width: 0; }
+.place-action {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--terra, #c15f3c);
+}
+.place-warning { margin: 2px 0 8px; color: var(--terra-dark, #a44a2b); }
+
+.location-picker {
+  width: min(460px, 94vw);
+  max-height: 90dvh;
+  overflow-y: auto;
+  background: #fffdf8;
+  border: 1px solid var(--line, #d8c4a6);
+  border-radius: 16px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.pick-map-wrap { position: relative; height: min(46dvh, 340px); }
+.pick-map { position: absolute; inset: 0; border-radius: 12px; overflow: hidden; }
+/* Fixed over a moving map. A draggable marker sits under the thumb dragging it. */
+.pick-crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 2rem;
+  line-height: 1;
+  color: var(--terra-dark, #a44a2b);
+  text-shadow: 0 0 4px #fff, 0 0 10px #fff;
+  pointer-events: none;
+}
+.permission-help {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f4ead9;
+  color: var(--ink, #2e2016);
+}
