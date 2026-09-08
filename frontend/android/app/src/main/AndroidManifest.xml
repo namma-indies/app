@@ -34,6 +34,21 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <!--
+      CAMERA, which the app did NOT need until now. Capacitor Camera's
+      takePhoto hands off to the system camera app, so a photo could be
+      captured without this. The live segmentation preview reads frames
+      directly, which cannot.
+
+      Consequences to be aware of before shipping: this appears on the Play
+      listing, needs a runtime prompt, and needs a line in the Data safety
+      form. `required="false"` on the feature so a camera-less device can still
+      install and use everything else : the map, the dex, the review queue.
+    -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+    <!--
       Camera-roll import needs no permission on Android 10+ (API 29): Capacitor
       Camera 8's chooseFromGallery goes through the system Photo Picker
       (ActivityResultContracts.PickVisualMedia), which hands back a single URI

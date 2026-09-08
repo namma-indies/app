@@ -13,4 +13,14 @@ ext {
     androidxJunitVersion = '1.3.0'
     androidxEspressoCoreVersion = '3.7.0'
     cordovaAndroidVersion = '14.0.1'
+
+    // On-device instance segmentation (see app/src/main/java/.../segment/).
+    cameraxVersion = '1.4.2'
+    // TFLite rather than the newer com.google.ai.edge.litert artifacts: the
+    // Interpreter / GpuDelegate / CompatibilityList API here has been stable
+    // for years, and this code cannot be compiled or run on the dev machine
+    // that wrote it. A settled API is worth more than a newer one when the
+    // first execution is on a phone someone is holding.
+    tfliteVersion = '2.17.0'
+    tfliteGpuPluginVersion = '0.4.4'
 }

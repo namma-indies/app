@@ -90,6 +90,17 @@ jobs:
           bundler-cache: true
           working-directory: frontend/android
 
+      - name: Export the on-device segmentation model
+        # The weights are AGPL-3.0 and this repo is MIT and public, so they are
+        # gitignored rather than committed -- same posture as the server's. The
+        # store build produces them here instead, which also means the version
+        # that ships is always the one this commit's script produces.
+        working-directory: ${{ github.workspace }}
+        run: |
+          python -m pip install --quiet ultralytics tensorflow onnx onnxruntime
+          python scripts/export_mobile_models.py --formats tflite --sizes 320 256
+          ls -la frontend/android/app/src/main/assets/
+
       - name: Sync web build into the Capacitor Android project
         run: npx cap sync android
 

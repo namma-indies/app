@@ -22,6 +22,7 @@ import {
 } from "../capture/importOrigin";
 import { locate } from "../capture/geolocate";
 import LocationPicker, { type PickedPlace } from "../components/LocationPicker";
+import LiveView, { liveViewAvailable } from "./LiveView";
 
 const MAX_PHOTOS = 5;
 
@@ -108,6 +109,9 @@ export default function Capture() {
   const [locating, setLocating] = useState(false);
   const [geoFailed, setGeoFailed] = useState(false);
   const [picking, setPicking] = useState(false);
+  // The segmenting viewfinder. Android only, and it takes over the screen
+  // because the camera is drawn natively behind a transparent WebView.
+  const [live, setLive] = useState(false);
 
   function showToast(msg: string) {
     setToast(msg);
@@ -367,6 +371,10 @@ export default function Capture() {
     }
   }
 
+  // Returned early: while the live view runs, the native camera is behind this
+  // WebView and anything else drawn here would sit on top of the preview.
+  if (live) return <LiveView onClose={() => setLive(false)} />;
+
   return (
     <div className="capture-stage">
       <div className="preview-frame">
@@ -444,6 +452,14 @@ export default function Capture() {
           <button type="button" className="link-btn" onClick={onImportPress}>
             or add one from your photos
           </button>
+          {/* Offered only where it exists. The server keeps just the largest
+              animal in a frame, so this is how someone finds out there are two
+              dogs in front of them BEFORE the photo rather than never. */}
+          {liveViewAvailable() && (
+            <button type="button" className="link-btn" onClick={() => setLive(true)}>
+              or check how many dogs are here
+            </button>
+          )}
         </div>
       ) : (
         <>

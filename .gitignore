@@ -29,3 +29,9 @@ frontend/vite.config.local.ts
 frontend/.certs/
 .gstack/
 frontend/vite.config.plainhttp.ts
+
+# On-device segmentation weights. Exported by scripts/export_mobile_models.py
+# and by the Android release workflow; AGPL-3.0, so this MIT repo does not
+# redistribute them. See frontend/android/app/src/main/assets/README.md.
+frontend/android/app/src/main/assets/*.tflite
+frontend/android/app/src/main/assets/*.onnx

@@ -913,3 +913,38 @@ button { font-family: inherit; }
   background: #f4ead9;
   color: var(--ink, #2e2016);
 }
+/* --- the segmenting viewfinder ---------------------------------------------
+   Almost nothing here draws: the camera, masks, boxes and frame rate are
+   rendered by the native layer BEHIND a transparent WebView. These rules exist
+   to keep the controls legible over an arbitrary camera image, and to keep the
+   middle of the screen empty so the preview shows through. */
+.live-view {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  /* No background. A colour here would cover the camera. */
+  background: transparent;
+  padding: max(16px, env(safe-area-inset-top)) 16px
+           max(16px, env(safe-area-inset-bottom));
+  pointer-events: none;
+}
+.live-view > * { pointer-events: auto; }
+.live-top { display: flex; align-items: center; gap: 10px; }
+.live-warn {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.62);
+  color: #ffd9c9;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.live-bottom, .live-error {
+  background: rgba(0, 0, 0, 0.62);
+  border-radius: 14px;
+  padding: 12px 14px;
+  color: #fff;
+}
+.live-bottom .hint, .live-error p { color: #f4ead9; }
+.live-count { margin: 0 0 2px; font-weight: 700; letter-spacing: 0.03em; }

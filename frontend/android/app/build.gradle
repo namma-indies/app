@@ -26,6 +26,13 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    androidResources {
+        // NOT optional. Segmenter memory-maps the model straight out of the
+        // APK via AssetManager.openFd, and openFd throws on a compressed
+        // asset. Without this the model fails to load at runtime with an error
+        // that says nothing about compression.
+        noCompress += 'tflite'
+    }
     buildTypes {
         release {
             minifyEnabled false
@@ -50,6 +57,27 @@ dependencies {
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')
+
+    // CameraX for the live preview and the frame analyser.
+    implementation "androidx.camera:camera-core:$cameraxVersion"
+    implementation "androidx.camera:camera-camera2:$cameraxVersion"
+    implementation "androidx.camera:camera-lifecycle:$cameraxVersion"
+    implementation "androidx.camera:camera-view:$cameraxVersion"
+
+    // TFLite, with the GPU delegate. The delegate is attempted and its failure
+    // reported rather than swallowed: minSdkVersion 24 reaches hardware where
+    // 30 fps will not happen at any resolution, and an app silently running at
+    // 6 fps on the CPU looks broken with no way to diagnose it.
+    implementation "org.tensorflow:tensorflow-lite:$tfliteVersion"
+    implementation "org.tensorflow:tensorflow-lite-gpu:$tfliteVersion"
+    // The -api artifact is separate and NOT pulled in transitively.
+    // GpuDelegate.Options extends GpuDelegateFactory.Options, so calling
+    // setPrecisionLossAllowed without this fails at compile time with
+    // "cannot access GpuDelegateFactory" -- which names a class the source
+    // never mentions, and so reads as a dependency-resolution bug rather than
+    // a missing dependency.
+    implementation "org.tensorflow:tensorflow-lite-gpu-api:$tfliteVersion"
+    implementation "org.tensorflow:tensorflow-lite-gpu-delegate-plugin:$tfliteGpuPluginVersion"
 }
 
 apply from: 'capacitor.build.gradle'
