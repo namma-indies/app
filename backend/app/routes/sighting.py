@@ -12,7 +12,6 @@ from starlette.responses import JSONResponse
 from app.auth.deps import require_observer
 from app.deps import get_storage
 from app.detect import DOG_CONF_THRESHOLD
-from app.detect_reid import animal_confidence
 from app.ids import uuid7
 from app.photos import process_photo, ProcessedPhoto, thumb_key
 from app.storage.s3 import S3Storage
@@ -23,50 +22,69 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _max_dog_confidence(raws: list[bytes]) -> float | None:
-    """Highest dog-confidence across the uploaded photos, or None if we
-    couldn't score them. This is a label, never a gate -- the caller saves the
-    sighting either way, so a detector failure costs us a label, not a photo."""
-    best: float | None = None
-    for raw in raws:
-        try:
-            # yolo26x, shared with the embedding path: the old yolov8n gate
-            # scored visible dogs as low as 0.02 (yolo26x: 0.80 on the same
-            # photo), and this task has never been on the user's wait path.
-            conf, _cat = await run_in_threadpool(animal_confidence, raw)
-        except Exception:
-            logger.warning("dog detection failed; saving unscored", exc_info=True)
-            continue
-        best = conf if best is None else max(best, conf)
-    return best
-
-
-async def _embed_and_save(
+async def _analyse_and_save(
     pool: asyncpg.Pool, sighting_id: UUID, photo_ids: list[UUID], raws: list[bytes]
 ) -> None:
-    """Embed each photo for re-identification, after the sighting is saved.
+    """Detect, score and embed every photo of a sighting, after it is saved.
 
-    Same contract as dog-confidence scoring: this never gates the save. A photo
-    with no embedding is simply not yet matchable -- it can be re-embedded later
-    (the model is versioned in the row, so a re-run is an upsert). Losing the
-    sighting because an embedder hiccuped would be the far worse trade.
+    ONE DETECTION PASS PER PHOTO
+    ----------------------------
+    This used to be two background tasks. `_score_and_save_dog_confidence`
+    called `animal_confidence`, and `_embed_and_save` called `embed_photo`
+    which called `best_animal_box` -- two full yolo26x forward passes over
+    identical bytes, plus three JPEG decodes, launched by the same request.
 
-    Photos with no dog detected are skipped rather than embedded whole-frame:
-    an embedding of mostly-street would pollute candidate search with a vector
-    that matches other streets.
+    On a 2-core box one yolo26x pass measures ~864 ms, so the duplication cost
+    about that much per photo, and clips multiply it by the frame count: a
+    12-frame clip spent roughly ten seconds re-detecting animals it had
+    already found. `app.analyse.analyse` returns the confidences and the box
+    from a single pass, and hands back the decoded image so the crop needs no
+    second decode.
 
-    Afterwards the per-frame vectors are averaged into one vector for the
-    sighting -- see `_save_mean_vector`.
+    THE CONTRACTS THIS KEEPS
+    ------------------------
+    Neither step gates the save, and their failures stay distinguishable:
+
+    * detection fails -> `dog_confidence` stays NULL, meaning "never scored",
+      which is not the same as 0.0 ("scored, saw nothing").
+    * no animal found -> no embedding row at all, deliberately. A whole-frame
+      embedding of mostly-street would pollute candidate search with a vector
+      that matches other streets.
+    * embedding fails -> the photo is simply not yet matchable, and a re-run
+      upserts on (photo_id, model).
+
+    Losing the sighting over any of them would be the far worse trade.
     """
     import numpy as np
 
-    from app.embed import EMBED_DIM, MODEL_NAME, embed_photo
+    from app.analyse import analyse, embed_analysis
+    from app.embed import EMBED_DIM, MODEL_NAME
 
     collected: list = []
+    best_conf: float | None = None
 
     for photo_id, raw in zip(photo_ids, raws):
         try:
-            found = await run_in_threadpool(embed_photo, raw)
+            found = await run_in_threadpool(analyse, raw)
+        except Exception:
+            # The detector failing costs a label and matchability for this
+            # photo, and nothing else.
+            logger.warning(
+                "analysis failed for photo=%s; leaving unscored and unembedded",
+                photo_id,
+                exc_info=True,
+            )
+            continue
+
+        conf = found.dog_confidence
+        best_conf = conf if best_conf is None else max(best_conf, conf)
+
+        if not found.has_animal:
+            logger.info("no animal detected in photo=%s; not embedding", photo_id)
+            continue
+
+        try:
+            vec = await run_in_threadpool(embed_analysis, found)
         except Exception:
             logger.warning(
                 "embedding failed for photo=%s; leaving unembedded",
@@ -74,10 +92,10 @@ async def _embed_and_save(
                 exc_info=True,
             )
             continue
-        if found is None:
-            logger.info("no dog detected in photo=%s; not embedding", photo_id)
+        if vec is None:
             continue
-        vec, box = found
+
+        box = found.box
         collected.append(vec)
         try:
             async with pool.acquire() as conn:
@@ -102,6 +120,7 @@ async def _embed_and_save(
                 "failed to store embedding for photo=%s", photo_id, exc_info=True
             )
 
+    await _save_dog_confidence(pool, sighting_id, best_conf)
     await _save_mean_vector(pool, sighting_id, collected)
 
     # Decide the match once, now that the vectors exist. This used to run inside
@@ -181,13 +200,15 @@ async def _save_mean_vector(pool: asyncpg.Pool, sighting_id: UUID, vecs: list) -
         )
 
 
-async def _score_and_save_dog_confidence(
-    pool: asyncpg.Pool, sighting_id: UUID, raws: list[bytes]
+async def _save_dog_confidence(
+    pool: asyncpg.Pool, sighting_id: UUID, dog_conf: float | None
 ) -> None:
-    """Runs after the sighting is already saved. Scoring is a label, never a
-    gate, so a failure here (bad image, model error) just leaves
-    dog_confidence NULL -- it must never affect whether the sighting exists."""
-    dog_conf = await _max_dog_confidence(raws)
+    """Store the highest dog confidence seen across the sighting's photos.
+
+    Scoring is a label, never a gate, so a failure here leaves dog_confidence
+    NULL -- which means "never scored" and is deliberately distinct from 0.0,
+    "scored and saw nothing". It must never affect whether the sighting exists.
+    """
     if dog_conf is None:
         return
     if dog_conf < DOG_CONF_THRESHOLD:
@@ -532,11 +553,10 @@ async def create_sighting(
             },
         )
 
+    # One task, one detection pass per photo. This was two tasks racing over
+    # the same bytes with two yolo26x forward passes; see _analyse_and_save.
     background_tasks.add_task(
-        _score_and_save_dog_confidence, request.app.state.pool, sighting_id, raws
-    )
-    background_tasks.add_task(
-        _embed_and_save,
+        _analyse_and_save,
         request.app.state.pool,
         sighting_id,
         [r["id"] for r in photo_rows],
