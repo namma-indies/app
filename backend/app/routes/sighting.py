@@ -10,7 +10,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
 from app.auth.deps import require_observer
-from app.deps import get_conn, get_storage
+from app.deps import get_storage
 from app.detect import DOG_CONF_THRESHOLD
 from app.detect_reid import animal_confidence
 from app.ids import uuid7
@@ -237,9 +237,28 @@ async def create_sighting(
     # to keep. Remove once no client in the field sends it.
     override_no_dog: bool = Form(False),
     observer_id: UUID = Depends(require_observer),
-    conn=Depends(get_conn),
     storage: S3Storage = Depends(get_storage),
 ):
+    # NO `conn=Depends(get_conn)`, and that is the fix rather than a tidy-up.
+    #
+    # A yield-dependency holds its connection for the whole request, and
+    # FastAPI does not release it before Starlette runs the background tasks.
+    # So every upload held TWO of the pool's connections at once: the
+    # request's, and the one its background task acquired. Against
+    # db_pool_max=30 that caps concurrency at fifteen uploads; the sixteenth
+    # waits for a connection nobody can release, `asyncpg.acquire()` has no
+    # timeout, and the API never recovers.
+    #
+    # Measured before this change on a 20-core box: 15 concurrent clips took
+    # 19 s and all succeeded, 30 completed ZERO and wedged the API
+    # permanently -- after which even single photo uploads hung. Postgres
+    # showed all 30 connections checked out and idle while /health kept
+    # answering 200, because it touches no database.
+    #
+    # Connections are now taken only around real database work. The decode,
+    # the frame extraction and the S3 uploads -- seconds of it -- hold none.
+    pool = request.app.state.pool
+
     if not photos and video is None:
         raise HTTPException(
             status_code=422, detail="at least one photo or a video is required"
@@ -253,13 +272,14 @@ async def create_sighting(
     # once) can both pass this check, and the INSERT below is where one of them
     # loses. This is the cheap path, not the correctness one.
     if client_token:
-        existing = await conn.fetchrow(
-            "SELECT s.id, array_agg(p.id ORDER BY p.created_at, p.id) AS photo_ids "
-            "FROM sightings s LEFT JOIN photos p ON p.sighting_id = s.id "
-            "WHERE s.client_token = $1 AND s.observer_id = $2 "
-            "GROUP BY s.id",
-            client_token, observer_id,
-        )
+        async with pool.acquire() as conn:
+            existing = await conn.fetchrow(
+                "SELECT s.id, array_agg(p.id ORDER BY p.created_at, p.id) AS photo_ids "
+                "FROM sightings s LEFT JOIN photos p ON p.sighting_id = s.id "
+                "WHERE s.client_token = $1 AND s.observer_id = $2 "
+                "GROUP BY s.id",
+                client_token, observer_id,
+            )
         if existing is not None:
             logger.info(
                 "duplicate submission for client_token=%s; returning sighting=%s",
@@ -405,80 +425,98 @@ async def create_sighting(
         attrs["source"] = "video"
 
     try:
-      async with conn.transaction():
-          if geog_present:
-              await conn.execute(
-                  """
-                  INSERT INTO sightings
-                      (id, observer_id, captured_at, reported_at, geog, geo_source,
-                       geo_accuracy_m, individual_id, match_status, review_status,
-                       phash, attrs, dog_confidence, client_token)
-                  VALUES
-                      ($1, $2, $3, $4,
-                       ST_SetSRID(ST_MakePoint($5, $6), 4326)::geography,
-                       $7, $8, NULL, 'unmatched', 'valid', $9, $10::jsonb, $11, $12)
-                  """,
-                  sighting_id,
-                  observer_id,
-                  captured_at,
-                  reported_at,
-                  lng,
-                  lat,
-                  geo_source,
-                  geo_accuracy_m,
-                  first_phash,
-                  json.dumps(attrs),
-                  None,
-                  client_token,
-              )
-          else:
-              await conn.execute(
-                  """
-                  INSERT INTO sightings
-                      (id, observer_id, captured_at, reported_at, geog, geo_source,
-                       geo_accuracy_m, individual_id, match_status, review_status,
-                       phash, attrs, dog_confidence, client_token)
-                  VALUES
-                      ($1, $2, $3, $4, NULL, $5, $6, NULL, 'unmatched', 'valid',
-                       $7, $8::jsonb, $9, $10)
-                  """,
-                  sighting_id,
-                  observer_id,
-                  captured_at,
-                  reported_at,
-                  geo_source,
-                  geo_accuracy_m,
-                  first_phash,
-                  json.dumps(attrs),
-                  None,
-                  client_token,
-              )
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                if geog_present:
+                    await conn.execute(
+                        """
+                        INSERT INTO sightings
+                            (id, observer_id, captured_at, reported_at, geog, geo_source,
+                             geo_accuracy_m, individual_id, match_status, review_status,
+                             phash, attrs, dog_confidence, client_token)
+                        VALUES
+                            ($1, $2, $3, $4,
+                             ST_SetSRID(ST_MakePoint($5, $6), 4326)::geography,
+                             $7, $8, NULL, 'unmatched', 'valid', $9, $10::jsonb, $11, $12)
+                        """,
+                        sighting_id,
+                        observer_id,
+                        captured_at,
+                        reported_at,
+                        lng,
+                        lat,
+                        geo_source,
+                        geo_accuracy_m,
+                        first_phash,
+                        json.dumps(attrs),
+                        None,
+                        client_token,
+                    )
+                else:
+                    await conn.execute(
+                        """
+                        INSERT INTO sightings
+                            (id, observer_id, captured_at, reported_at, geog, geo_source,
+                             geo_accuracy_m, individual_id, match_status, review_status,
+                             phash, attrs, dog_confidence, client_token)
+                        VALUES
+                            ($1, $2, $3, $4, NULL, $5, $6, NULL, 'unmatched', 'valid',
+                             $7, $8::jsonb, $9, $10)
+                        """,
+                        sighting_id,
+                        observer_id,
+                        captured_at,
+                        reported_at,
+                        geo_source,
+                        geo_accuracy_m,
+                        first_phash,
+                        json.dumps(attrs),
+                        None,
+                        client_token,
+                    )
 
-          for row in photo_rows:
-              await conn.execute(
-                  """
-                  INSERT INTO photos (id, sighting_id, s3_key, width, height, phash)
-                  VALUES ($1, $2, $3, $4, $5, $6)
-                  """,
-                  row["id"],
-                  sighting_id,
-                  row["s3_key"],
-                  row["width"],
-                  row["height"],
-                  row["phash"],
-              )
+                for row in photo_rows:
+                    await conn.execute(
+                        """
+                        INSERT INTO photos (id, sighting_id, s3_key, width, height, phash)
+                        VALUES ($1, $2, $3, $4, $5, $6)
+                        """,
+                        row["id"],
+                        sighting_id,
+                        row["s3_key"],
+                        row["width"],
+                        row["height"],
+                        row["phash"],
+                    )
+
+            if clip_key is not None:
+                # A follow-up UPDATE rather than a column in both INSERT
+                # variants: they differ only in whether a geography is
+                # supplied, and adding the same field to each is two places to
+                # forget it. On the connection already open, not a second one.
+                try:
+                    await conn.execute(
+                        "UPDATE sightings SET clip_s3_key = $1 WHERE id = $2",
+                        clip_key, sighting_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "stored clip for sighting=%s but could not record its key",
+                        sighting_id, exc_info=True,
+                    )
     except asyncpg.exceptions.UniqueViolationError:
         # Two attempts at one capture raced past the pre-check -- an installed
         # PWA and a browser tab flushing the same IndexedDB rows at the same
         # moment. The unique index is what makes that safe; this is where the
         # loser finds out. Return the winner's sighting, exactly as the
         # pre-check would have.
-        winner = await conn.fetchrow(
-            "SELECT s.id, array_agg(p.id ORDER BY p.created_at, p.id) AS photo_ids "
-            "FROM sightings s LEFT JOIN photos p ON p.sighting_id = s.id "
-            "WHERE s.client_token = $1 AND s.observer_id = $2 GROUP BY s.id",
-            client_token, observer_id,
-        )
+        async with pool.acquire() as conn:
+            winner = await conn.fetchrow(
+                "SELECT s.id, array_agg(p.id ORDER BY p.created_at, p.id) AS photo_ids "
+                "FROM sightings s LEFT JOIN photos p ON p.sighting_id = s.id "
+                "WHERE s.client_token = $1 AND s.observer_id = $2 GROUP BY s.id",
+                client_token, observer_id,
+            )
         if winner is None:
             raise
         logger.info(
@@ -497,22 +535,6 @@ async def create_sighting(
     background_tasks.add_task(
         _score_and_save_dog_confidence, request.app.state.pool, sighting_id, raws
     )
-    if clip_key is not None:
-        # A follow-up UPDATE rather than a column in both INSERT variants: they
-        # differ only in whether a geography is supplied, and adding the same
-        # field to each is two places to forget it.
-        try:
-            async with request.app.state.pool.acquire() as conn:
-                await conn.execute(
-                    "UPDATE sightings SET clip_s3_key = $1 WHERE id = $2",
-                    clip_key, sighting_id,
-                )
-        except Exception:
-            logger.warning(
-                "stored clip for sighting=%s but could not record its key",
-                sighting_id, exc_info=True,
-            )
-
     background_tasks.add_task(
         _embed_and_save,
         request.app.state.pool,
