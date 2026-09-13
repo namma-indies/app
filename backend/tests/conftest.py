@@ -59,8 +59,8 @@ async def migrated_db(_migrated):
     try:
         await conn.execute(
             "TRUNCATE observers, sightings, photos, embeddings, individuals, "
-            "match_proposals, confirmations, clinical_records, login_tokens "
-            "RESTART IDENTITY CASCADE"
+            "match_proposals, confirmations, clinical_records, login_tokens, "
+            "areas, individual_names RESTART IDENTITY CASCADE"
         )
         yield conn
     finally:
@@ -83,8 +83,8 @@ async def app_client(_migrated):
     async with app.state.pool.acquire() as c:
         await c.execute(
             "TRUNCATE observers, sightings, photos, embeddings, individuals, "
-            "match_proposals, confirmations, clinical_records, login_tokens "
-            "RESTART IDENTITY CASCADE"
+            "match_proposals, confirmations, clinical_records, login_tokens, "
+            "areas, individual_names RESTART IDENTITY CASCADE"
         )
 
     import httpx
@@ -112,3 +112,19 @@ async def authed_client(app_client):
         )
     app_client.cookies.set("session", issue_session(oid))
     yield app_client, oid
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Every test starts with a full budget.
+
+    The limiter stays *enabled* in the suite rather than switched off, so the
+    dependencies are exercised on every request the tests make. No existing
+    test makes more than two calls to any limited endpoint, so a per-test
+    reset is enough to keep them green while keeping the limiter real.
+    """
+    from app.ratelimit import reset
+
+    reset()
+    yield
+    reset()

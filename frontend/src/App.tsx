@@ -1,18 +1,22 @@
 import { useEffect, useState } from "react";
 import Capture from "./screens/Capture";
 import Dex from "./screens/Dex";
+import Stats from "./screens/Stats";
 import SignIn from "./screens/SignIn";
 import { failedCount, flush, setOnFlushed, setOnUnauthorized } from "./offline/queue";
 import FailedSightings from "./components/FailedSightings";
-import { getDex, UnauthorizedError } from "./api";
+import { getDex, getMe, UnauthorizedError } from "./api";
 import { API_BASE } from "./apiBase";
 import { listenForAuthLinks } from "./deepLink";
 import mark from "./assets/mark.svg";
 
-type Tab = "capture" | "dex";
+type Tab = "capture" | "dex" | "stats";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("capture");
+  // Display hint only: /stats/observers checks the tier itself and 404s
+  // without it, so a forged flag here reveals nothing.
+  const [isModerator, setIsModerator] = useState(false);
   const [unauthorized, setUnauthorized] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [failed, setFailed] = useState(0);
@@ -57,6 +61,12 @@ export default function App() {
       .then(() => {
         setUnauthorized(false);
         setCheckingAuth(false);
+        // Piggybacks on the existing probe rather than adding a second
+        // round trip on every load. A failure here is not an auth problem --
+        // it just means no extra tab.
+        getMe()
+          .then((me) => setIsModerator(me.is_moderator))
+          .catch(() => setIsModerator(false));
       })
       .catch((err) => {
         if (err instanceof UnauthorizedError) setUnauthorized(true);
@@ -133,6 +143,8 @@ export default function App() {
       <div className="screen">
         {tab === "capture" ? (
           <Capture />
+        ) : tab === "stats" ? (
+          <Stats onUnauthorized={() => setUnauthorized(true)} />
         ) : (
           <Dex onUnauthorized={() => setUnauthorized(true)} />
         )}
@@ -146,6 +158,12 @@ export default function App() {
           <span className="icon">📖</span>
           INDIEDEX
         </button>
+        {isModerator && (
+          <button className={tab === "stats" ? "active" : ""} onClick={() => setTab("stats")}>
+            <span className="icon">📊</span>
+            NUMBERS
+          </button>
+        )}
       </div>
       {showFailed && (
         <FailedSightings

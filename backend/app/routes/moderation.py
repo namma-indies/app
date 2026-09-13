@@ -16,19 +16,25 @@ puts an animal at risk, "file an issue on GitHub" is not a takedown path.
 
 THE PRODUCT DECISION IN HERE
 ----------------------------
-A single report hides the sighting immediately, pending a moderator.
+**Two** people must report a sighting before it hides, pending a moderator.
 
-That is a choice, and the opposite choice is defensible: queue the report and
-leave the photo up until a human looks, so one bad actor cannot blank the map.
-This takes the other side for two reasons. The harm from a sighting that
-endangers a dog is immediate and not undoable, while the harm from a wrongly
-hidden sighting is a photo being invisible for a day and then restored by a
-moderator who can see exactly who hid it and why. And a cohort this small,
-where every report is attributed, is the setting where hiding first is cheapest
-to get wrong.
+This started at one and was changed deliberately. Hiding on the first report
+makes the harm from a sighting that endangers a dog stop immediately, which is
+the argument for it -- but it also means any single account can take any photo
+off the shared map on its own say-so, and at pilot scale the people logging
+sightings are the people whose work disappears. Requiring a second, independent
+voice costs a delay measured in however long it takes one more person to agree,
+and buys the property that no one person can blank the map alone.
 
-Flip it by changing `_HIDE_ON_FIRST_REPORT`. The rest of the file does not
-care.
+It is two *distinct* reporters, not two taps: the primary key on
+(sighting_id, reporter_id) means one account reporting twice is one report.
+
+A report is always recorded and always reaches the queue, whether or not it
+crossed the threshold. Hiding is what waits for the second voice; a moderator
+seeing it does not.
+
+Change the number with `HIDE_AT_REPORTS`. The rest of the file does not care --
+set it to 1 to restore hide-on-first-report.
 
 WHO MODERATES
 -------------
@@ -50,7 +56,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, HTTPException
 
-from app.auth.deps import require_observer
+from app.auth.deps import require_moderator, require_observer
 from app.deps import get_conn, get_storage
 from app.photos import thumb_key
 from app.storage.s3 import S3Storage
@@ -59,8 +65,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# See the module docstring. One report hides; a moderator restores.
-_HIDE_ON_FIRST_REPORT = True
+# See the module docstring. Distinct reporters needed before a sighting hides;
+# a moderator restores. 1 restores the original hide-on-first-report behaviour.
+HIDE_AT_REPORTS = 2
 
 # Capped because it is stored and later rendered to a moderator. Long enough
 # for a sentence explaining what is wrong, short enough not to be a channel.
@@ -70,23 +77,6 @@ MAX_QUEUE = 200
 
 Reason = Literal["endangers_dog", "not_a_dog", "wrong_place", "offensive", "other"]
 
-
-async def require_moderator(
-    observer_id: UUID = Depends(require_observer), conn=Depends(get_conn)
-) -> UUID:
-    """A 404, not a 403, for a non-moderator.
-
-    403 confirms the endpoint exists and that this account simply lacks the
-    tier, which turns the moderation surface into something to probe for. There
-    is nothing here worth revealing to someone who cannot use it.
-    """
-    tier = await conn.fetchval(
-        "SELECT trust_tier FROM observers WHERE id = $1 AND deleted_at IS NULL",
-        observer_id,
-    )
-    if tier != "moderator":
-        raise HTTPException(status_code=404, detail="not found")
-    return observer_id
 
 
 @router.get("/me")
@@ -145,25 +135,36 @@ async def report_sighting(
             reason,
             (note or "").strip() or None,
         )
-        if _HIDE_ON_FIRST_REPORT:
-            # `reviewed_at IS NULL` is what makes a moderator's decision stick.
-            # Hiding on `review_status = 'valid'` alone looks equivalent and is
-            # not: once a moderator has looked and restored a sighting, the next
-            # person to tap report takes it straight back down, so the human
-            # decision is advisory and the last tap wins. The report is still
-            # recorded, and the queue surfaces anything reported *since* the
-            # last review, so re-reporting reaches a human -- it just does not
-            # reach past one.
-            await conn.execute(
-                "UPDATE sightings SET review_status = 'pending', updated_at = now() "
-                "WHERE id = $1 AND review_status = 'valid' AND reviewed_at IS NULL",
-                sighting_id,
-            )
+        # `reviewed_at IS NULL` is what makes a moderator's decision stick.
+        # Hiding on `review_status = 'valid'` alone looks equivalent and is
+        # not: once a moderator has looked and restored a sighting, the next
+        # person to tap report takes it straight back down, so the human
+        # decision is advisory and the last tap wins. The report is still
+        # recorded, and the queue surfaces anything reported *since* the
+        # last review, so re-reporting reaches a human -- it just does not
+        # reach past one.
+        #
+        # The count is of rows in sighting_reports, which is one per reporter
+        # by primary key, so this is "two people agree" and not "two taps".
+        await conn.execute(
+            "UPDATE sightings SET review_status = 'pending', updated_at = now() "
+            "WHERE id = $1 AND review_status = 'valid' AND reviewed_at IS NULL "
+            "  AND (SELECT count(*) FROM sighting_reports WHERE sighting_id = $1) >= $2",
+            sighting_id,
+            HIDE_AT_REPORTS,
+        )
 
     logger.info(
         "sighting=%s reported by observer=%s reason=%s", sighting_id, observer_id, reason
     )
-    return {"status": "ok", "hidden": _HIDE_ON_FIRST_REPORT}
+    # Read back rather than assume. The report may have crossed the threshold,
+    # may not have, or the sighting may already have been hidden by an earlier
+    # pair -- and "did my report take it down" is the one thing the reporter
+    # actually wants to know.
+    hidden = await conn.fetchval(
+        "SELECT review_status <> 'valid' FROM sightings WHERE id = $1", sighting_id
+    )
+    return {"status": "ok", "hidden": bool(hidden)}
 
 
 @router.get("/moderation/queue")

@@ -14,6 +14,7 @@ import pytest
 from PIL import Image
 
 from app.ids import uuid7
+from app.routes.moderation import HIDE_AT_REPORTS
 from app.security import issue_session
 
 BLR = (12.9716, 77.5946)
@@ -51,6 +52,24 @@ async def _observer(client, name="Priya", tier=None):
 
 def _become(client, oid):
     client.cookies.set("session", issue_session(oid))
+
+
+async def _report_enough_to_hide(client, sid, *, reason="endangers_dog"):
+    """Get a sighting over HIDE_AT_REPORTS, then hand the session back.
+
+    Hiding takes two *distinct* reporters, so the surface tests below cannot
+    just tap report twice -- the primary key on (sighting_id, reporter_id)
+    collapses that to one. Each extra voice is a fresh observer.
+    """
+    r = await _report(client, sid, reason=reason)
+    assert r.status_code == 200, r.text
+    caller = client.cookies.get("session")
+    for i in range(HIDE_AT_REPORTS - 1):
+        _become(client, await _observer(client, name=f"Corroborator{i}"))
+        r = await _report(client, sid, reason=reason)
+        assert r.status_code == 200, r.text
+    client.cookies.set("session", caller)
+    return r
 
 
 async def _make_moderator(client, oid):
@@ -102,14 +121,45 @@ async def test_reporting_an_unknown_sighting_is_a_404(authed_client):
 
 
 @pytest.mark.asyncio
-async def test_a_report_hides_the_sighting(authed_client):
+async def test_one_report_is_not_enough_to_hide_a_sighting(authed_client):
+    """No single account can take a photo off the shared map on its own say-so.
+    At pilot scale the people logging sightings are the people whose work would
+    disappear."""
     client, _ = authed_client
     sid = await _post(client)
     assert await _status(client, sid) == "valid"
 
-    assert (await _report(client, sid)).status_code == 200
+    r = await _report(client, sid)
 
+    assert r.status_code == 200
+    assert r.json()["hidden"] is False
+    assert await _status(client, sid) == "valid"
+
+
+@pytest.mark.asyncio
+async def test_a_second_reporter_hides_the_sighting(authed_client):
+    client, _ = authed_client
+    sid = await _post(client)
+    await _report(client, sid)
+
+    _become(client, await _observer(client, name="Second"))
+    r = await _report(client, sid)
+
+    assert r.json()["hidden"] is True
     assert await _status(client, sid) == "pending"
+
+
+@pytest.mark.asyncio
+async def test_one_person_reporting_twice_is_still_one_report(authed_client):
+    """Two taps is not two voices -- the primary key collapses them, and the
+    threshold has to mean agreement rather than persistence."""
+    client, _ = authed_client
+    sid = await _post(client)
+
+    await _report(client, sid, reason="endangers_dog")
+    await _report(client, sid, reason="offensive")
+
+    assert await _status(client, sid) == "valid"
 
 
 @pytest.mark.asyncio
@@ -157,6 +207,15 @@ async def test_a_new_report_does_not_overturn_a_moderator(authed_client):
     _become(client, other)
     await _report(client, sid)
 
+    # Pin the premise: this sighting now has enough distinct reporters that it
+    # *would* hide if nobody had reviewed it. Without this the test would pass
+    # vacuously the moment HIDE_AT_REPORTS is raised, and would stop testing
+    # the sticky-decision guard at all.
+    async with (await _pool(client)).acquire() as c:
+        reporters = await c.fetchval(
+            "SELECT count(*) FROM sighting_reports WHERE sighting_id = $1::uuid", sid)
+    assert reporters >= HIDE_AT_REPORTS
+
     assert await _status(client, sid) == "valid"
 
 
@@ -169,7 +228,7 @@ async def test_a_reported_sighting_leaves_the_map(authed_client):
     sid = await _post(client)
     assert sid in [s["id"] for s in (await client.get("/map")).json()["sightings"]]
 
-    await _report(client, sid)
+    await _report_enough_to_hide(client, sid)
 
     assert sid not in [s["id"] for s in (await client.get("/map")).json()["sightings"]]
 
@@ -190,7 +249,7 @@ async def test_a_reported_sighting_leaves_the_dog_catalogue(authed_client):
                 "WHERE id=$2::uuid", iid, sid)
     assert (await client.get("/dogs")).json()["dogs"][0]["sighting_count"] == 2
 
-    await _report(client, a)
+    await _report_enough_to_hide(client, a)
 
     assert (await client.get("/dogs")).json()["dogs"][0]["sighting_count"] == 1
 
@@ -209,7 +268,7 @@ async def test_a_reported_sighting_leaves_the_match_queue(authed_client):
             uuid7(), a, b)
     assert len((await client.get("/proposals")).json()["proposals"]) == 1
 
-    await _report(client, b)
+    await _report_enough_to_hide(client, b)
 
     assert (await client.get("/proposals")).json()["proposals"] == []
 
@@ -221,7 +280,7 @@ async def test_your_own_dex_still_shows_it_and_says_why(authed_client):
     see it."""
     client, _ = authed_client
     sid = await _post(client)
-    await _report(client, sid)
+    await _report_enough_to_hide(client, sid)
 
     mine = {s["id"]: s for s in (await client.get("/dex")).json()["sightings"]}
 

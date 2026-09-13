@@ -31,6 +31,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.aggregates import COUNTABLE_SIGHTING
 from app.auth.deps import require_observer
 from app.config import settings
 from app.deps import get_conn, get_storage
@@ -85,7 +86,7 @@ async def get_map(
     # in Python. A clip yields up to twelve frames under one sighting and the
     # map needs exactly one thumbnail, so joining every photo would multiply
     # every pin and then throw the extras away.
-    sql = """
+    sql = f"""
         SELECT DISTINCT ON (s.id)
             s.id,
             s.captured_at,
@@ -103,8 +104,9 @@ async def get_map(
         WHERE s.geog IS NOT NULL
           -- `= 'valid'`, not `<> 'rejected'`. `pending` means someone reported
           -- this and no human has looked yet; the whole point of that state is
-          -- that it is off the map while it waits.
-          AND s.review_status = 'valid'
+          -- that it is off the map while it waits. Defined once, in
+          -- app/aggregates.py, so the three read surfaces cannot drift.
+          AND {COUNTABLE_SIGHTING}
     """
     args: list = []
     if envelope is not None:

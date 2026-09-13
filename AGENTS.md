@@ -97,8 +97,17 @@ migration 0001, and `/map` filtered on it from the day it was written. Nothing
 ever set anything but `valid`, so that filter was unreachable code and no path
 in the product could take a photo off the shared map.
 
-`POST /sighting/{id}/report` is that writer. One report hides the sighting
-(`valid` → `pending`) and a moderator rules on it. Every shared surface now
+`POST /sighting/{id}/report` is that writer. **Two distinct reporters** hide a
+sighting (`valid` → `pending`) and a moderator rules on it. Hiding on the first
+report was the original behaviour and was changed deliberately: it let any
+single account take any photo off the shared map on its own say-so, and at
+pilot scale the people logging sightings are the people whose work disappears.
+A second, independent voice costs a delay and buys the property that no one
+person can blank the map alone. It is two *reporters*, not two taps — the
+primary key on `(sighting_id, reporter_id)` collapses one account reporting
+twice into one report. A report is recorded and reaches the queue either way;
+only the hiding waits. The count lives in `HIDE_AT_REPORTS`; set it to 1 to
+restore the old behaviour. Every shared surface now
 requires `review_status = 'valid'` — `/map`, `/dogs` and `/proposals` — while
 `/dex` still shows you your own whatever its status, and says which status.
 Candidate search excludes only `rejected`, so a moderator's takedown cannot
@@ -388,3 +397,95 @@ So merging is deploying. Before any merge touching the ML path:
 | species filter | not implemented; `detect_reid` returns the COCO class but it is not persisted |
 
 Treat this table as the current truth and §5 as intent.
+
+---
+
+## Counts: `/stats`
+
+Three read-only endpoints returning derived counts and nothing else — no row,
+coordinate, photo or name leaves them. That is what makes this the one tier of
+issue #58 that could eventually be read by someone who is not signed in.
+
+    GET /stats?kind=…              city-wide totals + monthly series
+    GET /stats/areas?kind=…        per-area rows
+    GET /stats/areas/{id}          one area, with its own monthly series
+
+**Cohort-gated today.** Opening them is a dependency swap, gated on three
+things: rate limiting (present), the privacy policy catching up (#53), and
+having looked at real numbers against real suppression thresholds first.
+
+**`kind` is the boundary scheme**, defaulting to `settings.area_default_kind`.
+Wards, PIN codes, neighbourhood outlines and hand-drawn pilot polygons are all
+rows in `areas` differing only by `kind`, loaded by `scripts/load_areas.py`.
+Changing which scheme the public number carries is a config line and a loader
+run, not a code change. An unknown kind is a 200 with an empty `areas` list,
+not a 404 — "no polygons loaded" is a legitimate state and it reads honestly:
+every sighting is unattributed because nothing exists to attribute it to.
+
+**Three numbers, never one called "dogs".** `sightings` overcounts dogs (one
+dog seen ten times is ten); `confirmed_individuals` undercounts them (every
+unmatched sighting is invisible to it, and `match_status` defaults to
+`unmatched`). The truth is between them and the API does not guess.
+
+**Suppression.** An area is reported only if it clears both
+`area_min_sightings` and `area_min_observers` for its kind — per kind, because
+the threshold protects a privacy property that depends on cell size. A
+suppressed area is **omitted entirely**, never returned with a flag: a flag
+still discloses "at least one dog is here". Fetching one by id returns 404,
+identical to an id that never existed, so the endpoint cannot be used as an
+oracle. An area's monthly series is floored separately, because an area-month
+cell is a finer disclosure than the area row containing it.
+
+**The numbers reconcile.** Per-area rows will not sum to the city total —
+areas drop out under suppression, sightings can have no location at all
+(`geo_source` allows `'none'`), and a sighting can fall outside every polygon
+of a kind. Hence `areas_suppressed` and `unattributed_sightings` on every
+response. Without them the difference looks like missing dogs.
+
+**Months only**, bucketed in `Asia/Kolkata`. There is no finer grain and no
+API to ask for one — that is issue #5's "delay" dial enforced by absence
+rather than by a rule someone has to remember.
+
+`app/aggregates.py` owns the single definition of a countable sighting
+(`review_status = 'valid'`) and the lateral join that attributes a sighting to
+at most one area. `/map` and `/dogs` import that constant. It is `= 'valid'`
+rather than `<> 'rejected'` because `pending` means reported-and-not-yet-looked-at
+(#46) — an argument that is stronger for a count than for the map, since a
+count is what gets quoted to a partner. `/dex` deliberately shows you your own
+sightings whatever their status, and reports the status alongside them.
+
+## Rate limiting
+
+`app/ratelimit.py` — in-process fixed windows, applied to `/stats`,
+`/auth/email` and `/auth/join`. The email path is why this exists: it had no
+throttle of any kind and sits in front of production SES. **Capture is not
+limited** — `/sighting` uploads are unaffected.
+
+The two keys on `/auth/email` do different jobs at different tightnesses.
+Per-address (5 / 15 min) is the anti-mail-bomb control and stays tight; per-IP
+(20 / 15 min) is anti-enumeration and cost, and is looser because an IP is not
+a person. Indian carriers put many subscribers behind one address, and field
+testers on mobile data would otherwise lock each other out during an onboarding
+push. `/auth/join` counts only *failed* passcode attempts, so it is a
+brute-force budget rather than a cap on how many people may join from one
+carrier NAT.
+
+Authenticated surfaces key on `observer_id`; unauthenticated ones key on the
+client IP read from `X-Real-IP`, which Caddy sets from the real peer and
+overwrites on every request (`deploy/Caddyfile`; verified against caddy:2 with
+a forged header).
+
+`trust_proxy_header` gates that and defaults to **true**, which is load-bearing
+rather than lax. In the deployed topology `app` publishes no ports and is
+reachable only through the `caddy` service over the compose bridge, so
+`request.client.host` is *Caddy's container IP* — the same value for every user
+on the internet. Defaulting to false there would not weaken the limiter, it
+would collapse both IP-keyed buckets into one global bucket: five login emails
+per fifteen minutes for the whole cohort. It is safe in dev because it is a
+fallback — with no proxy there is no header, and the peer address is used. Set
+it false only where the app is reachable without a proxy that overwrites the
+header.
+
+Single uvicorn, no `--workers`, so the counts are exact. Limits reset on
+deploy, and adding workers would silently multiply every limit by the worker
+count. Both are fine for dampening abuse and neither would be fine for a quota.

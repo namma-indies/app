@@ -432,3 +432,71 @@ export async function reviewSighting(
   });
   await handle<unknown>(res);
 }
+
+// --- stats (moderator dashboard) --------------------------------------------
+
+export interface StatsTotals {
+  observers: number;
+  sightings: number;
+  confirmed_individuals: number;
+}
+
+export interface StatsMonth extends StatsTotals {
+  month: string;
+}
+
+export interface StatsArea {
+  id: string;
+  name: string | null;
+  ext_code: string | null;
+  sightings: number;
+  confirmed_individuals: number;
+  observers: number;
+  last_active_month: string | null;
+}
+
+export interface Stats {
+  kind: string;
+  totals: StatsTotals;
+  months: StatsMonth[];
+  areas_reported: number;
+  areas_suppressed: number;
+  unattributed_sightings: number;
+}
+
+export interface StatsAreas {
+  kind: string;
+  areas: StatsArea[];
+  areas_suppressed: number;
+  unattributed_sightings: number;
+}
+
+export interface StatsObserver {
+  id: string;
+  display_name: string | null;
+  email: string | null;
+  created_via: string | null;
+  trust_tier: string | null;
+  created_at: string;
+  sightings: number;
+  confirmed_individuals: number;
+  last_sighting_at: string | null;
+}
+
+export async function getStats(kind?: string): Promise<Stats> {
+  const q = kind ? `?kind=${encodeURIComponent(kind)}` : "";
+  const res = await fetch(`${API_BASE}/stats${q}`, { credentials: "include" });
+  return handle<Stats>(res);
+}
+
+export async function getStatsAreas(kind?: string): Promise<StatsAreas> {
+  const q = kind ? `?kind=${encodeURIComponent(kind)}` : "";
+  const res = await fetch(`${API_BASE}/stats/areas${q}`, { credentials: "include" });
+  return handle<StatsAreas>(res);
+}
+
+/** Moderator-gated, and 404s rather than 403s without the tier. */
+export async function getStatsObservers(): Promise<{ observers: StatsObserver[] }> {
+  const res = await fetch(`${API_BASE}/stats/observers`, { credentials: "include" });
+  return handle<{ observers: StatsObserver[] }>(res);
+}

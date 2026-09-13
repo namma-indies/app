@@ -926,3 +926,68 @@ button { font-family: inherit; }
   background: #f4ead9;
   color: var(--ink, #2e2016);
 }
+
+/* --- stats (moderator dashboard) ----------------------------------------- */
+
+.stats { padding: 14px 16px 28px; overflow-y: auto; }
+
+.stats h3 {
+  font-size: .72rem; letter-spacing: .12em; color: var(--muted);
+  margin: 22px 0 8px; display: flex; align-items: baseline; gap: 8px;
+}
+.stats h3 .kind {
+  font-size: .62rem; color: var(--ink); background: var(--dust);
+  border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px;
+  letter-spacing: .06em;
+}
+
+.stat-row { display: flex; gap: 8px; }
+.stat {
+  flex: 1; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; box-shadow: 2px 2px 0 var(--line);
+  padding: 12px 8px; text-align: center;
+}
+.stat b { display: block; font-size: 1.7rem; line-height: 1.1; color: var(--accent); }
+.stat span {
+  display: block; margin-top: 3px; font-size: .56rem;
+  letter-spacing: .1em; color: var(--muted);
+}
+
+/* The reconciling sentences. Deliberately body-sized rather than fine print:
+   with a sparse corpus they are the whole story, not a footnote. */
+.stats-note {
+  margin: 8px 0 0; font-size: .78rem; line-height: 1.45; color: var(--muted);
+}
+.stats-note b { color: var(--ink); }
+
+.months { display: flex; align-items: flex-end; gap: 5px; height: 110px; }
+.month { flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; }
+.month .bar {
+  width: 100%; margin-top: auto; min-height: 3px;
+  background: var(--accent); border: 1px solid var(--line);
+  border-radius: 4px 4px 0 0;
+}
+.month .n { font-size: .68rem; color: var(--ink); margin-top: 3px; }
+.month .lbl { font-size: .56rem; color: var(--muted); letter-spacing: .04em; }
+
+.stats-table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+.stats-table th {
+  text-align: left; font-size: .58rem; letter-spacing: .1em;
+  color: var(--muted); font-weight: 600; padding: 0 6px 5px 0;
+}
+.stats-table td {
+  padding: 7px 6px 7px 0; border-top: 1px solid var(--frame);
+  vertical-align: top; color: var(--ink);
+}
+.stats-table th:not(:first-child), .stats-table td:not(:first-child) {
+  text-align: right; white-space: nowrap;
+}
+.stats-table .sub {
+  display: block; font-size: .64rem; color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.stats-table .tag {
+  margin-left: 5px; font-size: .5rem; letter-spacing: .08em;
+  background: var(--indigo); color: var(--panel);
+  border-radius: 3px; padding: 1px 4px; vertical-align: middle;
+}
