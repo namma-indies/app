@@ -148,7 +148,9 @@ async def test_post_sighting_saves_when_no_dog_detected(authed_client):
 @pytest.mark.asyncio
 async def test_post_sighting_records_dog_confidence(authed_client):
     """The label is persisted so we can tune the threshold from real captures
-    instead of guessing at synthetic ones."""
+    instead of guessing at synthetic ones. It lives on `animal_confidence` now
+    -- the max of dog and cat over the sighting's photos -- not on the
+    `dog_confidence` column, which nothing writes any more."""
     client, _ = authed_client
     r = await client.post(
         "/sighting",
@@ -159,7 +161,7 @@ async def test_post_sighting_records_dog_confidence(authed_client):
     pool = client._transport.app.state.pool
     async with pool.acquire() as c:
         conf = await c.fetchval(
-            "SELECT dog_confidence FROM sightings WHERE id=$1", r.json()["sighting_id"]
+            "SELECT animal_confidence FROM sightings WHERE id=$1", r.json()["sighting_id"]
         )
     assert conf is not None and 0.0 <= conf <= 1.0
 
@@ -182,11 +184,11 @@ async def test_post_sighting_accepts_legacy_override_field(authed_client):
 
 
 @pytest.mark.asyncio
-async def test_post_sighting_dog_confidence_null_until_background_task_runs(
+async def test_post_sighting_animal_confidence_null_until_background_task_runs(
     authed_client, monkeypatch
 ):
     """The insert itself must not depend on the detector: even if scoring is
-    slow or fails, the row exists with dog_confidence NULL until the
+    slow or fails, the row exists with animal_confidence NULL until the
     background task updates it."""
     import app.analyse as analyse_mod
 
@@ -210,10 +212,10 @@ async def test_post_sighting_dog_confidence_null_until_background_task_runs(
     pool = client._transport.app.state.pool
     async with pool.acquire() as c:
         row = await c.fetchrow(
-            "SELECT dog_confidence, review_status FROM sightings WHERE id=$1", sid
+            "SELECT animal_confidence, review_status FROM sightings WHERE id=$1", sid
         )
     # Detector failure fails open: sighting still saved, just unscored.
-    assert row["dog_confidence"] is None
+    assert row["animal_confidence"] is None
     assert row["review_status"] == "valid"
 
 
