@@ -36,6 +36,17 @@ beforeEach(() => {
 });
 
 describe("flush", () => {
+  it("deletes an uploaded queued video without waiting for frames or processing", async () => {
+    const { enqueue, flush, pendingCount, failedCount } = await freshQueue();
+    await enqueue({ ...SAMPLE, photos: undefined, video: new Blob(["clip"], { type: "video/mp4" }) });
+    vi.mocked(postSighting).mockResolvedValue({ sighting_id: "queued", photo_ids: [], processing_state: "queued" });
+    await flush();
+    expect(await pendingCount()).toBe(0);
+    expect(await failedCount()).toBe(0);
+    expect(postSighting).toHaveBeenCalledTimes(1);
+    await flush();
+    expect(postSighting).toHaveBeenCalledTimes(1);
+  });
   it("leaves a network-failure item pending and stops draining", async () => {
     const { enqueue, flush, pendingCount } = await freshQueue();
     await enqueue(SAMPLE);

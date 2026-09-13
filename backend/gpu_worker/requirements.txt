@@ -1,0 +1,13 @@
+# Separate DGX environment; never install alongside the CPU onnxruntime wheel.
+# CPU preprocessing versions match the locally installed, tested environment.
+# Validated with real model weights on DGX Python 3.12 / CUDA 12.9 / cuDNN 9.9.
+# CUDA provider TF32 must remain disabled for the measured CPU parity.
+onnxruntime-gpu==1.26.0
+numpy==2.5.1
+Pillow==12.3.0
+ImageHash==4.3.2
+imageio==2.37.3
+imageio-ffmpeg==0.6.0
+httpx==0.28.1
+pydantic==2.13.4
+pydantic-settings==2.14.2

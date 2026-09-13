@@ -93,6 +93,7 @@ async def get_map(
             ST_X(s.geog::geometry) AS lng,
             s.geo_accuracy_m,
             s.attrs,
+            s.processing_state,
             s.observer_id,
             o.display_name AS observer,
             p.s3_key
@@ -174,6 +175,7 @@ async def get_map(
                 "precision": where.precision if where else "none",
                 "cell_m": where.cell_m if where else None,
                 "attrs": attrs,
+                "processing_state": row["processing_state"],
                 "observer": row["observer"],
                 "mine": mine,
                 "photos": [{"thumb_url": thumb_url}] if thumb_url else [],

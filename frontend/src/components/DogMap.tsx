@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { MappableSighting } from "../api";
+import { processingLabel } from "../processing";
 
 const BANGALORE: [number, number] = [77.59, 12.97];
 const SOURCE_ID = "sightings";
@@ -57,6 +58,7 @@ function toFeature(s: MappableSighting): GeoJSON.Feature<GeoJSON.Point> {
     geometry: { type: "Point", coordinates: [s.lng as number, s.lat as number] },
     properties: {
       id: s.id,
+      processing_state: s.processing_state ?? "legacy",
       thumb: s.photos[0]?.thumb_url ?? "",
       time: new Date(s.captured_at).toLocaleString(),
       note: attrs.note ?? "",
@@ -77,6 +79,7 @@ function toFeature(s: MappableSighting): GeoJSON.Feature<GeoJSON.Point> {
 
 export function popupHtml(p: Record<string, string>): string {
   const tags = p.tags ? p.tags.split("|") : [];
+  const status = processingLabel(p.processing_state);
   // Said plainly rather than implied by a softer pin. Someone reading this map
   // is deciding whether they can go and find this dog, and the honest answer
   // for another person's sighting is "not from here".
@@ -86,7 +89,8 @@ export function popupHtml(p: Record<string, string>): string {
       : "";
   return `
     <div class="map-popup">
-      ${p.thumb ? `<img src="${esc(p.thumb)}" alt="dog sighting" />` : ""}
+      ${p.thumb ? `<img src="${esc(p.thumb)}" alt="dog sighting" />` : `<div class="media-placeholder">${esc(status ?? "Preview unavailable")}</div>`}
+      ${p.thumb && status ? `<div class="processing-status">${esc(status)}</div>` : ""}
       <div class="time">${esc(p.time)}</div>
       ${approx}
       ${p.observer ? `<div class="popup-by">logged by ${esc(p.observer)}</div>` : ""}
@@ -121,7 +125,9 @@ function pinEl(p: Record<string, string>): HTMLElement {
     img.alt = "dog sighting";
     el.appendChild(img);
   } else {
-    el.textContent = "🐾";
+    el.textContent = p.processing_state === "failed" ? "!" : p.processing_state === "no_animal" ? "—" : "…";
+    el.setAttribute("aria-label", processingLabel(p.processing_state) ?? "Preview unavailable");
+    el.title = processingLabel(p.processing_state) ?? "Preview unavailable";
     el.classList.add("photo-pin-fallback");
   }
   return el;
@@ -207,6 +213,7 @@ export default function DogMap({
       });
 
       const markers: Record<string, maplibregl.Marker> = {};
+      const signatures: Record<string, string> = {};
       let onScreen: Record<string, maplibregl.Marker> = {};
 
       const updateMarkers = () => {
@@ -223,8 +230,16 @@ export default function DogMap({
           const key = props.cluster ? `c${props.cluster_id}` : `s${props.id}`;
           if (next[key]) continue;
 
-          let marker = markers[key];
+          const signature = JSON.stringify([coords, props]);
+          let marker: maplibregl.Marker | undefined = markers[key];
+          if (marker && signatures[key] !== signature) {
+            marker.remove();
+            delete markers[key];
+            delete onScreen[key];
+            marker = undefined;
+          }
           if (!marker) {
+            signatures[key] = signature;
             if (props.cluster) {
               const el = clusterEl(props.point_count ?? 0);
               const clusterId = props.cluster_id as number;
@@ -249,7 +264,11 @@ export default function DogMap({
           if (!onScreen[key]) marker.addTo(map);
         }
         for (const key of Object.keys(onScreen)) {
-          if (!next[key]) onScreen[key].remove();
+          if (!next[key]) {
+            onScreen[key].remove();
+            delete markers[key];
+            delete signatures[key];
+          }
         }
         onScreen = next;
       };

@@ -1,4 +1,6 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { processingLabel, UPLOAD_COMPLETE_EVENT } from "../processing";
+import type { PostSightingResponse } from "../api";
 import {
   readPhotoMetadata,
   UnauthorizedError,
@@ -109,10 +111,24 @@ export default function Capture() {
   const [geoFailed, setGeoFailed] = useState(false);
   const [picking, setPicking] = useState(false);
 
+  const toastTimer = useRef<ReturnType<typeof setTimeout>>();
   function showToast(msg: string) {
+    clearTimeout(toastTimer.current);
     setToast(msg);
-    setTimeout(() => setToast(null), 2600);
+    toastTimer.current = setTimeout(() => setToast(null), 6000);
   }
+
+  useEffect(() => {
+    function uploaded(event: Event) {
+      const result = (event as CustomEvent<PostSightingResponse>).detail;
+      showToast(processingLabel(result.processing_state) ?? "Uploaded · saved to your Journal");
+    }
+    window.addEventListener(UPLOAD_COMPLETE_EVENT, uploaded);
+    return () => {
+      clearTimeout(toastTimer.current);
+      window.removeEventListener(UPLOAD_COMPLETE_EVENT, uploaded);
+    };
+  }, []);
 
   /** Start looking as soon as there is evidence in hand.
    *
@@ -357,7 +373,7 @@ export default function Capture() {
 
     try {
       await enqueue(input);
-      showToast("Sighting logged 🐾");
+      showToast("Saved on this device · waiting to upload");
       reset();
       flush().catch(() => {});
     } catch {

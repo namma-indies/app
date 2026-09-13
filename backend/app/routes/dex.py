@@ -27,6 +27,7 @@ async def get_dex(
             s.geo_accuracy_m,
             s.attrs,
             s.review_status,
+            s.processing_state,
             p.id AS photo_id,
             p.s3_key
         FROM sightings s
@@ -58,6 +59,7 @@ async def get_dex(
                 # -- but you should be told when one has been taken off the
                 # shared map, rather than wondering why nobody can see it.
                 "review_status": row["review_status"],
+                "processing_state": row["processing_state"],
                 "photos": [],
             }
             order.append(sid)

@@ -3,8 +3,6 @@ import {
   getDex,
   getMap,
   getMe,
-  UnauthorizedError,
-  type MapSighting,
   type Sighting,
 } from "../api";
 import DogMap from "../components/DogMap";
@@ -12,6 +10,8 @@ import ReportSheet from "../components/ReportSheet";
 import Dogs from "./Dogs";
 import Moderation from "./Moderation";
 import Review from "./Review";
+import { useProcessingFeed } from "../useProcessingFeed";
+import { processingLabel } from "../processing";
 
 const TAG_LABELS: Record<string, string> = {
   male: "♂ MALE",
@@ -43,31 +43,23 @@ function where(s: Sighting): string {
 }
 
 export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) {
-  const [sightings, setSightings] = useState<Sighting[] | null>(null);
   const [view, setView] = useState<"map" | "journal" | "dogs" | "review" | "flags">("map");
-  const [selected, setSelected] = useState<Sighting | null>(null);
+  const [selectedId, setSelected] = useState<string | null>(null);
   // The map can show the whole cohort's sightings, not just the viewer's.
   // Defaults to MINE: that renders straight from the /dex data already loaded
-  // for the journal, so the common case costs no extra request. /map is fetched
-  // once, lazily, the first time someone flips to EVERYONE.
+  // for the journal, so the common case costs no extra request. /map is loaded
+  // lazily; only pending media or a new upload triggers automatic refreshes.
   const [scope, setScope] = useState<"mine" | "everyone">("mine");
-  const [everyone, setEveryone] = useState<MapSighting[] | null>(null);
-  const [everyoneError, setEveryoneError] = useState(false);
+  const ownFeed = useProcessingFeed(getDex, view === "map" || view === "journal", onUnauthorized);
+  const sharedFeed = useProcessingFeed(getMap, view === "map" && scope === "everyone", onUnauthorized);
+  const { data: sightings } = ownFeed;
+  const { data: everyone, setData: setEveryone, error: everyoneError } = sharedFeed;
+  const selected = sightings?.find((s) => s.id === selectedId) ?? null;
   // Set while someone is reporting a sighting from a map popup.
   const [reporting, setReporting] = useState<string | null>(null);
   // Only decides whether the FLAGS tab renders. The endpoints behind it check
   // the tier themselves -- a client-side flag is a suggestion.
   const [isModerator, setIsModerator] = useState(false);
-
-  useEffect(() => {
-    getDex()
-      .then((res) => setSightings(res.sightings))
-      .catch((err) => {
-        if (err instanceof UnauthorizedError) onUnauthorized();
-        else setSightings([]);
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   useEffect(() => {
     // Failure is not surfaced: not being a moderator and the call failing look
@@ -76,17 +68,6 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
       .then((me) => setIsModerator(me.is_moderator))
       .catch(() => {});
   }, []);
-
-  useEffect(() => {
-    if (scope !== "everyone" || everyone !== null) return;
-    getMap()
-      .then((res) => setEveryone(res.sightings))
-      .catch((err) => {
-        if (err instanceof UnauthorizedError) onUnauthorized();
-        else setEveryoneError(true);
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope, everyone]);
 
   // Catalog numbers are assigned in the order sightings were first logged —
   // a life-list. Displayed newest-first.
@@ -101,7 +82,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
   }, [sightings]);
 
   if (sightings === null) {
-    return <div className="empty-state">FETCHING YOUR GUIDE…</div>;
+    return <div className="empty-state">{ownFeed.error ? <><p role="alert">Couldn't load your Journal.</p><button onClick={ownFeed.refresh}>Try again</button></> : "FETCHING YOUR GUIDE…"}</div>;
   }
 
   // MINE renders the /dex data already in hand. EVERYONE renders the cohort
@@ -132,8 +113,8 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
     // sightings are already loaded, so there is no reason to show nothing.
     mapBody = (
       <>
-        <p className="hint">Couldn't load the shared map — showing yours.</p>
-        <DogMap sightings={sightings} />
+        <p className="hint" role="alert">{everyone ? "Couldn't refresh the shared map — showing the last update." : "Couldn't load the shared map — showing yours."} <button onClick={sharedFeed.refresh}>Try again</button></p>
+        <DogMap sightings={everyone ?? sightings} onReport={everyone ? setReporting : undefined} />
       </>
     );
     showingMap = true;
@@ -169,6 +150,11 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
           </button>
         )}
       </div>
+
+      {ownFeed.error && <p className="hint" role="alert">Couldn't refresh your Journal — showing the last update. <button onClick={ownFeed.refresh}>Try again</button></p>}
+      {(view === "journal" || view === "map") && (ownFeed.paused || (scope === "everyone" && sharedFeed.paused)) && (
+        <p className="hint">Still processing. Automatic updates paused. <button onClick={() => { ownFeed.refresh(); sharedFeed.refresh(); }}>Check again</button></p>
+      )}
 
       {view === "flags" ? (
         <Moderation onUnauthorized={onUnauthorized} />
@@ -206,13 +192,14 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
             YOUR GUIDE · {sightings.length} SIGHTING{sightings.length === 1 ? "" : "S"}
           </div>
           {shown.map((s) => (
-            <div key={s.id} className="spec" onClick={() => setSelected(s)}>
+            <div key={s.id} className="spec" onClick={() => setSelected(s.id)}>
               <div className="frame">
-                {s.photos[0] && <img src={s.photos[0].thumb_url} alt="dog sighting" />}
+                {s.photos[0] ? <img src={s.photos[0].thumb_url} alt="dog sighting" /> : <div className="media-placeholder">No preview yet</div>}
                 <span className="no">No. {String(numberOf.get(s.id) ?? 0).padStart(3, "0")}</span>
               </div>
               <div className="meta">
                 <div className="name anon">— UNIDENTIFIED —</div>
+                {processingLabel(s.processing_state) && <div className="processing-status">{processingLabel(s.processing_state)}</div>}
                 {s.review_status && s.review_status !== "valid" && (
                   // Yours stays in your dex whatever its status. Being told is
                   // the point: otherwise it is simply missing from the shared
@@ -261,7 +248,8 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
       {selected && (
         <div className="viewer-overlay" onClick={() => setSelected(null)}>
           <div onClick={(e) => e.stopPropagation()}>
-            {selected.photos[0] && <img src={selected.photos[0].url} alt="dog sighting" />}
+            {selected.photos.length > 0 ? selected.photos.map((photo, index) => <img key={photo.url} src={photo.url} alt={`dog sighting ${index + 1}`} />) : <div className="media-placeholder">{processingLabel(selected.processing_state) ?? "Preview unavailable"}</div>}
+            {selected.photos.length > 0 && processingLabel(selected.processing_state) && <p className="viewer-caption">{processingLabel(selected.processing_state)}</p>}
             <p className="viewer-caption">
               No. {String(numberOf.get(selected.id) ?? 0).padStart(3, "0")} ·{" "}
               {when(selected.captured_at)}
