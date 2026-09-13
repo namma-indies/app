@@ -39,6 +39,11 @@ from PIL import Image
 from app.detect import load_upright
 
 _MODEL_PATH = Path(__file__).resolve().parent / "ml" / "yolo26x.onnx"
+# Written to `detections.model`, the way `embed.MODEL_NAME` is written to
+# `embeddings.model`. Issue #67 exists because nobody recorded which detector
+# produced a score; this is that record. Change it when the weights change,
+# never to rename a file.
+DETECTOR_NAME = "yolo26x"
 _INPUT = 640
 
 COCO_CAT = 15
