@@ -64,7 +64,19 @@ async def _scored(client, *, dog, cat, key="k"):
     return await _sighting(client, animal_confidence=max(dog, cat), photos=[(dog, cat, key)])
 
 
-async def test_the_queue_is_least_animal_like_first(app_client):
+@pytest.fixture
+def no_ceiling(monkeypatch):
+    """Lift `animal_review_max` above 1.0 for tests that are about something
+    else. The ceiling is real behaviour and has its own tests below; a test of
+    ordering, or of which photo represents a sighting, should not also be a
+    test of where the ceiling sits, or moving the ceiling breaks tests that
+    have nothing to do with it."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "animal_review_max", 1.01)
+
+
+async def test_the_queue_is_least_animal_like_first(app_client, no_ceiling):
     await _moderator(app_client)
     mid = await _scored(app_client, dog=0.40, cat=0.00, key="b")
     low = await _scored(app_client, dog=0.02, cat=0.01, key="a")
@@ -76,7 +88,7 @@ async def test_the_queue_is_least_animal_like_first(app_client):
     assert ids == [str(low), str(mid), str(high)]
 
 
-async def test_it_reports_dog_and_cat_separately(app_client):
+async def test_it_reports_dog_and_cat_separately(app_client, no_ceiling):
     """Akash's ask was to confirm the photos being taken out have no *dog* in
     them. A bare 0.82 cannot answer that -- it might have been a cat."""
     await _moderator(app_client)
@@ -147,7 +159,7 @@ async def test_a_non_moderator_gets_404(app_client):
     assert (await app_client.get("/moderation/animals")).status_code == 404
 
 
-async def test_the_representative_photo_is_the_highest_scoring_one(app_client):
+async def test_the_representative_photo_is_the_highest_scoring_one(app_client, no_ceiling):
     """A sighting can carry many photos -- a video clip yields up to twelve
     frames. The queue must show exactly one row for it, not one per photo
     (a plain join instead of the lateral's `LIMIT 1` would multiply the
@@ -225,3 +237,56 @@ async def test_a_detection_under_a_superseded_model_does_not_match(app_client):
     assert item["dog"] is None
     assert item["cat"] is None
     assert item["thumb_url"] is None
+
+
+async def test_a_confident_sighting_is_not_in_the_review_queue(app_client, monkeypatch):
+    """The ceiling. Without it the queue becomes every scored sighting the
+    moment the rescore finishes -- the confident dogs sitting behind the
+    sofas -- and a surface that calls ordinary content flagged is a surface a
+    moderator learns to stop reading."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "animal_review_max", 0.60)
+    await _moderator(app_client)
+    doubtful = await _scored(app_client, dog=0.04, cat=0.01, key="a")
+    await _scored(app_client, dog=0.95, cat=0.00, key="b")
+
+    ids = [i["sighting_id"] for i in
+           (await app_client.get("/moderation/animals")).json()["items"]]
+    assert ids == [str(doubtful)]
+
+
+async def test_the_ceiling_hides_nothing_from_anyone_else(app_client, monkeypatch):
+    """The separation that matters. `animal_review_max` decides what a
+    moderator is ASKED TO LOOK AT; `animal_confidence_min` decides what the
+    world SEES. A sighting above the review ceiling is absent from the queue
+    and still on the map -- if these two ever collapse into each other, this
+    is the test that says so."""
+    from app.aggregates import countable_sighting
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "animal_review_max", 0.60)
+    await _moderator(app_client)
+    confident = await _scored(app_client, dog=0.95, cat=0.00)
+
+    assert (await app_client.get("/moderation/animals")).json()["items"] == []
+    async with (await _pool(app_client)).acquire() as c:
+        still_counted = await c.fetchval(
+            f"SELECT count(*) FROM sightings s "
+            f"WHERE s.id = $1 AND {countable_sighting()}", confident)
+    assert still_counted == 1
+
+
+async def test_raising_the_ceiling_surfaces_more(app_client, monkeypatch):
+    """It is a request-time filter over stored scores, so it can be moved at
+    any point without a rescore and without disturbing a ruling already made."""
+    from app.config import settings
+
+    await _moderator(app_client)
+    await _scored(app_client, dog=0.72, cat=0.00)
+
+    monkeypatch.setattr(settings, "animal_review_max", 0.60)
+    assert (await app_client.get("/moderation/animals")).json()["items"] == []
+
+    monkeypatch.setattr(settings, "animal_review_max", 0.80)
+    assert len((await app_client.get("/moderation/animals")).json()["items"]) == 1

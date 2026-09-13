@@ -158,6 +158,23 @@ class Settings(BaseSettings):
     # "no animal" is the threshold.
     animal_confidence_min: float = 0.0
 
+    # The review queue's ceiling: `/moderation/animals` shows only sightings
+    # scoring BELOW this. Nothing else reads it.
+    #
+    # A SECOND number about the same column, which is the exact confusion #67
+    # was about -- so be clear which is which. `animal_confidence_min` decides
+    # what the world sees and is still 0.0. This one decides only what a
+    # moderator is asked to look at, changes nothing for anyone else, and is
+    # safe to move at any time: the queue filters on it at request time, so
+    # raising it surfaces more and lowering it surfaces less, with no effect
+    # on a ruling already made.
+    #
+    # 0.60 because the queue exists to find where the detector starts being
+    # wrong, and that is not up here -- on the measured corpus 0.60+ is the
+    # confident bulk. Raise it if the boundary turns out to sit higher than
+    # expected.
+    animal_review_max: float = 0.60
+
     # --- aggregates --------------------------------------------------------
     # Which boundary scheme a public count is labelled with when the caller
     # does not say. A data question, not a code one: falling back from wards

@@ -25,6 +25,7 @@ ACTIONS = {
     "deploy": "remote.sh",
     "deploy-staging": "remote-staging.sh",
     "backfill": "remote-backfill.sh",
+    "rescore": "remote-rescore.sh",
     "find-duplicates": "remote-find-duplicates.sh",
     "seed-models": "remote-seed-models.sh",
     "backup-db": "remote-backup-db.sh",
@@ -42,7 +43,7 @@ def box(tmp_path):
             "#!/usr/bin/env bash\n"
             f'echo "RAN {script}"\n'
             'echo "BRANCH=${BRANCH:-} DRY_RUN=${DRY_RUN:-} EXTRA_ARGS=${EXTRA_ARGS:-}"\n'
-            'echo "DETAIL=${DETAIL:-} UPLOAD=${UPLOAD:-}"\n'
+            'echo "DETAIL=${DETAIL:-} UPLOAD=${UPLOAD:-} MODE=${MODE:-}"\n'
             'cat > /tmp/should-never-exist-stdin 2>/dev/null || true\n'
         )
     return tmp_path
@@ -68,6 +69,10 @@ def run(box, command, stdin=""):
         ("backfill dry-run", "remote-backfill.sh"),
         ("backfill run", "remote-backfill.sh"),
         ("backfill run 0.5", "remote-backfill.sh"),
+        ("rescore dry-run", "remote-rescore.sh"),
+        ("rescore run", "remote-rescore.sh"),
+        ("rescore run 0.5", "remote-rescore.sh"),
+        ("rescore histogram", "remote-rescore.sh"),
         ("find-duplicates", "remote-find-duplicates.sh"),
         ("find-duplicates detail", "remote-find-duplicates.sh"),
         ("seed-models upload", "remote-seed-models.sh"),
@@ -113,6 +118,12 @@ def test_every_allowed_action_is_covered_by_a_case(box):
         "backfill maybe",
         "backfill run abc",                  # sleep must be a number
         "backfill run 1 2",                  # arity
+        "rescore",                           # mode is required
+        "rescore maybe",
+        "rescore run abc",                   # sleep must be a number
+        "rescore dry-run 5",                 # sleep is meaningless without a run
+        "rescore histogram 5",
+        "rescore run 1 2",                   # arity
         "find-duplicates loud",
         "seed-models yes",
         "backup-db now",
@@ -154,3 +165,15 @@ def test_arguments_are_passed_as_environment_not_interpolated(box):
     assert "EXTRA_ARGS=--sleep 2" in r.stdout
     r = run(box, "deploy-staging feat/some_branch-1.2")
     assert "BRANCH=feat/some_branch-1.2" in r.stdout
+
+
+def test_rescore_modes_reach_the_script_with_the_right_arguments(box):
+    """The mode is what decides whether this writes to production data at all,
+    and it travels as an environment variable rather than as a flag the caller
+    composed -- so the wrapper, not the client, picks what runs."""
+    assert "MODE=dry-run" in run(box, "rescore dry-run").stdout
+    assert "MODE=histogram" in run(box, "rescore histogram").stdout
+
+    r = run(box, "rescore run 1.5")
+    assert "MODE=run" in r.stdout
+    assert "EXTRA_ARGS=--sleep 1.5" in r.stdout

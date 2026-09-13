@@ -151,8 +151,9 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
           {toggle}
           <div className="empty-state">
             <span className="big">🐾</span>
-            NOTHING FLAGGED —<br />
-            RUN THE RESCORE FIRST
+            NOTHING BELOW THE DOUBT LINE —<br />
+            EITHER THE RESCORE HASN'T RUN, OR<br />
+            THE DETECTOR IS SURE ABOUT EVERYTHING
           </div>
         </>
       );
@@ -163,7 +164,7 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
         {toggle}
         <div className="review">
           <div className="journal-head">
-            {flaggedItems.length} FLAGGED SIGHTING{flaggedItems.length === 1 ? "" : "S"}
+            {flaggedItems.length} TO CHECK · LEAST ANIMAL-LIKE FIRST
           </div>
           {flaggedItems.map((item) => (
             <div key={item.sighting_id} className="match-card">
