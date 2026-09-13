@@ -221,6 +221,50 @@ def test_pvc_uses_existing_image_without_build(pvc_config):
     assert pod["securityContext"]["runAsUser"] == 10001
 
 
+@pytest.mark.parametrize("shared_claim", [True, False], ids=["shared-pvc", "distinct-pvcs"])
+def test_pvc_mounts_reuse_claim_without_weakening_security(pvc_config, shared_claim):
+    baseline = recipe.render(pvc_config)["items"]
+    if shared_claim:
+        pvc_config["runtime_pvc"] = pvc_config["model_pvc"]
+    cm, deployment, bootstrap = recipe.render(pvc_config)["items"]
+    pod = deployment["spec"]["template"]["spec"]
+    container = pod["containers"][0]
+    baseline_pod = baseline[1]["spec"]["template"]["spec"]
+    volumes = {v["name"]: v for v in pod["volumes"]}
+    assert len(volumes) == len(pod["volumes"]) == (5 if shared_claim else 6)
+    claims = [v["persistentVolumeClaim"] for v in volumes.values() if "persistentVolumeClaim" in v]
+    assert len(claims) == (1 if shared_claim else 2)
+    assert len({claim["claimName"] for claim in claims}) == len(claims)
+    assert all(claim["readOnly"] is True for claim in claims)
+    assert all(m["name"] in volumes for m in container["volumeMounts"])
+    mounts = {m["mountPath"]: m for m in container["volumeMounts"]}
+    assert mounts["/models"] == {"name": "models", "mountPath": "/models", "readOnly": True}
+    runtime_name = "models" if shared_claim else "runtime"
+    for key in ("release_dir", "venv_dir"):
+        path = pvc_config[key]
+        assert mounts[path] == {
+            "name": runtime_name, "mountPath": path, "subPath": path[len("/data/"):], "readOnly": True,
+        }
+        assert volumes[runtime_name]["persistentVolumeClaim"]["claimName"] == pvc_config["runtime_pvc"]
+    if shared_claim:
+        assert "runtime" not in volumes
+        assert all(m["name"] != "runtime" for m in container["volumeMounts"])
+    assert pod["securityContext"] == baseline_pod["securityContext"]
+    assert pod["automountServiceAccountToken"] is False
+    assert pod["terminationGracePeriodSeconds"] == baseline_pod["terminationGracePeriodSeconds"]
+    assert {k: v for k, v in container.items() if k != "volumeMounts"} == {
+        k: v for k, v in baseline_pod["containers"][0].items() if k != "volumeMounts"
+    }
+    assert [v for v in pod["volumes"] if "persistentVolumeClaim" not in v] == [
+        v for v in baseline_pod["volumes"] if "persistentVolumeClaim" not in v
+    ]
+    assert [m for m in container["volumeMounts"] if m["name"] not in ("models", "runtime")] == [
+        m for m in baseline_pod["containers"][0]["volumeMounts"] if m["name"] not in ("models", "runtime")
+    ]
+    assert cm == baseline[0] and bootstrap == baseline[2]
+    assert deployment["spec"]["selector"] == baseline[1]["spec"]["selector"]
+
+
 @pytest.mark.parametrize("key", sorted(recipe.PVC_REQUIRED))
 def test_pvc_required_fields(pvc_config, key):
     del pvc_config[key]

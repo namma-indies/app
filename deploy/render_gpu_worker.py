@@ -273,14 +273,20 @@ def render(config):
         container = pod["containers"][0]
         container["command"] = ["python3", "-I", "-S", "/bootstrap/gpu_release.py", "launch"]
         container["workingDir"] = "/scratch"
+        # Older kubelets collapse aliases of one PVC, then wait for the missing
+        # alias forever (kubernetes/kubernetes#127004). Reuse its declaration.
+        runtime_volume = "models" if c["runtime_pvc"] == c["model_pvc"] else "runtime"
+        if runtime_volume == "runtime":
+            pod["volumes"].append({
+                "name": "runtime", "persistentVolumeClaim": {"claimName": c["runtime_pvc"], "readOnly": True},
+            })
         container["volumeMounts"].extend([
-            {"name": "runtime", "mountPath": c[key], "subPath": c[key][len("/data/"):], "readOnly": True}
+            {"name": runtime_volume, "mountPath": c[key], "subPath": c[key][len("/data/"):], "readOnly": True}
             for key in ("release_dir", "venv_dir")
         ] + [{"name": "bootstrap", "mountPath": "/bootstrap", "readOnly": True}])
-        pod["volumes"].extend([
-            {"name": "runtime", "persistentVolumeClaim": {"claimName": c["runtime_pvc"], "readOnly": True}},
-            {"name": "bootstrap", "configMap": {"name": extra_items[0]["metadata"]["name"], "defaultMode": 292}},
-        ])
+        pod["volumes"].append({
+            "name": "bootstrap", "configMap": {"name": extra_items[0]["metadata"]["name"], "defaultMode": 292},
+        })
     return {"apiVersion": "v1", "kind": "List", "items": [
         {"apiVersion": "v1", "kind": "ConfigMap", "metadata": metadata, "data": data},
         {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": metadata,
