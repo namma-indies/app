@@ -3,12 +3,27 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends
 
+from app.aggregates import animal_present
 from app.auth.deps import require_observer
 from app.deps import get_conn, get_storage
 from app.photos import thumb_key
 from app.storage.s3 import S3Storage
 
 router = APIRouter()
+
+
+def _off_map_reason(row) -> str | None:
+    if row["review_status"] == "pending":
+        return "reported"
+    if row["review_status"] == "rejected":
+        return "hidden"
+    if not row["animal_ok"]:
+        return "no_animal"
+    return None
+
+
+def _on_map(row) -> bool:
+    return _off_map_reason(row) is None
 
 
 @router.get("/dex")
@@ -18,7 +33,7 @@ async def get_dex(
     storage: S3Storage = Depends(get_storage),
 ):
     rows = await conn.fetch(
-        """
+        f"""
         SELECT
             s.id AS sighting_id,
             s.captured_at,
@@ -27,6 +42,7 @@ async def get_dex(
             s.geo_accuracy_m,
             s.attrs,
             s.review_status,
+            {animal_present()} AS animal_ok,
             p.id AS photo_id,
             p.s3_key
         FROM sightings s
@@ -54,10 +70,14 @@ async def get_dex(
                 "lng": row["lng"],
                 "geo_accuracy_m": row["geo_accuracy_m"],
                 "attrs": attrs,
-                # Your own sightings stay in your own dex whatever their status
-                # -- but you should be told when one has been taken off the
-                # shared map, rather than wondering why nobody can see it.
+                # Yours stays in your own dex whatever its status -- but you
+                # should be told when one has been taken off the shared map,
+                # rather than wondering why nobody can see it. Two independent
+                # reasons that can both be true; a person acting is the more
+                # useful one to hear, so it wins.
                 "review_status": row["review_status"],
+                "on_map": _on_map(row),
+                "off_map_reason": _off_map_reason(row),
                 "photos": [],
             }
             order.append(sid)

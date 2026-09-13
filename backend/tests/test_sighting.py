@@ -120,12 +120,13 @@ async def test_post_sighting_saves_when_no_dog_detected(authed_client):
     pool = client._transport.app.state.pool
     async with pool.acquire() as c:
         row = await c.fetchrow(
-            "SELECT dog_confidence, review_status FROM sightings WHERE id=$1", sid
+            "SELECT dog_confidence, animal_confidence, review_status FROM sightings WHERE id=$1",
+            sid,
         )
         n_photos = await c.fetchval(
             "SELECT count(*) FROM photos WHERE sighting_id=$1", sid
         )
-    from app.detect import DOG_CONF_THRESHOLD
+    from app.config import Settings
 
     # The point of this test -- a capture is never lost to the detector -- holds
     # whether or not the detector exists, and is worth MORE without it: a
@@ -134,16 +135,23 @@ async def test_post_sighting_saves_when_no_dog_detected(authed_client):
     assert row["review_status"] == "valid"
     assert n_photos == 1
     if _HAS_DETECTOR:
-        # Scored, saved, and visible -- the low score is recorded, not acted on.
-        assert row["dog_confidence"] is not None
-        assert row["dog_confidence"] < DOG_CONF_THRESHOLD
+        # A blank frame scores low and is saved anyway -- that is the contract
+        # 0002 established, and the number is now on `animal_confidence`.
+        assert row["animal_confidence"] is not None
+        assert row["animal_confidence"] < 0.25
+    # This suite assumes the filter ships inert -- assert the declared default,
+    # not whatever this environment resolves the setting to, so raising the
+    # threshold in phase 2 doesn't break this test. See the spec's phase 2.
+    assert Settings.model_fields["animal_confidence_min"].default == 0.0
 
 
 @pytest.mark.skipif(not _HAS_DETECTOR, reason="YOLO26x weights absent")
 @pytest.mark.asyncio
 async def test_post_sighting_records_dog_confidence(authed_client):
     """The label is persisted so we can tune the threshold from real captures
-    instead of guessing at synthetic ones."""
+    instead of guessing at synthetic ones. It lives on `animal_confidence` now
+    -- the max of dog and cat over the sighting's photos -- not on the
+    `dog_confidence` column, which nothing writes any more."""
     client, _ = authed_client
     r = await client.post(
         "/sighting",
@@ -154,7 +162,7 @@ async def test_post_sighting_records_dog_confidence(authed_client):
     pool = client._transport.app.state.pool
     async with pool.acquire() as c:
         conf = await c.fetchval(
-            "SELECT dog_confidence FROM sightings WHERE id=$1", r.json()["sighting_id"]
+            "SELECT animal_confidence FROM sightings WHERE id=$1", r.json()["sighting_id"]
         )
     assert conf is not None and 0.0 <= conf <= 1.0
 
@@ -177,11 +185,11 @@ async def test_post_sighting_accepts_legacy_override_field(authed_client):
 
 
 @pytest.mark.asyncio
-async def test_post_sighting_dog_confidence_null_until_background_task_runs(
+async def test_post_sighting_animal_confidence_null_until_background_task_runs(
     authed_client, monkeypatch
 ):
     """The insert itself must not depend on the detector: even if scoring is
-    slow or fails, the row exists with dog_confidence NULL until the
+    slow or fails, the row exists with animal_confidence NULL until the
     background task updates it."""
     import app.analyse as analyse_mod
 
@@ -205,10 +213,10 @@ async def test_post_sighting_dog_confidence_null_until_background_task_runs(
     pool = client._transport.app.state.pool
     async with pool.acquire() as c:
         row = await c.fetchrow(
-            "SELECT dog_confidence, review_status FROM sightings WHERE id=$1", sid
+            "SELECT animal_confidence, review_status FROM sightings WHERE id=$1", sid
         )
     # Detector failure fails open: sighting still saved, just unscored.
-    assert row["dog_confidence"] is None
+    assert row["animal_confidence"] is None
     assert row["review_status"] == "valid"
 
 

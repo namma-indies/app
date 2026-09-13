@@ -11,9 +11,9 @@ from starlette.responses import JSONResponse
 
 from app.auth.deps import require_observer
 from app.deps import get_storage
-from app.detect import DOG_CONF_THRESHOLD
 from app.ids import uuid7
 from app.photos import process_photo, ProcessedPhoto, thumb_key
+from app.scoring import recompute_animal_confidence
 from app.storage.s3 import S3Storage
 from app.video import extract_diverse_frames
 
@@ -45,7 +45,7 @@ async def _analyse_and_save(
     ------------------------
     Neither step gates the save, and their failures stay distinguishable:
 
-    * detection fails -> `dog_confidence` stays NULL, meaning "never scored",
+    * detection fails -> `animal_confidence` stays NULL, meaning "never scored",
       which is not the same as 0.0 ("scored, saw nothing").
     * no animal found -> no embedding row at all, deliberately. A whole-frame
       embedding of mostly-street would pollute candidate search with a vector
@@ -59,9 +59,9 @@ async def _analyse_and_save(
 
     from app.analyse import analyse, embed_analysis
     from app.embed import EMBED_DIM, MODEL_NAME
+    from app.scoring import save_detection
 
     collected: list = []
-    best_conf: float | None = None
 
     for photo_id, raw in zip(photo_ids, raws):
         try:
@@ -76,8 +76,17 @@ async def _analyse_and_save(
             )
             continue
 
-        conf = found.dog_confidence
-        best_conf = conf if best_conf is None else max(best_conf, conf)
+        try:
+            async with pool.acquire() as conn:
+                await save_detection(
+                    conn, photo_id, found.dog_confidence, found.cat_confidence
+                )
+        except Exception:
+            # A lost score costs a label. It must not cost the embedding that
+            # the rest of this loop is about to compute.
+            logger.warning(
+                "failed to store detection for photo=%s", photo_id, exc_info=True
+            )
 
         if not found.has_animal:
             logger.info("no animal detected in photo=%s; not embedding", photo_id)
@@ -120,7 +129,7 @@ async def _analyse_and_save(
                 "failed to store embedding for photo=%s", photo_id, exc_info=True
             )
 
-    await _save_dog_confidence(pool, sighting_id, best_conf)
+    await _save_animal_confidence(pool, sighting_id)
     await _save_mean_vector(pool, sighting_id, collected)
 
     # Decide the match once, now that the vectors exist. This used to run inside
@@ -200,32 +209,20 @@ async def _save_mean_vector(pool: asyncpg.Pool, sighting_id: UUID, vecs: list) -
         )
 
 
-async def _save_dog_confidence(
-    pool: asyncpg.Pool, sighting_id: UUID, dog_conf: float | None
-) -> None:
-    """Store the highest dog confidence seen across the sighting's photos.
+async def _save_animal_confidence(pool: asyncpg.Pool, sighting_id: UUID) -> None:
+    """Derive the sighting's number from the rows just written.
 
-    Scoring is a label, never a gate, so a failure here leaves dog_confidence
-    NULL -- which means "never scored" and is deliberately distinct from 0.0,
-    "scored and saw nothing". It must never affect whether the sighting exists.
+    Scoring is a label, never a gate (migration 0002): a failure here leaves
+    `animal_confidence` NULL, which means "never scored" and is deliberately
+    distinct from 0.0, "scored and saw nothing". Every surface reads NULL as
+    visible. It must never affect whether the sighting exists.
     """
-    if dog_conf is None:
-        return
-    if dog_conf < DOG_CONF_THRESHOLD:
-        logger.info(
-            "low dog confidence, saved anyway: conf=%.3f threshold=%.2f sighting=%s",
-            dog_conf,
-            DOG_CONF_THRESHOLD,
-            sighting_id,
-        )
     try:
         async with pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE sightings SET dog_confidence=$1 WHERE id=$2", dog_conf, sighting_id
-            )
+            await recompute_animal_confidence(conn, sighting_id)
     except Exception:
         logger.warning(
-            "failed to save dog_confidence for sighting=%s", sighting_id, exc_info=True
+            "failed to save animal_confidence for sighting=%s", sighting_id, exc_info=True
         )
 
 
@@ -454,11 +451,11 @@ async def create_sighting(
                         INSERT INTO sightings
                             (id, observer_id, captured_at, reported_at, geog, geo_source,
                              geo_accuracy_m, individual_id, match_status, review_status,
-                             phash, attrs, dog_confidence, client_token)
+                             phash, attrs, client_token)
                         VALUES
                             ($1, $2, $3, $4,
                              ST_SetSRID(ST_MakePoint($5, $6), 4326)::geography,
-                             $7, $8, NULL, 'unmatched', 'valid', $9, $10::jsonb, $11, $12)
+                             $7, $8, NULL, 'unmatched', 'valid', $9, $10::jsonb, $11)
                         """,
                         sighting_id,
                         observer_id,
@@ -470,7 +467,6 @@ async def create_sighting(
                         geo_accuracy_m,
                         first_phash,
                         json.dumps(attrs),
-                        None,
                         client_token,
                     )
                 else:
@@ -479,10 +475,10 @@ async def create_sighting(
                         INSERT INTO sightings
                             (id, observer_id, captured_at, reported_at, geog, geo_source,
                              geo_accuracy_m, individual_id, match_status, review_status,
-                             phash, attrs, dog_confidence, client_token)
+                             phash, attrs, client_token)
                         VALUES
                             ($1, $2, $3, $4, NULL, $5, $6, NULL, 'unmatched', 'valid',
-                             $7, $8::jsonb, $9, $10)
+                             $7, $8::jsonb, $9)
                         """,
                         sighting_id,
                         observer_id,
@@ -492,7 +488,6 @@ async def create_sighting(
                         geo_accuracy_m,
                         first_phash,
                         json.dumps(attrs),
-                        None,
                         client_token,
                     )
 

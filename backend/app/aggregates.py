@@ -14,15 +14,42 @@ from uuid import UUID
 
 from app.config import settings
 
-# The one definition. `/map` and `/dogs` import it rather than restating it.
-#
-# `= 'valid'`, not `<> 'rejected'`. Since #46 gave `review_status` a writer,
-# `pending` means someone reported this and no human has looked yet -- the
-# whole point of that state is that it waits somewhere other than a public
-# surface. That argument is stronger here than for the map: a count is the
-# thing quoted to a partner, and a reported sighting has no business in one
-# until it has been looked at.
-COUNTABLE_SIGHTING = "s.review_status = 'valid'"
+
+def animal_present() -> str:
+    """Is there an animal in this sighting, as far as anyone can tell?
+
+    `animal_override` is a moderator's ruling and wins outright; NULL means
+    nobody has looked and the detector's number decides. A NULL score is
+    "never scored" and reads as present -- fail open, so a detector failure
+    costs a label and never someone's photograph.
+
+    A function rather than a constant because the threshold has to be varied
+    per test, and an f-string evaluated at import cannot be.
+    """
+    lo = settings.animal_confidence_min
+    # `animal_confidence` is `real`; an unsuffixed decimal literal is `numeric`,
+    # and `real >= numeric` promotes the `real` to `numeric` rather than
+    # rounding the literal to `real` -- so e.g. 0.29::real >= 0.29 is FALSE.
+    # The `::real` cast makes both sides compare as `real` and the boundary
+    # inclusive, as `>=` promises. (`{lo:g}` also caps at 6 significant
+    # digits, but no plausible threshold needs a 7th -- left as `:g` for
+    # readable SQL.)
+    return (
+        "COALESCE(s.animal_override, "
+        f"s.animal_confidence IS NULL OR s.animal_confidence >= {lo:g}::real)"
+    )
+
+
+def countable_sighting() -> str:
+    """The one definition. `/map` and `/dogs` call it rather than restating it.
+
+    `= 'valid'`, not `<> 'rejected'`. Since #46 gave `review_status` a writer,
+    `pending` means someone reported this and no human has looked yet -- the
+    whole point of that state is that it waits somewhere other than a public
+    surface.
+    """
+    return f"s.review_status = 'valid' AND {animal_present()}"
+
 
 # Bangalore. `captured_at` is timestamptz and date_trunc would otherwise bucket
 # in whatever the session timezone is; 23:30 UTC on the 31st is the 1st here.
@@ -81,7 +108,7 @@ async def city_totals(conn) -> dict:
             COUNT(*) AS sightings,
             COUNT(DISTINCT s.individual_id) AS confirmed_individuals
         FROM sightings s
-        WHERE {COUNTABLE_SIGHTING}
+        WHERE {countable_sighting()}
         """
     )
     return dict(row)
@@ -96,7 +123,7 @@ async def city_months(conn) -> list[dict]:
             COUNT(*) AS sightings,
             COUNT(DISTINCT s.individual_id) AS confirmed_individuals
         FROM sightings s
-        WHERE {COUNTABLE_SIGHTING}
+        WHERE {countable_sighting()}
         GROUP BY 1
         ORDER BY 1
         """
@@ -120,7 +147,7 @@ async def area_rows(conn, kind: str) -> list[dict]:
             to_char(MAX({_MONTH}), 'YYYY-MM') AS last_active_month
         FROM sightings s
         {_AREA_LATERAL}
-        WHERE {COUNTABLE_SIGHTING} AND a.id IS NOT NULL
+        WHERE {countable_sighting()} AND a.id IS NOT NULL
         GROUP BY a.id, a.name, a.ext_code
         ORDER BY a.name
         """,
@@ -141,7 +168,7 @@ async def unattributed_sightings(conn, kind: str) -> int:
         SELECT COUNT(*)
         FROM sightings s
         {_AREA_LATERAL}
-        WHERE {COUNTABLE_SIGHTING} AND a.id IS NULL
+        WHERE {countable_sighting()} AND a.id IS NULL
         """,
         kind,
     )
@@ -163,7 +190,7 @@ async def area_months(conn, area_id: UUID, kind: str) -> list[dict]:
             COUNT(DISTINCT s.observer_id) AS observers
         FROM sightings s
         {_AREA_LATERAL}
-        WHERE {COUNTABLE_SIGHTING} AND a.id = $2
+        WHERE {countable_sighting()} AND a.id = $2
         GROUP BY 1
         ORDER BY 1
         """,
@@ -193,10 +220,10 @@ async def observer_rows(conn) -> list[dict]:
             o.created_via,
             o.trust_tier,
             o.created_at,
-            COUNT(s.id) FILTER (WHERE {COUNTABLE_SIGHTING}) AS sightings,
-            COUNT(DISTINCT s.individual_id) FILTER (WHERE {COUNTABLE_SIGHTING})
+            COUNT(s.id) FILTER (WHERE {countable_sighting()}) AS sightings,
+            COUNT(DISTINCT s.individual_id) FILTER (WHERE {countable_sighting()})
                 AS confirmed_individuals,
-            MAX(s.captured_at) FILTER (WHERE {COUNTABLE_SIGHTING}) AS last_sighting_at
+            MAX(s.captured_at) FILTER (WHERE {countable_sighting()}) AS last_sighting_at
         FROM observers o
         LEFT JOIN sightings s ON s.observer_id = o.id
         WHERE o.deleted_at IS NULL

@@ -26,9 +26,11 @@ export interface SightingAttrs {
 }
 
 /** Where a sighting stands with the shared surfaces. `pending` means someone
- * reported it and no moderator has looked yet; `rejected` means one has. Only
- * `valid` sightings appear on /map, /dogs and /proposals -- but all of them
- * stay in your own dex, because it is your photograph. */
+ * reported it and no moderator has looked yet; `rejected` means one has.
+ * `valid` is necessary but not sufficient to appear on /map, /dogs and
+ * /proposals -- a sighting also has to clear the animal predicate
+ * (animal_override, or animal_confidence >= animal_confidence_min). All of
+ * them stay in your own dex, because it is your photograph. */
 export type ReviewStatus = "valid" | "pending" | "rejected";
 
 export interface Sighting {
@@ -42,6 +44,11 @@ export interface Sighting {
   geo_accuracy_m: number | null;
   attrs: SightingAttrs;
   photos: Photo[];
+  /** Present on /dex only. Whether this appears on the shared map at all. */
+  on_map?: boolean;
+  /** Why it does not: a person reported it, a moderator hid it, or the
+   * detector found no animal in the frame. */
+  off_map_reason?: "reported" | "hidden" | "no_animal" | null;
 }
 
 export interface DexResponse {
@@ -422,6 +429,46 @@ export async function reviewSighting(
   const form = new FormData();
   form.append("verdict", verdict);
   const res = await fetch(`${API_BASE}/sighting/${sightingId}/review`, {
+    method: "POST",
+    credentials: "include",
+    body: form,
+  });
+  await handle<unknown>(res);
+}
+
+export interface FlaggedItem {
+  sighting_id: string;
+  captured_at: string;
+  /** Who logged it. User-supplied at /join, so untrusted text. */
+  observer: string | null;
+  /** max(dog, cat) over the sighting's photos, under the current detector. */
+  animal_confidence: number | null;
+  /** Reported separately because "is there a dog in this" and "is there an
+   * animal in this" are different questions, and the max cannot tell them
+   * apart. */
+  dog: number | null;
+  cat: number | null;
+  thumb_url: string | null;
+}
+
+/** Moderators only. Least animal-like first — which is also how the hiding
+ * threshold gets chosen: walk it from the top until the photos start being
+ * real dogs. */
+export async function getFlaggedQueue(): Promise<{ items: FlaggedItem[] }> {
+  const res = await fetch(`${API_BASE}/moderation/animals`, { credentials: "include" });
+  return handle<{ items: FlaggedItem[] }>(res);
+}
+
+/** A person's verdict, which outranks the model's and survives a later change
+ * to the threshold or the detector. Writes nothing to `review_status`: being
+ * reported and having no animal in it are different questions. */
+export async function ruleOnAnimal(
+  sightingId: string,
+  verdict: "animal" | "no_animal",
+): Promise<void> {
+  const form = new FormData();
+  form.append("verdict", verdict);
+  const res = await fetch(`${API_BASE}/sighting/${sightingId}/animal`, {
     method: "POST",
     credentials: "include",
     body: form,

@@ -44,7 +44,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends
 
-from app.aggregates import COUNTABLE_SIGHTING
+from app.aggregates import countable_sighting
 from app.auth.deps import require_observer
 from app.config import settings
 from app.deps import get_conn, get_storage
@@ -175,7 +175,7 @@ async def get_dogs(
         -- hang off the survivor, so listing it would show the same dog twice.
         WHERE i.merged_into IS NULL
           AND i.status IS DISTINCT FROM 'merged'
-          AND {COUNTABLE_SIGHTING}
+          AND {countable_sighting()}
         GROUP BY i.id, i.name
         ORDER BY max(s.captured_at) DESC
         LIMIT $2

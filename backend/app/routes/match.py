@@ -11,6 +11,7 @@ from uuid import UUID
 import numpy as np
 from fastapi import APIRouter, Depends, Form, HTTPException
 
+from app.aggregates import animal_present
 from app.auth.deps import require_observer
 from app.config import settings
 from app.deps import get_conn, get_storage
@@ -164,7 +165,7 @@ async def list_proposals(
     path in issue #29.
     """
     rows = await conn.fetch(
-        """
+        f"""
         SELECT mp.id, mp.score,
                a.id AS a_id, a.captured_at AS a_when, pa.s3_key AS a_key,
                b.id AS b_id, b.captured_at AS b_when, pb.s3_key AS b_key
@@ -191,6 +192,13 @@ async def list_proposals(
           -- identity, which no moderator decision afterwards can unpick.
           AND a.review_status = 'valid'
           AND b.review_status = 'valid'
+          -- animal_present() is written against alias `s`; this query has no
+          -- `s`, only `a` and `b`, so re-alias with a plain string replace
+          -- rather than a second function. Safe only because every
+          -- alias-qualified column in the predicate is on `s` -- see the
+          -- guard test in test_animal_filter.py.
+          AND {animal_present().replace("s.", "a.")}
+          AND {animal_present().replace("s.", "b.")}
         ORDER BY mp.score DESC
         LIMIT $2
         """,

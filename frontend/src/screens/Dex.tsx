@@ -213,14 +213,16 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
               </div>
               <div className="meta">
                 <div className="name anon">— UNIDENTIFIED —</div>
-                {s.review_status && s.review_status !== "valid" && (
+                {s.off_map_reason && (
                   // Yours stays in your dex whatever its status. Being told is
                   // the point: otherwise it is simply missing from the shared
                   // map with no explanation anywhere.
                   <div className="under-review">
-                    {s.review_status === "pending"
+                    {s.off_map_reason === "reported"
                       ? "REPORTED · UNDER REVIEW"
-                      : "HIDDEN BY A MODERATOR"}
+                      : s.off_map_reason === "hidden"
+                        ? "HIDDEN BY A MODERATOR"
+                        : "NOT ON THE SHARED MAP · NO ANIMAL DETECTED"}
                   </div>
                 )}
                 <div className="line">
