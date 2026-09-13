@@ -58,3 +58,50 @@ async def test_dex_returns_only_own_sightings(authed_client):
     # full-resolution original. Asserting "starts with http" passed throughout.
     assert "_thumb.webp" in photo["thumb_url"]
     assert photo["thumb_url"].split("?")[0] != photo["url"].split("?")[0]
+
+
+@pytest.mark.asyncio
+async def test_dex_says_why_a_sighting_is_off_the_shared_map(authed_client, monkeypatch):
+    """Yours stays in your dex whatever happens to it -- but a sighting that
+    quietly stops appearing on the shared map with no explanation anywhere is
+    the bad experience #67 set out to avoid."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "animal_confidence_min", 0.30)
+    client, oid = authed_client
+    sid = await _post(client)  # reuse this file's existing helper
+
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as c:
+        await c.execute(
+            "UPDATE sightings SET animal_confidence = 0.02 WHERE id = $1", sid)
+
+    item = (await client.get("/dex")).json()["sightings"][0]
+    assert item["id"] == str(sid)
+    assert item["on_map"] is False
+    assert item["off_map_reason"] == "no_animal"
+
+
+@pytest.mark.asyncio
+async def test_a_report_outranks_the_detector_in_the_explanation(authed_client):
+    """Both can be true at once. A person acting is the more useful thing to
+    be told, so it is the reason reported."""
+    client, oid = authed_client
+    sid = await _post(client)
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as c:
+        await c.execute(
+            "UPDATE sightings SET review_status='pending', animal_confidence=0.02 "
+            "WHERE id=$1", sid)
+
+    item = (await client.get("/dex")).json()["sightings"][0]
+    assert item["off_map_reason"] == "reported"
+
+
+@pytest.mark.asyncio
+async def test_a_normal_sighting_is_on_the_map(authed_client):
+    client, oid = authed_client
+    await _post(client)
+    item = (await client.get("/dex")).json()["sightings"][0]
+    assert item["on_map"] is True
+    assert item["off_map_reason"] is None

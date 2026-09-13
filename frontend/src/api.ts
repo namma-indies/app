@@ -42,6 +42,11 @@ export interface Sighting {
   geo_accuracy_m: number | null;
   attrs: SightingAttrs;
   photos: Photo[];
+  /** Present on /dex only. Whether this appears on the shared map at all. */
+  on_map?: boolean;
+  /** Why it does not: a person reported it, a moderator hid it, or the
+   * detector found no animal in the frame. */
+  off_map_reason?: "reported" | "hidden" | "no_animal" | null;
 }
 
 export interface DexResponse {
