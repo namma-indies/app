@@ -97,8 +97,17 @@ migration 0001, and `/map` filtered on it from the day it was written. Nothing
 ever set anything but `valid`, so that filter was unreachable code and no path
 in the product could take a photo off the shared map.
 
-`POST /sighting/{id}/report` is that writer. One report hides the sighting
-(`valid` → `pending`) and a moderator rules on it. Every shared surface now
+`POST /sighting/{id}/report` is that writer. **Two distinct reporters** hide a
+sighting (`valid` → `pending`) and a moderator rules on it. Hiding on the first
+report was the original behaviour and was changed deliberately: it let any
+single account take any photo off the shared map on its own say-so, and at
+pilot scale the people logging sightings are the people whose work disappears.
+A second, independent voice costs a delay and buys the property that no one
+person can blank the map alone. It is two *reporters*, not two taps — the
+primary key on `(sighting_id, reporter_id)` collapses one account reporting
+twice into one report. A report is recorded and reaches the queue either way;
+only the hiding waits. The count lives in `HIDE_AT_REPORTS`; set it to 1 to
+restore the old behaviour. Every shared surface now
 requires `review_status = 'valid'` — `/map`, `/dogs` and `/proposals` — while
 `/dex` still shows you your own whatever its status, and says which status.
 Candidate search excludes only `rejected`, so a moderator's takedown cannot
