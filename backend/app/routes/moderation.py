@@ -50,7 +50,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, HTTPException
 
-from app.auth.deps import require_observer
+from app.auth.deps import require_moderator, require_observer
 from app.deps import get_conn, get_storage
 from app.photos import thumb_key
 from app.storage.s3 import S3Storage
@@ -70,23 +70,6 @@ MAX_QUEUE = 200
 
 Reason = Literal["endangers_dog", "not_a_dog", "wrong_place", "offensive", "other"]
 
-
-async def require_moderator(
-    observer_id: UUID = Depends(require_observer), conn=Depends(get_conn)
-) -> UUID:
-    """A 404, not a 403, for a non-moderator.
-
-    403 confirms the endpoint exists and that this account simply lacks the
-    tier, which turns the moderation surface into something to probe for. There
-    is nothing here worth revealing to someone who cannot use it.
-    """
-    tier = await conn.fetchval(
-        "SELECT trust_tier FROM observers WHERE id = $1 AND deleted_at IS NULL",
-        observer_id,
-    )
-    if tier != "moderator":
-        raise HTTPException(status_code=404, detail="not found")
-    return observer_id
 
 
 @router.get("/me")

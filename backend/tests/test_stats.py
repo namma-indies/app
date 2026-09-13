@@ -166,3 +166,49 @@ async def test_kind_defaults_to_config(authed_client):
     client, _ = authed_client
     body = (await client.get("/stats/areas")).json()
     assert body["kind"] == settings.area_default_kind
+
+
+async def _make_moderator(client):
+    pool = await _pool(client)
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE observers SET trust_tier = 'moderator'")
+
+
+async def test_the_observer_list_is_invisible_without_the_tier(authed_client):
+    """404, not 403. A 403 confirms the surface exists and that this account
+    merely lacks the tier, which turns it into something worth probing."""
+    client, _ = authed_client
+    assert (await client.get("/stats/observers")).status_code == 404
+
+
+async def test_a_moderator_sees_every_observer_and_what_they_logged(authed_client):
+    client, _ = authed_client
+    await _seed(
+        client,
+        sightings=[
+            ("priya", 12.5, 77.5, "2026-08-01"), ("priya", 12.5, 77.5, "2026-08-02"),
+            ("ravi", 12.5, 77.5, "2026-08-03"),
+        ],
+    )
+    await _make_moderator(client)
+
+    body = (await client.get("/stats/observers")).json()
+    by_name = {o["display_name"]: o for o in body["observers"]}
+    assert by_name["priya"]["sightings"] == 2
+    assert by_name["ravi"]["sightings"] == 1
+    # The signed-in tester logged nothing, and still appears: someone who
+    # joined and never captured is exactly what an operator wants to see.
+    assert by_name["Tester"]["sightings"] == 0
+
+
+async def test_rejected_sightings_do_not_inflate_an_observers_count(authed_client):
+    client, _ = authed_client
+    await _seed(client, sightings=[("priya", 12.5, 77.5, "2026-08-01")])
+    pool = await _pool(client)
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE sightings SET review_status = 'rejected'")
+    await _make_moderator(client)
+
+    body = (await client.get("/stats/observers")).json()
+    by_name = {o["display_name"]: o for o in body["observers"]}
+    assert by_name["priya"]["sightings"] == 0

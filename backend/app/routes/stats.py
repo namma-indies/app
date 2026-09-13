@@ -19,7 +19,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app import aggregates
-from app.auth.deps import require_observer
+from app.auth.deps import require_moderator, require_observer
 from app.config import settings
 from app.deps import get_conn
 from app.ratelimit import check, stats_limit
@@ -96,3 +96,28 @@ async def get_stats_area(
         if m["sightings"] >= min_sightings
     ]
     return {"area": {**area, "id": str(area["id"])}, "months": months}
+
+
+@router.get("/stats/observers")
+async def get_stats_observers(
+    _moderator: UUID = Depends(require_moderator),
+    conn=Depends(get_conn),
+):
+    """Who is contributing, and how much. Moderator-gated, unlike /stats.
+
+    The rest of this router returns counts over areas and is built to be
+    readable by a stranger one day. This is not that: these are named people
+    with contact addresses, and it exists so an operator can see their own
+    pilot cohort. The public, opt-in version of "how many dogs has this person
+    seen" is a separate and deliberately unbuilt question (#58, #5).
+
+    404 rather than 403 for a non-moderator -- see require_moderator.
+    """
+    check(f"obs:{_moderator}", stats_limit())
+    rows = await aggregates.observer_rows(conn)
+    return {
+        "observers": [
+            {**r, "id": str(r["id"])}
+            for r in rows
+        ]
+    }
