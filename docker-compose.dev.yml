@@ -17,7 +17,11 @@ services:
       - indiedex_db_data:/var/lib/postgresql/data
 
   minio:
-    image: minio/minio
+    # quay.io, not Docker Hub. The `minio/minio` Docker Hub repository stopped
+    # resolving in September 2026 ("pull access denied ... repository does not
+    # exist"), which broke CI and every fresh dev setup at once. quay.io is
+    # MinIO's own registry and is where the images actually live.
+    image: quay.io/minio/minio
     environment:
       MINIO_ROOT_USER: minio
       MINIO_ROOT_PASSWORD: minio123
