@@ -135,4 +135,26 @@ describe("Moderation — the flagged queue", () => {
     await userEvent.click(screen.getByRole("button", { name: "REPORTED" }));
     expect(await screen.findByText(/logged by Priya/)).toBeInTheDocument();
   });
+
+  it("a retry after a failed flagged fetch clears the error once it succeeds", async () => {
+    // Toggling away and back is the only retry path there is (the flagged
+    // fetch only refires when `queue` changes and no items have landed yet).
+    // A regression here means the error banner survives a successful retry
+    // forever, with no way out but a reload -- the same dead end as before,
+    // just reached one step later.
+    vi.mocked(getModerationQueue).mockResolvedValue({ items: [] });
+    vi.mocked(getFlaggedQueue)
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValueOnce({ items: [flagged({ observer: "Kavya" })] });
+    render(<Moderation onUnauthorized={() => {}} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /NOT ANIMALS/ }));
+    expect(await screen.findByText(/COULDN'T LOAD THE QUEUE/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "REPORTED" }));
+    await userEvent.click(screen.getByRole("button", { name: /NOT ANIMALS/ }));
+
+    expect(await screen.findByText(/logged by Kavya/)).toBeInTheDocument();
+    expect(screen.queryByText(/COULDN'T LOAD THE QUEUE/)).toBeNull();
+  });
 });

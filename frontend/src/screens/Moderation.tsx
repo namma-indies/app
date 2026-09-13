@@ -68,6 +68,14 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
 
   useEffect(() => {
     if (queue !== "flagged" || flaggedItems !== null) return;
+    // Clear a stale failure before trying again. The retry itself is driven
+    // by toggling away and back (flaggedItems stays null after a failed
+    // fetch, so the guard above lets the effect refire on the next `queue`
+    // change) -- but without this, a successful retry's data would render
+    // underneath a `failedFlagged` check that never got told to stop firing.
+    // Safe against a render loop: this effect's only dependency is `queue`,
+    // so setting state here does not re-trigger it.
+    setFailedFlagged(false);
     getFlaggedQueue()
       .then((r) => setFlaggedItems(r.items))
       .catch((err) => {
