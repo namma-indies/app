@@ -52,8 +52,12 @@ export default function ReportSheet({
     <div className="viewer-overlay" onClick={onClose}>
       <div className="report-sheet" onClick={(e) => e.stopPropagation()}>
         <h2>Report this sighting</h2>
+        {/* Accurate, not reassuring: hiding now takes a second person agreeing,
+            so promising instant removal would be a promise we break. Wording is
+            Akash's call -- the constraint is only that it stay true. */}
         <p className="hint">
-          It comes off the map straight away, and one of the team looks at it.
+          One of the team looks at it. If someone else reports it too, it comes
+          off the shared map while that happens.
         </p>
 
         <div className="report-reasons" role="radiogroup" aria-label="Reason">
