@@ -233,7 +233,7 @@ def downgrade() -> None:
 - [ ] **Step 4: Run the tests and make sure they pass**
 
 Run: `cd backend && uv run pytest tests/test_detections_schema.py tests/test_migration.py -v`
-Expected: PASS. (`test_migration.py` exercises upgrade/downgrade; if it walks down to base, the `downgrade` above must be reversible — it is.)
+Expected: PASS. Note: **no test in this repo exercises `downgrade`** — for any migration — so the `downgrade` here is verified by inspection only, as every other migration's is. Do not add a downgrade test for this one alone; that would be the only such test in the tree.
 
 - [ ] **Step 5: Commit**
 
