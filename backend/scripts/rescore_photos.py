@@ -12,9 +12,21 @@ max over each sighting's photos of `max(dog, cat)` under that detector.
 
 Safe to run repeatedly and safe to interrupt: pending is "no row for THIS
 model", each photo is written in its own statement, and `save_detection`
-upserts. Killing it mid-run loses at most the photo in flight. That resume key
-is why the table is keyed on the model at all -- `backfill_embeddings.py`
-documents what the `IS NULL` alternative costs.
+upserts. `recompute_animal_confidence` runs right after `save_detection` for
+every photo, not batched at the end -- a photo that is no longer pending has
+therefore already had its sighting's number folded in, so killing the process
+mid-run leaves `animal_confidence` consistent with whatever got scored, and
+loses at most the photo in flight. Deferring the recompute to a set collected
+across the whole run would mean a kill after the last `save_detection` but
+before that batch loses every one of those updates silently, and a re-run
+would not repair it: those photos are no longer pending, so they never
+re-enter the batch. That resume key is why the table is keyed on the model at
+all -- `backfill_embeddings.py` documents what the `IS NULL` alternative
+costs.
+
+One connection, not a pool, unlike the sibling: the run is deliberately
+serial (see below), so there is never more than one query in flight and a
+pool would only add ceremony.
 
 Usage, from /app/backend inside the container:
 
@@ -140,11 +152,24 @@ async def main() -> int:
                             exc_info=True)
                 continue
 
+            # Outside any swallowing try: a failure here should abort loudly,
+            # not be mistaken for "photo not scored".
             await save_detection(conn, row["id"], found.dog_confidence,
                                  found.cat_confidence)
-            touched.add(row["sighting_id"])
             log.info("  [%d/%d] %s dog=%.3f cat=%.3f", i, len(pending), row["id"],
                      found.dog_confidence, found.cat_confidence)
+
+            # Recomputed immediately, not batched at the end: a kill after
+            # this point leaves animal_confidence consistent with every
+            # detections row written so far. See the module docstring.
+            try:
+                await recompute_animal_confidence(conn, row["sighting_id"])
+                touched.add(row["sighting_id"])
+            except Exception:
+                # A failing recompute costs this sighting's number, not the
+                # run -- the remaining photos still get scored.
+                log.warning("    recompute failed for sighting=%s", row["sighting_id"],
+                            exc_info=True)
 
             if args.embed and found.has_animal:
                 await _maybe_embed(conn, row["id"], found)
@@ -152,12 +177,9 @@ async def main() -> int:
             if args.sleep:
                 time.sleep(args.sleep)
 
-        for sid in touched:
-            await recompute_animal_confidence(conn, sid)
-
         log.info("scored %d, failed %d, %d sighting(s) updated",
                  len(pending) - failed, failed, len(touched))
-        return 0
+        return 0 if failed == 0 else 1
     finally:
         await conn.close()
 
