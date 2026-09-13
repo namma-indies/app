@@ -68,6 +68,13 @@ validation on staging before promotion. NGC base includes torch, but the isolate
 worker venv does not install or import it. Licences remain a separate launch gate.
 The application allowlist is NOT a network firewall; arrange DNS/TLS egress policy
 at the cluster boundary if required (standard NetworkPolicy cannot pin FQDNs).
+The clip child removes credentials from its environment and restricts FFmpeg
+protocols/demuxers, but shares the UID, token mount and pod network with the worker.
+RuntimeDefault seccomp is not a no-network policy; it does not prevent reading
+that mount or opening sockets after a native decoder exploit. Nonroot/drop-ALL
+cannot assume unshare/chroot is available under the provider's seccomp policy.
+True decoder isolation needs a separately authorized credential-free filesystem
+and network boundary; no unverified namespace or privileged fallback is enabled.
 """
 from __future__ import annotations
 

@@ -3,7 +3,11 @@
 import hashlib
 import io
 import json
+import os
+from pathlib import Path
 import subprocess
+import sys
+import time
 from dataclasses import asdict
 from types import SimpleNamespace
 
@@ -258,8 +262,8 @@ def test_clip_child_reuses_existing_extraction_with_decode_and_thread_caps(monke
             self.closed = True
 
     def get_reader(*args, **kwargs):
-        assert kwargs["input_params"] == ["-threads", "1"]
-        assert kwargs["output_params"] == ["-threads", "1"]
+        assert kwargs["input_params"] == list(clip.FFMPEG_INPUT_PARAMS)
+        assert kwargs["output_params"] == ["-threads", "1", "-frames:v", "3"]
         reader = Reader()
         readers.append(reader)
         return reader
@@ -346,3 +350,149 @@ def test_clip_timeout_kills_process_group_and_bounds_environment(monkeypatch):
     assert waits == [.1, None]
     assert killed == [(123456, clip.signal.SIGKILL)]
     assert not adapter._lock.locked()
+
+
+def test_decoder_environment_excludes_credentials_and_loader_hooks(monkeypatch, tmp_path):
+    secrets = {
+        "MEDIA_GPU_TOKEN": "synthetic-secret", "MEDIA_GPU_TOKEN_FILE": "/run/worker-token/token",
+        "AWS_SECRET_ACCESS_KEY": "synthetic-aws", "DATABASE_URL": "synthetic-db",
+        "HTTP_PROXY": "http://synthetic-proxy", "LD_PRELOAD": "/synthetic/preload.so",
+        "PYTHONHOME": "/synthetic/python", "IMAGEIO_FFMPEG_EXE": "/synthetic/ffmpeg",
+        "UNRECOGNIZED_CREDENTIAL": "synthetic-other",
+    }
+    for name, value in secrets.items():
+        monkeypatch.setenv(name, value)
+    env = clip._child_environment(str(tmp_path))
+    assert not set(secrets) & env.keys()
+    result = subprocess.run([sys.executable, "-c", "import os,json; print(json.dumps(dict(os.environ)))"],
+                            env=env, cwd=tmp_path, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout)
+    assert not set(secrets) & observed.keys()
+    assert observed["HOME"] == str(tmp_path)
+    assert observed["CUDA_VISIBLE_DEVICES"] == ""
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_child_limits_only_lower_existing_hard_caps(monkeypatch, platform):
+    import resource
+
+    applied = {}
+    monkeypatch.setattr(clip.sys, "platform", platform)
+    monkeypatch.setattr(resource, "getrlimit", lambda kind: (resource.RLIM_INFINITY, 512))
+    monkeypatch.setattr(resource, "setrlimit", lambda kind, bounds: applied.setdefault(kind, bounds))
+    clip._limit_child(asdict(gpu.Limits()))
+    assert applied[resource.RLIMIT_CORE] == (0, 0)
+    assert applied[resource.RLIMIT_CPU] == (90, 90)
+    assert applied[resource.RLIMIT_NOFILE] == (64, 64)
+    assert applied[resource.RLIMIT_FSIZE] == (512, 512)
+    assert (resource.RLIMIT_AS in applied) == (platform == "linux")
+
+
+@pytest.fixture(params=[("mp4", "libx264"), ("mov", "libx264"), ("webm", "libvpx-vp9")])
+def real_clip(request, tmp_path):
+    import imageio_ffmpeg
+
+    extension, codec = request.param
+    path = tmp_path / f"real.{extension}"
+    result = subprocess.run([
+        imageio_ffmpeg.get_ffmpeg_exe(), "-v", "error", "-f", "lavfi", "-i",
+        "testsrc=size=64x48:rate=4:duration=3", "-c:v", codec, "-pix_fmt", "yuv420p",
+        "-threads", "1", str(path),
+    ], capture_output=True, timeout=15)
+    assert result.returncode == 0, result.stderr.decode()
+    return path.read_bytes()
+
+
+def test_real_clip_preserves_existing_frame_selection(real_clip):
+    reference = video.extract_diverse_frames(real_clip)
+    result = clip.extract_bounded(real_clip, gpu.Limits())
+    assert len(result) == len(reference) == 3
+    assert result == reference
+
+
+def test_real_clip_pixel_and_decode_limits(real_clip, monkeypatch, tmp_path):
+    monkeypatch.setattr(clip.tempfile, "tempdir", str(tmp_path))
+    with pytest.raises(ValueError, match="decoding failed"):
+        clip.extract_bounded(real_clip, gpu.Limits(max_pixels=64))
+    result = clip.extract_bounded(real_clip, gpu.Limits(max_decoded_frames=2))
+    assert len(result) == 1
+    assert not list(tmp_path.glob("dgx-frames-*"))
+
+
+@pytest.mark.parametrize("protocol", ["http", "https", "tcp", "udp", "concat", "subfile", "crypto", "data", "pipe"])
+def test_ffmpeg_denies_non_file_input_protocols(protocol):
+    import imageio_ffmpeg
+
+    # FFmpeg rejects these before opening anything; never requires a remote host
+    # or listening test server. Explicit demuxer keeps the assertion independent
+    # of probing a nonexistent resource.
+    result = subprocess.run([
+        imageio_ffmpeg.get_ffmpeg_exe(), "-v", "error", *clip.FFMPEG_INPUT_PARAMS,
+        "-f", "mov", "-i", f"{protocol}:synthetic-denied", "-f", "null", "-",
+    ], capture_output=True, text=True, timeout=5, env=clip._child_environment("/tmp"))
+    assert result.returncode != 0
+    assert "not on whitelist" in result.stderr or "Protocol not found" in result.stderr
+
+
+@pytest.mark.parametrize("playlist", [
+    b"#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nhttps://example.invalid/secret.ts\n#EXT-X-ENDLIST\n",
+    b"ffconcat version 1.0\nfile '/run/worker-token/token'\n",
+    b"ffconcat version 1.0\nfile 'https://example.invalid/secret.mp4'\n",
+])
+def test_disguised_playlists_are_rejected_and_cleaned(playlist, monkeypatch, tmp_path):
+    monkeypatch.setattr(clip.tempfile, "tempdir", str(tmp_path))
+    with pytest.raises(ValueError, match="decoding failed"):
+        clip.extract_bounded(playlist, gpu.Limits(clip_timeout_seconds=10))
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("demuxer,contents", [
+    ("concat", "ffconcat version 1.0\nfile '/run/worker-token/token'\n"),
+    ("hls", "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nhttps://example.invalid/secret.ts\n"),
+])
+def test_playlist_demuxers_denied_before_references_are_opened(demuxer, contents, tmp_path):
+    import imageio_ffmpeg
+
+    path = tmp_path / "disguised.mp4"
+    path.write_text(contents)
+    result = subprocess.run([
+        imageio_ffmpeg.get_ffmpeg_exe(), "-v", "error", *clip.FFMPEG_INPUT_PARAMS,
+        "-f", demuxer, "-i", str(path), "-f", "null", "-",
+    ], capture_output=True, text=True, timeout=5)
+    assert result.returncode != 0
+    assert "not on whitelist" in result.stderr
+
+
+def test_real_timeout_kills_decoder_group_and_cleans_scratch(monkeypatch, tmp_path):
+    popen = subprocess.Popen
+    spawned = []
+    roots = []
+
+    def slow_decoder(args, **kwargs):
+        roots.append(Path(args[3]))
+        child_code = "import time; time.sleep(60)"
+        code = ("import subprocess,sys,time; "
+                f"subprocess.Popen([sys.executable, '-c', {child_code!r}]); time.sleep(60)")
+        process = popen([sys.executable, "-c", code], **kwargs)
+        spawned.append(process)
+        assert kwargs["close_fds"] and kwargs["stdin"] == subprocess.DEVNULL
+        assert kwargs["cwd"] == args[3]
+        return process
+
+    monkeypatch.setattr(clip.subprocess, "Popen", slow_decoder)
+    start = time.monotonic()
+    with pytest.raises(ValueError, match="time limit"):
+        clip.extract_bounded(b"synthetic", gpu.Limits(clip_timeout_seconds=.5))
+    assert time.monotonic() - start < 5
+    assert spawned[0].returncode == -clip.signal.SIGKILL
+    assert not roots[0].exists()
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(spawned[0].pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(.01)
+    else:
+        pytest.fail("decoder process group survived cleanup")

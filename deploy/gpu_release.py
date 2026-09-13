@@ -17,6 +17,13 @@ validated venv may be reused only with its observed fingerprint and correct
 permissions. This is environment inventory, NOT cryptographic verification of
 venv package contents, nor a reproducible transitive dependency lock. The PVC
 provisioner and its other writers remain trusted; restrict them operationally.
+In particular .pth startup code, pip itself, native libraries and normal venv
+symlink targets execute before/without content verification: modified code can
+preserve (or forge) the same freeze output. Read-only subpath mounts do not stop
+other PVC writers changing those bytes after a check. A package hash manifest
+alone would still leave that race; a verified private runtime snapshot or an
+operator-enforced immutable versioned venv is needed before claiming integrity.
+Do not reject the ordinary bin/python and lib64 symlinks as a substitute.
 
 The renderer mounts this stdlib verifier from a ConfigMap. Provider Python runs
 it with -I -S before any release/venv imports. Source is copied to private scratch
