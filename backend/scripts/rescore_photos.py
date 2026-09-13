@@ -24,6 +24,16 @@ re-enter the batch. That resume key is why the table is keyed on the model at
 all -- `backfill_embeddings.py` documents what the `IS NULL` alternative
 costs.
 
+That resumability claim covers a kill, not a recompute exception. If
+`recompute_animal_confidence` itself raises, `save_detection` has already
+committed, so the photo is still no longer pending and a re-run will not
+revisit it -- that sighting's `animal_confidence` is left stale-or-NULL for
+good, not merely until the next run. Rare (it is one UPDATE over rows this
+same process just wrote) but not impossible, and unlike every other failure
+path here it is not self-healing. It is counted in `failed` so the exit code
+surfaces it; there is no `--repair` flag, and adding one was deliberately
+deferred.
+
 One connection, not a pool, unlike the sibling: the run is deliberately
 serial (see below), so there is never more than one query in flight and a
 pool would only add ceremony.
@@ -166,8 +176,13 @@ async def main() -> int:
                 await recompute_animal_confidence(conn, row["sighting_id"])
                 touched.add(row["sighting_id"])
             except Exception:
-                # A failing recompute costs this sighting's number, not the
-                # run -- the remaining photos still get scored.
+                # save_detection above has already committed, so this photo is
+                # no longer pending -- a re-run will not revisit it, and this
+                # sighting's animal_confidence is now stuck stale-or-NULL.
+                # Counted in `failed` (unlike the docstring's claimed
+                # resumability, this case is NOT auto-repaired by a re-run) so
+                # the exit code -- and the operator -- can't miss it.
+                failed += 1
                 log.warning("    recompute failed for sighting=%s", row["sighting_id"],
                             exc_info=True)
 
