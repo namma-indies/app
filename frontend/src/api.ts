@@ -26,9 +26,11 @@ export interface SightingAttrs {
 }
 
 /** Where a sighting stands with the shared surfaces. `pending` means someone
- * reported it and no moderator has looked yet; `rejected` means one has. Only
- * `valid` sightings appear on /map, /dogs and /proposals -- but all of them
- * stay in your own dex, because it is your photograph. */
+ * reported it and no moderator has looked yet; `rejected` means one has.
+ * `valid` is necessary but not sufficient to appear on /map, /dogs and
+ * /proposals -- a sighting also has to clear the animal predicate
+ * (animal_override, or animal_confidence >= animal_confidence_min). All of
+ * them stay in your own dex, because it is your photograph. */
 export type ReviewStatus = "valid" | "pending" | "rejected";
 
 export interface Sighting {

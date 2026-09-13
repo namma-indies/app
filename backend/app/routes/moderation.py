@@ -312,7 +312,10 @@ async def animal_queue(
         ) pd ON TRUE
         WHERE s.animal_confidence IS NOT NULL
           AND s.animal_override IS NULL
-        ORDER BY s.animal_confidence ASC, s.captured_at DESC
+        -- s.id tiebreaks. Two sightings sharing a score and a captured_at
+        -- would otherwise leave their relative order to the plan, so the
+        -- queue could reshuffle between one fetch and the next.
+        ORDER BY s.animal_confidence ASC, s.captured_at DESC, s.id
         LIMIT $2
         """,
         DETECTOR_NAME,

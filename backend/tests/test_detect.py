@@ -31,9 +31,10 @@ def _as_jpeg(img: Image.Image, orientation: int | None = None) -> bytes:
 
 
 def test_load_upright_applies_exif_orientation():
-    """A portrait phone photo arrives rotated with orientation=6. The detector
-    must see the same upright pixels the rest of the pipeline stores, or a real
-    dog gets scored sideways and the gate rejects it."""
+    """A portrait phone photo arrives rotated with orientation=6. This must
+    hand the detector the same upright pixels the rest of the pipeline
+    stores, or a real dog gets scored sideways and the detector sees
+    something else than what downstream matching does."""
     upright = _patterned_image()
     # How a camera writes it: pixels rotated 90° CCW, tag says "rotate back".
     rotated_bytes = _as_jpeg(upright.rotate(90, expand=True), orientation=6)

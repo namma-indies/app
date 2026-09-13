@@ -45,7 +45,7 @@ async def _analyse_and_save(
     ------------------------
     Neither step gates the save, and their failures stay distinguishable:
 
-    * detection fails -> `dog_confidence` stays NULL, meaning "never scored",
+    * detection fails -> `animal_confidence` stays NULL, meaning "never scored",
       which is not the same as 0.0 ("scored, saw nothing").
     * no animal found -> no embedding row at all, deliberately. A whole-frame
       embedding of mostly-street would pollute candidate search with a vector
@@ -59,7 +59,7 @@ async def _analyse_and_save(
 
     from app.analyse import analyse, embed_analysis
     from app.embed import EMBED_DIM, MODEL_NAME
-    from app.scoring import recompute_animal_confidence, save_detection
+    from app.scoring import save_detection
 
     collected: list = []
 
