@@ -107,8 +107,11 @@ geo and count queries, and `COUNTABLE_SIGHTING` is a SQL fragment pasted into
 several of them, so a per-row join to `detections` would have to be threaded
 through every caller. One column keeps the filter a predicate.
 
-Written in two places, both of which already exist as functions: the capture
-path (`_save_dog_confidence`, renamed) and the rescore script.
+Written by every path that analyses a photo: the capture path
+(`_save_dog_confidence`, renamed), the rescore script, and — once #64 lands —
+the GPU worker's completion handler. Three writers of one derived number is a
+smell, so the recompute lives in one function that all three call, taking a
+`sighting_id` and reading `detections`.
 
 **NULL means visible.** A never-scored sighting is shown, not hidden. This is
 the same fail-open contract `0002` established — a detector failure costs a
@@ -125,20 +128,54 @@ the new ones exist to compare against.
 
 ## Part 3 — the filter
 
-`aggregates.py` already declares itself the owner of what counts as a sighting,
-and `/map` and `/dogs` import that rather than restating it. So the filter is
-one predicate in one place:
+`aggregates.py` declares itself the owner of what counts as a sighting, and
+`/map` and `/dogs` import `COUNTABLE_SIGHTING` rather than restating it. That
+is where the animal rule goes:
 
 ```python
-COUNTABLE_SIGHTING = (
-    "s.review_status = 'valid' "
-    f"AND (s.animal_confidence IS NULL OR s.animal_confidence >= {_MIN})"
-)
+def animal_present() -> str:
+    lo = settings.animal_confidence_min
+    return f"(s.animal_confidence IS NULL OR s.animal_confidence >= {lo:g})"
+
+def countable_sighting() -> str:
+    return f"s.review_status = 'valid' AND {animal_present()}"
 ```
 
-where `_MIN` is `settings.animal_confidence_min`, formatted as a float literal
-at import. `/dex` filters by `observer_id` and does not use this constant, so
-"yours stays in your dex" holds by construction rather than by remembering.
+**Callables, not module constants.** The threshold has to be varied per test —
+four rows of the test plan below set it — and an f-string evaluated at import
+cannot be changed without reimporting the module. Reading the setting per call
+costs nothing at these query rates and keeps the tests honest. The existing
+`COUNTABLE_SIGHTING` constant becomes `countable_sighting()` at its nine call
+sites in `aggregates.py`, `map.py` and `dogs.py`.
+
+`/dex` filters by `observer_id` and calls neither, so "yours stays in your dex"
+holds by construction rather than by remembering.
+
+### The re-ID paths restate their own filter, and need the animal half too
+
+`COUNTABLE_SIGHTING` does **not** cover everything. Two re-ID paths inline
+their own visibility rules, and deliberately so, each with a comment giving the
+reason:
+
+- `matching.py:143` — candidate search uses `s.review_status <> 'rejected'`,
+  not `= 'valid'`, because `pending` is a temporary state and dropping
+  candidates on every report would make re-ID quality depend on who tapped
+  what.
+- `routes/match.py:192` — the review queue requires `= 'valid'` on **both**
+  sides, because a `same` verdict folds content under review into an identity
+  and no later moderator decision can unpick it.
+
+Those differences are correct and stay. But "no animal in this photo" is not a
+temporary state the way `pending` is, and the consequence of ignoring it is
+concrete: the box threshold is `REID_CONF_THRESHOLD = 0.10`, independent of the
+map threshold, so a photo scoring below the map threshold can still produce a
+box, get embedded, and seed an identity. An identity built partly on a photo of
+a sofa is exactly the thing `match.py`'s own comment says cannot be unpicked.
+
+So `animal_present()` is composed into both — each keeping its own
+`review_status` rule. One animal predicate, three call sites, no duplicated
+rule. While the threshold is `0.0` this is a no-op everywhere, which is also
+how it gets to land with low risk.
 
 ### Two things this deliberately does not do
 
@@ -176,8 +213,11 @@ further if it runs during the day. This is not a reason to wait for #48.
 
 **`--embed`.** 20 photos currently have no MiewID embedding. Rescoring and then
 running `backfill_embeddings.py` means two detector passes over the same
-bytes — precisely the waste #49 removed from the capture path. With `--embed`,
-the script reuses the same `Analysis` to fill a missing embedding. The saving
+bytes — precisely the waste #49 removed from the capture path, and note that
+the existing backfill calls `embed.embed_photo`, which re-decodes and re-detects
+internally. With `--embed`, this script uses `analyse()` + `embed_analysis()`
+instead — the pair the capture path already uses — so one pass fills both the
+`detections` row and a missing embedding. The saving
 is small at this corpus size; the reason to do it is that the alternative
 reintroduces a mistake this repo has already paid to fix once.
 
@@ -253,6 +293,7 @@ merge revision at integration time; it is not a conflict in the tree.
 | Sighting number is the max | Two photos, different scores → `animal_confidence` is the higher, over both classes. |
 | Never-scored stays visible | `animal_confidence IS NULL` with a non-zero threshold → still counted by `aggregates`. |
 | Below threshold drops off the shared surfaces | With the threshold set, the sighting leaves `/map` and the `/dogs` counts, and `review_status` is untouched. |
+| …and out of re-ID | Below threshold but with an embedding (score under the map threshold, over `REID_CONF_THRESHOLD`): not returned as a candidate, not in the review queue. |
 | …and stays in `/dex` | Same sighting, owner's `/dex`: present, `on_map: false`, `off_map_reason: "no_animal"`. |
 | A moderator verdict is unaffected | Hiding and unhiding still works on a sighting the detector scored high, and vice versa. |
 | Rescore is resumable | Run twice; the second run scores nothing. `--dry-run` writes nothing. |
