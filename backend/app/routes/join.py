@@ -23,7 +23,7 @@ from app.auth.magiclink import create_observer
 from app.config import settings
 from app.deps import get_conn
 from app.email.sender import get_sender
-from app.ratelimit import check, client_key, email_limit, join_limit
+from app.ratelimit import check, client_key, email_addr_limit, email_ip_limit, join_limit
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -131,9 +131,14 @@ async def join_submit(
     passcode: str = Form(...),
     conn=Depends(get_conn),
 ):
-    check(f"join:ip:{client_key(request)}", join_limit())
     display_name = name.strip()
     if not hmac.compare_digest(passcode, settings.join_passcode):
+        # Counted here rather than at the top of the handler so the budget is
+        # spent by *wrong* guesses only. The threat is someone walking a
+        # keyspace against a shared code; a dozen field testers joining from
+        # one carrier NAT during an onboarding push is the opposite of that,
+        # and a limiter that cannot tell them apart blocks the wrong one.
+        check(f"join:ip:{client_key(request)}", join_limit())
         return _fail(
             request,
             error="Wrong passcode — check with whoever invited you.",
@@ -181,8 +186,8 @@ async def email_submit(request: Request, email: str = Form(...), conn=Depends(ge
     # inbox, and lets one office NAT lock out everyone behind it; address
     # alone does nothing against a script walking a list. Both are fixed
     # windows -- this is dampening, not a lockout.
-    check(f"email:ip:{client_key(request)}", email_limit())
-    check(f"email:addr:{address}", email_limit())
+    check(f"email:ip:{client_key(request)}", email_ip_limit())
+    check(f"email:addr:{address}", email_addr_limit())
     if not is_allowed(address):
         # Told plainly, not silently swallowed: the allowlist is a domain, not
         # a secret, and silent failure just generates "did it send?" pings.

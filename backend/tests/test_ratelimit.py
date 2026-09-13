@@ -95,7 +95,7 @@ def test_disabling_the_limiter_is_a_single_switch(monkeypatch):
 
 async def test_the_email_endpoint_stops_sending_after_the_limit(app_client, monkeypatch):
     """The endpoint this change exists for: it had no throttle at all."""
-    monkeypatch.setattr(settings, "rl_email_times", 2)
+    monkeypatch.setattr(settings, "rl_email_addr_times", 2)
     sent = []
 
     class _Sender:
@@ -116,6 +116,63 @@ async def test_the_email_endpoint_stops_sending_after_the_limit(app_client, monk
     )
     assert resp.status_code == 429
     assert len(sent) == 2
+
+
+async def test_many_people_may_join_from_one_carrier_nat(app_client, monkeypatch):
+    """Field testers recruited over WhatsApp are on mobile data, and Indian
+    carriers put many subscribers behind one public address. Counting correct
+    passcodes would make an onboarding push look like an attack."""
+    monkeypatch.setattr(settings, "rl_join_times", 2)
+    for i in range(6):
+        resp = await app_client.post(
+            "/auth/join",
+            data={"name": f"tester{i}", "passcode": settings.join_passcode},
+            headers={"accept": "application/json"},
+        )
+        assert resp.status_code == 200, f"tester {i} was turned away"
+
+
+async def test_wrong_passcodes_still_run_out(app_client, monkeypatch):
+    """The budget exists; it is just spent by guesses rather than by people."""
+    monkeypatch.setattr(settings, "rl_join_times", 2)
+    for _ in range(2):
+        resp = await app_client.post(
+            "/auth/join",
+            data={"name": "x", "passcode": "wrong"},
+            headers={"accept": "application/json"},
+        )
+        assert resp.status_code == 401
+    resp = await app_client.post(
+        "/auth/join",
+        data={"name": "x", "passcode": "wrong"},
+        headers={"accept": "application/json"},
+    )
+    assert resp.status_code == 429
+
+
+async def test_one_inbox_is_protected_even_from_many_sources(app_client, monkeypatch):
+    """The per-address budget is the anti-mail-bomb control, and it is tighter
+    than the per-IP one on purpose -- an IP is not a person, an address is."""
+    monkeypatch.setattr(settings, "rl_email_addr_times", 2)
+    monkeypatch.setattr(settings, "rl_email_ip_times", 100)
+
+    class _Sender:
+        async def send(self, address, link):
+            pass
+
+    monkeypatch.setattr("app.routes.join.get_sender", lambda: _Sender())
+
+    for _ in range(2):
+        resp = await app_client.post(
+            "/auth/email", data={"email": "akash@dognosis.tech"},
+            headers={"accept": "application/json"},
+        )
+        assert resp.status_code == 200
+    resp = await app_client.post(
+        "/auth/email", data={"email": "akash@dognosis.tech"},
+        headers={"accept": "application/json"},
+    )
+    assert resp.status_code == 429
 
 
 async def test_stats_is_limited_per_observer(authed_client, monkeypatch):

@@ -127,8 +127,18 @@ def stats_limit() -> Limit:
     return Limit(settings.rl_stats_times, settings.rl_stats_window_s)
 
 
-def email_limit() -> Limit:
-    return Limit(settings.rl_email_times, settings.rl_email_window_s)
+def email_addr_limit() -> Limit:
+    """Anti-mail-bomb: tight, because it protects one person's inbox."""
+    return Limit(settings.rl_email_addr_times, settings.rl_email_addr_window_s)
+
+
+def email_ip_limit() -> Limit:
+    """Anti-enumeration and cost: looser, because an IP is not a person.
+
+    Behind carrier-grade NAT one address is many subscribers, so treating it
+    as an identity turns an onboarding push into a lockout.
+    """
+    return Limit(settings.rl_email_ip_times, settings.rl_email_ip_window_s)
 
 
 def join_limit() -> Limit:

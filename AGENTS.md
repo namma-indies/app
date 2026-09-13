@@ -414,7 +414,17 @@ Journal shows, deliberately not changed here.
 
 `app/ratelimit.py` — in-process fixed windows, applied to `/stats`,
 `/auth/email` and `/auth/join`. The email path is why this exists: it had no
-throttle of any kind and sits in front of production SES.
+throttle of any kind and sits in front of production SES. **Capture is not
+limited** — `/sighting` uploads are unaffected.
+
+The two keys on `/auth/email` do different jobs at different tightnesses.
+Per-address (5 / 15 min) is the anti-mail-bomb control and stays tight; per-IP
+(20 / 15 min) is anti-enumeration and cost, and is looser because an IP is not
+a person. Indian carriers put many subscribers behind one address, and field
+testers on mobile data would otherwise lock each other out during an onboarding
+push. `/auth/join` counts only *failed* passcode attempts, so it is a
+brute-force budget rather than a cap on how many people may join from one
+carrier NAT.
 
 Authenticated surfaces key on `observer_id`; unauthenticated ones key on the
 client IP read from `X-Real-IP`, which Caddy sets from the real peer and

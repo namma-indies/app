@@ -158,16 +158,31 @@ class Settings(BaseSettings):
     rl_stats_times: int = 60
     rl_stats_window_s: int = 60
 
-    # Tight, and the reason rate limiting is in this change at all. This path
-    # had no throttle of any kind and sits in front of production SES: an
-    # unthrottled send endpoint is both a cost exposure and a way to mail-bomb
-    # a third party. Keyed on IP *and* on the address, because IP alone lets a
-    # rotating attacker hammer one inbox and lets one office NAT block itself.
-    rl_email_times: int = 5
-    rl_email_window_s: int = 900
+    # The reason rate limiting is in this change at all: this path had no
+    # throttle of any kind and sits in front of production SES, so it was both
+    # a cost exposure and a way to mail-bomb a third party.
+    #
+    # Two keys doing two different jobs, at two different tightnesses.
+    #
+    # Per address is the anti-mail-bomb control and stays tight: nobody's inbox
+    # takes more than this however many machines ask.
+    rl_email_addr_times: int = 5
+    rl_email_addr_window_s: int = 900
+    # Per IP is the anti-enumeration and cost control, and is deliberately
+    # looser, because an IP here is not a person. Indian mobile carriers put
+    # many subscribers behind one public address (CGNAT), and field testers
+    # recruited over WhatsApp are on mobile data by definition -- at 5 per
+    # quarter-hour the sixth tester to ask for a link during an onboarding
+    # push gets a 429 they did nothing to earn. One office's wifi has the same
+    # shape. 20 still caps a single source at 80 mails an hour, and per-address
+    # above means the volume cannot be aimed at anyone.
+    rl_email_ip_times: int = 20
+    rl_email_ip_window_s: int = 900
 
     # A shared passcode with unlimited attempts is a shared passcode with no
-    # passcode.
+    # passcode -- but only *failed* attempts are counted (see routes/join.py),
+    # so this is a brute-force budget rather than a cap on how many people may
+    # join from one carrier NAT in a quarter of an hour.
     rl_join_times: int = 10
     rl_join_window_s: int = 900
 
