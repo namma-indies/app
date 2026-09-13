@@ -40,17 +40,19 @@ a one-line `WHERE`:
 3. A resumable `rescore_photos.py`, shaped like the embeddings backfill.
 4. The filter itself, wired into `aggregates.COUNTABLE_SIGHTING` but **inert**
    until a threshold is configured.
-5. `/dex` telling the owner when one of their sightings is off the shared map,
+5. A **detector-flagged queue in the existing moderation pane**, lowest score
+   first, with a human verdict that outranks the model.
+6. `/dex` telling the owner when one of their sightings is off the shared map,
    and why.
-6. Deleting the dead YOLOv8n detector.
+7. Deleting the dead YOLOv8n detector.
 
 **Out, and why:**
 
 | Not building | Why |
 |---|---|
-| The threshold value | #67's whole argument is that it must be chosen against rescored numbers. Shipping a number derived from the mixed corpus would repeat the mistake the spec is fixing. |
+| The threshold value | #67's whole argument is that it must be chosen against rescored numbers. Shipping a number derived from the mixed corpus would repeat the mistake the spec is fixing. The review queue below is how it gets chosen. |
 | A capture-time reject gate | Migration `0002` exists *because* this was built and reverted. The PWA captures through a file input, so iOS never writes those frames to the camera roll — the server copy a gate discards is the only copy in existence. A wrong call must cost a label, never the photo. |
-| An appeal / "this really is a dog" button | #54. It needs a queue source and a surface; being told is the agreed first step. |
+| A contributor-facing appeal button | #54. A *moderator* can now overturn the detector; the contributor still cannot ask them to. Being told is the agreed first step. |
 | Writing the verdict into `review_status` | See below — that column means "a person ruled". |
 | Deleting anything | #54 and #63 own deletion. Nothing here removes a row or an object. |
 | Moving inference to a GPU | #48 / PR #64. Three minutes of CPU does not need a GPU; see *Where it runs*. |
@@ -135,11 +137,19 @@ is where the animal rule goes:
 ```python
 def animal_present() -> str:
     lo = settings.animal_confidence_min
-    return f"(s.animal_confidence IS NULL OR s.animal_confidence >= {lo:g})"
+    return (
+        "COALESCE(s.animal_override, "
+        f"s.animal_confidence IS NULL OR s.animal_confidence >= {lo:g})"
+    )
 
 def countable_sighting() -> str:
     return f"s.review_status = 'valid' AND {animal_present()}"
 ```
+
+`animal_override` is the human verdict from Part 5 — `NULL` means nobody has
+ruled and the model's number decides. A person's ruling therefore survives
+both a threshold retune and the next detector swap, which is the property that
+makes the review pass below worth doing once rather than every time.
 
 **Callables, not module constants.** The threshold has to be varied per test —
 four rows of the test plan below set it — and an f-string evaluated at import
@@ -174,8 +184,9 @@ a sofa is exactly the thing `match.py`'s own comment says cannot be unpicked.
 
 So `animal_present()` is composed into both — each keeping its own
 `review_status` rule. One animal predicate, three call sites, no duplicated
-rule. While the threshold is `0.0` this is a no-op everywhere, which is also
-how it gets to land with low risk.
+rule. Confirmed by Akash: a photo with no dog in it has no business being
+proposed as the same dog as anything. While the threshold is `0.0` this is a
+no-op everywhere, which is also how it gets to land with low risk.
 
 ### Two things this deliberately does not do
 
@@ -221,7 +232,63 @@ instead — the pair the capture path already uses — so one pass fills both th
 is small at this corpus size; the reason to do it is that the alternative
 reintroduces a mistake this repo has already paid to fix once.
 
-## Part 5 — telling the contributor
+## Part 5 — the detector-flagged queue, and the human verdict that outranks it
+
+The moderation pane from #66 already exists, is gated on
+`observers.trust_tier = 'moderator'`, and already renders exactly this card:
+thumbnail, observer, captured-at, and two buttons. It gains a second queue.
+
+```sql
+ALTER TABLE sightings ADD COLUMN animal_override  boolean;
+ALTER TABLE sightings ADD COLUMN animal_reviewed_at timestamptz;
+ALTER TABLE sightings ADD COLUMN animal_reviewed_by uuid REFERENCES observers(id);
+```
+
+Deliberately symmetric with `reviewed_at` / `reviewed_by` and deliberately
+*not* the same columns, for the reason Part 3 gives: those mean "a person ruled
+on a report". These mean "a person ruled on whether there is an animal in it".
+The same sighting can have both rulings, and they are different questions.
+
+`GET /moderation/animals` — its own endpoint, not a flag on
+`/moderation/queue`, whose SQL is a report aggregation with a `HAVING` clause
+that a second source would make unreadable:
+
+- `animal_confidence IS NOT NULL AND animal_override IS NULL` — scored, and
+  nobody has ruled.
+- **`ORDER BY animal_confidence ASC`** — least animal-like first.
+- Returns the score alongside the thumbnail, so the moderator sees the number
+  they are judging.
+
+`POST /sighting/{id}/animal` takes `animal` or `no_animal` and writes the three
+columns. It does not touch `review_status`, does not delete, and is reversible
+by ruling again.
+
+### The queue is how the threshold gets chosen
+
+This is the part worth noticing. A histogram tells you where the scores
+cluster; it cannot tell you where the detector starts being wrong. Walking the
+queue from 0.00 upward does: you stop being able to say "no animal" at some
+point, and that point is the threshold. So the review pass Akash asked for to
+*check* the cleanup is the same pass that *produces the number* — one piece of
+work, not two.
+
+Which fixes an ordering problem this spec otherwise had. The queue sorts by
+score and filters on `animal_override IS NULL`, so it is fully usable while
+`animal_confidence_min` is still `0.0` and nothing is hidden yet. Review comes
+before the threshold, not after it.
+
+### Two things it sets up that this spec does not build
+
+`sighting_reports.reason` already includes `not_a_dog`. A person reporting
+"there is no dog in this" and the detector flagging the same photo are the same
+question arriving through two doors, and `POST /sighting/{id}/animal` is the
+natural resolution for both. Wiring the report path into it is a small follow-up
+and not in scope here.
+
+And a moderator can now overturn the detector, which is most of the machinery an
+appeal needs — what is missing is the contributor's way to ask (#54).
+
+## Part 6 — telling the contributor
 
 `/dex` gains two fields per sighting:
 
@@ -239,7 +306,7 @@ saying being told is the point. This adds a third case to that block —
 
 No appeal button. #54.
 
-## Part 6 — deleting the old detector
+## Part 7 — deleting the old detector
 
 `app/detect.py` still holds the YOLOv8n scorer, and it is dead: `analyse()` and
 everything downstream use `detect_reid` (YOLO26x). What survives of `detect.py`
@@ -296,11 +363,24 @@ merge revision at integration time; it is not a conflict in the tree.
 | …and out of re-ID | Below threshold but with an embedding (score under the map threshold, over `REID_CONF_THRESHOLD`): not returned as a candidate, not in the review queue. |
 | …and stays in `/dex` | Same sighting, owner's `/dex`: present, `on_map: false`, `off_map_reason: "no_animal"`. |
 | A moderator verdict is unaffected | Hiding and unhiding still works on a sighting the detector scored high, and vice versa. |
+| A human verdict outranks the model | `animal_override = true` on a 0.01-scoring sighting → back on `/map` and matchable. `false` on a 0.95 one → off it. |
+| The two review states are independent | An animal verdict leaves `review_status`/`reviewed_at` untouched, and a moderator report verdict leaves the animal columns untouched. |
+| The flagged queue is usable at threshold 0 | With `animal_confidence_min = 0.0`, `/moderation/animals` still returns scored, unruled sightings, lowest first. |
+| Ruling removes it from the flagged queue | Either verdict; the sighting does not come back on the next fetch. |
 | Rescore is resumable | Run twice; the second run scores nothing. `--dry-run` writes nothing. |
 | Detector failure fails open | `analyse` raising leaves no `detections` row, `animal_confidence` NULL, sighting saved and visible. |
 
-## Phase 2
+## Phase 2 — choosing the number
 
-Run the rescore in production, read the histogram of `detections.dog` and
-`detections.cat` under `yolo26x`, pick `animal_confidence_min`, set it in the
-environment. Then drop `sightings.dog_confidence`.
+1. Run the rescore in production. Nothing changes on any surface: the
+   threshold is still `0.0`.
+2. Publish the histogram of `max(dog, cat)` under `yolo26x` alongside a
+   **recommended threshold**, in the PR description.
+3. Akash walks `/moderation/animals` from the bottom, ruling. Where he stops
+   being able to say "no animal" is the real threshold; the recommendation is
+   there to be checked against, not trusted.
+4. Review assigned to **@aswin-dot-R**, with the histogram and the
+   recommendation as the thing being reviewed.
+5. Set `animal_confidence_min` in the environment. The photos already ruled on
+   keep their verdict regardless of where the line lands.
+6. Drop `sightings.dog_confidence`.
