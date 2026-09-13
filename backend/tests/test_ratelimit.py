@@ -65,6 +65,27 @@ def test_client_ip_uses_the_header_the_proxy_controls(monkeypatch):
     assert client_key(_request({"X-Real-IP": "203.0.113.9"})) == "203.0.113.9"
 
 
+def test_trusting_the_header_still_falls_back_when_there_is_none(monkeypatch):
+    """Why trusting it can be the default. With no proxy in front there is no
+    header to read, so dev and tests get the peer address without configuring
+    anything -- and the deployed topology, where `request.client.host` is
+    Caddy's container IP and identical for every user, gets the real client."""
+    monkeypatch.setattr(settings, "trust_proxy_header", True)
+    assert client_key(_request()) == "10.0.0.1"
+
+
+def test_without_the_header_every_caller_shares_one_key(monkeypatch):
+    """The failure this default prevents. Behind a proxy the peer address is
+    the proxy, so an IP-keyed limiter becomes one global bucket -- the sixth
+    person to request a login link in the window gets a 429 because five
+    strangers already did."""
+    monkeypatch.setattr(settings, "trust_proxy_header", False)
+    proxy_ip = ("172.18.0.4", 5555)
+    a = client_key(_request({"X-Real-IP": "203.0.113.9"}, client=proxy_ip))
+    b = client_key(_request({"X-Real-IP": "198.51.100.7"}, client=proxy_ip))
+    assert a == b == "172.18.0.4"
+
+
 def test_disabling_the_limiter_is_a_single_switch(monkeypatch):
     monkeypatch.setattr(settings, "rate_limit_enabled", False)
     limit = Limit(times=1, window_s=60)

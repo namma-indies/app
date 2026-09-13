@@ -172,9 +172,24 @@ class Settings(BaseSettings):
     rl_join_window_s: int = 900
 
     # Read the client IP from X-Real-IP, which Caddy sets from the real peer
-    # (deploy/Caddyfile). False for local dev and tests, where there is no
-    # proxy and the header would be attacker-supplied.
-    trust_proxy_header: bool = False
+    # and overwrites on every request (deploy/Caddyfile -- verified against
+    # caddy:2 with a forged header).
+    #
+    # True by default, and that default is load-bearing rather than lax. In
+    # the deployed topology the app publishes no ports and is reachable only
+    # through the caddy service over the compose bridge, so
+    # `request.client.host` is *Caddy's container IP* -- the same value for
+    # every user on the internet. Defaulting to False there would not weaken
+    # the limiter, it would collapse both IP-keyed buckets into one global
+    # bucket: five login emails per fifteen minutes for the entire cohort,
+    # and a sign-in path that locks out the sixth person to ask.
+    #
+    # Safe in dev and in tests because it is a fallback, not a requirement:
+    # with no proxy there is no X-Real-IP to read and the peer address is
+    # used. Set this to False only in a deployment where the app is reachable
+    # without a proxy that overwrites the header -- there, and only there, a
+    # caller could set it themselves.
+    trust_proxy_header: bool = True
 
     # Sized for request handlers plus the background tasks that run after the
     # response; see the comment in main.py's lifespan.

@@ -418,9 +418,19 @@ throttle of any kind and sits in front of production SES.
 
 Authenticated surfaces key on `observer_id`; unauthenticated ones key on the
 client IP read from `X-Real-IP`, which Caddy sets from the real peer and
-overwrites (`deploy/Caddyfile`). `trust_proxy_header` gates that and defaults
-to **false** — a limiter keyed on a value the caller chose is worse than none,
-because it looks like protection.
+overwrites on every request (`deploy/Caddyfile`; verified against caddy:2 with
+a forged header).
+
+`trust_proxy_header` gates that and defaults to **true**, which is load-bearing
+rather than lax. In the deployed topology `app` publishes no ports and is
+reachable only through the `caddy` service over the compose bridge, so
+`request.client.host` is *Caddy's container IP* — the same value for every user
+on the internet. Defaulting to false there would not weaken the limiter, it
+would collapse both IP-keyed buckets into one global bucket: five login emails
+per fifteen minutes for the whole cohort. It is safe in dev because it is a
+fallback — with no proxy there is no header, and the peer address is used. Set
+it false only where the app is reachable without a proxy that overwrites the
+header.
 
 Single uvicorn, no `--workers`, so the counts are exact. Limits reset on
 deploy, and adding workers would silently multiply every limit by the worker

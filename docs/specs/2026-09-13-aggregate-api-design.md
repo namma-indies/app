@@ -341,11 +341,21 @@ control — the Caddyfile sets a single-valued header from the real peer:
 }
 ```
 
-`header_up` overwrites any client-supplied value. The app reads `X-Real-IP` when
-`trust_proxy_header` is set, and `request.client.host` otherwise (local dev,
-tests). **This must be verified empirically against the deployed box** — a
-`curl -H "X-Forwarded-For: 1.2.3.4" -H "X-Real-IP: 1.2.3.4"` with the resolved
-key logged — before the limiter is relied on for anything.
+`header_up` overwrites any client-supplied value. **Verified empirically**
+against `caddy:2`: a request carrying `X-Real-IP: 1.2.3.4` and
+`X-Forwarded-For: 6.6.6.6` reached the backend with both rewritten to the real
+peer. The limiter cannot be keyed on a value the caller chose.
+
+`trust_proxy_header` gates reading it, and **defaults to true**. That direction
+is deliberate: in the deployed topology `app` publishes no ports and is reached
+only through the `caddy` service over the compose bridge, so
+`request.client.host` is Caddy's container IP — identical for every user on the
+internet. Defaulting to false would not make the limiter weaker, it would make
+both IP-keyed buckets *global*: five login emails per fifteen minutes for the
+entire cohort, and a sign-in path that 429s the sixth person to ask. It stays
+safe in dev and tests because it is a fallback — no proxy means no header means
+the peer address. Set it false only where the app is reachable without a proxy
+that overwrites the header.
 
 ## Part 4 — `individual_names` (migration only)
 
