@@ -48,7 +48,12 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
   const [queue, setQueue] = useState<"reported" | "flagged">("reported");
   const [items, setItems] = useState<ModerationItem[] | null>(null);
   const [flaggedItems, setFlaggedItems] = useState<FlaggedItem[] | null>(null);
-  const [failed, setFailed] = useState(false);
+  // Kept separate rather than one shared `failed` flag: the two queues fetch
+  // independently, and a network hiccup on one must not strand a moderator
+  // who is mid-way through the other -- the toggle has to survive either
+  // failure so they can always get back to the queue that did load.
+  const [failedReported, setFailedReported] = useState(false);
+  const [failedFlagged, setFailedFlagged] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
   useEffect(() => {
@@ -56,7 +61,7 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
       .then((r) => setItems(r.items))
       .catch((err) => {
         if (err instanceof UnauthorizedError) onUnauthorized();
-        else setFailed(true);
+        else setFailedReported(true);
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -67,7 +72,7 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
       .then((r) => setFlaggedItems(r.items))
       .catch((err) => {
         if (err instanceof UnauthorizedError) onUnauthorized();
-        else setFailed(true);
+        else setFailedFlagged(true);
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queue]);
@@ -81,7 +86,7 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
       setItems((cur) => (cur ?? []).filter((x) => x.sighting_id !== item.sighting_id));
     } catch (err) {
       if (err instanceof UnauthorizedError) onUnauthorized();
-      else setFailed(true);
+      else setFailedReported(true);
     } finally {
       setBusy(null);
     }
@@ -96,13 +101,11 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
       setFlaggedItems((cur) => (cur ?? []).filter((x) => x.sighting_id !== item.sighting_id));
     } catch (err) {
       if (err instanceof UnauthorizedError) onUnauthorized();
-      else setFailed(true);
+      else setFailedFlagged(true);
     } finally {
       setBusy(null);
     }
   }
-
-  if (failed) return <div className="empty-state">COULDN'T LOAD THE QUEUE — TRY AGAIN</div>;
 
   const toggle = (
     <div className="scope-toggle">
@@ -116,6 +119,15 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
   );
 
   if (queue === "flagged") {
+    if (failedFlagged) {
+      return (
+        <>
+          {toggle}
+          <div className="empty-state">COULDN'T LOAD THE QUEUE — TRY AGAIN</div>
+        </>
+      );
+    }
+
     if (flaggedItems === null) {
       return (
         <>
@@ -183,6 +195,15 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
             </div>
           ))}
         </div>
+      </>
+    );
+  }
+
+  if (failedReported) {
+    return (
+      <>
+        {toggle}
+        <div className="empty-state">COULDN'T LOAD THE QUEUE — TRY AGAIN</div>
       </>
     );
   }

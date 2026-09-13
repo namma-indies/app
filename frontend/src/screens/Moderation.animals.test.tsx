@@ -17,6 +17,7 @@ import {
   getModerationQueue,
   ruleOnAnimal,
   type FlaggedItem,
+  type ModerationItem,
 } from "../api";
 import Moderation from "./Moderation";
 
@@ -30,6 +31,20 @@ function flagged(over: Partial<FlaggedItem> = {}): FlaggedItem {
     animal_confidence: 0.02,
     dog: 0.02,
     cat: 0.01,
+    thumb_url: "https://example.test/a_thumb.webp",
+    ...over,
+  };
+}
+
+function reported(over: Partial<ModerationItem> = {}): ModerationItem {
+  return {
+    sighting_id: "r1",
+    captured_at: "2026-08-01T10:00:00Z",
+    review_status: "pending",
+    observer: "Priya",
+    report_count: 1,
+    reasons: ["endangers_dog"],
+    notes: [],
     thumb_url: "https://example.test/a_thumb.webp",
     ...over,
   };
@@ -98,5 +113,26 @@ describe("Moderation — the flagged queue", () => {
     await userEvent.click(await screen.findByRole("button", { name: /^NO ANIMAL$/ }));
     expect(ruleOnAnimal).toHaveBeenCalledWith("s1", "no_animal");
     await waitFor(() => expect(screen.queryByText(/logged by Priya/)).toBeNull());
+  });
+
+  it("a failed flagged fetch does not strand the moderator away from the reported queue", async () => {
+    // The two queues fetch independently. If the flagged one fails, the
+    // toggle must stay on screen -- otherwise a moderator who was mid-way
+    // through the (working) reported queue has no way back short of a
+    // reload.
+    vi.mocked(getModerationQueue).mockResolvedValue({ items: [reported()] });
+    vi.mocked(getFlaggedQueue).mockRejectedValue(new Error("network down"));
+    render(<Moderation onUnauthorized={() => {}} />);
+
+    await screen.findByText(/logged by Priya/);
+
+    await userEvent.click(await screen.findByRole("button", { name: /NOT ANIMALS/ }));
+    expect(await screen.findByText(/COULDN'T LOAD THE QUEUE/)).toBeInTheDocument();
+    // The reported card must not still be on screen once we're on the failed
+    // flagged queue -- the two views are not stacked.
+    expect(screen.queryByText(/logged by Priya/)).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "REPORTED" }));
+    expect(await screen.findByText(/logged by Priya/)).toBeInTheDocument();
   });
 });
