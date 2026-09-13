@@ -144,6 +144,87 @@ class Settings(BaseSettings):
     # clears propose_min on a thin sighting, asking for a short clip is worth
     # more than asking for a yes/no the contributor cannot answer confidently.
     reid_thin_evidence_frames: int = 4
+    # --- aggregates --------------------------------------------------------
+    # Which boundary scheme a public count is labelled with when the caller
+    # does not say. A data question, not a code one: falling back from wards
+    # to PIN codes is this line plus a loader run.
+    area_default_kind: str = "bbmp_ward"
+
+    # Small-cell suppression. An area is reported only if it clears BOTH.
+    # Per kind, because the threshold protects a privacy property and that
+    # property depends on cell size: a Bangalore PIN code and a BBMP ward
+    # differ by roughly an order of magnitude in area, so one number cannot be
+    # right for both. A global threshold would also silently become the wrong
+    # number the moment the PIN-code fallback happened, with no code change to
+    # notice it. JSON in the environment: AREA_MIN_SIGHTINGS='{"bbmp_ward":5}'
+    area_min_sightings: dict[str, int] = {"bbmp_ward": 5, "pin_code": 20}
+    area_min_observers: dict[str, int] = {"bbmp_ward": 2, "pin_code": 3}
+    # Applied to any kind not named above, including one loaded tomorrow. A
+    # new kind gets the ward defaults and should be given its own entry before
+    # anything derived from it is published.
+    area_min_sightings_default: int = 5
+    area_min_observers_default: int = 2
+
+    # --- rate limiting -----------------------------------------------------
+    # In-process fixed windows. The container runs a single uvicorn with no
+    # --workers, so the counts are exact. Two consequences, neither a bug but
+    # both worth knowing: limits reset on deploy, and adding --workers would
+    # silently multiply every limit below by the worker count.
+    rate_limit_enabled: bool = True
+
+    # Generous. Exists so a runaway client cannot spin the database, not to
+    # ration anything.
+    rl_stats_times: int = 60
+    rl_stats_window_s: int = 60
+
+    # The reason rate limiting is in this change at all: this path had no
+    # throttle of any kind and sits in front of production SES, so it was both
+    # a cost exposure and a way to mail-bomb a third party.
+    #
+    # Two keys doing two different jobs, at two different tightnesses.
+    #
+    # Per address is the anti-mail-bomb control and stays tight: nobody's inbox
+    # takes more than this however many machines ask.
+    rl_email_addr_times: int = 5
+    rl_email_addr_window_s: int = 900
+    # Per IP is the anti-enumeration and cost control, and is deliberately
+    # looser, because an IP here is not a person. Indian mobile carriers put
+    # many subscribers behind one public address (CGNAT), and field testers
+    # recruited over WhatsApp are on mobile data by definition -- at 5 per
+    # quarter-hour the sixth tester to ask for a link during an onboarding
+    # push gets a 429 they did nothing to earn. One office's wifi has the same
+    # shape. 20 still caps a single source at 80 mails an hour, and per-address
+    # above means the volume cannot be aimed at anyone.
+    rl_email_ip_times: int = 20
+    rl_email_ip_window_s: int = 900
+
+    # A shared passcode with unlimited attempts is a shared passcode with no
+    # passcode -- but only *failed* attempts are counted (see routes/join.py),
+    # so this is a brute-force budget rather than a cap on how many people may
+    # join from one carrier NAT in a quarter of an hour.
+    rl_join_times: int = 10
+    rl_join_window_s: int = 900
+
+    # Read the client IP from X-Real-IP, which Caddy sets from the real peer
+    # and overwrites on every request (deploy/Caddyfile -- verified against
+    # caddy:2 with a forged header).
+    #
+    # True by default, and that default is load-bearing rather than lax. In
+    # the deployed topology the app publishes no ports and is reachable only
+    # through the caddy service over the compose bridge, so
+    # `request.client.host` is *Caddy's container IP* -- the same value for
+    # every user on the internet. Defaulting to False there would not weaken
+    # the limiter, it would collapse both IP-keyed buckets into one global
+    # bucket: five login emails per fifteen minutes for the entire cohort,
+    # and a sign-in path that locks out the sixth person to ask.
+    #
+    # Safe in dev and in tests because it is a fallback, not a requirement:
+    # with no proxy there is no X-Real-IP to read and the peer address is
+    # used. Set this to False only in a deployment where the app is reachable
+    # without a proxy that overwrites the header -- there, and only there, a
+    # caller could set it themselves.
+    trust_proxy_header: bool = True
+
     # Sized for request handlers plus the background tasks that run after the
     # response; see the comment in main.py's lifespan.
     db_pool_min: int = 5
