@@ -10,12 +10,28 @@ vi.mock("../api", async (importOriginal) => ({
   getStatsObservers: vi.fn(),
 }));
 
-import { getStats, getStatsAreas, getStatsObservers } from "../api";
+import {
+  getStats,
+  getStatsAreas,
+  getStatsObservers,
+  type StatsArea,
+  type StatsObserver,
+} from "../api";
 import Stats from "./Stats";
 
 afterEach(cleanup);
 
-function mock({ areas = [], suppressed = 0, unattributed = 0, observers = [] } = {}) {
+function mock({
+  areas = [],
+  suppressed = 0,
+  unattributed = 0,
+  observers = [],
+}: {
+  areas?: StatsArea[];
+  suppressed?: number;
+  unattributed?: number;
+  observers?: StatsObserver[];
+} = {}) {
   vi.mocked(getStats).mockResolvedValue({
     kind: "bbmp_ward",
     totals: { observers: 11, sightings: 71, confirmed_individuals: 2 },
@@ -26,11 +42,11 @@ function mock({ areas = [], suppressed = 0, unattributed = 0, observers = [] } =
   });
   vi.mocked(getStatsAreas).mockResolvedValue({
     kind: "bbmp_ward",
-    areas: areas as never,
+    areas,
     areas_suppressed: suppressed,
     unattributed_sightings: unattributed,
   });
-  vi.mocked(getStatsObservers).mockResolvedValue({ observers: observers as never });
+  vi.mocked(getStatsObservers).mockResolvedValue({ observers });
 }
 
 describe("Stats", () => {
