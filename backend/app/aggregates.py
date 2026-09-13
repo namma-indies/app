@@ -27,9 +27,16 @@ def animal_present() -> str:
     per test, and an f-string evaluated at import cannot be.
     """
     lo = settings.animal_confidence_min
+    # `animal_confidence` is `real`; an unsuffixed decimal literal is `numeric`,
+    # and `real >= numeric` promotes the `real` to `numeric` rather than
+    # rounding the literal to `real` -- so e.g. 0.29::real >= 0.29 is FALSE.
+    # The `::real` cast makes both sides compare as `real` and the boundary
+    # inclusive, as `>=` promises. (`{lo:g}` also caps at 6 significant
+    # digits, but no plausible threshold needs a 7th -- left as `:g` for
+    # readable SQL.)
     return (
         "COALESCE(s.animal_override, "
-        f"s.animal_confidence IS NULL OR s.animal_confidence >= {lo:g})"
+        f"s.animal_confidence IS NULL OR s.animal_confidence >= {lo:g}::real)"
     )
 
 

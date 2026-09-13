@@ -126,7 +126,7 @@ async def test_post_sighting_saves_when_no_dog_detected(authed_client):
         n_photos = await c.fetchval(
             "SELECT count(*) FROM photos WHERE sighting_id=$1", sid
         )
-    from app.config import settings
+    from app.config import Settings
 
     # The point of this test -- a capture is never lost to the detector -- holds
     # whether or not the detector exists, and is worth MORE without it: a
@@ -139,9 +139,10 @@ async def test_post_sighting_saves_when_no_dog_detected(authed_client):
         # 0002 established, and the number is now on `animal_confidence`.
         assert row["animal_confidence"] is not None
         assert row["animal_confidence"] < 0.25
-    assert settings.animal_confidence_min == 0.0, (
-        "this suite assumes the filter is inert; see the spec's phase 2"
-    )
+    # This suite assumes the filter ships inert -- assert the declared default,
+    # not whatever this environment resolves the setting to, so raising the
+    # threshold in phase 2 doesn't break this test. See the spec's phase 2.
+    assert Settings.model_fields["animal_confidence_min"].default == 0.0
 
 
 @pytest.mark.skipif(not _HAS_DETECTOR, reason="YOLO26x weights absent")

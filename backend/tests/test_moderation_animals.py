@@ -89,10 +89,12 @@ async def test_it_reports_dog_and_cat_separately(app_client):
 
 
 async def test_the_queue_works_while_the_filter_is_inert(app_client):
-    """Review comes before the threshold, not after it."""
-    from app.config import settings
+    """Review comes before the threshold, not after it. Asserts the declared
+    default rather than whatever this environment resolves the setting to --
+    an operator's env can raise it in phase 2 without this suite breaking."""
+    from app.config import Settings
 
-    assert settings.animal_confidence_min == 0.0
+    assert Settings.model_fields["animal_confidence_min"].default == 0.0
     await _moderator(app_client)
     await _scored(app_client, dog=0.01, cat=0.00)
     assert len((await app_client.get("/moderation/animals")).json()["items"]) == 1

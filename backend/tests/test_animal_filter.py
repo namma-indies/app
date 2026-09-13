@@ -33,10 +33,13 @@ async def _countable(conn):
 
 def test_the_filter_is_inert_by_default():
     """It ships switched off. The threshold is chosen in phase 2, against
-    rescored numbers -- not from the mixed corpus #67 measured."""
-    from app.config import settings
+    rescored numbers -- not from the mixed corpus #67 measured. This asserts
+    the *declared default*, not whatever the setting resolves to here -- an
+    operator's env can and eventually will raise it without breaking this
+    suite."""
+    from app.config import Settings
 
-    assert settings.animal_confidence_min == 0.0
+    assert Settings.model_fields["animal_confidence_min"].default == 0.0
 
 
 async def test_unscored_sightings_stay_visible(migrated_db, monkeypatch):
@@ -55,6 +58,21 @@ async def test_a_low_score_drops_out_once_a_threshold_is_set(migrated_db, monkey
     monkeypatch.setattr(settings, "animal_confidence_min", 0.30)
     await _sighting(migrated_db, conf=0.05)
     await _sighting(migrated_db, conf=0.91)
+    assert await _countable(migrated_db) == 1
+
+
+async def test_the_boundary_is_inclusive(migrated_db, monkeypatch):
+    """A moderator who walks the queue and rules "0.29 is where I stop being
+    able to say no animal" and sets the threshold to 0.29 must see the photo
+    they scored exactly 0.29 stay countable. `animal_confidence` is `real`;
+    an unsuffixed decimal literal is `numeric`, and `real >= numeric` promotes
+    the `real` operand rather than rounding the literal -- so an uncast
+    `s.animal_confidence >= 0.29` is FALSE at 0.29::real. 0.29 is one of the
+    49-in-99 two-decimal thresholds in [0.01, 0.99] where that bites."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "animal_confidence_min", 0.29)
+    await _sighting(migrated_db, conf=0.29)
     assert await _countable(migrated_db) == 1
 
 
