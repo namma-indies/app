@@ -57,6 +57,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Form, HTTPException
 
 from app.auth.deps import require_moderator, require_observer
+from app.config import settings
 from app.deps import get_conn, get_storage
 from app.detect_reid import DETECTOR_NAME
 from app.photos import thumb_key
@@ -288,6 +289,21 @@ async def animal_queue(
 
     Not folded into `/moderation/queue`: that one aggregates reports with a
     HAVING clause, and a second source would make both unreadable.
+
+    THE CEILING, AND WHY IT IS NOT THE OTHER NUMBER
+    -----------------------------------------------
+    Only sightings scoring below `animal_review_max` appear. Without it the
+    queue is every scored sighting the moment the rescore finishes -- the 0.95
+    dogs sitting behind the 0.02 sofas -- and a surface that calls ordinary
+    content "flagged" teaches a moderator to stop reading it.
+
+    This is a second number about the same column, which is precisely the
+    confusion #67 was about, so the difference is worth stating plainly:
+    `animal_confidence_min` decides what the WORLD sees and is still 0.0;
+    `animal_review_max` decides only what a MODERATOR is asked to look at.
+    Nothing outside this endpoint reads it, moving it hides nothing from
+    anyone, and a ruling already made is unaffected -- `animal_override` is
+    stored, not recomputed.
     """
     rows = await conn.fetch(
         """
@@ -312,6 +328,12 @@ async def animal_queue(
         ) pd ON TRUE
         WHERE s.animal_confidence IS NOT NULL
           AND s.animal_override IS NULL
+          -- The ceiling. `::real` for the same reason the map predicate casts:
+          -- `animal_confidence` is `real`, and comparing it against an
+          -- unsuffixed literal widens both to double precision, where a float4
+          -- does not land on the decimal you typed. Casting keeps the
+          -- comparison in the column's own type, so the boundary behaves.
+          AND s.animal_confidence < $3::real
         -- s.id tiebreaks. Two sightings sharing a score and a captured_at
         -- would otherwise leave their relative order to the plan, so the
         -- queue could reshuffle between one fetch and the next.
@@ -320,6 +342,7 @@ async def animal_queue(
         """,
         DETECTOR_NAME,
         MAX_QUEUE,
+        settings.animal_review_max,
     )
     keys = [thumb_key(r["s3_key"]) for r in rows if r["s3_key"]]
     urls = await storage.urls(keys)

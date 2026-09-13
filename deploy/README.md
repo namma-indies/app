@@ -41,6 +41,7 @@ at all" path is closed.
 | `deploy` | `remote.sh` |
 | `deploy-staging <branch>` | `remote-staging.sh` |
 | `backfill <dry-run\|run> [sleep]` | `remote-backfill.sh` |
+| `rescore <dry-run\|run\|histogram> [sleep]` | `remote-rescore.sh` |
 | `find-duplicates [detail]` | `remote-find-duplicates.sh` |
 | `seed-models <upload\|no-upload>` | `remote-seed-models.sh` |
 | `backup-db` | `remote-backup-db.sh` |

@@ -46,8 +46,9 @@ cat >/dev/null 2>&1 || true
 deny() {
     echo "refused: $1" >&2
     echo "this key may only run: deploy | deploy-staging <branch> |" >&2
-    echo "  backfill <dry-run|run> [sleep] | find-duplicates [detail] |" >&2
-    echo "  seed-models <upload|no-upload>" >&2
+    echo "  backfill <dry-run|run> [sleep] |" >&2
+    echo "  rescore <dry-run|run|histogram> [sleep] |" >&2
+    echo "  find-duplicates [detail] | seed-models <upload|no-upload>" >&2
     exit 2
 }
 
@@ -105,6 +106,24 @@ case "$action" in
           extra="--sleep $a2"
       fi
       DRY_RUN="$dry" EXTRA_ARGS="$extra" run "$DEPLOY/remote-backfill.sh"
+      ;;
+
+  rescore)
+      # Three modes rather than backfill's two: `histogram` reads what is
+      # stored and writes nothing, so it is worth being able to ask for
+      # without also being able to ask for a scoring run.
+      case "$a1" in
+        dry-run|run|histogram) mode="$a1" ;;
+        *) deny "rescore needs 'dry-run', 'run' or 'histogram'" ;;
+      esac
+      extra=""
+      if [ -n "$a2" ]; then
+          [ "$mode" = "run" ] || deny "sleep only applies to 'rescore run'"
+          printf '%s' "$a2" | grep -Eq '^[0-9]+(\.[0-9]+)?$' \
+              || deny "sleep must be a number"
+          extra="--sleep $a2"
+      fi
+      MODE="$mode" EXTRA_ARGS="$extra" run "$DEPLOY/remote-rescore.sh"
       ;;
 
   find-duplicates)

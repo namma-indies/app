@@ -383,7 +383,16 @@ So merging is deploying. Before any merge touching the ML path:
       is one number meaning one thing (the `detections` table records which
       model produced it), but existing rows were scored by whatever ran before
       this deploy and need a pass under the current detector before they mean
-      anything comparable. From `/app/backend` on the box, in order:
+      anything comparable.
+
+      **Without SSH:** run the **Rescore photos** workflow from the Actions
+      tab — `dry-run`, then `run`, then `histogram`. Note this needs the box's
+      forced command refreshed once first (`install -m 0755
+      ~/app/deploy/authorized-command.sh ~/authorized-command.sh`), because
+      that copy is deliberately the one script a deploy does not update, and
+      the `rescore` action is new. Until then the workflow is refused.
+
+      **With SSH,** from `/app/backend` on the box, in order:
       1. `uv run python scripts/rescore_photos.py --dry-run` — confirm the
          pending count looks right before touching anything.
       2. `uv run python scripts/rescore_photos.py --embed` — score for real;
@@ -393,7 +402,9 @@ So merging is deploying. Before any merge touching the ML path:
       4. Walk `/moderation/animals` from the bottom to find where the detector
          starts being wrong, then set `ANIMAL_CONFIDENCE_MIN` to that value.
          `animal_confidence_min` ships at `0.0` (inert — nothing is hidden)
-         until a human does this.
+         until a human does this. Do not confuse it with `animal_review_max`
+         (default `0.60`), which decides only what the review queue *shows* a
+         moderator and hides nothing from anyone.
 
 ---
 

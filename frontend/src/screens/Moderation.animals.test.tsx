@@ -62,7 +62,7 @@ describe("Moderation — the flagged queue", () => {
   it("says so plainly when nothing is flagged", async () => {
     vi.mocked(getFlaggedQueue).mockResolvedValue({ items: [] });
     await openFlagged();
-    expect(await screen.findByText(/NOTHING FLAGGED/)).toBeInTheDocument();
+    expect(await screen.findByText(/NOTHING BELOW THE DOUBT LINE/)).toBeInTheDocument();
   });
 
   it("shows dog and cat separately, not the max", async () => {
