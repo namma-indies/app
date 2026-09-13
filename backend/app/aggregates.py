@@ -170,3 +170,38 @@ async def area_months(conn, area_id: UUID, kind: str) -> list[dict]:
         kind, area_id,
     )
     return [dict(r) for r in rows]
+
+
+async def observer_rows(conn) -> list[dict]:
+    """Every observer, with what they have contributed. Moderator-only.
+
+    Not an aggregate in the sense the rest of this module means it: these are
+    named people, not counts over an area, and nothing here may be exposed on
+    a public surface. The opt-in public profile question (#58, #5) is
+    deliberately unbuilt -- this is the operator's view of their own pilot
+    cohort, not a directory.
+
+    Observers with no sightings are included. Someone who signed in and never
+    logged anything is exactly the thing an operator wants to see.
+    """
+    rows = await conn.fetch(
+        f"""
+        SELECT
+            o.id,
+            o.display_name,
+            o.email,
+            o.created_via,
+            o.trust_tier,
+            o.created_at,
+            COUNT(s.id) FILTER (WHERE {COUNTABLE_SIGHTING}) AS sightings,
+            COUNT(DISTINCT s.individual_id) FILTER (WHERE {COUNTABLE_SIGHTING})
+                AS confirmed_individuals,
+            MAX(s.captured_at) FILTER (WHERE {COUNTABLE_SIGHTING}) AS last_sighting_at
+        FROM observers o
+        LEFT JOIN sightings s ON s.observer_id = o.id
+        WHERE o.deleted_at IS NULL
+        GROUP BY o.id, o.display_name, o.email, o.created_via, o.trust_tier, o.created_at
+        ORDER BY sightings DESC, o.created_at ASC
+        """
+    )
+    return [dict(r) for r in rows]
