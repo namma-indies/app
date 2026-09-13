@@ -191,7 +191,9 @@ Thresholds are **per kind**, in config:
 ```python
 area_min_sightings: dict[str, int] = {"bbmp_ward": 5, "pin_code": 20}
 area_min_observers:  dict[str, int] = {"bbmp_ward": 2, "pin_code": 3}
-area_suppression_fallback: tuple[int, int] = (5, 2)   # unknown kinds
+# Applied to any kind not named above.
+area_min_sightings_default: int = 5
+area_min_observers_default: int = 2
 ```
 
 Per-kind rather than global because the threshold protects a privacy property

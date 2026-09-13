@@ -355,3 +355,73 @@ So merging is deploying. Before any merge touching the ML path:
 | species filter | not implemented; `detect_reid` returns the COCO class but it is not persisted |
 
 Treat this table as the current truth and §5 as intent.
+
+---
+
+## Counts: `/stats`
+
+Three read-only endpoints returning derived counts and nothing else — no row,
+coordinate, photo or name leaves them. That is what makes this the one tier of
+issue #58 that could eventually be read by someone who is not signed in.
+
+    GET /stats?kind=…              city-wide totals + monthly series
+    GET /stats/areas?kind=…        per-area rows
+    GET /stats/areas/{id}          one area, with its own monthly series
+
+**Cohort-gated today.** Opening them is a dependency swap, gated on three
+things: rate limiting (present), the privacy policy catching up (#53), and
+having looked at real numbers against real suppression thresholds first.
+
+**`kind` is the boundary scheme**, defaulting to `settings.area_default_kind`.
+Wards, PIN codes, neighbourhood outlines and hand-drawn pilot polygons are all
+rows in `areas` differing only by `kind`, loaded by `scripts/load_areas.py`.
+Changing which scheme the public number carries is a config line and a loader
+run, not a code change. An unknown kind is a 200 with an empty `areas` list,
+not a 404 — "no polygons loaded" is a legitimate state and it reads honestly:
+every sighting is unattributed because nothing exists to attribute it to.
+
+**Three numbers, never one called "dogs".** `sightings` overcounts dogs (one
+dog seen ten times is ten); `confirmed_individuals` undercounts them (every
+unmatched sighting is invisible to it, and `match_status` defaults to
+`unmatched`). The truth is between them and the API does not guess.
+
+**Suppression.** An area is reported only if it clears both
+`area_min_sightings` and `area_min_observers` for its kind — per kind, because
+the threshold protects a privacy property that depends on cell size. A
+suppressed area is **omitted entirely**, never returned with a flag: a flag
+still discloses "at least one dog is here". Fetching one by id returns 404,
+identical to an id that never existed, so the endpoint cannot be used as an
+oracle. An area's monthly series is floored separately, because an area-month
+cell is a finer disclosure than the area row containing it.
+
+**The numbers reconcile.** Per-area rows will not sum to the city total —
+areas drop out under suppression, sightings can have no location at all
+(`geo_source` allows `'none'`), and a sighting can fall outside every polygon
+of a kind. Hence `areas_suppressed` and `unattributed_sightings` on every
+response. Without them the difference looks like missing dogs.
+
+**Months only**, bucketed in `Asia/Kolkata`. There is no finer grain and no
+API to ask for one — that is issue #5's "delay" dial enforced by absence
+rather than by a rule someone has to remember.
+
+`app/aggregates.py` owns the single definition of a countable sighting
+(`review_status <> 'rejected'`) and the lateral join that attributes a sighting
+to at most one area. `/map` and `/dogs` import that constant. `/dex` still does
+not filter rejected sightings — that is issue #54's call about what your own
+Journal shows, deliberately not changed here.
+
+## Rate limiting
+
+`app/ratelimit.py` — in-process fixed windows, applied to `/stats`,
+`/auth/email` and `/auth/join`. The email path is why this exists: it had no
+throttle of any kind and sits in front of production SES.
+
+Authenticated surfaces key on `observer_id`; unauthenticated ones key on the
+client IP read from `X-Real-IP`, which Caddy sets from the real peer and
+overwrites (`deploy/Caddyfile`). `trust_proxy_header` gates that and defaults
+to **false** — a limiter keyed on a value the caller chose is worse than none,
+because it looks like protection.
+
+Single uvicorn, no `--workers`, so the counts are exact. Limits reset on
+deploy, and adding workers would silently multiply every limit by the worker
+count. Both are fine for dampening abuse and neither would be fine for a quota.
