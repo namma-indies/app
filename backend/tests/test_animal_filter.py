@@ -82,3 +82,17 @@ async def test_review_status_still_counts(migrated_db, monkeypatch):
     await migrated_db.execute(
         "UPDATE sightings SET review_status='rejected' WHERE id=$1", sid)
     assert await _countable(migrated_db) == 0
+
+
+def test_the_predicate_only_touches_the_s_alias():
+    """`routes/match.py` re-aliases this to `a.` and `b.` with a blind string
+    replace. That is only safe while EVERY alias-qualified column in the
+    string is on `s` -- a `t.`-aliased join column added here would survive
+    the replace untouched and produce a query referencing a table that side
+    of the join does not have. Guard it."""
+    import re
+
+    from app.aggregates import animal_present
+
+    aliases = set(re.findall(r"\b([a-z_]+)\.", animal_present()))
+    assert aliases == {"s"}, f"non-`s` alias in the predicate: {aliases - {'s'}}"
