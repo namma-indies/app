@@ -1,3 +1,13 @@
 {$APP_DOMAIN} {
-    reverse_proxy app:8000
+	# X-Real-IP is set from the real peer and overwrites anything the client
+	# sent. The app reads this rather than X-Forwarded-For so the limiter
+	# never depends on whether a proxy appends to or replaces a
+	# client-supplied value -- getting that backwards is not a bug, it is a
+	# bypass, since the key becomes a string the caller chose.
+	#
+	# The app only trusts it when `trust_proxy_header` is set, which defaults
+	# to false so dev and tests never trust a header.
+	reverse_proxy app:8000 {
+		header_up X-Real-IP {http.request.remote.host}
+	}
 }

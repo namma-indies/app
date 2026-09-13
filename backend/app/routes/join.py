@@ -23,6 +23,7 @@ from app.auth.magiclink import create_observer
 from app.config import settings
 from app.deps import get_conn
 from app.email.sender import get_sender
+from app.ratelimit import check, client_key, email_limit, join_limit
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -130,6 +131,7 @@ async def join_submit(
     passcode: str = Form(...),
     conn=Depends(get_conn),
 ):
+    check(f"join:ip:{client_key(request)}", join_limit())
     display_name = name.strip()
     if not hmac.compare_digest(passcode, settings.join_passcode):
         return _fail(
@@ -175,6 +177,12 @@ async def email_submit(request: Request, email: str = Form(...), conn=Depends(ge
     address = normalize_email(email)
     if not address:
         return _fail(request, error="That doesn't look like an email address.", status=400)
+    # Two keys, not one. IP alone lets a rotating attacker hammer a single
+    # inbox, and lets one office NAT lock out everyone behind it; address
+    # alone does nothing against a script walking a list. Both are fixed
+    # windows -- this is dampening, not a lockout.
+    check(f"email:ip:{client_key(request)}", email_limit())
+    check(f"email:addr:{address}", email_limit())
     if not is_allowed(address):
         # Told plainly, not silently swallowed: the allowlist is a domain, not
         # a secret, and silent failure just generates "did it send?" pings.

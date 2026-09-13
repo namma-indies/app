@@ -146,6 +146,36 @@ class Settings(BaseSettings):
     area_min_sightings_default: int = 5
     area_min_observers_default: int = 2
 
+    # --- rate limiting -----------------------------------------------------
+    # In-process fixed windows. The container runs a single uvicorn with no
+    # --workers, so the counts are exact. Two consequences, neither a bug but
+    # both worth knowing: limits reset on deploy, and adding --workers would
+    # silently multiply every limit below by the worker count.
+    rate_limit_enabled: bool = True
+
+    # Generous. Exists so a runaway client cannot spin the database, not to
+    # ration anything.
+    rl_stats_times: int = 60
+    rl_stats_window_s: int = 60
+
+    # Tight, and the reason rate limiting is in this change at all. This path
+    # had no throttle of any kind and sits in front of production SES: an
+    # unthrottled send endpoint is both a cost exposure and a way to mail-bomb
+    # a third party. Keyed on IP *and* on the address, because IP alone lets a
+    # rotating attacker hammer one inbox and lets one office NAT block itself.
+    rl_email_times: int = 5
+    rl_email_window_s: int = 900
+
+    # A shared passcode with unlimited attempts is a shared passcode with no
+    # passcode.
+    rl_join_times: int = 10
+    rl_join_window_s: int = 900
+
+    # Read the client IP from X-Real-IP, which Caddy sets from the real peer
+    # (deploy/Caddyfile). False for local dev and tests, where there is no
+    # proxy and the header would be attacker-supplied.
+    trust_proxy_header: bool = False
+
     # Sized for request handlers plus the background tasks that run after the
     # response; see the comment in main.py's lifespan.
     db_pool_min: int = 5

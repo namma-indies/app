@@ -22,6 +22,7 @@ from app import aggregates
 from app.auth.deps import require_observer
 from app.config import settings
 from app.deps import get_conn
+from app.ratelimit import check, stats_limit
 
 router = APIRouter()
 
@@ -32,6 +33,7 @@ async def get_stats(
     _observer: UUID = Depends(require_observer),
     conn=Depends(get_conn),
 ):
+    check(f"obs:{_observer}", stats_limit())
     kind = kind or settings.area_default_kind
     rows = await aggregates.area_rows(conn, kind)
     kept, suppressed = aggregates.suppress(rows, kind)
@@ -51,6 +53,7 @@ async def get_stats_areas(
     _observer: UUID = Depends(require_observer),
     conn=Depends(get_conn),
 ):
+    check(f"obs:{_observer}", stats_limit())
     kind = kind or settings.area_default_kind
     rows = await aggregates.area_rows(conn, kind)
     kept, suppressed = aggregates.suppress(rows, kind)
@@ -68,6 +71,7 @@ async def get_stats_area(
     _observer: UUID = Depends(require_observer),
     conn=Depends(get_conn),
 ):
+    check(f"obs:{_observer}", stats_limit())
     kind = await conn.fetchval("SELECT kind FROM areas WHERE id = $1", area_id)
     if kind is None:
         raise HTTPException(status_code=404)
