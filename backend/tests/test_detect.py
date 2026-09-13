@@ -4,7 +4,7 @@ import numpy as np
 import piexif
 from PIL import Image
 
-from app.detect import _letterbox, load_upright
+from app.detect import load_upright
 
 
 def _patterned_image(size=(1200, 900)) -> Image.Image:
@@ -47,18 +47,6 @@ def test_load_upright_applies_exif_orientation():
         - np.asarray(upright.convert("RGB"), dtype=np.int16)
     )
     assert diff.mean() < 3.0
-
-
-def test_letterbox_identical_for_tagged_and_untagged_same_scene():
-    """End of the preprocessing chain: what reaches the model must not depend
-    on how the orientation was encoded."""
-    upright = _patterned_image()
-    plain = _letterbox(load_upright(_as_jpeg(upright)))
-    tagged = _letterbox(load_upright(_as_jpeg(upright.rotate(90, expand=True),
-                                              orientation=6)))
-
-    assert plain.shape == tagged.shape
-    assert np.abs(plain - tagged).mean() < 0.02
 
 
 def test_load_upright_handles_missing_exif():

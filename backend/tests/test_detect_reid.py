@@ -1,9 +1,12 @@
 import io
 
+import numpy as np
+import piexif
 import pytest
 from PIL import Image
 
 from app import detect_reid
+from app.detect import load_upright
 from app.detect_reid import (
     BOX_MARGIN,
     COCO_CAT,
@@ -49,6 +52,48 @@ def test_letterbox_pads_the_other_axis_for_tall_images():
     assert scale == pytest.approx(640 / 1200)
     assert pad_y == 0
     assert pad_x > 0
+
+
+def _patterned_image(size=(1200, 900)) -> Image.Image:
+    """A non-symmetric image -- a flat or symmetric fill would survive rotation
+    unchanged and make the orientation assertion below vacuous."""
+    w, h = size
+    img = Image.new("RGB", size)
+    px = img.load()
+    for y in range(h):
+        for x in range(w):
+            px[x, y] = (x * 255 // w, y * 255 // h, 40)
+    return img
+
+
+def _as_jpeg(img: Image.Image, orientation: int | None = None) -> bytes:
+    buf = io.BytesIO()
+    kwargs = {}
+    if orientation is not None:
+        exif = {"0th": {piexif.ImageIFD.Orientation: orientation}, "Exif": {},
+                "GPS": {}, "1st": {}, "thumbnail": None}
+        kwargs["exif"] = piexif.dump(exif)
+    img.save(buf, "JPEG", quality=95, **kwargs)
+    return buf.getvalue()
+
+
+def test_letterbox_identical_for_tagged_and_untagged_same_scene():
+    """End of the preprocessing chain: what reaches the model must not depend
+    on how the orientation was encoded. Moved from test_detect.py -- this
+    detector's `_letterbox` is the one actually in the path, and it returns
+    (batch, scale, pad_x, pad_y) rather than a bare array."""
+    upright = _patterned_image()
+    plain_batch, plain_scale, plain_px, plain_py = _letterbox(
+        load_upright(_as_jpeg(upright))
+    )
+    tagged_batch, tagged_scale, tagged_px, tagged_py = _letterbox(
+        load_upright(_as_jpeg(upright.rotate(90, expand=True), orientation=6))
+    )
+
+    assert plain_batch.shape == tagged_batch.shape
+    assert plain_scale == tagged_scale
+    assert (plain_px, plain_py) == (tagged_px, tagged_py)
+    assert np.abs(plain_batch - tagged_batch).mean() < 0.02
 
 
 def test_classes_and_thresholds_are_the_benchmarked_ones():
