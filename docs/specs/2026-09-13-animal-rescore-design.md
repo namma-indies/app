@@ -256,8 +256,18 @@ that a second source would make unreadable:
 - `animal_confidence IS NOT NULL AND animal_override IS NULL` — scored, and
   nobody has ruled.
 - **`ORDER BY animal_confidence ASC`** — least animal-like first.
-- Returns the score alongside the thumbnail, so the moderator sees the number
-  they are judging.
+- Returns **`dog` and `cat` separately** for the representative photo, not just
+  the sighting's `max` of the two. Akash's ask was to confirm the photos being
+  taken out have no *dog* in them, and a bare 0.82 cannot tell him that was a
+  cat. One join onto the table Part 1 already adds.
+
+**Gap, stated rather than fixed:** a sighting whose detection *failed* keeps
+`animal_confidence IS NULL`, so it is visible on the map (fail-open, Part 2)
+and appears in no queue — nobody is ever asked to look at it. After the
+rescore this should be the empty set, and the accepted cost of fail-open is
+that a silent detector failure is invisible to review rather than wrongly
+hidden. If it turns out not to be empty, the fix is a second ordering in the
+same endpoint (NULLs first), not a new surface.
 
 `POST /sighting/{id}/animal` takes `animal` or `no_animal` and writes the three
 columns. It does not touch `review_status`, does not delete, and is reversible
@@ -380,7 +390,9 @@ merge revision at integration time; it is not a conflict in the tree.
    being able to say "no animal" is the real threshold; the recommendation is
    there to be checked against, not trusted.
 4. Review assigned to **@aswin-dot-R**, with the histogram and the
-   recommendation as the thing being reviewed.
+   recommendation as the thing being reviewed. *(Reading the ask as both: you
+   walk the queue, Aswin reviews the number. Collapse to one if you meant
+   either-or.)*
 5. Set `animal_confidence_min` in the environment. The photos already ruled on
    keep their verdict regardless of where the line lands.
 6. Drop `sightings.dog_confidence`.
