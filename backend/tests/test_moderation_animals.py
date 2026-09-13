@@ -31,8 +31,17 @@ async def _moderator(client):
     return oid
 
 
-async def _scored(client, *, dog, cat, key="k"):
-    sid, pid = uuid7(), uuid7()
+async def _sighting(client, *, animal_confidence, photos):
+    """A sighting with an arbitrary number of scored photos.
+
+    `photos` is a list of `(dog, cat, key)` tuples, one `photos` row and one
+    `detections` row each. `_scored` below is the one-photo case and is what
+    every earlier test uses; it can never exercise the lateral's
+    "pick the highest-scoring photo" behaviour because there is only ever one
+    row to pick from. This exists so a test can put two photos on one
+    sighting at different scores.
+    """
+    sid = uuid7()
     async with (await _pool(client)).acquire() as c:
         oid = uuid7()
         await c.execute(
@@ -40,13 +49,19 @@ async def _scored(client, *, dog, cat, key="k"):
             oid)
         await c.execute(
             "INSERT INTO sightings (id, observer_id, captured_at, animal_confidence) "
-            "VALUES ($1,$2,now(),$3)", sid, oid, max(dog, cat))
-        await c.execute(
-            "INSERT INTO photos (id, sighting_id, s3_key) VALUES ($1,$2,$3)", pid, sid, key)
-        await c.execute(
-            "INSERT INTO detections (photo_id, model, dog, cat) VALUES ($1,'yolo26x',$2,$3)",
-            pid, dog, cat)
+            "VALUES ($1,$2,now(),$3)", sid, oid, animal_confidence)
+        for dog, cat, key in photos:
+            pid = uuid7()
+            await c.execute(
+                "INSERT INTO photos (id, sighting_id, s3_key) VALUES ($1,$2,$3)", pid, sid, key)
+            await c.execute(
+                "INSERT INTO detections (photo_id, model, dog, cat) VALUES ($1,'yolo26x',$2,$3)",
+                pid, dog, cat)
     return sid
+
+
+async def _scored(client, *, dog, cat, key="k"):
+    return await _sighting(client, animal_confidence=max(dog, cat), photos=[(dog, cat, key)])
 
 
 async def test_the_queue_is_least_animal_like_first(app_client):
@@ -128,3 +143,83 @@ async def test_a_non_moderator_gets_404(app_client):
     app_client.cookies.set("session", issue_session(oid))
 
     assert (await app_client.get("/moderation/animals")).status_code == 404
+
+
+async def test_the_representative_photo_is_the_highest_scoring_one(app_client):
+    """A sighting can carry many photos -- a video clip yields up to twelve
+    frames. The queue must show exactly one row for it, not one per photo
+    (a plain join instead of the lateral's `LIMIT 1` would multiply the
+    row), and the evidence shown must come from the highest-scoring photo,
+    so a moderator rules against the sighting's best evidence rather than
+    its worst."""
+    await _moderator(app_client)
+    sid = await _sighting(
+        app_client,
+        animal_confidence=0.60,
+        photos=[
+            (0.10, 0.05, "low.jpg"),
+            (0.60, 0.20, "high.jpg"),
+        ],
+    )
+
+    items = (await app_client.get("/moderation/animals")).json()["items"]
+    matches = [i for i in items if i["sighting_id"] == str(sid)]
+    assert len(matches) == 1  # no row multiplication across the two photos
+
+    item = matches[0]
+    assert item["dog"] == pytest.approx(0.60, abs=1e-6)
+    assert item["cat"] == pytest.approx(0.20, abs=1e-6)
+    assert "high_thumb" in item["thumb_url"]
+    assert "low_thumb" not in item["thumb_url"]
+
+
+async def test_an_unscored_sighting_is_excluded(app_client):
+    """`animal_confidence IS NULL` means the detector has not looked at this
+    sighting yet -- not evidence of "no animal", just no evidence at all. It
+    must not appear in a queue whose whole point is ruling on what the
+    detector actually said."""
+    await _moderator(app_client)
+    sid = uuid7()
+    async with (await _pool(app_client)).acquire() as c:
+        oid = uuid7()
+        await c.execute(
+            "INSERT INTO observers (id, display_name, created_via) VALUES ($1,'T','test')",
+            oid)
+        await c.execute(
+            "INSERT INTO sightings (id, observer_id, captured_at) VALUES ($1,$2,now())",
+            sid, oid)
+
+    ids = [i["sighting_id"] for i in
+           (await app_client.get("/moderation/animals")).json()["items"]]
+    assert str(sid) not in ids
+
+
+async def test_a_detection_under_a_superseded_model_does_not_match(app_client):
+    """`detections` is keyed on `(photo_id, model)` precisely so an old
+    detector's scores stay on the table without being read as current ones
+    (0013). The lateral only joins rows for `DETECTOR_NAME`, so a sighting
+    whose only detection is under a different model has no matching photo --
+    it must still surface (it is genuinely unscored by the current
+    detector), with `dog`/`cat`/`thumb_url` all `None` rather than vanishing
+    or erroring."""
+    await _moderator(app_client)
+    sid, pid = uuid7(), uuid7()
+    async with (await _pool(app_client)).acquire() as c:
+        oid = uuid7()
+        await c.execute(
+            "INSERT INTO observers (id, display_name, created_via) VALUES ($1,'T','test')",
+            oid)
+        await c.execute(
+            "INSERT INTO sightings (id, observer_id, captured_at, animal_confidence) "
+            "VALUES ($1,$2,now(),$3)", sid, oid, 0.02)
+        await c.execute(
+            "INSERT INTO photos (id, sighting_id, s3_key) VALUES ($1,$2,$3)", pid, sid, "stale")
+        await c.execute(
+            "INSERT INTO detections (photo_id, model, dog, cat) VALUES ($1,'yolov8n',$2,$3)",
+            pid, 0.02, 0.00)
+
+    item = (await app_client.get("/moderation/animals")).json()["items"][0]
+    assert item["sighting_id"] == str(sid)
+    assert item["dog"] is None
+    assert item["cat"] is None
+    assert item["thumb_url"] is None
