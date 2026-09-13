@@ -442,6 +442,11 @@ class Worker:
             except Exception:
                 errors = min(errors + 1, 8)
                 delay = min(self.config.max_backoff, self.config.error_delay * 2**(errors - 1))
+            # A lease renewal is not evidence that native inference made progress.
+            # The separate process watchdog observes completed claim loops only.
+            progress = os.getenv("MEDIA_GPU_PROGRESS_FILE")
+            if progress:
+                Path(progress).touch()
             if delay:
                 with suppress(TimeoutError):
                     await asyncio.wait_for(self.stop.wait(), delay * random.uniform(0.8, 1.2))
