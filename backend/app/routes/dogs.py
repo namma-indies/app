@@ -37,6 +37,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends
 
+from app.aggregates import COUNTABLE_SIGHTING
 from app.auth.deps import require_observer
 from app.config import settings
 from app.deps import get_conn, get_storage
@@ -144,7 +145,7 @@ async def get_dogs(
     storage: S3Storage = Depends(get_storage),
 ):
     dogs = await conn.fetch(
-        """
+        f"""
         SELECT
             i.id,
             i.name,
@@ -166,7 +167,7 @@ async def get_dogs(
         -- hang off the survivor, so listing it would show the same dog twice.
         WHERE i.merged_into IS NULL
           AND i.status IS DISTINCT FROM 'merged'
-          AND s.review_status <> 'rejected'
+          AND {COUNTABLE_SIGHTING}
         GROUP BY i.id, i.name
         ORDER BY max(s.captured_at) DESC
         LIMIT $2

@@ -24,6 +24,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.aggregates import COUNTABLE_SIGHTING
 from app.auth.deps import require_observer
 from app.deps import get_conn, get_storage
 from app.photos import thumb_key
@@ -76,7 +77,7 @@ async def get_map(
     # in Python. A clip yields up to twelve frames under one sighting and the
     # map needs exactly one thumbnail, so joining every photo would multiply
     # every pin and then throw the extras away.
-    sql = """
+    sql = f"""
         SELECT DISTINCT ON (s.id)
             s.id,
             s.captured_at,
@@ -91,7 +92,7 @@ async def get_map(
         JOIN observers o ON o.id = s.observer_id
         LEFT JOIN photos p ON p.sighting_id = s.id
         WHERE s.geog IS NOT NULL
-          AND s.review_status <> 'rejected'
+          AND {COUNTABLE_SIGHTING}
     """
     args: list = []
     if envelope is not None:

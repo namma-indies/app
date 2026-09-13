@@ -125,6 +125,27 @@ class Settings(BaseSettings):
     # clears propose_min on a thin sighting, asking for a short clip is worth
     # more than asking for a yes/no the contributor cannot answer confidently.
     reid_thin_evidence_frames: int = 4
+    # --- aggregates --------------------------------------------------------
+    # Which boundary scheme a public count is labelled with when the caller
+    # does not say. A data question, not a code one: falling back from wards
+    # to PIN codes is this line plus a loader run.
+    area_default_kind: str = "bbmp_ward"
+
+    # Small-cell suppression. An area is reported only if it clears BOTH.
+    # Per kind, because the threshold protects a privacy property and that
+    # property depends on cell size: a Bangalore PIN code and a BBMP ward
+    # differ by roughly an order of magnitude in area, so one number cannot be
+    # right for both. A global threshold would also silently become the wrong
+    # number the moment the PIN-code fallback happened, with no code change to
+    # notice it. JSON in the environment: AREA_MIN_SIGHTINGS='{"bbmp_ward":5}'
+    area_min_sightings: dict[str, int] = {"bbmp_ward": 5, "pin_code": 20}
+    area_min_observers: dict[str, int] = {"bbmp_ward": 2, "pin_code": 3}
+    # Applied to any kind not named above, including one loaded tomorrow. A
+    # new kind gets the ward defaults and should be given its own entry before
+    # anything derived from it is published.
+    area_min_sightings_default: int = 5
+    area_min_observers_default: int = 2
+
     # Sized for request handlers plus the background tasks that run after the
     # response; see the comment in main.py's lifespan.
     db_pool_min: int = 5
