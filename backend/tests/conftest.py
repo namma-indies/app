@@ -59,8 +59,8 @@ async def migrated_db(_migrated):
     try:
         await conn.execute(
             "TRUNCATE observers, sightings, photos, embeddings, individuals, "
-            "match_proposals, confirmations, clinical_records, login_tokens "
-            "RESTART IDENTITY CASCADE"
+            "match_proposals, confirmations, clinical_records, login_tokens, "
+            "areas RESTART IDENTITY CASCADE"
         )
         yield conn
     finally:
@@ -83,8 +83,8 @@ async def app_client(_migrated):
     async with app.state.pool.acquire() as c:
         await c.execute(
             "TRUNCATE observers, sightings, photos, embeddings, individuals, "
-            "match_proposals, confirmations, clinical_records, login_tokens "
-            "RESTART IDENTITY CASCADE"
+            "match_proposals, confirmations, clinical_records, login_tokens, "
+            "areas RESTART IDENTITY CASCADE"
         )
 
     import httpx
