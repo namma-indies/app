@@ -120,12 +120,13 @@ async def test_post_sighting_saves_when_no_dog_detected(authed_client):
     pool = client._transport.app.state.pool
     async with pool.acquire() as c:
         row = await c.fetchrow(
-            "SELECT dog_confidence, review_status FROM sightings WHERE id=$1", sid
+            "SELECT dog_confidence, animal_confidence, review_status FROM sightings WHERE id=$1",
+            sid,
         )
         n_photos = await c.fetchval(
             "SELECT count(*) FROM photos WHERE sighting_id=$1", sid
         )
-    from app.detect import DOG_CONF_THRESHOLD
+    from app.config import settings
 
     # The point of this test -- a capture is never lost to the detector -- holds
     # whether or not the detector exists, and is worth MORE without it: a
@@ -134,9 +135,13 @@ async def test_post_sighting_saves_when_no_dog_detected(authed_client):
     assert row["review_status"] == "valid"
     assert n_photos == 1
     if _HAS_DETECTOR:
-        # Scored, saved, and visible -- the low score is recorded, not acted on.
-        assert row["dog_confidence"] is not None
-        assert row["dog_confidence"] < DOG_CONF_THRESHOLD
+        # A blank frame scores low and is saved anyway -- that is the contract
+        # 0002 established, and the number is now on `animal_confidence`.
+        assert row["animal_confidence"] is not None
+        assert row["animal_confidence"] < 0.25
+    assert settings.animal_confidence_min == 0.0, (
+        "this suite assumes the filter is inert; see the spec's phase 2"
+    )
 
 
 @pytest.mark.skipif(not _HAS_DETECTOR, reason="YOLO26x weights absent")

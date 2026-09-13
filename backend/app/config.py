@@ -144,6 +144,20 @@ class Settings(BaseSettings):
     # clears propose_min on a thin sighting, asking for a short clip is worth
     # more than asking for a yes/no the contributor cannot answer confidently.
     reid_thin_evidence_frames: int = 4
+
+    # --- animal presence ---------------------------------------------------
+    # A sighting whose photos score below this does not appear on /map, /dogs,
+    # the public counts, or in re-ID candidate search. It stays in its owner's
+    # /dex, and nothing is deleted.
+    #
+    # DELIBERATELY 0.0 -- the filter ships switched off. `dog_confidence` was
+    # scored by two detectors that disagree badly (v8n scored a real dog at
+    # 0.021 where 26x gives 0.800, see #67), so any number picked before the
+    # corpus is rescored would hide real dogs. Choose it by walking
+    # /moderation/animals from the bottom: where you stop being able to say
+    # "no animal" is the threshold.
+    animal_confidence_min: float = 0.0
+
     # --- aggregates --------------------------------------------------------
     # Which boundary scheme a public count is labelled with when the caller
     # does not say. A data question, not a code one: falling back from wards
