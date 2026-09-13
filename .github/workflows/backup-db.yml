@@ -1,0 +1,38 @@
+name: Back up the database
+# On-demand database backup, for people without SSH access to the box, and for
+# taking one deliberately before a risky migration.
+#
+# The nightly run is deploy/backup-db.timer on the box. This is the same script
+# by another door, not a second mechanism.
+
+on:
+  workflow_dispatch: {}
+
+concurrency:
+  group: production-diagnostics
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Back up argos
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_TARGET: ${{ secrets.DEPLOY_SSH_TARGET }}
+        run: |
+          set -euo pipefail
+          key_file="$(mktemp)"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$key_file"
+          chmod 600 "$key_file"
+          # The action name is sent and the script is still piped, so this works
+          # whether the box has the old `command="bash -s"` pinning or
+          # deploy/authorized-command.sh. See deploy/README.md.
+          cat deploy/remote-backup-db.sh \
+            | ssh -i "$key_file" -o BatchMode=yes -o ConnectTimeout=15 \
+                  -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
+                "$DEPLOY_SSH_TARGET" 'backup-db'

@@ -183,15 +183,16 @@ async def test_post_sighting_dog_confidence_null_until_background_task_runs(
     """The insert itself must not depend on the detector: even if scoring is
     slow or fails, the row exists with dog_confidence NULL until the
     background task updates it."""
-    from app.routes import sighting as sighting_route
+    import app.analyse as analyse_mod
 
     def boom(_raw):
         raise RuntimeError("simulated detector failure")
 
-    # sighting.py does `from app.detect_reid import animal_confidence`, which
-    # binds its own name in this module's namespace -- patch that name, not
-    # app.detect_reid's, or the patch has no effect on the code under test.
-    monkeypatch.setattr(sighting_route, "animal_confidence", boom)
+    # Patched on app.analyse, not on the route module. sighting.py imports
+    # `analyse` INSIDE _analyse_and_save, so the lookup happens at call time
+    # against app.analyse -- binding a name on the route module would have no
+    # effect on the code under test.
+    monkeypatch.setattr(analyse_mod, "analyse", boom)
 
     client, _ = authed_client
     r = await client.post(
@@ -222,13 +223,15 @@ async def test_post_sighting_insert_does_not_call_detector_directly(
     from app.routes import sighting as sighting_route
 
     calls = []
-    orig = sighting_route._score_and_save_dog_confidence
+    # Detection and embedding are one task now: they shared a yolo26x pass over
+    # identical bytes, so two tasks meant two forward passes per photo.
+    orig = sighting_route._analyse_and_save
 
-    async def spy(pool, sighting_id, raws):
+    async def spy(pool, sighting_id, photo_ids, raws):
         calls.append(sighting_id)
-        await orig(pool, sighting_id, raws)
+        await orig(pool, sighting_id, photo_ids, raws)
 
-    monkeypatch.setattr(sighting_route, "_score_and_save_dog_confidence", spy)
+    monkeypatch.setattr(sighting_route, "_analyse_and_save", spy)
 
     client, _ = authed_client
     r = await client.post(

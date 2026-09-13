@@ -21,8 +21,8 @@ but `deploy/entrypoint.sh` is `set -e` -- a migration that aborts does not
 leave the site un-updated, it leaves the site down, with the old container
 already gone. This form is correct whether or not the belief holds.
 
-Revision ID: 0008_areas_kind
-Revises: 0007_geo_source_exif
+Revision ID: 0011_areas_kind
+Revises: 0010_sighting_reports
 Create Date: 2026-09-13
 
 """
@@ -30,8 +30,8 @@ from typing import Sequence, Union
 
 from alembic import op
 
-revision: str = "0008_areas_kind"
-down_revision: Union[str, None] = "0007_geo_source_exif"
+revision: str = "0011_areas_kind"
+down_revision: Union[str, None] = "0010_sighting_reports"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

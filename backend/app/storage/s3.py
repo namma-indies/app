@@ -66,6 +66,25 @@ class S3Storage:
                 ContentType=content_type,
             )
 
+    async def put_file(self, key: str, path: str, content_type: str) -> int:
+        """Upload a file by streaming it, and return the byte count.
+
+        Separate from `put` rather than folded into it. `put` takes bytes,
+        which is right for a photo already decoded in memory and wrong for a
+        database dump: reading one into memory to hand it over is how a backup
+        job becomes the thing that OOMs the box it is protecting. This hands
+        boto3 a file object and lets it multipart as needed.
+        """
+        import os
+
+        size = os.path.getsize(path)
+        async with self._client() as client:
+            with open(path, "rb") as fh:
+                await client.upload_fileobj(
+                    fh, self.bucket, key, ExtraArgs={"ContentType": content_type}
+                )
+        return size
+
     async def get(self, key: str) -> bytes:
         """Read an object back. Used by the embedding backfill, which has to
         re-derive vectors from photos that were stored before the model
@@ -75,6 +94,21 @@ class S3Storage:
             obj = await client.get_object(Bucket=self.bucket, Key=key)
             async with obj["Body"] as body:
                 return await body.read()
+
+    async def get_file(self, key: str, path: str) -> int:
+        """Download an object to a file by streaming, and return its size.
+
+        The counterpart of `put_file`, and it exists for the same reason: a
+        restore reaches for the largest object in the bucket, and `get`'s
+        read-it-all-into-memory would pick the worst possible moment -- a box
+        already in trouble -- to need the whole database resident at once.
+        """
+        import os
+
+        async with self._client() as client:
+            with open(path, "wb") as fh:
+                await client.download_fileobj(self.bucket, key, fh)
+        return os.path.getsize(path)
 
     async def list_keys(self, prefix: str) -> list[str]:
         async with self._client() as client:

@@ -476,6 +476,22 @@ button { font-family: inherit; }
 .photo-pin img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .photo-pin-fallback { display: flex; align-items: center; justify-content: center; font-size: 1.2rem; }
 
+/* Another observer's sighting, collapsed to a grid cell by the server. The
+   dashed, softened edge says "roughly here" before anyone taps -- a crisp pin
+   would assert a precision the payload explicitly does not carry. */
+.photo-pin-approx {
+  border-style: dashed;
+  opacity: 0.82;
+  filter: saturate(0.85);
+}
+.popup-approx {
+  margin-top: 2px;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  color: var(--muted, #6b5844);
+  font-style: italic;
+}
+
 /* Cluster bubbles: same stamped-card language as the pins, so a group reads
    as "several of these" rather than as a different kind of thing. */
 .cluster-pin {
@@ -718,4 +734,182 @@ button { font-family: inherit; }
 .dog-by {
   font-family: "Silkscreen", monospace; font-size: 0.48rem;
   color: var(--accent); margin-top: 0.35rem;
+}
+
+/* --- Review: possible matches awaiting a verdict -------------------------
+   Two photos, side by side, equal weight. The whole question is "are these the
+   same animal", so nothing may suggest an answer before the person looks --
+   which is also why the two buttons are the same size. */
+.review { display: flex; flex-direction: column; gap: 0.85rem; margin-top: 0.25rem; }
+
+.match-card {
+  background: var(--panel); border: 3px solid var(--line); border-radius: 4px;
+  box-shadow: 3px 3px 0 var(--shadow); padding: 0.7rem;
+}
+
+.match-pair { display: flex; gap: 0.6rem; }
+.match-side { flex: 1 1 0; min-width: 0; text-align: center; }
+.match-side img,
+.match-blank {
+  width: 100%; aspect-ratio: 1; object-fit: cover; display: block;
+  border: 3px solid var(--line); border-radius: 3px; background: var(--frame);
+}
+.match-blank { display: flex; align-items: center; justify-content: center; font-size: 1.5rem; }
+.match-date {
+  display: block; font-family: "Silkscreen", monospace; font-size: 0.46rem;
+  color: var(--muted); margin-top: 0.25rem;
+}
+
+.match-score {
+  font-family: "Silkscreen", monospace; font-size: 0.46rem; color: var(--muted);
+  text-align: center; margin: 0.5rem 0;
+}
+
+.match-actions { display: flex; gap: 0.5rem; }
+.match-actions button {
+  flex: 1 1 0; padding: 0.6rem 0.4rem; border: 3px solid var(--line);
+  border-radius: 4px; font-family: "Silkscreen", monospace; font-size: 0.55rem;
+  cursor: pointer; box-shadow: 2px 2px 0 var(--shadow);
+}
+.match-actions button:disabled { opacity: 0.5; cursor: default; }
+/* Same size, deliberately. Making "same dog" the prominent one would nudge
+   toward merging, and a wrong merge is the expensive direction: it fuses two
+   animals into one record. */
+.btn-different { background: var(--panel); color: var(--ink); }
+.btn-same { background: var(--accent); color: var(--panel); }
+
+
+/* --- reporting & moderation ------------------------------------------------ */
+
+/* In the map popup, on other people's sightings only. Deliberately quiet: it
+   should be findable when wanted and never compete with the photo. */
+.popup-report {
+  margin-top: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--terra-dark, #a44a2b);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.report-sheet {
+  width: min(420px, 92vw);
+  background: var(--card, #fffdf8);
+  border: 1px solid var(--line, #d8c4a6);
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 8px 30px rgba(46, 32, 22, 0.18);
+}
+.report-sheet h2 { margin: 0 0 4px; font-size: 1.1rem; }
+.report-reasons { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 16px; }
+.report-note-label { display: block; font-size: 0.78rem; font-weight: 600; margin-bottom: 6px; }
+.report-sheet textarea {
+  width: 100%;
+  border: 1px solid var(--line, #d8c4a6);
+  border-radius: 10px;
+  padding: 10px;
+  font: inherit;
+  resize: vertical;
+}
+
+/* One of your own, taken off the shared map. You keep seeing it; you are also
+   told why, rather than left wondering where it went. */
+.under-review {
+  margin: 4px 0;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  color: var(--terra-dark, #a44a2b);
+  font-weight: 700;
+}
+
+.mod-head { display: flex; gap: 12px; align-items: flex-start; }
+.mod-thumb {
+  width: 92px; height: 92px; object-fit: cover;
+  border-radius: 10px; flex: 0 0 auto;
+}
+.mod-meta { min-width: 0; }
+.mod-notes {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  font-size: 0.85rem;
+  color: var(--ink, #2e2016);
+}
+.mod-notes li { margin-bottom: 4px; overflow-wrap: anywhere; }
+
+/* Required in-app by Apple 5.1.1 (privacy policy) and 1.2 (contact details). */
+.legal-row {
+  padding: 10px 0 14px;
+  text-align: center;
+  font-size: 0.72rem;
+  color: var(--muted, #6b5844);
+}
+.legal-row a { color: inherit; text-decoration: underline; }
+
+/* --- saying where a sighting happened -------------------------------------- */
+
+/* A row, not a label: the whole thing is the tap target. A tester who lost
+   their fix had nothing to press, and the sighting saved placeless in silence. */
+.place-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin: 4px 0 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--line, #d8c4a6);
+  border-radius: 12px;
+  background: #fffdf8;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink, #2e2016);
+  text-align: left;
+  cursor: pointer;
+}
+.place-row-empty { border-style: dashed; color: var(--terra-dark, #a44a2b); }
+.place-text { flex: 1; min-width: 0; }
+.place-action {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--terra, #c15f3c);
+}
+.place-warning { margin: 2px 0 8px; color: var(--terra-dark, #a44a2b); }
+
+.location-picker {
+  width: min(460px, 94vw);
+  max-height: 90dvh;
+  overflow-y: auto;
+  background: #fffdf8;
+  border: 1px solid var(--line, #d8c4a6);
+  border-radius: 16px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.pick-map-wrap { position: relative; height: min(46dvh, 340px); }
+.pick-map { position: absolute; inset: 0; border-radius: 12px; overflow: hidden; }
+/* Fixed over a moving map. A draggable marker sits under the thumb dragging it. */
+.pick-crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 2rem;
+  line-height: 1;
+  color: var(--terra-dark, #a44a2b);
+  text-shadow: 0 0 4px #fff, 0 0 10px #fff;
+  pointer-events: none;
+}
+.permission-help {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f4ead9;
+  color: var(--ink, #2e2016);
 }

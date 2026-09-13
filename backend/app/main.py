@@ -21,6 +21,7 @@ from app.routes.sighting import router as sighting_router
 from app.routes.stats import router as stats_router
 from app.routes.map import router as map_router
 from app.routes.match import router as match_router
+from app.routes.moderation import router as moderation_router
 from app.routes.photo_metadata import router as photo_metadata_router
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,7 @@ app.include_router(sighting_router)
 app.include_router(map_router)
 app.include_router(stats_router)
 app.include_router(match_router)
+app.include_router(moderation_router)
 app.include_router(photo_metadata_router)
 
 

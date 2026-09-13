@@ -34,8 +34,8 @@ individual, which is exactly what the cache column can represent. The database
 refuses the inconsistent state rather than trusting application code that has
 not been written yet to avoid it.
 
-Revision ID: 0009_individual_names
-Revises: 0008_areas_kind
+Revision ID: 0012_individual_names
+Revises: 0011_areas_kind
 Create Date: 2026-09-13
 
 """
@@ -43,8 +43,8 @@ from typing import Sequence, Union
 
 from alembic import op
 
-revision: str = "0009_individual_names"
-down_revision: Union[str, None] = "0008_areas_kind"
+revision: str = "0012_individual_names"
+down_revision: Union[str, None] = "0011_areas_kind"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

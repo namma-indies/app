@@ -7,21 +7,28 @@ vi.mock("@capacitor/core", () => ({
 
 const takePhoto = vi.fn();
 const chooseFromGallery = vi.fn();
+const recordVideo = vi.fn();
 vi.mock("@capacitor/camera", () => ({
   Camera: {
     takePhoto: (...args: unknown[]) => takePhoto(...args),
     chooseFromGallery: (...args: unknown[]) => chooseFromGallery(...args),
+    recordVideo: (...args: unknown[]) => recordVideo(...args),
   },
   CameraResultType: { Uri: "uri" },
   CameraSource: { Camera: "camera", Photos: "photos" },
 }));
 
-import { chooseFromGalleryIfNative, takePhotoIfNative } from "./takePhoto";
+import {
+  chooseFromGalleryIfNative,
+  recordVideoIfNative,
+  takePhotoIfNative,
+} from "./takePhoto";
 
 beforeEach(() => {
   isNativePlatform.mockReset();
   takePhoto.mockReset();
   chooseFromGallery.mockReset();
+  recordVideo.mockReset();
   vi.stubGlobal(
     "fetch",
     vi
@@ -161,5 +168,75 @@ describe("chooseFromGalleryIfNative", () => {
     chooseFromGallery.mockRejectedValue(new Error("User denied access to photos"));
 
     await expect(chooseFromGalleryIfNative()).rejects.toThrow("denied");
+  });
+});
+
+// Video was the one capture path never given a native route: photos and
+// camera-roll imports were both moved onto the Camera plugin while the clip
+// button kept clicking a hidden file input, which inside a WebView depends on
+// platform file-provider behaviour rather than on anything we control.
+describe("recordVideoIfNative", () => {
+  function blobOf(type: string) {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      blob: () => Promise.resolve(new Blob(["x"], { type })),
+    }));
+  }
+
+  it("returns null on web so the caller falls back to the file input", async () => {
+    isNativePlatform.mockReturnValue(false);
+    expect(await recordVideoIfNative()).toBeNull();
+    expect(recordVideo).not.toHaveBeenCalled();
+  });
+
+  it("leaves no copy in the camera roll", async () => {
+    // The server mines frames and discards the clip -- routes/sighting.py never
+    // persists the video. Saving to the gallery would make the user's camera
+    // roll the only lasting artefact of something the app throws away.
+    isNativePlatform.mockReturnValue(true);
+    recordVideo.mockResolvedValue({ webPath: "file:///clip" });
+    blobOf("video/mp4");
+    await recordVideoIfNative();
+    expect(recordVideo).toHaveBeenCalledWith(
+      expect.objectContaining({ saveToGallery: false, isPersistent: false }),
+    );
+  });
+
+  it("names the file from the blob's own MIME type", async () => {
+    isNativePlatform.mockReturnValue(true);
+    recordVideo.mockResolvedValue({ webPath: "file:///clip" });
+    blobOf("video/quicktime");
+    const f = await recordVideoIfNative();
+    expect(f?.type).toBe("video/quicktime");
+    expect(f?.name).toMatch(/\.quicktime$/);
+  });
+
+  it("falls back to video/mp4, never the photo default", async () => {
+    // Camera 8's MediaResult carries no `format` field, so the extension comes
+    // off the blob. A typeless clip inheriting image/jpeg would be posted as a
+    // photo, which the backend rejects.
+    isNativePlatform.mockReturnValue(true);
+    recordVideo.mockResolvedValue({ webPath: "file:///clip" });
+    blobOf("");
+    const f = await recordVideoIfNative();
+    expect(f?.type).toBe("video/mp4");
+    expect(f?.name).toMatch(/\.mp4$/);
+  });
+
+  it("returns null on cancellation rather than throwing", async () => {
+    isNativePlatform.mockReturnValue(true);
+    recordVideo.mockRejectedValue(new Error("User cancelled photos app"));
+    expect(await recordVideoIfNative()).toBeNull();
+  });
+
+  it("rethrows a real failure so the caller can surface it", async () => {
+    isNativePlatform.mockReturnValue(true);
+    recordVideo.mockRejectedValue(new Error("camera unavailable"));
+    await expect(recordVideoIfNative()).rejects.toThrow("camera unavailable");
+  });
+
+  it("returns null when the native call yields no path", async () => {
+    isNativePlatform.mockReturnValue(true);
+    recordVideo.mockResolvedValue({});
+    expect(await recordVideoIfNative()).toBeNull();
   });
 });

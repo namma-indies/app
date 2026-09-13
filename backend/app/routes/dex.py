@@ -26,6 +26,7 @@ async def get_dex(
             ST_X(s.geog::geometry) AS lng,
             s.geo_accuracy_m,
             s.attrs,
+            s.review_status,
             p.id AS photo_id,
             p.s3_key
         FROM sightings s
@@ -53,6 +54,10 @@ async def get_dex(
                 "lng": row["lng"],
                 "geo_accuracy_m": row["geo_accuracy_m"],
                 "attrs": attrs,
+                # Your own sightings stay in your own dex whatever their status
+                # -- but you should be told when one has been taken off the
+                # shared map, rather than wondering why nobody can see it.
+                "review_status": row["review_status"],
                 "photos": [],
             }
             order.append(sid)

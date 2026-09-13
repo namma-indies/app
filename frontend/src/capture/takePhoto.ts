@@ -31,11 +31,18 @@ function isCancellation(err: unknown): boolean {
   return message.toLowerCase().includes("cancel");
 }
 
-async function fileFrom(webPath: string | undefined, prefix: string): Promise<File | null> {
+async function fileFrom(
+  webPath: string | undefined,
+  prefix: string,
+  fallbackType = "image/jpeg",
+): Promise<File | null> {
   if (!webPath) return null;
   const blob = await fetch(webPath).then((r) => r.blob());
-  const type = blob.type || "image/jpeg";
-  const ext = type.split("/")[1] || "jpeg";
+  // Camera 8's MediaResult carries no `format`, so the extension comes off the
+  // blob's MIME type. The fallback has to be passed in: a video that reports no
+  // type would otherwise be named .jpeg and sent as an image.
+  const type = blob.type || fallbackType;
+  const ext = type.split("/")[1] || fallbackType.split("/")[1];
   return new File([blob], `${prefix}-${Date.now()}.${ext}`, { type });
 }
 
@@ -83,6 +90,40 @@ export async function chooseFromGalleryIfNative(): Promise<File | null> {
     const photo = results?.[0];
     if (!photo) return null;
     return await fileFrom(photo.webPath, "import");
+  } catch (err) {
+    if (isCancellation(err)) return null;
+    throw err;
+  }
+}
+
+/**
+ * Opens the native video camera. Returns null on web (caller falls back to the
+ * file-input flow) or if the user cancels.
+ *
+ * This exists because video was the one capture path never given a native
+ * route. Photos and camera-roll imports were both moved off
+ * `<input type="file" capture>` onto the Camera plugin; the clip button was
+ * left clicking a hidden file input, which inside a WebView depends on
+ * platform file-provider behaviour rather than on anything we control.
+ *
+ * `saveToGallery` is false, unlike `takePhotoIfNative`. A clip is evidence the
+ * server mines for frames and then discards -- `routes/sighting.py` never
+ * persists the video itself -- so leaving a copy in the user's camera roll
+ * would be the only lasting artefact of a thing the app deliberately throws
+ * away. `isPersistent` is false for the same reason: the URI is read once,
+ * immediately, and never across launches.
+ */
+export async function recordVideoIfNative(): Promise<File | null> {
+  if (!Capacitor.isNativePlatform()) return null;
+
+  const { Camera } = await import("@capacitor/camera");
+
+  try {
+    const clip = await Camera.recordVideo({
+      saveToGallery: false,
+      isPersistent: false,
+    });
+    return await fileFrom(clip.webPath, "clip", "video/mp4");
   } catch (err) {
     if (isCancellation(err)) return null;
     throw err;

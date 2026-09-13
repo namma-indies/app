@@ -86,14 +86,47 @@ setting at this data density.
 | `GET /map` | the **cohort's** sightings as pins, thumbnails only, optional `bbox` |
 | `GET /dogs` | identified individuals, one card each, with ranked look-alikes |
 | `GET /sighting/{id}/match` · `POST /proposal/{id}` | candidates, and the human verdict on them |
+| `GET /me` | who the session is, and whether they moderate |
+| `POST /sighting/{id}/report` | flag a sighting; it leaves the shared surfaces at once |
+| `GET /moderation/queue` · `POST /sighting/{id}/review` | what needs a human, and the ruling |
+
+### review_status finally has a writer
+
+`sightings.review_status` has carried `pending`/`valid`/`rejected` since
+migration 0001, and `/map` filtered on it from the day it was written. Nothing
+ever set anything but `valid`, so that filter was unreachable code and no path
+in the product could take a photo off the shared map.
+
+`POST /sighting/{id}/report` is that writer. One report hides the sighting
+(`valid` → `pending`) and a moderator rules on it. Every shared surface now
+requires `review_status = 'valid'` — `/map`, `/dogs` and `/proposals` — while
+`/dex` still shows you your own whatever its status, and says which status.
+Candidate search excludes only `rejected`, so a moderator's takedown cannot
+keep seeding identities, while a merely-reported sighting stays matchable.
+
+A moderator's decision is sticky: `reviewed_at` is what stops the next report
+quietly overturning it. Reports after a review still surface in the queue, so
+re-reporting reaches a human without reaching past one. Moderators are
+`observers.trust_tier = 'moderator'`, set by hand.
 
 `/dex` and `/map` differ deliberately: `/dex` means "mine" and is the ownership
 semantics `resolve_sighting` reads, while `/map` is cohort-wide and carries
-`mine` per sighting so a client filters rather than refetches. `/map` and
-`/dogs` both show **full precision to any signed-in observer**, which is safe
-only while the cohort stays passcode- and allowlist-gated. Issue #5's
-`resolve_precision` has to land on both at once — a coarsened map beside a
-precise dog card protects nothing.
+`mine` per sighting so a client filters rather than refetches.
+
+`/map` and `/dogs` show **full precision only for animals you photographed**;
+everyone else's collapse to the centre of a ~1 km grid cell (`app/precision.py`,
+`settings.map_coarsen_cell_m`). Both apply the identical rule, because the
+looser of the two would decide what is actually protected. They used to show
+full precision to any signed-in observer, justified by the cohort being
+passcode-gated — but the passcode is shared and mints an anonymous observer on
+the spot, so anyone holding it could read the exact position of every dog.
+
+A grid cell rather than a jittered point, and that is the whole design: jitter
+averages away under repeated fetches, and leaks further the more sightings a dog
+has, so the best-documented animals end up the least protected. Snapping is a
+function of the input alone, so refreshing and aggregating both reveal nothing.
+Still to come from issue #5: a named `area` polygon instead of a cell centre,
+plus the delay and marking-suppression dials.
 
 ---
 
@@ -405,10 +438,12 @@ API to ask for one — that is issue #5's "delay" dial enforced by absence
 rather than by a rule someone has to remember.
 
 `app/aggregates.py` owns the single definition of a countable sighting
-(`review_status <> 'rejected'`) and the lateral join that attributes a sighting
-to at most one area. `/map` and `/dogs` import that constant. `/dex` still does
-not filter rejected sightings — that is issue #54's call about what your own
-Journal shows, deliberately not changed here.
+(`review_status = 'valid'`) and the lateral join that attributes a sighting to
+at most one area. `/map` and `/dogs` import that constant. It is `= 'valid'`
+rather than `<> 'rejected'` because `pending` means reported-and-not-yet-looked-at
+(#46) — an argument that is stronger for a count than for the map, since a
+count is what gets quoted to a partner. `/dex` deliberately shows you your own
+sightings whatever their status, and reports the status alongside them.
 
 ## Rate limiting
 

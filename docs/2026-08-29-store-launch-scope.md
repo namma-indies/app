@@ -64,7 +64,23 @@ has no such carve-out. Apps with user-generated content **must** include:
 All four. Which means the real target is Apple's list, and Play's requirement
 is a subset of it. Tracked in #27.
 
-Rough shape, subject to the design conversation that has not happened yet:
+**Status, 2026-09-04.** Three of Apple's four are built; blocking is not.
+
+- **Report** — *shipped.* An action in the map popup on other people's
+  sightings. `sightings.review_status` turned out to be exactly the machinery
+  guessed at below: it existed, `/map` already filtered on it, and nothing had
+  ever written to it, so the filter was unreachable code.
+- **Filter** — *shipped, as the pending state.* A reported sighting leaves
+  `/map`, `/dogs` and `/proposals` at once and waits for a moderator. That is
+  the human-in-the-loop reading of Apple's wording, which is the honest one at
+  this cohort size; automated screening is not built and is not proposed.
+- **Contact** — *shipped.* `privacy` and `contact us` on the sign-in gate and
+  in the app chrome, which also covers 5.1.1's in-app privacy policy.
+- **Block** — *not built.* Still the genuine product question below: what
+  blocking means in a shared-map app with no messaging. It is the one remaining
+  Apple item.
+
+Original shape, kept for the reasoning:
 
 - **Report** — an action on the sighting detail sheet. `sightings.review_status`
   already carries `pending`/`valid`/`rejected`, so hiding a reported sighting
@@ -79,11 +95,9 @@ Rough shape, subject to the design conversation that has not happened yet:
 - **Contact** — nearly free. `nammaindies@gmail.com` is already published on
   the privacy page; it needs to be reachable from the listing and the app.
 
-**Also required and currently missing:** Apple 5.1.1 wants the privacy policy
-linked **inside the app**, not only in App Store Connect metadata. The page
-exists at `nammaindies.org/privacy`; nothing in the app links to it. Small
-frontend change, cheap to fold into whatever ships next, annoying to discover
-during review.
+**Apple 5.1.1** wants the privacy policy linked **inside the app**, not only in
+App Store Connect metadata. *Done* — `privacy` and `contact us` sit on the
+sign-in gate and in the app chrome.
 
 ---
 

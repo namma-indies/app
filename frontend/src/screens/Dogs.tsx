@@ -45,11 +45,15 @@ function byLine(d: Dog): string {
 }
 
 function whereLine(d: Dog): string {
-  // Full precision, the same as the map already shows this cohort. When issue
-  // #5's area-label coarsening lands it replaces this line, and must land on
-  // the map at the same time — a stricter dog card next to a precise map
-  // protects nothing.
+  // Exact only for a dog you have photographed yourself; otherwise the server
+  // has already collapsed this to a grid cell, and the card has to say so.
+  // Printing four decimals of a coordinate that is accurate to a kilometre
+  // invites the reader to believe the digits.
   if (d.lat == null || d.lng == null) return "NO LOCATION RECORDED";
+  if (d.precision === "area") {
+    const km = d.cell_m ? (d.cell_m / 1000).toFixed(d.cell_m % 1000 === 0 ? 0 : 1) : "1";
+    return `LAST SEEN IN A ~${km} KM AREA · ${d.lat.toFixed(2)}, ${d.lng.toFixed(2)}`;
+  }
   return `LAST SEEN ${d.lat.toFixed(4)}, ${d.lng.toFixed(4)}`;
 }
 

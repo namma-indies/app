@@ -25,9 +25,18 @@ export interface SightingAttrs {
   condition?: Condition;
 }
 
+/** Where a sighting stands with the shared surfaces. `pending` means someone
+ * reported it and no moderator has looked yet; `rejected` means one has. Only
+ * `valid` sightings appear on /map, /dogs and /proposals -- but all of them
+ * stay in your own dex, because it is your photograph. */
+export type ReviewStatus = "valid" | "pending" | "rejected";
+
 export interface Sighting {
   id: string;
   captured_at: string;
+  /** Present on /dex only, so you can be told when one of yours has been taken
+   * off the shared map rather than wondering why nobody can see it. */
+  review_status?: ReviewStatus;
   lat: number | null;
   lng: number | null;
   geo_accuracy_m: number | null;
@@ -53,12 +62,28 @@ export interface MappableSighting {
   /** Absent on /dex responses, where every sighting is the viewer's. */
   observer?: string;
   mine?: boolean;
+  /** What the coordinate above actually means. "exact" for animals you
+   * photographed; "area" for everyone else's, where the server has collapsed
+   * the point to the centre of a `cell_m`-wide grid cell. Absent on /dex,
+   * where every sighting is your own and therefore exact.
+   *
+   * The map must not draw an "area" point as a pin: the cell centre is the one
+   * place in the cell the dog demonstrably is not. */
+  precision?: Precision;
+  cell_m?: number | null;
 }
 
+export type Precision = "exact" | "area" | "none";
+
 export interface MapSighting extends MappableSighting {
+  /** Null for another observer's sighting: a 6 m accuracy beside a
+   * kilometre-wide cell is a contradiction, and the sharper of the two is the
+   * one a reader would believe. */
   geo_accuracy_m: number | null;
   observer: string;
   mine: boolean;
+  precision: Precision;
+  cell_m: number | null;
 }
 
 export interface MapResponse {
@@ -129,6 +154,12 @@ export async function readPhotoMetadata(file: Blob): Promise<PhotoMetadata> {
 }
 
 export interface PostSightingInput {
+  /** Identifies the capture, not the attempt. Minted once when the sighting is
+   * queued and resent unchanged on every retry, so the server can recognise a
+   * repeat of a request that already landed. Without it a lost *response* --
+   * ordinary on mobile data mid-upload -- makes the queue post the same capture
+   * again and the server create a second sighting. */
+  client_token?: string;
   photos?: Blob[];
   video?: Blob;
   lat?: number;
@@ -146,6 +177,9 @@ export interface PostSightingInput {
 export interface PostSightingResponse {
   sighting_id: string;
   photo_ids: string[];
+  /** True when the server recognised this as a repeat and returned the
+   * sighting the first attempt created, rather than making another. */
+  duplicate?: boolean;
 }
 
 export class UnauthorizedError extends Error {
@@ -185,6 +219,7 @@ export function buildSightingForm(input: PostSightingInput): FormData {
   if (input.lng !== undefined) form.append("lng", String(input.lng));
   if (input.geo_accuracy_m !== undefined)
     form.append("geo_accuracy_m", String(input.geo_accuracy_m));
+  if (input.client_token) form.append("client_token", input.client_token);
   form.append("geo_source", input.geo_source);
   form.append("captured_at", input.captured_at);
   if (input.reported_at) form.append("reported_at", input.reported_at);
@@ -226,6 +261,9 @@ export interface Dog {
   photos: string[];
   lat: number | null;
   lng: number | null;
+  /** Exact only for a dog you have photographed yourself. */
+  precision: Precision;
+  cell_m: number | null;
   tags: string[];
   /** Nearest visual neighbours, best first. A ranked shortlist for a human to
    * review -- explicitly NOT a claim that these are the same animal. On this
@@ -250,4 +288,143 @@ export interface DogsResponse {
 export async function getDogs(): Promise<DogsResponse> {
   const res = await fetch(`${API_BASE}/dogs`, { credentials: "include" });
   return handle<DogsResponse>(res);
+}
+
+/** One side of a proposed match. */
+export interface MatchSide {
+  sighting_id: string;
+  date: string;
+  thumb_url: string | null;
+}
+
+/** A pair the model thinks might be one dog, awaiting a human. */
+export interface Proposal {
+  id: string;
+  /** Cosine similarity. Shown so a reviewer can calibrate their own eye --
+   * never used by the UI to decide anything. */
+  score: number;
+  a: MatchSide;
+  b: MatchSide;
+}
+
+export interface ProposalsResponse {
+  proposals: Proposal[];
+  propose_min: number;
+}
+
+export async function getProposals(): Promise<ProposalsResponse> {
+  const res = await fetch(`${API_BASE}/proposals`, { credentials: "include" });
+  return handle<ProposalsResponse>(res);
+}
+
+/** Record a verdict. `same` merges the two sightings into one individual --
+ * minting it if neither had an identity yet -- and is not undoable through the
+ * app, which is why the caller confirms first. */
+export async function resolveProposal(
+  id: string,
+  verdict: "same" | "different",
+): Promise<void> {
+  const form = new FormData();
+  form.append("verdict", verdict);
+  const res = await fetch(`${API_BASE}/proposal/${id}`, {
+    method: "POST",
+    credentials: "include",
+    body: form,
+  });
+  await handle<unknown>(res);
+}
+
+
+// --- who am I ---------------------------------------------------------------
+
+export interface Me {
+  id: string;
+  display_name: string | null;
+  is_moderator: boolean;
+}
+
+/** Used only to decide whether to render the moderation tab. Every moderation
+ * endpoint checks the tier itself -- a client-side flag is a suggestion. */
+export async function getMe(): Promise<Me> {
+  const res = await fetch(`${API_BASE}/me`, { credentials: "include" });
+  return handle<Me>(res);
+}
+
+// --- reporting --------------------------------------------------------------
+
+/** Why someone is flagging a sighting. `endangers_dog` is first because it is
+ * the one this app exists to take seriously: a photo that shows where a
+ * specific animal sleeps is a different kind of problem from a blurry cat. */
+export type ReportReason =
+  | "endangers_dog"
+  | "not_a_dog"
+  | "wrong_place"
+  | "offensive"
+  | "other";
+
+export const REPORT_REASONS: { value: ReportReason; label: string }[] = [
+  { value: "endangers_dog", label: "Puts this dog at risk" },
+  { value: "offensive", label: "Offensive or abusive" },
+  { value: "not_a_dog", label: "Not a dog" },
+  { value: "wrong_place", label: "Wrong place or time" },
+  { value: "other", label: "Something else" },
+];
+
+export const MAX_REPORT_NOTE = 500;
+
+/** Flag a sighting. Idempotent per person per sighting on the server, so a
+ * double tap on a slow connection cannot inflate the count a moderator reads. */
+export async function reportSighting(
+  sightingId: string,
+  reason: ReportReason,
+  note?: string,
+): Promise<void> {
+  const form = new FormData();
+  form.append("reason", reason);
+  if (note) form.append("note", note);
+  const res = await fetch(`${API_BASE}/sighting/${sightingId}/report`, {
+    method: "POST",
+    credentials: "include",
+    body: form,
+  });
+  await handle<unknown>(res);
+}
+
+// --- moderation -------------------------------------------------------------
+
+export interface ModerationItem {
+  sighting_id: string;
+  captured_at: string;
+  review_status: ReviewStatus;
+  /** Who logged it. User-supplied at /join, so untrusted text. */
+  observer: string | null;
+  report_count: number;
+  reasons: ReportReason[];
+  /** Written by whoever reported it. Untrusted text; React escapes on render. */
+  notes: string[];
+  thumb_url: string | null;
+}
+
+/** Moderators only. Answers 404 for everyone else, so a non-moderator sees the
+ * same thing they would for a route that does not exist. */
+export async function getModerationQueue(): Promise<{ items: ModerationItem[] }> {
+  const res = await fetch(`${API_BASE}/moderation/queue`, { credentials: "include" });
+  return handle<{ items: ModerationItem[] }>(res);
+}
+
+/** `rejected` hides the sighting everywhere shared and stops it seeding
+ * identities. It deletes nothing -- the photograph is evidence of something
+ * that happened, and this decision should be reversible. */
+export async function reviewSighting(
+  sightingId: string,
+  verdict: "valid" | "rejected",
+): Promise<void> {
+  const form = new FormData();
+  form.append("verdict", verdict);
+  const res = await fetch(`${API_BASE}/sighting/${sightingId}/review`, {
+    method: "POST",
+    credentials: "include",
+    body: form,
+  });
+  await handle<unknown>(res);
 }

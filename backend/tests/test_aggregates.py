@@ -76,10 +76,14 @@ async def test_three_numbers_are_counted_separately(migrated_db):
     assert totals == {"observers": 2, "sightings": 3, "confirmed_individuals": 1}
 
 
-async def test_rejected_sightings_count_nowhere(migrated_db):
+async def test_only_valid_sightings_count(migrated_db):
+    """Not `<> 'rejected'`. Since #46 gave review_status a writer, `pending`
+    means someone reported this and no human has looked yet -- and a count is
+    the thing quoted to a partner."""
     o = await _observer(migrated_db)
     await _sighting(migrated_db, o, lat=12.9, lng=77.6)
     await _sighting(migrated_db, o, lat=12.9, lng=77.6, review="rejected")
+    await _sighting(migrated_db, o, lat=12.9, lng=77.6, review="pending")
     assert (await city_totals(migrated_db))["sightings"] == 1
 
 

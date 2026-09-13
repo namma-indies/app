@@ -127,13 +127,18 @@ and having looked at real numbers first.
 One predicate, defined once in `backend/app/aggregates.py`:
 
 ```
-s.review_status <> 'rejected'
+s.review_status = 'valid'
 ```
 
-`/map` and `/dogs` each inline this today and `/dex` omits it (issue #54). They
-are repointed at the shared constant so the three can't drift — the bug where
-one surface forgets is already in the tracker, and three copies is how it
-happened.
+`= 'valid'`, not `<> 'rejected'`: since #46 gave `review_status` a writer,
+`pending` means someone reported the sighting and no human has looked yet. That
+state exists precisely so the row waits somewhere other than a public surface,
+and the argument is stronger for a count than for the map — a count is the
+thing quoted to a partner.
+
+`/map` and `/dogs` each inlined this and are repointed at the shared constant so
+the surfaces can't drift. `/dex` deliberately keeps showing you your own
+sightings whatever their status.
 
 This predicate is only as honest as the data behind it. Issue #54's cleanup of
 the indoor test sightings is assigned and in progress; **no number from these

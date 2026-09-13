@@ -141,10 +141,17 @@ jobs:
           # authorized_keys with `command="bash -s"`, and a forced command drops
           # the client's command string, so UPLOAD never arrived and the script
           # silently used its default. Same fix as backfill.yml.
+          [ "$UPLOAD" = "true" ] && action="seed-models upload" || action="seed-models no-upload"
+          # The command string names an ACTION, while the script is still piped
+          # on stdin. That is what makes this safe to merge before the box is
+          # switched over: with the old `command="bash -s"` pinning the action
+          # name is discarded and stdin runs, exactly as before; with
+          # deploy/authorized-command.sh installed the action is honoured and
+          # stdin is drained and dropped. Both work, in either order.
           {
             printf 'UPLOAD=%s\n' "$UPLOAD"
             cat deploy/remote-seed-models.sh
-          } | $SSH "$SSH_TARGET" 'bash -s'
+          } | $SSH "$SSH_TARGET" "$action"
 
       - name: Confirm re-ID came up ready
         env:

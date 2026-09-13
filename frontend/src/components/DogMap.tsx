@@ -18,7 +18,7 @@ const SOURCE_ID = "sightings";
 const BASEMAP_LIGHT = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 const BASEMAP_DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
 
-function basemapStyle(): string {
+export function basemapStyle(): string {
   const dark =
     typeof window !== "undefined" &&
     window.matchMedia?.("(prefers-color-scheme: dark)").matches;
@@ -65,16 +65,30 @@ function toFeature(s: MappableSighting): GeoJSON.Feature<GeoJSON.Point> {
       // itself. Empty for the viewer's own sightings and for /dex responses,
       // where "who" is never in question.
       observer: s.mine === false && s.observer ? s.observer : "",
+      // "area" means the server collapsed this to a grid cell because the
+      // viewer did not photograph this animal. Carried through so the pin can
+      // look different and the popup can say so -- a coarse point drawn as a
+      // confident pin is a claim the server never made.
+      precision: s.precision ?? "exact",
+      approx_km: s.cell_m ? (s.cell_m / 1000).toFixed(s.cell_m % 1000 === 0 ? 0 : 1) : "",
     },
   };
 }
 
 export function popupHtml(p: Record<string, string>): string {
   const tags = p.tags ? p.tags.split("|") : [];
+  // Said plainly rather than implied by a softer pin. Someone reading this map
+  // is deciding whether they can go and find this dog, and the honest answer
+  // for another person's sighting is "not from here".
+  const approx =
+    p.precision === "area"
+      ? `<div class="popup-approx">somewhere in this ~${esc(p.approx_km || "1")} km area</div>`
+      : "";
   return `
     <div class="map-popup">
       ${p.thumb ? `<img src="${esc(p.thumb)}" alt="dog sighting" />` : ""}
       <div class="time">${esc(p.time)}</div>
+      ${approx}
       ${p.observer ? `<div class="popup-by">logged by ${esc(p.observer)}</div>` : ""}
       ${p.note ? `<div class="popup-note">${esc(p.note)}</div>` : ""}
       ${
@@ -84,12 +98,23 @@ export function popupHtml(p: Record<string, string>): string {
               .join("")}</div>`
           : ""
       }
+      ${
+        // Only on someone else's sighting -- reporting your own is not a thing
+        // anyone wants, and deleting it is a different feature. `p.id` is
+        // required too: the button carries the id it would report, so without
+        // one there is nothing for the delegated handler to act on.
+        p.observer && p.id
+          ? `<button type="button" class="popup-report" data-report="${esc(p.id)}">report</button>`
+          : ""
+      }
     </div>`;
 }
 
 function pinEl(p: Record<string, string>): HTMLElement {
   const el = document.createElement("div");
-  el.className = "photo-pin";
+  // A coarsened sighting gets a soft, dashed edge so the map reads as "roughly
+  // here" at a glance, before anyone taps. The popup says it in words too.
+  el.className = p.precision === "area" ? "photo-pin photo-pin-approx" : "photo-pin";
   if (p.thumb) {
     const img = document.createElement("img");
     img.src = p.thumb;
@@ -114,9 +139,21 @@ function clusterEl(count: number): HTMLElement {
   return el;
 }
 
-export default function DogMap({ sightings }: { sightings: MappableSighting[] }) {
+export default function DogMap({
+  sightings,
+  onReport,
+}: {
+  sightings: MappableSighting[];
+  /** Called with a sighting id when someone taps `report` in its popup.
+   * Omitted on surfaces where reporting makes no sense (your own dex). */
+  onReport?: (sightingId: string) => void;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
+  // Read inside a listener registered once, which would otherwise close over
+  // the first render's handler forever.
+  const onReportRef = useRef(onReport);
+  onReportRef.current = onReport;
   // Read inside map callbacks, which are registered once and would otherwise
   // close over the first render's sightings forever.
   const sightingsRef = useRef(sightings);
@@ -134,6 +171,17 @@ export default function DogMap({ sightings }: { sightings: MappableSighting[] })
     });
     mapRef.current = map;
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+
+    // One delegated listener on the container rather than wiring each popup as
+    // it opens. Popups are created and destroyed constantly as markers come in
+    // and out of view, and per-popup listeners leak with them.
+    const container = containerRef.current;
+    const onClick = (e: MouseEvent) => {
+      const target = (e.target as HTMLElement | null)?.closest?.("[data-report]");
+      const id = target?.getAttribute("data-report");
+      if (id) onReportRef.current?.(id);
+    };
+    container.addEventListener("click", onClick);
 
     map.on("load", () => {
       map.addSource(SOURCE_ID, {
@@ -214,6 +262,7 @@ export default function DogMap({ sightings }: { sightings: MappableSighting[] })
     });
 
     return () => {
+      container.removeEventListener("click", onClick);
       map.remove();
       mapRef.current = null;
     };

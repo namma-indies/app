@@ -27,6 +27,8 @@ function dog(over: Partial<Dog> = {}): Dog {
     photos: ["https://example.test/a_thumb.webp"],
     lat: 12.9716,
     lng: 77.5946,
+    precision: "exact",
+    cell_m: null,
     tags: ["female", "injured"],
     looks_like: [],
     ...over,
@@ -155,5 +157,48 @@ describe("Dogs look-alikes", () => {
     );
     render(<Dogs onUnauthorized={() => {}} />);
     await waitFor(() => expect(screen.getByText("0.50")).toBeInTheDocument());
+  });
+});
+
+// --- precision ---------------------------------------------------------------
+// A dog card gathers one animal, its history and its last known place onto a
+// single screen, which is the shape someone would want if they meant it harm.
+// Full precision is reserved for animals this viewer photographed; the rest are
+// collapsed to a grid cell server-side, and the card has to say so.
+describe("Dogs location precision", () => {
+  it("shows a full coordinate for a dog you have photographed", async () => {
+    vi.mocked(getDogs).mockResolvedValue(resp([dog({ precision: "exact", cell_m: null })]));
+    render(<Dogs onUnauthorized={() => {}} />);
+    expect(await screen.findByText(/LAST SEEN 12\.9716, 77\.5946/)).toBeInTheDocument();
+  });
+
+  it("says it is an area, and rounds off the digits, for someone else's dog", async () => {
+    vi.mocked(getDogs).mockResolvedValue(
+      resp([dog({ seen_by_me: false, precision: "area", cell_m: 1000, lat: 12.96712, lng: 77.59407 })]),
+    );
+    render(<Dogs onUnauthorized={() => {}} />);
+
+    const line = await screen.findByText(/LAST SEEN IN A ~1 KM AREA/);
+    expect(line).toBeInTheDocument();
+    // Four decimals on a coordinate accurate to a kilometre invites the reader
+    // to believe the digits.
+    expect(line.textContent).toContain("12.97, 77.59");
+    expect(line.textContent).not.toContain("12.9671");
+  });
+
+  it("reports the radius the server used rather than a hardcoded one", async () => {
+    vi.mocked(getDogs).mockResolvedValue(
+      resp([dog({ seen_by_me: false, precision: "area", cell_m: 2500 })]),
+    );
+    render(<Dogs onUnauthorized={() => {}} />);
+    expect(await screen.findByText(/~2\.5 KM AREA/)).toBeInTheDocument();
+  });
+
+  it("still says nothing when there is no location at all", async () => {
+    vi.mocked(getDogs).mockResolvedValue(
+      resp([dog({ lat: null, lng: null, precision: "none", cell_m: null })]),
+    );
+    render(<Dogs onUnauthorized={() => {}} />);
+    expect(await screen.findByText(/NO LOCATION RECORDED/)).toBeInTheDocument();
   });
 });

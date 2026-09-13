@@ -52,6 +52,10 @@ jobs:
           chmod 600 "$key_file"
           extra=""
           [ "${SLEEP:-0}" != "0" ] && extra="--sleep $SLEEP"
+          # The wrapper takes words, not flags, so its grammar can be matched
+          # against literals rather than parsed.
+          [ "$DRY_RUN" = "true" ] && mode=dry-run || mode=run
+          [ "${SLEEP:-0}" != "0" ] && sleep_arg="$SLEEP" || sleep_arg=""
 
           # The settings go through stdin, prepended to the script, NOT as an
           # env prefix on the ssh command. The deploy key is pinned in the box's
@@ -59,13 +63,19 @@ jobs:
           # discards the client's command string entirely -- so the env prefix
           # never arrived, DRY_RUN was always unset, and a real run would have
           # quietly executed as --dry-run and reported success.
+          # The command string names an ACTION, while the script is still piped
+          # on stdin. That is what makes this safe to merge before the box is
+          # switched over: with the old `command="bash -s"` pinning the action
+          # name is discarded and stdin runs, exactly as before; with
+          # deploy/authorized-command.sh installed the action is honoured and
+          # stdin is drained and dropped. Both work, in either order.
           {
             printf 'DRY_RUN=%s\n' "$DRY_RUN"
             printf "EXTRA_ARGS='%s'\n" "$extra"
             cat deploy/remote-backfill.sh
           } | ssh -i "$key_file" -o IdentitiesOnly=yes \
                 -o StrictHostKeyChecking=accept-new \
-                "$DEPLOY_SSH_TARGET" 'bash -s'
+                "$DEPLOY_SSH_TARGET" "backfill $mode $sleep_arg"
 
       - name: Report matching state
         if: ${{ inputs.dry_run == false }}

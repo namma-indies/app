@@ -67,6 +67,31 @@ function getDb() {
   return dbPromise;
 }
 
+/** A stable identifier for one capture.
+ *
+ * Minted here, at enqueue, and never regenerated -- that is the whole point.
+ * Every attempt at this sighting resends the same value, so a server that
+ * already stored it recognises the repeat instead of creating a second row.
+ *
+ * The failure it closes: `flush` posts, waits, and only deletes the queued item
+ * once the response arrives. When the request lands but the *response* is lost
+ * -- signal dropped mid-upload, phone asleep, tab closed -- the item stays
+ * pending and the next pass posts it again. That is ordinary on mobile data,
+ * which is what this app runs on.
+ *
+ * randomUUID needs a secure context, which the app always has (it also needs
+ * one for the camera and geolocation). The fallback keeps a dev server on plain
+ * http working rather than throwing.
+ */
+function newClientToken(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random()
+    .toString(36)
+    .slice(2)}`;
+}
+
 export async function enqueue(input: PostSightingInput): Promise<void> {
   const db = await getDb();
   const { photos, video, ...rest } = input;
@@ -83,6 +108,9 @@ export async function enqueue(input: PostSightingInput): Promise<void> {
     : undefined;
   await db.add(STORE, {
     ...rest,
+    // Only if the caller did not supply one, so a retry of an item that already
+    // has a token keeps it.
+    client_token: rest.client_token ?? newClientToken(),
     photo_data,
     video_data,
     status: "pending" as QueueStatus,
@@ -176,15 +204,23 @@ export async function flush(): Promise<void> {
       for (const stored of all) {
         const status = stored.status ?? "pending";
         if (status !== "pending") continue;
-        const item = toItem(stored);
+        let record = stored;
+        if (!record.client_token) {
+          // Queued before tokens existed. Mint one and write it back *before*
+          // sending: generating it per attempt would defeat the point, since
+          // each retry would look like a different capture.
+          record = { ...record, client_token: newClientToken() };
+          await db.put(STORE, record);
+        }
+        const item = toItem(record);
         try {
           await postSighting(item);
-          await db.delete(STORE, stored.id);
+          await db.delete(STORE, record.id);
         } catch (err) {
           if (isPermanentFailure(err)) {
             // Write back `stored`, not the reconstructed item: persisting the
             // rebuilt Blobs would downgrade the record to the legacy shape.
-            await db.put(STORE, { ...stored, status: "failed" satisfies QueueStatus });
+            await db.put(STORE, { ...record, status: "failed" satisfies QueueStatus });
             if (err instanceof UnauthorizedError) onUnauthorized?.();
             continue;
           }

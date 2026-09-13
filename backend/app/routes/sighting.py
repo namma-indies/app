@@ -10,9 +10,8 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
 from app.auth.deps import require_observer
-from app.deps import get_conn, get_storage
+from app.deps import get_storage
 from app.detect import DOG_CONF_THRESHOLD
-from app.detect_reid import animal_confidence
 from app.ids import uuid7
 from app.photos import process_photo, ProcessedPhoto, thumb_key
 from app.storage.s3 import S3Storage
@@ -23,43 +22,69 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _max_dog_confidence(raws: list[bytes]) -> float | None:
-    """Highest dog-confidence across the uploaded photos, or None if we
-    couldn't score them. This is a label, never a gate -- the caller saves the
-    sighting either way, so a detector failure costs us a label, not a photo."""
-    best: float | None = None
-    for raw in raws:
-        try:
-            # yolo26x, shared with the embedding path: the old yolov8n gate
-            # scored visible dogs as low as 0.02 (yolo26x: 0.80 on the same
-            # photo), and this task has never been on the user's wait path.
-            conf, _cat = await run_in_threadpool(animal_confidence, raw)
-        except Exception:
-            logger.warning("dog detection failed; saving unscored", exc_info=True)
-            continue
-        best = conf if best is None else max(best, conf)
-    return best
-
-
-async def _embed_and_save(
+async def _analyse_and_save(
     pool: asyncpg.Pool, sighting_id: UUID, photo_ids: list[UUID], raws: list[bytes]
 ) -> None:
-    """Embed each photo for re-identification, after the sighting is saved.
+    """Detect, score and embed every photo of a sighting, after it is saved.
 
-    Same contract as dog-confidence scoring: this never gates the save. A photo
-    with no embedding is simply not yet matchable -- it can be re-embedded later
-    (the model is versioned in the row, so a re-run is an upsert). Losing the
-    sighting because an embedder hiccuped would be the far worse trade.
+    ONE DETECTION PASS PER PHOTO
+    ----------------------------
+    This used to be two background tasks. `_score_and_save_dog_confidence`
+    called `animal_confidence`, and `_embed_and_save` called `embed_photo`
+    which called `best_animal_box` -- two full yolo26x forward passes over
+    identical bytes, plus three JPEG decodes, launched by the same request.
 
-    Photos with no dog detected are skipped rather than embedded whole-frame:
-    an embedding of mostly-street would pollute candidate search with a vector
-    that matches other streets.
+    On a 2-core box one yolo26x pass measures ~864 ms, so the duplication cost
+    about that much per photo, and clips multiply it by the frame count: a
+    12-frame clip spent roughly ten seconds re-detecting animals it had
+    already found. `app.analyse.analyse` returns the confidences and the box
+    from a single pass, and hands back the decoded image so the crop needs no
+    second decode.
+
+    THE CONTRACTS THIS KEEPS
+    ------------------------
+    Neither step gates the save, and their failures stay distinguishable:
+
+    * detection fails -> `dog_confidence` stays NULL, meaning "never scored",
+      which is not the same as 0.0 ("scored, saw nothing").
+    * no animal found -> no embedding row at all, deliberately. A whole-frame
+      embedding of mostly-street would pollute candidate search with a vector
+      that matches other streets.
+    * embedding fails -> the photo is simply not yet matchable, and a re-run
+      upserts on (photo_id, model).
+
+    Losing the sighting over any of them would be the far worse trade.
     """
-    from app.embed import EMBED_DIM, MODEL_NAME, embed_photo
+    import numpy as np
+
+    from app.analyse import analyse, embed_analysis
+    from app.embed import EMBED_DIM, MODEL_NAME
+
+    collected: list = []
+    best_conf: float | None = None
 
     for photo_id, raw in zip(photo_ids, raws):
         try:
-            found = await run_in_threadpool(embed_photo, raw)
+            found = await run_in_threadpool(analyse, raw)
+        except Exception:
+            # The detector failing costs a label and matchability for this
+            # photo, and nothing else.
+            logger.warning(
+                "analysis failed for photo=%s; leaving unscored and unembedded",
+                photo_id,
+                exc_info=True,
+            )
+            continue
+
+        conf = found.dog_confidence
+        best_conf = conf if best_conf is None else max(best_conf, conf)
+
+        if not found.has_animal:
+            logger.info("no animal detected in photo=%s; not embedding", photo_id)
+            continue
+
+        try:
+            vec = await run_in_threadpool(embed_analysis, found)
         except Exception:
             logger.warning(
                 "embedding failed for photo=%s; leaving unembedded",
@@ -67,10 +92,11 @@ async def _embed_and_save(
                 exc_info=True,
             )
             continue
-        if found is None:
-            logger.info("no dog detected in photo=%s; not embedding", photo_id)
+        if vec is None:
             continue
-        vec, box = found
+
+        box = found.box
+        collected.append(vec)
         try:
             async with pool.acquire() as conn:
                 await conn.execute(
@@ -93,6 +119,9 @@ async def _embed_and_save(
             logger.warning(
                 "failed to store embedding for photo=%s", photo_id, exc_info=True
             )
+
+    await _save_dog_confidence(pool, sighting_id, best_conf)
+    await _save_mean_vector(pool, sighting_id, collected)
 
     # Decide the match once, now that the vectors exist. This used to run inside
     # GET /sighting/{id}/match, which meant every read deleted and recreated the
@@ -122,13 +151,64 @@ async def _embed_and_save(
         )
 
 
-async def _score_and_save_dog_confidence(
-    pool: asyncpg.Pool, sighting_id: UUID, raws: list[bytes]
+async def _save_mean_vector(pool: asyncpg.Pool, sighting_id: UUID, vecs: list) -> None:
+    """Average the frame vectors into one vector for the sighting.
+
+    A clip sampled at 1 Hz gives several looks at the same animal a second
+    apart. Those are one view sampled repeatedly, not several views, so their
+    mean is that view with the per-frame noise averaged down -- a cleaner
+    vector than any single frame, and the thing to match on.
+
+    Averaging is right here and wrong one level up. Two sightings days apart
+    are genuinely different views, and a centroid of those blurs both into
+    neither, which is why `routes/dogs.py` compares two dogs by the max over
+    their photo pairs and carries a test that fails if anyone switches it to a
+    mean. Identical arithmetic, opposite conclusion, because the scope differs.
+
+    Re-normalised after averaging: the mean of unit vectors is not itself a
+    unit vector (it is shorter the more the frames disagree), and everything
+    downstream reads these as unit vectors -- pgvector's cosine operator
+    normalises internally, but any plain dot product would silently be scaled.
+
+    Frames where no dog was found never reach this: `embed_photo` returns None
+    for them and the caller skips. That matters more for a mean than for a max
+    -- one bad frame drags an average, while a max simply ignores it.
+    """
+    if not vecs:
+        return
+    import numpy as np
+
+    mean = np.mean(np.stack(vecs), axis=0)
+    norm = float(np.linalg.norm(mean))
+    if norm == 0.0:
+        # Only reachable if the frames cancelled exactly, which would mean the
+        # embeddings are not what we think. Skip rather than store a zero
+        # vector, whose cosine against anything is undefined.
+        logger.warning("mean vector for sighting=%s has zero norm; not stored", sighting_id)
+        return
+    mean = mean / norm
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE sightings SET vec_miew = $1::vector WHERE id = $2",
+                "[" + ",".join(f"{float(v):.7g}" for v in mean) + "]",
+                sighting_id,
+            )
+    except Exception:
+        logger.warning(
+            "failed to store mean vector for sighting=%s", sighting_id, exc_info=True
+        )
+
+
+async def _save_dog_confidence(
+    pool: asyncpg.Pool, sighting_id: UUID, dog_conf: float | None
 ) -> None:
-    """Runs after the sighting is already saved. Scoring is a label, never a
-    gate, so a failure here (bad image, model error) just leaves
-    dog_confidence NULL -- it must never affect whether the sighting exists."""
-    dog_conf = await _max_dog_confidence(raws)
+    """Store the highest dog confidence seen across the sighting's photos.
+
+    Scoring is a label, never a gate, so a failure here leaves dog_confidence
+    NULL -- which means "never scored" and is deliberately distinct from 0.0,
+    "scored and saw nothing". It must never affect whether the sighting exists.
+    """
     if dog_conf is None:
         return
     if dog_conf < DOG_CONF_THRESHOLD:
@@ -158,6 +238,10 @@ async def create_sighting(
     lat: float | None = Form(None),
     lng: float | None = Form(None),
     geo_accuracy_m: float | None = Form(None),
+    # Minted once when the capture is queued and resent on every attempt, so
+    # all attempts at one capture carry the same value. Optional: an older
+    # client, or a direct API caller, simply gets no protection.
+    client_token: str | None = Form(None),
     # "exif" is a camera-roll import: coordinates read from the file rather
     # than observed live. Trusted at the same level as "device_gps" -- the
     # client supplies lat/lng in both cases, and in this one it got them from
@@ -174,13 +258,76 @@ async def create_sighting(
     # to keep. Remove once no client in the field sends it.
     override_no_dog: bool = Form(False),
     observer_id: UUID = Depends(require_observer),
-    conn=Depends(get_conn),
     storage: S3Storage = Depends(get_storage),
 ):
+    # NO `conn=Depends(get_conn)`, and that is the fix rather than a tidy-up.
+    #
+    # A yield-dependency holds its connection for the whole request, and
+    # FastAPI does not release it before Starlette runs the background tasks.
+    # So every upload held TWO of the pool's connections at once: the
+    # request's, and the one its background task acquired. Against
+    # db_pool_max=30 that caps concurrency at fifteen uploads; the sixteenth
+    # waits for a connection nobody can release, `asyncpg.acquire()` has no
+    # timeout, and the API never recovers.
+    #
+    # Measured before this change on a 20-core box: 15 concurrent clips took
+    # 19 s and all succeeded, 30 completed ZERO and wedged the API
+    # permanently -- after which even single photo uploads hung. Postgres
+    # showed all 30 connections checked out and idle while /health kept
+    # answering 200, because it touches no database.
+    #
+    # Connections are now taken only around real database work. The decode,
+    # the frame extraction and the S3 uploads -- seconds of it -- hold none.
+    pool = request.app.state.pool
+
     if not photos and video is None:
         raise HTTPException(
             status_code=422, detail="at least one photo or a video is required"
         )
+    # A retry of a capture that already landed returns the original rather than
+    # creating a second sighting. Checked up front so a repeat costs one query
+    # instead of a decode, two S3 uploads and an embedding.
+    #
+    # The unique index is what actually guarantees this -- two attempts racing
+    # (an installed PWA and a browser tab flushing the same IndexedDB rows at
+    # once) can both pass this check, and the INSERT below is where one of them
+    # loses. This is the cheap path, not the correctness one.
+    if client_token:
+        async with pool.acquire() as conn:
+            existing = await conn.fetchrow(
+                "SELECT s.id, array_agg(p.id ORDER BY p.created_at, p.id) AS photo_ids "
+                "FROM sightings s LEFT JOIN photos p ON p.sighting_id = s.id "
+                "WHERE s.client_token = $1 AND s.observer_id = $2 "
+                "GROUP BY s.id",
+                client_token, observer_id,
+            )
+        if existing is not None:
+            logger.info(
+                "duplicate submission for client_token=%s; returning sighting=%s",
+                client_token, existing["id"],
+            )
+            return JSONResponse(
+                status_code=201,
+                content={
+                    "sighting_id": str(existing["id"]),
+                    "photo_ids": [str(i) for i in (existing["photo_ids"] or []) if i],
+                    "duplicate": True,
+                },
+            )
+
+    # Range-check before PostGIS sees it. `geography(Point,4326)` does not
+    # reject an out-of-range latitude -- it wraps it. A GPS glitch or a client
+    # bug sending lat=999 was silently stored as -81.0, a real coordinate in
+    # Antarctica, and rendered on the map like any other pin. Silent relocation
+    # is worse than a rejection, because nothing downstream can tell it happened.
+    if lat is not None and not (-90.0 <= lat <= 90.0):
+        raise HTTPException(status_code=422, detail="lat must be between -90 and 90")
+    if lng is not None and not (-180.0 <= lng <= 180.0):
+        raise HTTPException(status_code=422, detail="lng must be between -180 and 180")
+    # Negative accuracy is not a smaller error, it is a malformed one.
+    if geo_accuracy_m is not None and geo_accuracy_m < 0:
+        raise HTTPException(status_code=422, detail="geo_accuracy_m cannot be negative")
+
     if photos and video is not None:
         raise HTTPException(
             status_code=422, detail="provide either photos or a video, not both"
@@ -189,20 +336,28 @@ async def create_sighting(
     sighting_id = uuid7()
 
     processed_frames: list[ProcessedPhoto]
+    raw_video: bytes | None = None
     if video is not None:
+        # Read once into a variable: an UploadFile is a stream, so reading it a
+        # second time yields b"" -- and the clip is now needed twice, for frame
+        # extraction and for storage.
+        raw_video = await video.read()
         try:
             # Decoding is CPU-bound and can run for seconds on a long clip;
             # off the event loop so it does not stall every other request.
             processed_frames = await run_in_threadpool(
-                extract_diverse_frames, await video.read()
+                extract_diverse_frames, raw_video
             )
         except (ValueError, OSError, RuntimeError):
             raise HTTPException(
                 status_code=422, detail="could not read video / no decodable frames"
             )
-        # The raw video is never persisted -- only the frames it yielded. Those
-        # frames are also what the background tasks see, so dog-confidence and
-        # the embedding score exactly the bytes we stored.
+        # The extracted frames are what the background tasks see, so
+        # dog-confidence and the embedding score exactly the bytes we stored.
+        # The clip is kept too (below) so a better detector or a newer
+        # embedding model can be re-run over the original footage -- which
+        # discard-after-extraction made impossible: every frame not chosen was
+        # gone for good.
         raws = [p.original for p in processed_frames]
     else:
         # Read once. An UploadFile is a stream: reading it a second time yields
@@ -217,9 +372,27 @@ async def create_sighting(
         # behind them until the client gave up at 90s. Every other heavy call
         # here was already offloaded; this one was missed because it is the only
         # one on the user's critical path rather than in a background task.
-        processed_frames = [
-            await run_in_threadpool(process_photo, raw) for raw in raws
-        ]
+        try:
+            processed_frames = [
+                await run_in_threadpool(process_photo, raw) for raw in raws
+            ]
+        except Exception:
+            # An unreadable upload -- truncated by a flaky camera, an odd
+            # format, bytes that are not an image at all -- used to escape as a
+            # 500. That is not merely an ugly error: the offline queue treats
+            # 4xx as permanent and 5xx as retryable, and its drain *breaks* on a
+            # retryable failure. So one corrupt photo stopped the whole queue,
+            # and every sighting behind it never synced, on every pass, forever.
+            #
+            # 422 makes it a permanent failure the queue can set aside and move
+            # past, which is exactly how the video path already treats a clip it
+            # cannot decode.
+            logger.warning(
+                "unreadable photo upload from observer=%s", observer_id, exc_info=True
+            )
+            raise HTTPException(
+                status_code=422, detail="could not read one of the photos"
+            )
 
     photo_rows = []
     first_phash: str | None = None
@@ -240,6 +413,24 @@ async def create_sighting(
             }
         )
 
+    clip_key: str | None = None
+    if raw_video is not None:
+        # Beside the frames it produced, under the same sighting prefix, so a
+        # sighting's objects stay together for lifecycle rules and deletion.
+        clip_key = f"sightings/{sighting_id}/clip.mp4"
+        try:
+            await storage.put(clip_key, raw_video, video.content_type or "video/mp4")
+        except Exception:
+            # Same contract as every other optional step here: never lose the
+            # sighting over it. The frames are already stored and are what
+            # matching uses; a missing clip costs re-processing later, not the
+            # observation.
+            logger.warning(
+                "failed to store clip for sighting=%s; frames kept",
+                sighting_id, exc_info=True,
+            )
+            clip_key = None
+
     geog_present = geo_source != "none" and lat is not None and lng is not None
     attrs = {
         k: v
@@ -254,72 +445,118 @@ async def create_sighting(
     if video is not None:
         attrs["source"] = "video"
 
-    async with conn.transaction():
-        if geog_present:
-            await conn.execute(
-                """
-                INSERT INTO sightings
-                    (id, observer_id, captured_at, reported_at, geog, geo_source,
-                     geo_accuracy_m, individual_id, match_status, review_status,
-                     phash, attrs, dog_confidence)
-                VALUES
-                    ($1, $2, $3, $4,
-                     ST_SetSRID(ST_MakePoint($5, $6), 4326)::geography,
-                     $7, $8, NULL, 'unmatched', 'valid', $9, $10::jsonb, $11)
-                """,
-                sighting_id,
-                observer_id,
-                captured_at,
-                reported_at,
-                lng,
-                lat,
-                geo_source,
-                geo_accuracy_m,
-                first_phash,
-                json.dumps(attrs),
-                None,
-            )
-        else:
-            await conn.execute(
-                """
-                INSERT INTO sightings
-                    (id, observer_id, captured_at, reported_at, geog, geo_source,
-                     geo_accuracy_m, individual_id, match_status, review_status,
-                     phash, attrs, dog_confidence)
-                VALUES
-                    ($1, $2, $3, $4, NULL, $5, $6, NULL, 'unmatched', 'valid',
-                     $7, $8::jsonb, $9)
-                """,
-                sighting_id,
-                observer_id,
-                captured_at,
-                reported_at,
-                geo_source,
-                geo_accuracy_m,
-                first_phash,
-                json.dumps(attrs),
-                None,
-            )
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                if geog_present:
+                    await conn.execute(
+                        """
+                        INSERT INTO sightings
+                            (id, observer_id, captured_at, reported_at, geog, geo_source,
+                             geo_accuracy_m, individual_id, match_status, review_status,
+                             phash, attrs, dog_confidence, client_token)
+                        VALUES
+                            ($1, $2, $3, $4,
+                             ST_SetSRID(ST_MakePoint($5, $6), 4326)::geography,
+                             $7, $8, NULL, 'unmatched', 'valid', $9, $10::jsonb, $11, $12)
+                        """,
+                        sighting_id,
+                        observer_id,
+                        captured_at,
+                        reported_at,
+                        lng,
+                        lat,
+                        geo_source,
+                        geo_accuracy_m,
+                        first_phash,
+                        json.dumps(attrs),
+                        None,
+                        client_token,
+                    )
+                else:
+                    await conn.execute(
+                        """
+                        INSERT INTO sightings
+                            (id, observer_id, captured_at, reported_at, geog, geo_source,
+                             geo_accuracy_m, individual_id, match_status, review_status,
+                             phash, attrs, dog_confidence, client_token)
+                        VALUES
+                            ($1, $2, $3, $4, NULL, $5, $6, NULL, 'unmatched', 'valid',
+                             $7, $8::jsonb, $9, $10)
+                        """,
+                        sighting_id,
+                        observer_id,
+                        captured_at,
+                        reported_at,
+                        geo_source,
+                        geo_accuracy_m,
+                        first_phash,
+                        json.dumps(attrs),
+                        None,
+                        client_token,
+                    )
 
-        for row in photo_rows:
-            await conn.execute(
-                """
-                INSERT INTO photos (id, sighting_id, s3_key, width, height, phash)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                """,
-                row["id"],
-                sighting_id,
-                row["s3_key"],
-                row["width"],
-                row["height"],
-                row["phash"],
-            )
+                for row in photo_rows:
+                    await conn.execute(
+                        """
+                        INSERT INTO photos (id, sighting_id, s3_key, width, height, phash)
+                        VALUES ($1, $2, $3, $4, $5, $6)
+                        """,
+                        row["id"],
+                        sighting_id,
+                        row["s3_key"],
+                        row["width"],
+                        row["height"],
+                        row["phash"],
+                    )
 
+            if clip_key is not None:
+                # A follow-up UPDATE rather than a column in both INSERT
+                # variants: they differ only in whether a geography is
+                # supplied, and adding the same field to each is two places to
+                # forget it. On the connection already open, not a second one.
+                try:
+                    await conn.execute(
+                        "UPDATE sightings SET clip_s3_key = $1 WHERE id = $2",
+                        clip_key, sighting_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "stored clip for sighting=%s but could not record its key",
+                        sighting_id, exc_info=True,
+                    )
+    except asyncpg.exceptions.UniqueViolationError:
+        # Two attempts at one capture raced past the pre-check -- an installed
+        # PWA and a browser tab flushing the same IndexedDB rows at the same
+        # moment. The unique index is what makes that safe; this is where the
+        # loser finds out. Return the winner's sighting, exactly as the
+        # pre-check would have.
+        async with pool.acquire() as conn:
+            winner = await conn.fetchrow(
+                "SELECT s.id, array_agg(p.id ORDER BY p.created_at, p.id) AS photo_ids "
+                "FROM sightings s LEFT JOIN photos p ON p.sighting_id = s.id "
+                "WHERE s.client_token = $1 AND s.observer_id = $2 GROUP BY s.id",
+                client_token, observer_id,
+            )
+        if winner is None:
+            raise
+        logger.info(
+            "concurrent duplicate for client_token=%s; returning sighting=%s",
+            client_token, winner["id"],
+        )
+        return JSONResponse(
+            status_code=201,
+            content={
+                "sighting_id": str(winner["id"]),
+                "photo_ids": [str(i) for i in (winner["photo_ids"] or []) if i],
+                "duplicate": True,
+            },
+        )
+
+    # One task, one detection pass per photo. This was two tasks racing over
+    # the same bytes with two yolo26x forward passes; see _analyse_and_save.
     background_tasks.add_task(
-        _score_and_save_dog_confidence, request.app.state.pool, sighting_id, raws
-    )
-    background_tasks.add_task(
-        _embed_and_save,
+        _analyse_and_save,
         request.app.state.pool,
         sighting_id,
         [r["id"] for r in photo_rows],

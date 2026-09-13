@@ -10,10 +10,10 @@ One request serves both sides of the Mine/Everyone toggle: each sighting says
 whether it is the viewer's, so flipping the toggle is a client-side filter
 rather than a round trip.
 
-Visibility is the whole authenticated cohort at full precision. That is safe
-today because the cohort is passcode- and allowlist-gated. Issue #5's
-`resolve_precision` coarsening is what a *public* map would need, and is
-deliberately not built here.
+Visibility is the whole authenticated cohort, but not at one precision: your
+own sightings come back exactly, everyone else's collapse to a grid cell. See
+app/precision.py, and the precision tests at the bottom of this file for the
+two properties that make a cell worth more than a jittered point.
 """
 
 import io
@@ -266,3 +266,106 @@ async def test_the_thumbnail_choice_is_deterministic(authed_client):
 
     url = (await client.get("/map")).json()["sightings"][0]["photos"][0]["thumb_url"]
     assert "aaa-lowest_thumb.webp" in url
+
+
+# --- precision ---------------------------------------------------------------
+# Full precision used to go to the whole cohort, justified by the cohort being
+# passcode- and allowlist-gated. That justification does not survive contact
+# with the passcode door: it is shared, typed into a form, and mints an
+# anonymous observer on the spot. "Vetted tester" describes how we hope it is
+# used, not anything the system checks -- so anyone holding the passcode could
+# read the exact position of every dog in the database.
+
+
+@pytest.mark.asyncio
+async def test_your_own_sightings_keep_full_precision(authed_client):
+    client, oid = authed_client
+    sid = await _post(client, lat="12.9716", lng="77.5946")
+
+    s = next(x for x in (await client.get("/map")).json()["sightings"] if x["id"] == sid)
+
+    assert (s["lat"], s["lng"]) == (12.9716, 77.5946)
+    assert s["precision"] == "exact"
+    assert s["cell_m"] is None
+
+
+@pytest.mark.asyncio
+async def test_someone_elses_sighting_is_coarsened(authed_client):
+    client, oid_a = authed_client
+    await _second_observer(client)
+    theirs = await _post(client, lat="12.9716", lng="77.5946")
+    _become(client, oid_a)
+
+    s = next(x for x in (await client.get("/map")).json()["sightings"] if x["id"] == theirs)
+
+    assert s["mine"] is False
+    assert s["precision"] == "area"
+    assert s["cell_m"] == 1000.0
+    assert (s["lat"], s["lng"]) != (12.9716, 77.5946)
+
+
+@pytest.mark.asyncio
+async def test_accuracy_is_withheld_with_the_coordinate(authed_client):
+    """A 6 m accuracy beside a kilometre-wide cell is a contradiction, and it
+    is the sharper of the two that a reader would believe."""
+    client, oid_a = authed_client
+    await _second_observer(client)
+    theirs = await _post(client)
+    mine = None
+    _become(client, oid_a)
+    mine = await _post(client)
+
+    by_id = {x["id"]: x for x in (await client.get("/map")).json()["sightings"]}
+
+    assert by_id[theirs]["geo_accuracy_m"] is None
+    assert by_id[mine]["geo_accuracy_m"] == 8.0
+
+
+@pytest.mark.asyncio
+async def test_refetching_never_sharpens_someone_elses_position(authed_client):
+    """The property random jitter cannot have. Ten fetches of a jittered point
+    average back to the truth; ten fetches of this are ten identical answers."""
+    client, oid_a = authed_client
+    await _second_observer(client)
+    theirs = await _post(client, lat="12.9716", lng="77.5946")
+    _become(client, oid_a)
+
+    seen = set()
+    for _ in range(5):
+        s = next(x for x in (await client.get("/map")).json()["sightings"] if x["id"] == theirs)
+        seen.add((s["lat"], s["lng"]))
+
+    assert len(seen) == 1
+
+
+@pytest.mark.asyncio
+async def test_several_sightings_of_one_area_collapse_to_one_point(authed_client):
+    """Aggregation must not sharpen either: sightings a few metres apart come
+    back as the same coordinate, so a well-documented dog is no easier to find
+    than a barely-documented one."""
+    client, oid_a = authed_client
+    await _second_observer(client)
+    ids = [
+        await _post(client, lat=f"12.97{n:02d}", lng="77.5946")
+        for n in (10, 11, 12)
+    ]
+    _become(client, oid_a)
+
+    by_id = {x["id"]: x for x in (await client.get("/map")).json()["sightings"]}
+    points = {(by_id[i]["lat"], by_id[i]["lng"]) for i in ids}
+
+    assert len(points) == 1
+
+
+@pytest.mark.asyncio
+async def test_bbox_still_filters_on_the_true_position(authed_client):
+    """Coarsening is a presentation concern. Filtering on the coarse point
+    instead would drop sightings near a cell edge out of their own viewport."""
+    client, oid_a = authed_client
+    await _second_observer(client)
+    theirs = await _post(client, lat="12.9716", lng="77.5946")
+    _become(client, oid_a)
+
+    r = await client.get("/map", params={"bbox": "77.59,12.97,77.60,12.98"})
+
+    assert theirs in [s["id"] for s in r.json()["sightings"]]

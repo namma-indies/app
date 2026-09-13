@@ -31,8 +31,15 @@ This repository is the **IndieDex** — the capture-and-collect app that feeds t
 - 🖼️ **Import from your camera roll** — for a dog you photographed before you had the app. It keeps the photo's *own* date and place, read from EXIF; where a file has been stripped, it asks rather than assuming here-and-now.
 - 🐕 **Re-identification** — YOLO26x finds the animal, MiewID embeds the crop, and candidates are retrieved within 1 km via PostGIS → HNSW → an exact re-rank. Proposals go to a human; a confirmed verdict mints an individual.
 - 🗂️ **Dogs** — the identified animals, one card each, with their photos, how many people have seen them, and a ranked shortlist of look-alikes for review.
-- 🗺️ **Map** — sightings as photo pins, clustered; yours by default, or the whole contributor cohort's.
+- 🗺️ **Map** — sightings as photo pins, clustered; yours by default, or the whole
+  contributor cohort's. Your own pins are exact; everyone else's are shown as a
+  ~1 km area, because a map that resolves a specific street dog to a specific
+  street is useful to someone who means it harm.
 - 🏷️ **Optional structured fields** — sex, ear-notch (sterilization marker), condition, notes — all optional, stored flexibly.
+- 🚩 **Report and review** — anyone can flag a sighting from the map; it leaves the
+  shared surfaces immediately and waits for a moderator, who can restore it or
+  keep it down. Nothing is deleted: a photograph is evidence of something that
+  happened, and hiding is reversible where deleting is not.
 - 🔐 **Passwordless auth** — magic-link sign-in behind a pluggable provider seam, with a shared-passcode door for closed pilots.
 - 🔒 **Privacy-aware photos** — capture metadata is read once, then stripped: stored images carry no EXIF, no embedded GPS. A full-fidelity WebP original is kept for the vision models, plus a thumbnail for the gallery.
 
@@ -98,6 +105,49 @@ uv run python -m app.auth.magiclink mint "Your Name"
 ```
 
 Open the printed link (it works over `localhost`, a secure origin, so the camera and geolocation work), snap a photo, and watch it appear in the IndieDex.
+
+### Testing from a phone
+
+`localhost` is a secure origin, so the steps above give you the camera and GPS
+on the desktop. A phone on the LAN is not localhost, and three things then bite
+at once — each of which fails silently:
+
+- **The session cookie is `Secure`.** Over plain http a browser declines to
+  store it, so sign-in bounces you straight back to the gate with no error
+  anywhere. The dev server therefore serves HTTPS whenever `frontend/.certs/`
+  holds a `dev.crt` / `dev.key` pair. Generate one for your LAN IP with any
+  self-signed recipe; the directory is gitignored. Expect a certificate warning
+  once, and click through it.
+- **Camera and geolocation need a secure context**, so LAN testing cannot work
+  over http at all.
+- **Photos come from MinIO**, which is http. Loaded from an https page they are
+  blocked as mixed content — an empty map with no useful console message. The
+  dev server proxies the bucket path so the whole app is one origin.
+
+The port is pinned to **5174** deliberately: the backend signs photo URLs and
+magic links against `PUBLIC_BASE_URL` / `S3_PUBLIC_ENDPOINT`, so a dev server
+that drifted to 5173 would break every image and every sign-in link with no
+visible cause.
+
+Point both at the dev server, and start it with whatever ports you actually
+have free:
+
+```bash
+# backend -- 8000 is often already taken
+S3_PUBLIC_ENDPOINT=https://192.168.1.42:5174 \
+PUBLIC_BASE_URL=https://192.168.1.42:5174 \
+  uv run uvicorn app.main:app --reload --port 8300
+
+# frontend, in another terminal
+VITE_API_TARGET=http://localhost:8300 \
+VITE_S3_TARGET=http://localhost:9002 \
+  npm run dev
+```
+
+Keep `--reload` on the backend. Without it the process serves whatever code it
+started with, and a branch switch leaves the API answering with an old response
+shape while the hot-reloaded frontend expects the new one — which surfaces as a
+blank screen rather than an error.
 
 ## Testing
 

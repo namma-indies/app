@@ -87,3 +87,36 @@ async def test_urls_matches_url_for_the_same_key(storage):
     single = await storage.url(key)
     batched = (await storage.urls([key]))[0]
     assert single.split("?")[0] == batched.split("?")[0]
+
+
+# --- streaming upload --------------------------------------------------------
+# `put` takes bytes, which is right for a photo already decoded in memory and
+# wrong for a database dump: reading one into memory to hand it over is how the
+# backup job becomes the thing that OOMs the box it is protecting.
+
+
+@pytest.mark.asyncio
+async def test_put_file_streams_a_file_and_reports_its_size(storage, tmp_path):
+    await storage.ensure_bucket()
+    payload = b"PGDMP" + b"\xa5" * 200_000
+    src = tmp_path / "indiedex.dump"
+    src.write_bytes(payload)
+
+    size = await storage.put_file("backups/test.dump", str(src), "application/octet-stream")
+
+    assert size == len(payload)
+    assert await storage.get("backups/test.dump") == payload
+
+
+@pytest.mark.asyncio
+async def test_put_file_lands_where_list_keys_can_find_it(storage, tmp_path):
+    """The backup script reads the key back after writing it. A backup nobody
+    has confirmed is there is a belief, not a backup."""
+    await storage.ensure_bucket()
+    src = tmp_path / "b.dump"
+    src.write_bytes(b"PGDMP" + b"\x00" * 2000)
+    key = "backups/indiedex-20260904T193005Z.dump"
+
+    await storage.put_file(key, str(src), "application/octet-stream")
+
+    assert key in await storage.list_keys("backups/")

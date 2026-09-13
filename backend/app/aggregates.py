@@ -15,7 +15,14 @@ from uuid import UUID
 from app.config import settings
 
 # The one definition. `/map` and `/dogs` import it rather than restating it.
-COUNTABLE_SIGHTING = "s.review_status <> 'rejected'"
+#
+# `= 'valid'`, not `<> 'rejected'`. Since #46 gave `review_status` a writer,
+# `pending` means someone reported this and no human has looked yet -- the
+# whole point of that state is that it waits somewhere other than a public
+# surface. That argument is stronger here than for the map: a count is the
+# thing quoted to a partner, and a reported sighting has no business in one
+# until it has been looked at.
+COUNTABLE_SIGHTING = "s.review_status = 'valid'"
 
 # Bangalore. `captured_at` is timestamptz and date_trunc would otherwise bucket
 # in whatever the session timezone is; 23:30 UTC on the 31st is the 1st here.
