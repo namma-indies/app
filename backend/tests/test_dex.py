@@ -83,9 +83,15 @@ async def test_dex_says_why_a_sighting_is_off_the_shared_map(authed_client, monk
 
 
 @pytest.mark.asyncio
-async def test_a_report_outranks_the_detector_in_the_explanation(authed_client):
+async def test_a_report_outranks_the_detector_in_the_explanation(authed_client, monkeypatch):
     """Both can be true at once. A person acting is the more useful thing to
     be told, so it is the reason reported."""
+    from app.config import settings
+
+    # Without this, animal_confidence_min stays 0.0 and 0.02 >= 0.0 is True --
+    # animal_ok would be True and there would be nothing for `pending` to
+    # outrank. Mirrors test_dex_says_why_a_sighting_is_off_the_shared_map above.
+    monkeypatch.setattr(settings, "animal_confidence_min", 0.30)
     client, oid = authed_client
     sid = await _post(client)
     pool = client._transport.app.state.pool
@@ -96,6 +102,40 @@ async def test_a_report_outranks_the_detector_in_the_explanation(authed_client):
 
     item = (await client.get("/dex")).json()["sightings"][0]
     assert item["off_map_reason"] == "reported"
+
+
+@pytest.mark.asyncio
+async def test_a_moderator_hiding_it_is_reported_as_hidden(authed_client):
+    """The third off_map_reason value, otherwise unverified server-side."""
+    client, oid = authed_client
+    sid = await _post(client)
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as c:
+        await c.execute(
+            "UPDATE sightings SET review_status='rejected' WHERE id=$1", sid)
+
+    item = (await client.get("/dex")).json()["sightings"][0]
+    assert item["on_map"] is False
+    assert item["off_map_reason"] == "hidden"
+
+
+@pytest.mark.asyncio
+async def test_a_moderator_hiding_it_wins_over_no_animal_too(authed_client, monkeypatch):
+    """rejected + a failing animal score: hidden still wins -- the same
+    precedence as the pending case, checked against the other losing branch."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "animal_confidence_min", 0.30)
+    client, oid = authed_client
+    sid = await _post(client)
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as c:
+        await c.execute(
+            "UPDATE sightings SET review_status='rejected', animal_confidence=0.02 "
+            "WHERE id=$1", sid)
+
+    item = (await client.get("/dex")).json()["sightings"][0]
+    assert item["off_map_reason"] == "hidden"
 
 
 @pytest.mark.asyncio
