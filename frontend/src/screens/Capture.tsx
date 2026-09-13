@@ -69,12 +69,6 @@ function Chips<T extends string>({
   );
 }
 
-/** A position for the import prompt, which only wants coordinates or nothing. */
-async function getLocation(): Promise<{ lat: number; lng: number } | null> {
-  const got = await locate();
-  return got.ok ? { lat: got.lat, lng: got.lng } : null;
-}
-
 export default function Capture() {
   const fileRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLInputElement>(null);
@@ -612,7 +606,6 @@ export default function Capture() {
       {asking && (
         <ImportOriginPrompt
           md={asking.md}
-          getPosition={getLocation}
           onConfirm={(o) => {
             stageImport(asking.file, o);
             setAsking(null);

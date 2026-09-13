@@ -6,27 +6,11 @@ import {
   resolveCapturedAt,
   type ImportOrigin,
 } from "../capture/importOrigin";
-
-/**
- * Asks for what an imported photo's file didn't say.
- *
- * Reached whenever a camera-roll photo is missing its date or its coordinates.
- * That is the common path, not the edge: WhatsApp forwards, screenshots and
- * several gallery apps strip EXIF entirely, and an offline preflight looks
- * identical. The alternative to asking is defaulting to here-and-now, which
- * silently inserts a phantom sighting into the 1km spatial prior that
- * re-identification matches against.
- *
- * Deliberately plain: this is a placeholder while the real interaction gets
- * designed (see the follow-up issue). It only has to be correct, not lovely --
- * so it asks for a rough time and offers one location, rather than pretending
- * to a map picker it doesn't have.
- */
+import LocationPicker from "./LocationPicker";
 
 /** "2026-08-05T18:42:11" -> "2026-08-05T18:42", which is what the input wants. */
 function toInputValue(local: string | null): string {
-  if (!local) return "";
-  return local.slice(0, 16);
+  return local?.slice(0, 16) ?? "";
 }
 
 function nowInputValue(): string {
@@ -39,67 +23,72 @@ function nowInputValue(): string {
 
 export default function ImportOriginPrompt({
   md,
-  getPosition,
+  mediaKind = "photo",
   onConfirm,
   onCancel,
 }: {
   md: PhotoMetadata;
-  getPosition: () => Promise<{ lat: number; lng: number } | null>;
+  mediaKind?: "photo" | "video";
   onConfirm: (origin: ImportOrigin) => void;
   onCancel: () => void;
 }) {
-  const knownLocation =
+  const [place, setPlace] = useState<{ lat: number; lng: number } | null>(() =>
     md.has_location && md.lat != null && md.lng != null
       ? { lat: md.lat, lng: md.lng }
-      : null;
-
+      : null,
+  );
+  const [placeFromFile, setPlaceFromFile] = useState(md.has_location);
   const [when, setWhen] = useState(toInputValue(md.captured_at_local));
-  const [place, setPlace] = useState<{ lat: number; lng: number } | null>(knownLocation);
-  const [locating, setLocating] = useState(false);
+  const [picking, setPicking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function useCurrentLocation() {
-    setLocating(true);
-    setError(null);
-    const pos = await getPosition();
-    setLocating(false);
-    if (!pos) {
-      setError("Couldn't get your location. You can still save without it.");
-      return;
-    }
-    setPlace(pos);
-  }
-
-  function confirm(withPlace: { lat: number; lng: number } | null) {
-    // The offset is only meaningful for a value that came from the file. A time
-    // typed into the input is in the device's zone, which is what a null offset
-    // means to resolveCapturedAt.
+  function confirm() {
+    // Preserve seconds and the file's offset when its displayed time is unchanged.
     const fromFile = when === toInputValue(md.captured_at_local) && md.has_date;
     const capturedAt = resolveCapturedAt(
-      when,
+      fromFile ? md.captured_at_local : when,
       fromFile ? md.utc_offset_minutes : null,
     );
     if (!capturedAt) {
       setError("Please give a rough date and time.");
       return;
     }
+    if (new Date(capturedAt).getTime() > Date.now()) {
+      setError("Please choose a date and time that isn't in the future.");
+      return;
+    }
     onConfirm(
-      // A coordinate the file itself carried stays `exif`; one the person
-      // supplied is a `pin`, because they're asserting where it happened.
-      knownLocation && withPlace === knownLocation
-        ? originFromExif(capturedAt, knownLocation.lat, knownLocation.lng)
-        : originFromPerson(capturedAt, withPlace),
+      placeFromFile && place
+        ? originFromExif(capturedAt, place.lat, place.lng)
+        : originFromPerson(capturedAt, place),
+    );
+  }
+
+  if (picking) {
+    return (
+      <LocationPicker
+        initial={place}
+        onPick={(picked) => {
+          setPlace(picked);
+          // Even an explicit current fix is the person's assertion about a past event.
+          setPlaceFromFile(false);
+          setPicking(false);
+        }}
+        onClose={() => setPicking(false)}
+      />
     );
   }
 
   return (
     <div className="viewer-overlay" onClick={onCancel}>
       <div className="import-prompt" onClick={(e) => e.stopPropagation()}>
-        <span className="spot-label">ABOUT THIS PHOTO</span>
+        <span className="spot-label">ABOUT THIS {mediaKind === "video" ? "CLIP" : "PHOTO"}</span>
         <p className="hint">
-          {md.has_date || md.has_location
-            ? "This photo didn't say everything about itself — fill in the rest."
-            : "This photo carries no date or place, so we need a rough idea."}
+          {mediaKind === "video"
+            ? "Tell us when and where this clip was recorded — not where you are now."
+            : md.has_date || md.has_location
+              ? "This photo didn't say everything about itself — fill in the rest."
+              : "This photo carries no date or place, so we need a rough idea."}
         </p>
 
         <div className="field-group">
@@ -109,40 +98,32 @@ export default function ImportOriginPrompt({
             type="datetime-local"
             value={when}
             max={nowInputValue()}
-            onChange={(e) => setWhen(e.target.value)}
+            onChange={(e) => { setWhen(e.target.value); setError(null); }}
           />
+          <p className="hint">Times you enter use this device's time zone.</p>
         </div>
 
         <div className="field-group">
           <label>roughly where?</label>
-          {place ? (
+          {place && (
             <p className="hint">
               {place.lat.toFixed(4)}, {place.lng.toFixed(4)}
-              {knownLocation && place === knownLocation ? " (from the photo)" : ""}
+              {placeFromFile ? " (from the photo)" : ""}
             </p>
-          ) : (
-            <button
-              type="button"
-              className="link-btn"
-              disabled={locating}
-              onClick={useCurrentLocation}
-            >
-              {locating ? "finding you…" : "use my current location"}
-            </button>
           )}
+          <button type="button" className="link-btn" onClick={() => setPicking(true)}>
+            {place ? "change place" : "set where it was taken"}
+          </button>
+          {!place && <p className="hint">Without a place this sighting won't appear on the map.</p>}
         </div>
 
-        {error && <p className="hint import-error">{error}</p>}
+        {error && <p className="hint import-error" role="alert">{error}</p>}
 
         <div className="actions-row">
           <button type="button" className="btn btn-secondary" onClick={onCancel}>
             Cancel
           </button>
-          {/* Saving without a place is allowed on purpose. A sighting with no
-              coordinate still counts -- it just draws no pin, exactly like an
-              offline capture with geo_source=none. Refusing it would throw away
-              a real photo of a real dog over a field nobody remembers. */}
-          <button type="button" className="btn btn-primary" onClick={() => confirm(place)}>
+          <button type="button" className="btn btn-primary" onClick={confirm}>
             {place ? "Add sighting" : "Add without a place"}
           </button>
         </div>

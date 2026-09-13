@@ -136,7 +136,7 @@ describe("camera-roll import: the photo's own date and place", () => {
     expect((screen.getByLabelText(/roughly when/) as HTMLInputElement).value).toBe(
       "2026-08-05T18:42",
     );
-    expect(screen.getByText("use my current location")).toBeInTheDocument();
+    expect(screen.getByText("set where it was taken")).toBeInTheDocument();
   });
 
   it("uses the time the person typed, in their own zone", async () => {
@@ -199,7 +199,8 @@ describe("camera-roll import: the photo's own date and place", () => {
     const whenInput = screen.getByLabelText(/roughly when/) as HTMLInputElement;
     await userEvent.clear(whenInput);
     await userEvent.type(whenInput, "2026-07-14T09:30");
-    await userEvent.click(screen.getByText("use my current location"));
+    await userEvent.click(screen.getByText("set where it was taken"));
+    await userEvent.click(screen.getByText("USE MY LOCATION"));
     await waitFor(() => expect(screen.getByText(/12\.9000, 77\.6000/)).toBeInTheDocument());
     await userEvent.click(screen.getByText("Add sighting"));
     await waitFor(() => screen.getByText(/^from your photos ·/));

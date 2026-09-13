@@ -65,6 +65,7 @@ export default function LocationPicker({
   const [lat, setLat] = useState(initial ? String(initial.lat) : "");
   const [lng, setLng] = useState(initial ? String(initial.lng) : "");
 
+  const active = useRef(true);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const centreRef = useRef<{ lat: number; lng: number }>(
@@ -72,7 +73,9 @@ export default function LocationPicker({
   );
 
   useEffect(() => {
-    permissionState().then((s) => setDenied(s === "denied"));
+    active.current = true;
+    permissionState().then((s) => { if (active.current) setDenied(s === "denied"); });
+    return () => { active.current = false; };
   }, []);
 
   useEffect(() => {
@@ -101,6 +104,7 @@ export default function LocationPicker({
     setBusy(true);
     setError(null);
     const got = await locate();
+    if (!active.current) return;
     setBusy(false);
     if (got.ok) {
       onPick({
