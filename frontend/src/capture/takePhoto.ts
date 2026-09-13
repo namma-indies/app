@@ -69,27 +69,27 @@ export async function takePhotoIfNative(): Promise<File | null> {
  * file input without `capture`, which lets the OS offer the gallery) or if the
  * user dismisses the picker.
  *
- * One photo, not a multi-select: each import carries its own capture date and
- * place, and photos chosen together are not necessarily from the same time or
- * street. Grouping several into one sighting would have to either ask per photo
- * or cluster them by EXIF -- see the follow-up issue.
+ * One photo or clip, not a multi-select: each import carries its own capture
+ * date and place. Grouping several into one sighting would have to ask per file
+ * or cluster them by metadata -- see the follow-up issue.
  */
 export async function chooseFromGalleryIfNative(): Promise<File | null> {
   if (!Capacitor.isNativePlatform()) return null;
 
-  const { Camera } = await import("@capacitor/camera");
+  const { Camera, MediaType, MediaTypeSelection } = await import("@capacitor/camera");
 
   try {
     const { results } = await Camera.chooseFromGallery({
+      mediaType: MediaTypeSelection.All,
       allowMultipleSelection: false,
       // No in-app editing: a crop re-encodes, and re-encoding is what strips
       // the EXIF this import depends on.
       editable: "no",
       quality: 100,
     });
-    const photo = results?.[0];
-    if (!photo) return null;
-    return await fileFrom(photo.webPath, "import");
+    const media = results?.[0];
+    if (!media) return null;
+    return await fileFrom(media.webPath, "import", media.type === MediaType.Video ? "video/mp4" : "image/jpeg");
   } catch (err) {
     if (isCancellation(err)) return null;
     throw err;

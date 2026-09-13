@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 vi.mock("../offline/queue", () => ({
@@ -12,7 +12,7 @@ vi.mock("../offline/queue", () => ({
 vi.mock("../capture/takePhoto", () => ({
   takePhotoIfNative: vi.fn(),
   chooseFromGalleryIfNative: vi.fn(),
-  isNative: () => false, // web path: the component drives the hidden input
+  isNative: vi.fn(() => false), // web path unless a test enables the native picker
 }));
 
 const readPhotoMetadata = vi.fn();
@@ -21,8 +21,9 @@ vi.mock("../api", async (importOriginal) => {
   return { ...actual, readPhotoMetadata: (f: Blob) => readPhotoMetadata(f) };
 });
 
-import { enqueue } from "../offline/queue";
+import { enqueue, flush } from "../offline/queue";
 import Capture from "./Capture";
+import { chooseFromGalleryIfNative, isNative } from "../capture/takePhoto";
 
 afterEach(cleanup);
 
@@ -50,7 +51,10 @@ function oldPhoto(name = "old.jpg"): File {
 
 beforeEach(() => {
   vi.mocked(enqueue).mockReset().mockResolvedValue(undefined);
+  vi.mocked(flush).mockReset().mockResolvedValue(undefined);
   readPhotoMetadata.mockReset();
+  vi.mocked(isNative).mockReset().mockReturnValue(false);
+  vi.mocked(chooseFromGalleryIfNative).mockReset();
   Object.defineProperty(URL, "createObjectURL", {
     value: (b: Blob) => `blob:${(b as File).name}`,
     writable: true,
@@ -71,6 +75,128 @@ async function importFile(file = oldPhoto()) {
   const input = screen.getByLabelText("choose from photos") as HTMLInputElement;
   await userEvent.upload(input, file);
 }
+
+describe("gallery clips", () => {
+  function clip(name = "old.mp4", type = "video/mp4") {
+    return new File(["old clip bytes"], name, { type, lastModified: new Date("2020-01-01").getTime() });
+  }
+
+  async function confirmTime() {
+    fireEvent.change(screen.getByLabelText(/roughly when/), { target: { value: "2026-07-14T09:30" } });
+    await userEvent.click(screen.getByText("Add without a place"));
+  }
+
+  it.each([["old.mp4", "video/mp4"], ["old.mov", "video/quicktime"], ["old.webm", "video/webm"], ["old.MOV", ""]])("accepts %s with an explicit time, never filesystem time or current GPS", async (name, type) => {
+    const getCurrentPosition = vi.fn();
+    Object.defineProperty(navigator, "geolocation", { value: { getCurrentPosition }, configurable: true });
+    const file = clip(name, type);
+    const { container } = render(<Capture />);
+    await importFile(file);
+    expect(screen.getByText("ABOUT THIS CLIP")).toBeInTheDocument();
+    expect(screen.getByLabelText(/roughly when/)).toHaveValue("");
+    await userEvent.click(screen.getByText("Add without a place"));
+    expect(screen.getByRole("alert")).toHaveTextContent("rough date and time");
+    expect(enqueue).not.toHaveBeenCalled();
+    await confirmTime();
+    expect(container.querySelector("video")).toHaveAttribute("src", `blob:${name}`);
+    await userEvent.click(screen.getByText("LOG IT"));
+    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ video: file, photos: undefined, captured_at: new Date("2026-07-14T09:30").toISOString(), geo_source: "none", lat: undefined, lng: undefined }));
+    expect(readPhotoMetadata).not.toHaveBeenCalled();
+    expect(getCurrentPosition).not.toHaveBeenCalled();
+  });
+
+  it("routes a native gallery clip through the same origin prompt", async () => {
+    vi.mocked(isNative).mockReturnValue(true);
+    vi.mocked(chooseFromGalleryIfNative).mockResolvedValue(clip());
+    render(<Capture />);
+    await userEvent.click(screen.getByText("or add a photo or clip from your gallery"));
+    expect(await screen.findByText("ABOUT THIS CLIP")).toBeInTheDocument();
+    expect(readPhotoMetadata).not.toHaveBeenCalled();
+  });
+
+  it("native cancellation does not reopen the web file chooser or stage anything", async () => {
+    vi.mocked(isNative).mockReturnValue(true);
+    vi.mocked(chooseFromGalleryIfNative).mockResolvedValue(null);
+    render(<Capture />);
+    const open = vi.spyOn(screen.getByLabelText("choose from photos"), "click");
+    await userEvent.click(screen.getByText("or add a photo or clip from your gallery"));
+    expect(open).not.toHaveBeenCalled();
+    expect(screen.queryByText("ABOUT THIS CLIP")).not.toBeInTheDocument();
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("queues a gallery clip with manually entered historical coordinates offline", async () => {
+    vi.mocked(flush).mockRejectedValue(new TypeError("offline"));
+    const file = clip();
+    render(<Capture />);
+    await importFile(file);
+    fireEvent.change(screen.getByLabelText(/roughly when/), { target: { value: "2026-07-14T09:30" } });
+    await userEvent.click(screen.getByText("set where it was taken"));
+    await userEvent.click(screen.getByText("ENTER COORDINATES"));
+    await userEvent.type(screen.getByLabelText("latitude"), "10.2381");
+    await userEvent.type(screen.getByLabelText("longitude"), "77.4892");
+    await userEvent.click(screen.getByText("USE THESE"));
+    await userEvent.click(screen.getByText("Add sighting"));
+    await userEvent.click(screen.getByText("LOG IT"));
+    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ video: file, lat: 10.2381, lng: 77.4892, geo_source: "pin", captured_at: new Date("2026-07-14T09:30").toISOString() }));
+    expect(screen.getByText("Saved on this device · waiting to upload")).toBeInTheDocument();
+  });
+
+  it("cancels and reselects the same clip with empty time and place", async () => {
+    const file = clip();
+    const { container } = render(<Capture />);
+    await importFile(file);
+    fireEvent.change(screen.getByLabelText(/roughly when/), { target: { value: "2026-07-14T09:30" } });
+    await userEvent.click(screen.getByText("Cancel"));
+    expect(container.querySelector("video")).toBeNull();
+    await importFile(file);
+    expect(screen.getByLabelText(/roughly when/)).toHaveValue("");
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("removing an imported clip clears its metadata before a live capture", async () => {
+    render(<Capture />);
+    await importFile(clip());
+    await confirmTime();
+    await userEvent.click(screen.getByText("Remove clip"));
+    await userEvent.upload(screen.getByLabelText("capture photo"), oldPhoto("live.jpg"));
+    await userEvent.click(screen.getByText("LOG IT"));
+    const sent = vi.mocked(enqueue).mock.calls[0][0];
+    expect(sent.video).toBeUndefined();
+    expect(Date.now() - new Date(sent.captured_at).getTime()).toBeLessThan(60_000);
+    expect(sent.geo_source).toBe("none");
+  });
+
+  it("rejects a future capture time", async () => {
+    render(<Capture />);
+    await importFile(clip());
+    fireEvent.change(screen.getByLabelText(/roughly when/), { target: { value: "2099-01-01T09:30" } });
+    await userEvent.click(screen.getByText("Add without a place"));
+    expect(screen.getByRole("alert")).toHaveTextContent("isn't in the future");
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it.each(["empty", "oversize", "unsupported"])("rejects %s video before asking or queueing", async (kind) => {
+    const file = kind === "empty" ? new File([], "empty.mp4", { type: "video/mp4" }) : clip("clip.mp4", kind === "unsupported" ? "video/avi" : "video/mp4");
+    if (kind === "oversize") Object.defineProperty(file, "size", { value: 100 * 1024 * 1024 + 1 });
+    render(<Capture />);
+    fireEvent.change(screen.getByLabelText("choose from photos"), { target: { files: [file] } });
+    expect(screen.getByText(kind === "empty" ? /clip is empty/ : kind === "oversize" ? /Trim or compress/ : /Export your video/)).toBeInTheDocument();
+    expect(screen.queryByText("ABOUT THIS CLIP")).not.toBeInTheDocument();
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("ignores a late photo preflight after selecting a clip", async () => {
+    let finish!: (md: typeof FULL_EXIF) => void;
+    readPhotoMetadata.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    render(<Capture />);
+    await importFile(oldPhoto());
+    await importFile(clip());
+    await act(async () => finish(FULL_EXIF));
+    expect(screen.getByText("ABOUT THIS CLIP")).toBeInTheDocument();
+    expect(screen.queryByText(/^from your photos/)).not.toBeInTheDocument();
+  });
+});
 
 describe("camera-roll import: the photo's own date and place", () => {
   it("logs an EXIF-complete photo as then-and-there, without asking anything", async () => {
@@ -136,7 +262,7 @@ describe("camera-roll import: the photo's own date and place", () => {
     expect((screen.getByLabelText(/roughly when/) as HTMLInputElement).value).toBe(
       "2026-08-05T18:42",
     );
-    expect(screen.getByText("use my current location")).toBeInTheDocument();
+    expect(screen.getByText("set where it was taken")).toBeInTheDocument();
   });
 
   it("uses the time the person typed, in their own zone", async () => {
@@ -199,7 +325,8 @@ describe("camera-roll import: the photo's own date and place", () => {
     const whenInput = screen.getByLabelText(/roughly when/) as HTMLInputElement;
     await userEvent.clear(whenInput);
     await userEvent.type(whenInput, "2026-07-14T09:30");
-    await userEvent.click(screen.getByText("use my current location"));
+    await userEvent.click(screen.getByText("set where it was taken"));
+    await userEvent.click(screen.getByText("USE MY LOCATION"));
     await waitFor(() => expect(screen.getByText(/12\.9000, 77\.6000/)).toBeInTheDocument());
     await userEvent.click(screen.getByText("Add sighting"));
     await waitFor(() => screen.getByText(/^from your photos ·/));
