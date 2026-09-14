@@ -70,6 +70,36 @@ def _become(client, oid):
 
 
 @pytest.mark.asyncio
+async def test_queued_placeholder_respects_animal_visibility(authed_client, monkeypatch):
+    from app.config import settings
+    from app.ids import uuid7
+
+    monkeypatch.setattr(settings, "animal_confidence_min", 0.3)
+    client, oid = authed_client
+    sid = uuid7()
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as conn:
+        await conn.execute("INSERT INTO sightings(id,observer_id,captured_at,geog,geo_source,processing_state) VALUES($1,$2,now(),ST_SetSRID(ST_MakePoint(77.5,12.9),4326)::geography,'device_gps','queued')", sid, oid)
+    placeholder = (await client.get("/map")).json()["sightings"][0]
+    assert placeholder["id"] == str(sid)
+    assert placeholder["processing_state"] == "queued"
+    assert placeholder["photos"] == []
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE sightings SET animal_confidence=0,processing_state='no_animal' WHERE id=$1", sid)
+    assert (await client.get("/map")).json()["sightings"] == []
+    own = (await client.get("/dex")).json()["sightings"][0]
+    assert own["processing_state"] == "no_animal"
+    assert own["off_map_reason"] == "no_animal"
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE sightings SET animal_override=true WHERE id=$1", sid)
+    assert (await client.get("/map")).json()["sightings"][0]["id"] == str(sid)
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE sightings SET review_status='pending' WHERE id=$1", sid)
+    assert (await client.get("/map")).json()["sightings"] == []
+    assert (await client.get("/dex")).json()["sightings"][0]["off_map_reason"] == "reported"
+
+
+@pytest.mark.asyncio
 async def test_map_requires_auth(app_client):
     assert (await app_client.get("/map")).status_code == 401
 

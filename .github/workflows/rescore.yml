@@ -1,0 +1,100 @@
+name: Rescore photos
+# Scores every photo with the current detector and records which one that was,
+# for people without SSH access to the box.
+#
+# `sightings.dog_confidence` was written by two detectors that disagree badly
+# -- YOLOv8n gave 0.021 to a clearly visible dog where YOLO26x gives 0.800 --
+# and nothing recorded which one ran. Until this has scored the corpus under a
+# single model, `animal_confidence` is NULL for every pre-existing sighting,
+# /moderation/animals is empty, and no threshold can be chosen honestly. See
+# #67.
+#
+# Modelled on backfill.yml, which is modelled on deploy.yml: the settings are
+# prepended to the script on stdin rather than passed as an env prefix, because
+# the deploy key's forced command discards the client's command string. That
+# wrapper's own comments carry the full reasoning; do not simplify this into an
+# `ssh host "MODE=run ..."` without reading them first.
+#
+# Manual only. It is CPU-bound work on the box that serves live traffic, and
+# `run` writes to production data.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: >-
+          dry-run counts what would be scored and writes nothing. run scores
+          everything and fills any missing embedding from the same pass.
+          histogram prints the distribution of what is already stored and
+          scores nothing.
+        type: choice
+        options: [dry-run, run, histogram]
+        default: dry-run
+      sleep:
+        description: >-
+          Seconds to pause between photos, for `run` only. Leave at 0 unless
+          running during the day -- inference competes with live uploads for
+          the same two cores.
+        type: string
+        default: "0"
+
+concurrency:
+  # Two rescores at once would fight for CPU and duplicate work. They are
+  # idempotent, so this is about the box, not correctness.
+  group: rescore-production
+  cancel-in-progress: false
+
+jobs:
+  rescore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360   # unknown corpus size; a large one legitimately takes hours
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rescore on argos
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_TARGET: ${{ secrets.DEPLOY_SSH_TARGET }}
+          MODE: ${{ inputs.mode }}
+          SLEEP: ${{ inputs.sleep }}
+        run: |
+          set -euo pipefail
+          key_file="$(mktemp)"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$key_file"
+          chmod 600 "$key_file"
+
+          # Sleep only means anything for a scoring run, and the wrapper on the
+          # box refuses it otherwise -- so drop it here rather than sending an
+          # argument that will be denied.
+          extra=""
+          sleep_arg=""
+          if [ "$MODE" = "run" ] && [ "${SLEEP:-0}" != "0" ]; then
+            extra="--sleep $SLEEP"
+            sleep_arg="$SLEEP"
+          fi
+
+          # The settings go through stdin, prepended to the script, NOT as an
+          # env prefix on the ssh command: the deploy key is pinned with a
+          # forced command, which discards the client's command string
+          # entirely, so an env prefix never arrives and MODE would fall back
+          # to its dry-run default -- a real run reporting success having
+          # written nothing.
+          #
+          # The command string names an ACTION while the script is still piped
+          # on stdin, so this works either side of the box being switched from
+          # `command="bash -s"` to deploy/authorized-command.sh: with the old
+          # pinning the action name is discarded and stdin runs; with the
+          # wrapper the action is honoured and stdin is drained and dropped.
+          {
+            printf 'MODE=%s\n' "$MODE"
+            printf "EXTRA_ARGS='%s'\n" "$extra"
+            cat deploy/remote-rescore.sh
+          } | ssh -i "$key_file" -o IdentitiesOnly=yes \
+                -o StrictHostKeyChecking=accept-new \
+                "$DEPLOY_SSH_TARGET" "rescore $MODE $sleep_arg"
+
+      - name: What to do next
+        if: ${{ inputs.mode == 'run' }}
+        run: |
+          echo "::notice::Rescore finished. Run this workflow again with mode=histogram to see the distribution, then walk Dex -> FLAGS -> NOT ANIMALS to find where the detector starts being wrong. That point is ANIMAL_CONFIDENCE_MIN."

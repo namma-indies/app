@@ -25,8 +25,10 @@ from starlette.concurrency import run_in_threadpool
 
 from app.config import settings
 from app.deps import get_storage
+from app.detect_reid import DETECTOR_NAME
 from app.ids import uuid7
 from app.photos import thumb_key
+from app.scoring import recompute_animal_confidence, save_detection
 
 PIPELINE_VERSION = "stored-webp-q90-yolo26x-miewid-msv3-v1"
 MODEL_NAME = "miewid-msv3"
@@ -310,6 +312,10 @@ async def complete_job(conn, storage, job_id, body: Completion, *, cpu=False):
                 await conn.execute("INSERT INTO photos (id,sighting_id,s3_key,width,height,phash) VALUES ($1,$2,$3,$4,$5,$6)", frame.photo_id, sid, key, frame.width, frame.height, frame.phash)
         vecs = []
         for frame in body.frames:
+            # The validated pipeline pins YOLO26x; `body.model` names only
+            # the embedder. Persist even frames with no box or embedding.
+            await save_detection(conn, frame.photo_id, frame.dog_confidence,
+                                 frame.cat_confidence, model=DETECTOR_NAME)
             if frame.vector is None:
                 continue
             vecs.append(frame.vector)
@@ -327,6 +333,7 @@ async def complete_job(conn, storage, job_id, body: Completion, *, cpu=False):
             mean = vector_text(mean / norm)
         outcome = "ready" if vecs else "no_animal"
         await conn.execute("UPDATE sightings SET dog_confidence=$2,vec_miew=$3::vector,processing_state=$4,phash=COALESCE(phash,$5) WHERE id=$1", sid, max(f.dog_confidence for f in body.frames), mean, outcome, body.frames[0].phash)
+        await recompute_animal_confidence(conn, sid)
         if vecs and sighting["review_status"] != "rejected":
             await resolve_sighting(conn, sid, auto_merge_min=settings.reid_auto_merge_min,
                 propose_min=settings.reid_propose_min, radius_m=settings.reid_radius_m,

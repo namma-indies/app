@@ -34,6 +34,7 @@ from uuid import UUID
 import asyncpg
 import numpy as np
 
+from app.aggregates import animal_present
 from app.embed import EMBED_DIM, MODEL_NAME
 
 # How many neighbours the ANN stage pulls before exact re-ranking. Larger costs
@@ -141,6 +142,11 @@ async def find_candidates(
                   -- state, and dropping candidates on every report would make
                   -- re-ID quality depend on who tapped what.
                   AND s.review_status <> 'rejected'
+                  -- A photo with no animal in it must not seed an identity.
+                  -- Note this is a different knob from the box threshold:
+                  -- REID_CONF_THRESHOLD = 0.10 can produce a box, and so an
+                  -- embedding, for a frame the map would not show.
+                  AND {animal_present()}
                   AND ({p_excl}::uuid IS NULL OR s.id <> {p_excl}::uuid)
                   {geo_filter}
                 ORDER BY e.vec_miew::halfvec({EMBED_DIM}) <=> q.v::halfvec({EMBED_DIM})

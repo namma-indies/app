@@ -96,9 +96,9 @@ def test_photo_processing_exact_and_stored_photo_never_reencoded(monkeypatch):
 
 
 def test_no_app_global_sessions_initialized():
-    prior = (detect._session, detect_reid._session, embed._session)
+    prior = (detect_reid._session, embed._session)
     worker().analyse_photo(image_bytes())
-    assert (detect._session, detect_reid._session, embed._session) == prior
+    assert (detect_reid._session, embed._session) == prior
 
 
 @pytest.mark.parametrize("detections, dog, cat", [

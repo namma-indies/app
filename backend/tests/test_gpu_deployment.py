@@ -413,6 +413,21 @@ def test_prepare_reads_only_selected_committed_blobs(release_module, monkeypatch
         release_module.prepare(tmp_path, "b" * 40, output)
 
 
+def test_source_release_contains_worker_import_closure(release_module, tmp_path):
+    # Import only the source allowlist, not the checkout's backend; a newly
+    # transitive app import must not silently break the no-build release.
+    import shutil
+    for name, source in release_module.FILES.items():
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / source, target)
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", "import sys; sys.path.insert(0, sys.argv[1]); import gpu_worker.inference, gpu_worker.client, gpu_worker.__main__", str(tmp_path)],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_image_static_contract():
     dockerfile = (ROOT / "backend/gpu_worker/Dockerfile").read_text()
     assert "FROM nvcr.io/nvidia/pytorch@sha256:" in dockerfile

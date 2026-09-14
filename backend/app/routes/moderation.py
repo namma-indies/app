@@ -57,7 +57,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Form, HTTPException
 
 from app.auth.deps import require_moderator, require_observer
+from app.config import settings
 from app.deps import get_conn, get_storage
+from app.detect_reid import DETECTOR_NAME
 from app.photos import thumb_key
 from app.storage.s3 import S3Storage
 
@@ -261,3 +263,135 @@ async def review_sighting(
         "sighting=%s reviewed as %s by moderator=%s", sighting_id, verdict, moderator_id
     )
     return {"status": "ok", "review_status": verdict}
+
+
+@router.get("/moderation/animals")
+async def animal_queue(
+    _mod: UUID = Depends(require_moderator),
+    conn=Depends(get_conn),
+    storage: S3Storage = Depends(get_storage),
+):
+    """Photos the detector thinks have no animal in them, least likely first.
+
+    THIS IS ALSO HOW THE THRESHOLD GETS CHOSEN
+    ------------------------------------------
+    A histogram of scores says where they cluster; it cannot say where the
+    detector starts being wrong. Walking this list from the bottom does: you
+    stop being able to say "no animal" at some point, and that point is
+    `animal_confidence_min`. So the review pass that checks the cleanup is the
+    same pass that produces the number, and it runs while the filter is still
+    inert and nothing has been hidden from anyone.
+
+    Dog and cat are reported separately rather than as the max the sighting
+    was scored with. The product call is that any animal counts, but the
+    question a moderator is actually answering is "is there a dog in this",
+    and 0.82 alone cannot distinguish a dog from a cat.
+
+    Not folded into `/moderation/queue`: that one aggregates reports with a
+    HAVING clause, and a second source would make both unreadable.
+
+    THE CEILING, AND WHY IT IS NOT THE OTHER NUMBER
+    -----------------------------------------------
+    Only sightings scoring below `animal_review_max` appear. Without it the
+    queue is every scored sighting the moment the rescore finishes -- the 0.95
+    dogs sitting behind the 0.02 sofas -- and a surface that calls ordinary
+    content "flagged" teaches a moderator to stop reading it.
+
+    This is a second number about the same column, which is precisely the
+    confusion #67 was about, so the difference is worth stating plainly:
+    `animal_confidence_min` decides what the WORLD sees and is still 0.0;
+    `animal_review_max` decides only what a MODERATOR is asked to look at.
+    Nothing outside this endpoint reads it, moving it hides nothing from
+    anyone, and a ruling already made is unaffected -- `animal_override` is
+    stored, not recomputed.
+    """
+    rows = await conn.fetch(
+        """
+        SELECT s.id,
+               s.captured_at,
+               s.animal_confidence,
+               o.display_name AS observer,
+               pd.dog, pd.cat, pd.s3_key
+        FROM sightings s
+        LEFT JOIN observers o ON o.id = s.observer_id
+        -- One representative photo and its scores, in a lateral rather than a
+        -- join: a clip yields up to twelve frames and would multiply the row.
+        -- The photo shown is the one that scored highest, so a moderator
+        -- rules against the sighting's best evidence rather than its worst.
+        LEFT JOIN LATERAL (
+            SELECT ph.s3_key, dd.dog, dd.cat
+            FROM photos ph
+            JOIN detections dd ON dd.photo_id = ph.id AND dd.model = $1
+            WHERE ph.sighting_id = s.id
+            ORDER BY greatest(dd.dog, dd.cat) DESC
+            LIMIT 1
+        ) pd ON TRUE
+        WHERE s.animal_confidence IS NOT NULL
+          AND s.animal_override IS NULL
+          -- The ceiling. `::real` for the same reason the map predicate casts:
+          -- `animal_confidence` is `real`, and comparing it against an
+          -- unsuffixed literal widens both to double precision, where a float4
+          -- does not land on the decimal you typed. Casting keeps the
+          -- comparison in the column's own type, so the boundary behaves.
+          AND s.animal_confidence < $3::real
+        -- s.id tiebreaks. Two sightings sharing a score and a captured_at
+        -- would otherwise leave their relative order to the plan, so the
+        -- queue could reshuffle between one fetch and the next.
+        ORDER BY s.animal_confidence ASC, s.captured_at DESC, s.id
+        LIMIT $2
+        """,
+        DETECTOR_NAME,
+        MAX_QUEUE,
+        settings.animal_review_max,
+    )
+    keys = [thumb_key(r["s3_key"]) for r in rows if r["s3_key"]]
+    urls = await storage.urls(keys)
+    thumbs = iter(urls)
+    return {
+        "items": [
+            {
+                "sighting_id": str(r["id"]),
+                "captured_at": r["captured_at"],
+                "observer": r["observer"],
+                "animal_confidence": r["animal_confidence"],
+                "dog": r["dog"],
+                "cat": r["cat"],
+                "thumb_url": next(thumbs) if r["s3_key"] else None,
+            }
+            for r in rows
+        ]
+    }
+
+
+@router.post("/sighting/{sighting_id}/animal")
+async def rule_on_animal(
+    sighting_id: UUID,
+    verdict: Literal["animal", "no_animal"] = Form(...),
+    moderator_id: UUID = Depends(require_moderator),
+    conn=Depends(get_conn),
+):
+    """A person's answer to "is there an animal in this", which beats the model's.
+
+    Written to `animal_override`, never to `review_status`. That column and
+    `reviewed_at` mean "a person ruled on a report" (0010), and a verdict about
+    what is in the frame is a different question -- the same photo can carry
+    both answers. Keeping them apart is also what lets this ruling survive a
+    threshold retune and the next detector swap, so the corpus is reviewed
+    once rather than after every change.
+
+    Reversible by ruling again, and it deletes nothing.
+    """
+    override = verdict == "animal"
+    updated = await conn.fetchval(
+        "UPDATE sightings SET animal_override = $2, animal_reviewed_at = now(), "
+        "animal_reviewed_by = $3, updated_at = now() WHERE id = $1 RETURNING id",
+        sighting_id,
+        override,
+        moderator_id,
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="no such sighting")
+    logger.info(
+        "sighting=%s ruled %s by moderator=%s", sighting_id, verdict, moderator_id
+    )
+    return {"status": "ok", "animal_override": override}

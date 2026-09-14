@@ -31,7 +31,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.aggregates import COUNTABLE_SIGHTING
+from app.aggregates import countable_sighting
 from app.auth.deps import require_observer
 from app.config import settings
 from app.deps import get_conn, get_storage
@@ -106,7 +106,7 @@ async def get_map(
           -- this and no human has looked yet; the whole point of that state is
           -- that it is off the map while it waits. Defined once, in
           -- app/aggregates.py, so the three read surfaces cannot drift.
-          AND {COUNTABLE_SIGHTING}
+          AND {countable_sighting()}
     """
     args: list = []
     if envelope is not None:

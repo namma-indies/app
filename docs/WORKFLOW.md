@@ -36,6 +36,12 @@ had ever written a row to any of them.** A photo went in, received a
 dog-confidence score, and stopped. There was no embedding, no candidate search,
 no notion of an individual animal.
 
+The YOLOv8n scorer this diagram shows is since deleted (#67) -- nothing in the
+tree runs it any more. `sightings.dog_confidence` survives, unread, as the
+historical record of what it wrote; migration `0013` keeps the column
+deliberately rather than dropping it. Every current path uses YOLO26x and
+writes `animal_confidence` instead, per `## Now` below.
+
 ---
 
 ## Now
@@ -106,7 +112,7 @@ flowchart TD
 | Encode | JPEG q95 / thumb q80 | **WebP q90** / thumb q80 | −0.2 accuracy points, 66% smaller (674 kB vs 2001 kB on a 12 MP capture) |
 | S3 keys | `.jpg` | `.webp` | Old objects keep their keys and formats; both coexist |
 | S3 endpoint | one | **write vs presign split** | SigV4 signs the Host, so a URL signed for the internal host 403s in a browser |
-| Animal gate | YOLOv8n | **YOLO26x**, dog *and* cat | v8n scored a clearly visible dog at 0.021 where 26x gives 0.800 |
+| Animal gate | YOLOv8n | **YOLO26x**, dog *and* cat | v8n scored a clearly visible dog at 0.021 where 26x gives 0.800 -- the two models' scores were incomparable until `detections` and the rescore (#67) made the corpus one population again |
 | Embedding | none | **MiewID-msv3**, 2152-d, on the animal crop | Whole-frame embeddings match other streets, not other dogs |
 | Candidate search | none | PostGIS 1 km → HNSW → exact re-rank | HNSW caps at 2000 dims; MiewID is 2152, so ANN runs on a `halfvec` cast and the shortlist is re-scored at full precision |
 | Identity | none | human verdict only, **on your own sightings** | You decide about photographs you took; a stranger has only the pixels. Cross-observer pairs stay pending for an adjudicator (#29) |
@@ -422,10 +428,15 @@ That was unsafe until the guard described under *Why a human verdict is never
 overwritten* landed: on a corpus with confirmed dogs it would have unlinked
 them.
 
-**`dog_confidence` becomes incomparable across the deploy** — old rows scored by
+**`dog_confidence` became incomparable across that deploy** — old rows scored by
 YOLOv8n, new rows by YOLO26x, and the two disagree substantially (on 29 varied
-photos: dogs 14/17 vs 9/17, cats 10/12 vs 1/12). Any filter on that column will
-treat two different populations as one.
+photos: dogs 14/17 vs 9/17, cats 10/12 vs 1/12), with no record of which model
+scored which row. That is what #67 resolves: a `detections` table keyed
+`(photo_id, model)`, `sightings.animal_confidence` recomputed from it as one
+number meaning one thing, and `scripts/rescore_photos.py` to bring the whole
+corpus under the current detector. Filtering on `animal_confidence` is safe
+once that rescore has run; filtering on the old `dog_confidence` column never
+was, and nothing reads it any more.
 
 **A failed migration would take the site down**, not merely leave it un-updated:
 `entrypoint.sh` is `set -e`, so a migration error means uvicorn never starts and

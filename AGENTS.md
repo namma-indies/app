@@ -41,7 +41,7 @@ flowchart TD
     G --> H["BackgroundTasks"]
 
     subgraph BG["background — nothing blocks the response"]
-        H --> I["animal_confidence<br/>YOLO26x → sightings.dog_confidence"]
+        H --> I["YOLO26x → detections<br/>+ sightings.animal_confidence"]
         H --> J["_embed_and_save"]
         J --> K{"best_animal_box<br/>dog or cat?"}
         K -- no --> L["no row written<br/>sighting stays unmatchable"]
@@ -145,7 +145,7 @@ plus the delay and marking-suppression dials.
 |---|---|---|---|---|
 | `app/detect_reid.py` | YOLO26x (ONNX, NMS baked in) | onnxruntime CPU | ~314 ms | animal box + dog/cat confidence |
 | `app/embed.py` | MiewID-msv3 (ONNX) | onnxruntime CPU | ~170 ms | 2152-d identity vector |
-| `app/detect.py` | YOLOv8n (ONNX) | onnxruntime CPU | ~27 ms | **superseded**, no live callers |
+| `app/detect.py` | none | -- | -- | EXIF-upright decode only; the YOLOv8n scorer it used to hold is deleted |
 
 **There is no torch anywhere, and there must not be.** The service runs ONNX
 Runtime on CPU. Models are exported on a machine that has torch, via
@@ -158,7 +158,7 @@ Dockerfile. Consequences an agent must not trip over:
   `DetectorUnavailable` naming the script to run.
 - Model-dependent tests **skip** rather than fail when weights are absent, so a
   green suite does not prove the models work. Check for `skipped` in the output.
-- **Deploying as-is silently disables `dog_confidence` in production** — the
+- **Deploying as-is silently disables `animal_confidence` in production** — the
   background task catches the error and the sighting still saves. See
   [Before deploying](#before-deploying).
 
@@ -379,8 +379,32 @@ So merging is deploying. Before any merge touching the ML path:
       gallery density, skipping it starts the system at its worst point.
 - [ ] Licence position settled for anything shipped in a public artifact.
 - [ ] `S3_PUBLIC_ENDPOINT` correct for the environment.
-- [ ] Note that `dog_confidence` is not comparable across this deploy: existing
-      rows were scored by YOLOv8n, new ones by YOLO26x.
+- [ ] **Rescore the corpus, then pick the threshold (#67).** `sightings.animal_confidence`
+      is one number meaning one thing (the `detections` table records which
+      model produced it), but existing rows were scored by whatever ran before
+      this deploy and need a pass under the current detector before they mean
+      anything comparable.
+
+      **Without SSH:** run the **Rescore photos** workflow from the Actions
+      tab — `dry-run`, then `run`, then `histogram`. Note this needs the box's
+      forced command refreshed once first (`install -m 0755
+      ~/app/deploy/authorized-command.sh ~/authorized-command.sh`), because
+      that copy is deliberately the one script a deploy does not update, and
+      the `rescore` action is new. Until then the workflow is refused.
+
+      **With SSH,** from `/app/backend` on the box, in order:
+      1. `uv run python scripts/rescore_photos.py --dry-run` — confirm the
+         pending count looks right before touching anything.
+      2. `uv run python scripts/rescore_photos.py --embed` — score for real;
+         `--embed` also backfills any missing MiewID vector from the same pass.
+      3. `uv run python scripts/rescore_photos.py --histogram` — see where the
+         rescored corpus's scores land.
+      4. Walk `/moderation/animals` from the bottom to find where the detector
+         starts being wrong, then set `ANIMAL_CONFIDENCE_MIN` to that value.
+         `animal_confidence_min` ships at `0.0` (inert — nothing is hidden)
+         until a human does this. Do not confuse it with `animal_review_max`
+         (default `0.60`), which decides only what the review queue *shows* a
+         moderator and hides nothing from anyone.
 
 ---
 

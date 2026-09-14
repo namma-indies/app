@@ -1,5 +1,6 @@
-"""Protocol tests do not touch a database; integration tests require an explicit
-local disposable DSN and never use the repository's truncating fixtures.
+"""Protocol unit tests plus transactional persistence on the local test database.
+
+The optional claim/reclaim test additionally accepts an explicit disposable DSN.
 """
 import io
 import os
@@ -62,7 +63,8 @@ def test_digest_ignores_lease_and_frame_order_but_not_analysis():
 
 def test_duplicate_ids_and_pipeline_mismatch_rejected():
     a = frame()
-    for kwargs in ({"frames": [a, a]}, {"pipeline_version": "legacy"}, {"model": "other"}):
+    for kwargs in ({"frames": [a, a]}, {"pipeline_version": "legacy"}, {"model": "other"},
+                   {"detector_model": "miewid-msv3"}):
         with pytest.raises(ValidationError):
             completion(**kwargs)
 
@@ -256,6 +258,9 @@ async def test_photo_completion_publishes_no_animal_terminal_state():
     assert result == {"status": "done", "outcome": "no_animal", "replayed": False}
     assert any("completion_digest" in q and args[2] == "no_animal" for q, args in conn.calls if "UPDATE jobs" in q)
     assert not any("INSERT INTO embeddings" in q for q, _ in conn.calls)
+    detection = next(args for q, args in conn.calls if "INSERT INTO detections" in q)
+    assert detection == (source.photo_id, "yolo26x", source.dog_confidence, source.cat_confidence)
+    assert any("SET animal_confidence" in q for q, _ in conn.calls)
     wrong = completion([source.model_copy(update={"photo_id": uuid4()})])
     with pytest.raises(HTTPException) as exc:
         await jobs.complete_job(conn, None, conn.job["id"], wrong)
@@ -350,3 +355,102 @@ async def test_optional_isolated_db_claim_and_reclaim(monkeypatch):
     finally:
         await transaction.rollback()
         await conn.close()
+
+
+async def scored_job(conn, monkeypatch, *, cpu=False, video=False, scores=((0.1, 0.9),)):
+    import json
+    monkeypatch.setattr(settings, "media_cpu_grace_s", 0)
+    sid = uuid4()
+    await conn.execute("INSERT INTO sightings(id,captured_at,geo_source,geog) VALUES($1,now(),'device_gps',ST_SetSRID(ST_MakePoint(77.5,12.9),4326)::geography)", sid)
+    frames = [frame(dog_confidence=dog, cat_confidence=cat,
+                    **({"bbox": (0, 0, 10, 10), "vector": [1.0] + [0.0] * 2151} if max(dog, cat) >= 0.1 else {}))
+              for dog, cat in scores]
+    for f in frames:
+        if not video:
+            await conn.execute("INSERT INTO photos(id,sighting_id,s3_key,width,height,phash) VALUES($1,$2,'stored.webp',$3,$4,$5)", f.photo_id, sid, f.width, f.height, f.phash)
+    await jobs.enqueue(conn, sid, "video" if video else "photo")
+    job, token = await jobs.claim_job(conn, "test", cpu=cpu)
+    if video:
+        slots = {}
+        for i, f in enumerate(frames):
+            f.index = i
+            slots[str(i)] = {"photo_id": str(f.photo_id), "key": f"staging/{i}", "spec": {"original_bytes": 100, "thumbnail_bytes": 20}}
+        await conn.execute("UPDATE jobs SET payload=$2::jsonb WHERE id=$1", job["id"], json.dumps({"slots": slots}))
+    return job, completion(frames, lease_token=token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cpu,video", [(False, False), (True, False), (False, True)])
+@pytest.mark.parametrize("scores", [((0.01, 0.92),), ((0.75, 0.1), (0.05, 0.88), (0.0, 0.0)), ((0.0, 0.0),)])
+async def test_completion_persists_detector_scores_and_replay_is_read_only(migrated_db, monkeypatch, cpu, video, scores):
+    conn = migrated_db
+    job, body = await scored_job(conn, monkeypatch, cpu=cpu, video=video, scores=scores)
+    storage = SimpleNamespace(publish_checked=AsyncMock())
+    result = await jobs.complete_job(conn, storage, job["id"], body, cpu=cpu)
+    assert result["status"] == "done"
+    assert result["outcome"] == ("ready" if any(max(pair) >= 0.1 for pair in scores) else "no_animal")
+    rows = await conn.fetch("SELECT * FROM detections ORDER BY photo_id")
+    assert len(rows) == len(scores)
+    by_id = {f.photo_id: f for f in body.frames}
+    for row in rows:
+        assert row["model"] == "yolo26x" != body.model
+        assert row["dog"] == pytest.approx(by_id[row["photo_id"]].dog_confidence)
+        assert row["cat"] == pytest.approx(by_id[row["photo_id"]].cat_confidence)
+    sighting = await conn.fetchrow("SELECT * FROM sightings WHERE id=$1", job["sighting_id"])
+    assert sighting["animal_confidence"] == pytest.approx(max(max(pair) for pair in scores))
+    storage.publish_checked.reset_mock()
+    assert (await jobs.complete_job(conn, storage, job["id"], body, cpu=cpu))["replayed"]
+    assert await conn.fetch("SELECT * FROM detections ORDER BY photo_id") == rows
+    assert await conn.fetchrow("SELECT * FROM sightings WHERE id=$1", job["sighting_id"]) == sighting
+    storage.publish_checked.assert_not_called()
+    changed = body.model_copy(update={"frames": [body.frames[0].model_copy(update={"cat_confidence": 0.5}), *body.frames[1:]]})
+    with pytest.raises(HTTPException):
+        await jobs.complete_job(conn, storage, job["id"], changed, cpu=cpu)
+    assert await conn.fetch("SELECT * FROM detections ORDER BY photo_id") == rows
+    assert await conn.fetchrow("SELECT * FROM sightings WHERE id=$1", job["sighting_id"]) == sighting
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rejection", ["stale", "metadata", "cancelled_vectors", "expired_during_commit"])
+async def test_rejected_completion_rolls_back_scores_and_sighting(migrated_db, monkeypatch, rejection):
+    conn = migrated_db
+    job, body = await scored_job(conn, monkeypatch, scores=((0.0, 0.0), (0.0, 0.0)))
+    from app.scoring import save_detection, recompute_animal_confidence
+    for f in body.frames:
+        await save_detection(conn, f.photo_id, 0.7, 0.2)
+    await recompute_animal_confidence(conn, job["sighting_id"])
+    if rejection == "stale":
+        body.lease_token = "z" * 43
+    elif rejection == "metadata":
+        body.frames[-1].width += 1
+    elif rejection == "cancelled_vectors":
+        for sign, f in zip((1, -1), body.frames):
+            f.bbox = (0, 0, 10, 10)
+            f.vector = [float(sign)] + [0.0] * 2151
+    else:
+        async def expire_after_detection(*args, **kwargs):
+            await save_detection(*args, **kwargs)
+            await conn.execute("UPDATE jobs SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1", job["id"])
+        monkeypatch.setattr(jobs, "save_detection", expire_after_detection)
+    before = await conn.fetch("SELECT * FROM detections ORDER BY photo_id")
+    sighting = await conn.fetchrow("SELECT * FROM sightings WHERE id=$1", job["sighting_id"])
+    with pytest.raises(HTTPException):
+        await jobs.complete_job(conn, None, job["id"], body)
+    assert await conn.fetch("SELECT * FROM detections ORDER BY photo_id") == before
+    assert await conn.fetchrow("SELECT * FROM sightings WHERE id=$1", job["sighting_id"]) == sighting
+    assert await conn.fetchval("SELECT count(*) FROM embeddings") == 0
+    assert await conn.fetchval("SELECT status FROM jobs WHERE id=$1", job["id"]) == "running"
+
+
+@pytest.mark.asyncio
+async def test_cpu_fallback_persists_cat_analysis(migrated_db, monkeypatch):
+    from app import analyse
+    job, body = await scored_job(migrated_db, monkeypatch, cpu=True)
+    monkeypatch.setattr(analyse, "analyse", lambda raw: SimpleNamespace(dog_confidence=0.02, cat_confidence=0.91, box=None))
+    monkeypatch.setattr(analyse, "embed_analysis", lambda analysis: None)
+    await jobs.cpu_process(FakePool(migrated_db), SimpleNamespace(get=AsyncMock(return_value=b"stored")), job, body.lease_token)
+    row = await migrated_db.fetchrow("SELECT model,dog,cat FROM detections")
+    assert row["model"] == "yolo26x"
+    assert row["dog"] == pytest.approx(0.02)
+    assert row["cat"] == pytest.approx(0.91)
+    assert await migrated_db.fetchval("SELECT animal_confidence FROM sightings WHERE id=$1", job["sighting_id"]) == pytest.approx(0.91)
