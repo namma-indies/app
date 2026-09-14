@@ -36,6 +36,17 @@ beforeEach(() => {
 });
 
 describe("flush", () => {
+  it("deletes an uploaded queued video without waiting for frames or processing", async () => {
+    const { enqueue, flush, pendingCount, failedCount } = await freshQueue();
+    await enqueue({ ...SAMPLE, photos: undefined, video: new Blob(["clip"], { type: "video/mp4" }) });
+    vi.mocked(postSighting).mockResolvedValue({ sighting_id: "queued", photo_ids: [], processing_state: "queued" });
+    await flush();
+    expect(await pendingCount()).toBe(0);
+    expect(await failedCount()).toBe(0);
+    expect(postSighting).toHaveBeenCalledTimes(1);
+    await flush();
+    expect(postSighting).toHaveBeenCalledTimes(1);
+  });
   it("leaves a network-failure item pending and stops draining", async () => {
     const { enqueue, flush, pendingCount } = await freshQueue();
     await enqueue(SAMPLE);
@@ -200,6 +211,33 @@ describe("photo storage owns its bytes", () => {
 });
 
 describe("clip storage owns its bytes too", () => {
+  it.each(["pin", "none"] as const)("preserves imported bytes, time and %s provenance through reload and offline retry", async (geo_source) => {
+    const queue = await freshQueue();
+    const clip = new File([new Uint8Array([2, 4, 8, 16])], "old.mov", { type: "video/quicktime" });
+    const origin = { captured_at: "2026-07-14T04:00:00.000Z", geo_source, ...(geo_source === "pin" ? { lat: 10.2381, lng: 77.4892 } : {}) };
+    await queue.enqueue({ video: clip, ...origin });
+    clip.arrayBuffer = () => Promise.reject(new Error("original file removed"));
+    vi.resetModules();
+    const { flush, pendingCount } = await import("./queue");
+    vi.mocked(postSighting).mockRejectedValueOnce(new TypeError("offline"));
+    await flush();
+    expect(await pendingCount()).toBe(1);
+    vi.mocked(postSighting).mockResolvedValueOnce({ sighting_id: "saved", photo_ids: [], processing_state: "queued" });
+    await flush();
+    expect(await pendingCount()).toBe(0);
+    const attempts = vi.mocked(postSighting).mock.calls.map(([input]) => input);
+    expect(attempts).toHaveLength(2);
+    for (const sent of attempts) {
+      expect(sent).toMatchObject(origin);
+      expect(sent.video!.type).toBe("video/quicktime");
+      expect(new Uint8Array(await sent.video!.arrayBuffer())).toEqual(new Uint8Array([2, 4, 8, 16]));
+      expect(sent.photos ?? []).toHaveLength(0);
+      if (geo_source === "none") { expect(sent.lat).toBeUndefined(); expect(sent.lng).toBeUndefined(); }
+    }
+    expect(attempts[0].client_token).toBeTruthy();
+    expect(attempts[1].client_token).toBe(attempts[0].client_token);
+  });
+
   // A clip is the same purgeable camera File handle as a photo, only larger --
   // so more likely to be evicted, not less. enqueue() originally destructured
   // only `photos`, which left the clip stored as a live Blob reference.

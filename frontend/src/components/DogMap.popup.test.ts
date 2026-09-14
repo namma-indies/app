@@ -6,6 +6,25 @@ import { esc, popupHtml } from "./DogMap";
 // logged the sighting; the photo URL and tags are server-supplied but still
 // land inside attributes. The previous version escaped only "<" in the note,
 // which stops a tag but not an attribute break-out.
+describe("processing placeholders", () => {
+  it.each([
+    ["queued", "Uploaded · waiting to process"],
+    ["processing", "Uploaded · processing media"],
+    ["failed", "Processing failed · upload saved"],
+    ["no_animal", "No animal detected · matching unavailable"],
+  ])("shows %s without inventing an image or exact location", (state, label) => {
+    const html = popupHtml({ thumb: "", time: "1 Aug", tags: "", processing_state: state, precision: "area", approx_km: "1" });
+    expect(html).toContain(label);
+    expect(html).not.toContain("<img");
+    expect(html).toContain("somewhere in this ~1 km area");
+  });
+  it("retains an existing image alongside processing failure", () => {
+    const html = popupHtml({ thumb: "https://example.test/photo.webp", time: "1 Aug", processing_state: "failed" });
+    expect(html).toContain('<img src="https://example.test/photo.webp"');
+    expect(html).toContain("Processing failed");
+  });
+});
+
 describe("popup escaping", () => {
   it("escapes the characters that break out of text and attributes", () => {
     expect(esc(`<b>&"'`)).toBe("&lt;b&gt;&amp;&quot;&#39;");

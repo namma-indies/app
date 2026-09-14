@@ -70,6 +70,15 @@ describe("the journal says why an off-map sighting is off the map", () => {
     expect(screen.getByText("NOT ON THE SHARED MAP · NO ANIMAL DETECTED")).toBeInTheDocument();
   });
 
+  it("keeps processing feedback alongside the off-map reason", async () => {
+    getDex.mockResolvedValue({ sightings: [{ ...sighting("a", "no_animal"), processing_state: "no_animal" }] });
+    render(<Dex onUnauthorized={() => {}} />);
+    await waitFor(() => screen.getByTestId("dogmap"));
+    await userEvent.click(screen.getByText("JOURNAL"));
+    expect(screen.getByText("No animal detected · matching unavailable")).toBeInTheDocument();
+    expect(screen.getByText("NOT ON THE SHARED MAP · NO ANIMAL DETECTED")).toBeInTheDocument();
+  });
+
   it("renders nothing when the sighting is on the map", async () => {
     getDex.mockResolvedValue({ sightings: [sighting("a", null)] });
     render(<Dex onUnauthorized={() => {}} />);

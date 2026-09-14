@@ -14,6 +14,8 @@ vi.mock("@capacitor/camera", () => ({
     chooseFromGallery: (...args: unknown[]) => chooseFromGallery(...args),
     recordVideo: (...args: unknown[]) => recordVideo(...args),
   },
+  MediaType: { Photo: 0, Video: 1 },
+  MediaTypeSelection: { Photo: 0, Video: 1, All: 2 },
   CameraResultType: { Uri: "uri" },
   CameraSource: { Camera: "camera", Photos: "photos" },
 }));
@@ -124,6 +126,17 @@ describe("chooseFromGalleryIfNative", () => {
     expect(file?.name).toMatch(/^import-/);
   });
 
+  it.each(["video/quicktime", "video/webm", ""])("preserves gallery video bytes and type (%s)", async (type) => {
+    isNativePlatform.mockReturnValue(true);
+    chooseFromGallery.mockResolvedValue({ results: [{ type: 1, webPath: "capacitor://blob/clip" }] });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      blob: () => Promise.resolve(new Blob([new Uint8Array([1, 5, 9])], { type })),
+    }));
+    const file = await chooseFromGalleryIfNative();
+    expect(file?.type).toBe(type || "video/mp4");
+    expect(new Uint8Array(await file!.arrayBuffer())).toEqual(new Uint8Array([1, 5, 9]));
+  });
+
   it("reads `results`, the Camera 8 field, not the old `photos`", async () => {
     // pickImages returned {photos}; chooseFromGallery returns {results}. Reading
     // the wrong one yields a silent "user cancelled" on every import.
@@ -145,7 +158,7 @@ describe("chooseFromGalleryIfNative", () => {
 
     await chooseFromGalleryIfNative();
     expect(chooseFromGallery).toHaveBeenCalledWith(
-      expect.objectContaining({ allowMultipleSelection: false, editable: "no" }),
+      expect.objectContaining({ mediaType: 2, allowMultipleSelection: false, editable: "no" }),
     );
   });
 

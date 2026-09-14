@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { UPLOAD_COMPLETE_EVENT } from "../processing";
 import userEvent from "@testing-library/user-event";
 
 vi.mock("../offline/queue", () => ({
@@ -40,6 +41,18 @@ beforeEach(() => {
     writable: true,
   });
   Object.defineProperty(URL, "revokeObjectURL", { value: () => {}, writable: true });
+});
+
+describe("upload acknowledgement", () => {
+  it("separates saving on the device from server processing", async () => {
+    render(<Capture />);
+    await userEvent.upload(screen.getByLabelText("capture photo"), makePhoto("one.jpg"));
+    await userEvent.click(screen.getByRole("button", { name: /LOG IT/ }));
+    await waitFor(() => expect(screen.getByText("Saved on this device · waiting to upload")).toBeInTheDocument());
+    act(() => window.dispatchEvent(new CustomEvent(UPLOAD_COMPLETE_EVENT, { detail: { sighting_id: "q", photo_ids: [], processing_state: "queued" } })));
+    expect(screen.getByText("Uploaded · waiting to process")).toBeInTheDocument();
+    expect(screen.queryByText("Saved on this device · waiting to upload")).not.toBeInTheDocument();
+  });
 });
 
 describe("burst photo capture", () => {

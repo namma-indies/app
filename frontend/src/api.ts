@@ -32,10 +32,12 @@ export interface SightingAttrs {
  * (animal_override, or animal_confidence >= animal_confidence_min). All of
  * them stay in your own dex, because it is your photograph. */
 export type ReviewStatus = "valid" | "pending" | "rejected";
+export type ProcessingState = "legacy" | "queued" | "processing" | "ready" | "no_animal" | "failed";
 
 export interface Sighting {
   id: string;
   captured_at: string;
+  processing_state?: ProcessingState;
   /** Present on /dex only, so you can be told when one of yours has been taken
    * off the shared map rather than wondering why nobody can see it. */
   review_status?: ReviewStatus;
@@ -61,6 +63,7 @@ export interface DexResponse {
  * than on either response. */
 export interface MappableSighting {
   id: string;
+  processing_state?: ProcessingState;
   captured_at: string;
   lat: number | null;
   lng: number | null;
@@ -100,8 +103,8 @@ export interface MapResponse {
 /** Everyone's sightings, not just the viewer's. One request serves both sides
  * of the Mine/Everyone toggle: each sighting carries `mine`, so the toggle is a
  * filter over what we already have rather than another round trip. */
-export async function getMap(): Promise<MapResponse> {
-  const res = await fetch(`${API_BASE}/map`, { credentials: "include" });
+export async function getMap(signal?: AbortSignal): Promise<MapResponse> {
+  const res = await fetch(`${API_BASE}/map`, { credentials: "include", signal });
   return handle<MapResponse>(res);
 }
 
@@ -183,6 +186,7 @@ export interface PostSightingInput {
 
 export interface PostSightingResponse {
   sighting_id: string;
+  processing_state?: ProcessingState;
   photo_ids: string[];
   /** True when the server recognised this as a repeat and returned the
    * sighting the first attempt created, rather than making another. */
@@ -210,8 +214,8 @@ async function handle<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 
-export async function getDex(): Promise<DexResponse> {
-  const res = await fetch(`${API_BASE}/dex`, { credentials: "include" });
+export async function getDex(signal?: AbortSignal): Promise<DexResponse> {
+  const res = await fetch(`${API_BASE}/dex`, { credentials: "include", signal });
   return handle<DexResponse>(res);
 }
 
@@ -543,4 +547,3 @@ export async function getStatsObservers(): Promise<{ observers: StatsObserver[] 
   const res = await fetch(`${API_BASE}/stats/observers`, { credentials: "include" });
   return handle<{ observers: StatsObserver[] }>(res);
 }
-

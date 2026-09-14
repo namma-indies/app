@@ -216,7 +216,19 @@ class MatchOutcome:
     suggest_video: bool = False
 
 
-async def resolve_sighting(
+async def lock_matching(conn):
+    # A coarse transaction lock is intentional at pilot scale: a verdict can
+    # affect two sightings and an individual, including a resolver's candidate.
+    await conn.execute("SELECT pg_advisory_xact_lock(734821902)")
+
+
+async def resolve_sighting(conn, sighting_id, **kwargs):
+    async with conn.transaction():
+        await lock_matching(conn)
+        return await _resolve_sighting(conn, sighting_id, **kwargs)
+
+
+async def _resolve_sighting(
     conn: asyncpg.Connection,
     sighting_id: UUID,
     *,

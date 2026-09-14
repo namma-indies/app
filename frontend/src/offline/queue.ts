@@ -3,6 +3,7 @@
 // pending items to the server whenever it's called (on enqueue, on app
 // open, on the browser's `online` event).
 import { openDB, type IDBPDatabase } from "idb";
+import { UPLOAD_COMPLETE_EVENT } from "../processing";
 import { HttpError, postSighting, UnauthorizedError, type PostSightingInput } from "../api";
 
 const DB_NAME = "indiedex-queue";
@@ -214,8 +215,11 @@ export async function flush(): Promise<void> {
         }
         const item = toItem(record);
         try {
-          await postSighting(item);
+          const uploaded = await postSighting(item);
           await db.delete(STORE, record.id);
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent(UPLOAD_COMPLETE_EVENT, { detail: uploaded }));
+          }
         } catch (err) {
           if (isPermanentFailure(err)) {
             // Write back `stored`, not the reconstructed item: persisting the

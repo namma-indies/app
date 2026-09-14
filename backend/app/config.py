@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -41,6 +42,18 @@ class Settings(BaseSettings):
     # server writes them (dev proxy, or a CDN in front of S3). Empty means
     # "same as s3_endpoint".
     s3_public_endpoint: str = ""
+
+    # Default-off: deploy schema and worker before deliberately changing intake.
+    media_jobs_enabled: bool = False
+    media_gpu_token: str = ""
+    media_cpu_fallback_enabled: bool = True
+    media_cpu_grace_s: int = Field(default=5, ge=0, le=3600)
+    media_lease_s: int = Field(default=120, ge=15, le=600)
+    media_url_s: int = Field(default=60, ge=1, le=300)
+    media_poll_s: float = Field(default=1.0, ge=0.1, le=60)
+    media_max_attempts: int = Field(default=8, ge=1, le=100)
+    media_max_video_bytes: int = Field(default=100 * 1024 * 1024, gt=0, le=500 * 1024 * 1024)
+    media_max_photo_bytes: int = Field(default=20 * 1024 * 1024, gt=0, le=50 * 1024 * 1024)
 
     # --- re-identification -------------------------------------------------
     # Candidate scope for a new sighting. Street dogs hold small territories,

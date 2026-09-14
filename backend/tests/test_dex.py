@@ -80,6 +80,7 @@ async def test_dex_says_why_a_sighting_is_off_the_shared_map(authed_client, monk
     assert item["id"] == str(sid)
     assert item["on_map"] is False
     assert item["off_map_reason"] == "no_animal"
+    assert item["processing_state"] == "legacy"
 
 
 @pytest.mark.asyncio
