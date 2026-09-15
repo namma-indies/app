@@ -24,9 +24,9 @@ seconds later, but an item that sat in the queue overnight lands hours later and
 is no less a duplicate.
 
 The output is deliberately a report. Deleting a sighting destroys a real
-photograph and cannot be undone from here; merging the pair through the review
-queue is the reversible route, and it is the same "are these the same dog?"
-question a human already answers there.
+photograph and cannot be undone from here. Matching metadata and perceptual
+hashes only nominate candidates for review; they do not prove byte equality.
+Identity confirmation is not storage deduplication and has no in-app undo.
 """
 
 import argparse
@@ -55,6 +55,7 @@ SELECT s.observer_id,
 FROM sightings s
 JOIN photos p     ON p.sighting_id = s.id
 LEFT JOIN observers o ON o.id = s.observer_id
+WHERE p.phash IS NOT NULL
 GROUP BY s.observer_id, o.display_name, s.captured_at, p.phash
 HAVING count(DISTINCT s.id) > 1
 ORDER BY count(DISTINCT s.id) DESC, min(s.created_at)
@@ -85,6 +86,7 @@ SELECT s.observer_id, s.captured_at, p.phash,
        array_agg(DISTINCT s.match_status)                        AS statuses
 FROM sightings s
 JOIN photos p ON p.sighting_id = s.id
+WHERE p.phash IS NOT NULL
 GROUP BY s.observer_id, s.captured_at, p.phash
 HAVING count(DISTINCT s.id) > 1
 ORDER BY min(s.created_at)
@@ -112,9 +114,8 @@ async def main() -> int:
         print(f"no duplicate captures found across {total} sightings")
         return 0
 
-    extra = sum(r["copies"] - 1 for r in rows)
-    print(f"{len(rows)} duplicated capture(s) across {total} sightings "
-          f"-- {extra} extra row(s)\n")
+    print(f"{len(rows)} candidate hash group(s) across {total} sightings "
+          "-- groups may overlap; not a deletion count\n")
     for r in rows:
         who = r["display_name"] or str(r["observer_id"])[:8]
         print(f"  {r['copies']}x  {who}  captured {r['captured_at']:%Y-%m-%d %H:%M}")
@@ -140,20 +141,19 @@ async def main() -> int:
                 (b - a).total_seconds()
                 for a, b in zip(r["stored_at"], r["stored_at"][1:])
             ]
-            verdict = "one queued item, sent twice" if same else "FIELDS DIFFER"
+            verdict = "MATCHING METADATA — review needed" if same else "FIELDS DIFFER"
             print(f"  {r['copies']}x  {verdict}")
             print(f"      places={r['distinct_places']} accuracy={r['distinct_accuracy']} "
                   f"attrs={r['distinct_attrs']} geo_source={r['distinct_geo_source']}")
             print(f"      gaps between copies: "
                   f"{', '.join(f'{g/3600:.1f}h' for g in gaps)}")
             print(f"      match_status: {r['statuses']}")
-        print(f"\n  {identical}/{len(detail)} groups are byte-identical apart from the id.")
-        print("  A second capture would have taken a fresh GPS reading, so identical")
-        print("  coordinates to full precision mean the same stored bytes were sent")
-        print("  twice -- which only the offline queue does.\n")
+        print(f"\n  {identical}/{len(detail)} groups have matching compared metadata.")
+        print("  Metadata and perceptual hashes do not establish byte equality.")
+        print("  Review downloaded original hashes and observation history separately.\n")
 
-    print("Nothing was changed. To resolve these, merge each pair through the")
-    print("MATCHES tab -- it is the same question, and it is reversible.")
+    print("Nothing was changed. These are review candidates, not approved deletions.")
+    print("Identity confirmation does not deduplicate files and has no in-app undo.")
     return 0
 
 
