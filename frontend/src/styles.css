@@ -991,3 +991,25 @@ button { font-family: inherit; }
   background: var(--indigo); color: var(--panel);
   border-radius: 3px; padding: 1px 4px; vertical-align: middle;
 }
+
+.capture-status-list:empty { display: none; }
+.capture-status-list { max-height: 28vh; overflow-y: auto; flex-shrink: 0; }
+.capture-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 12px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); font-size: .8rem; }
+.capture-status span { color: var(--muted); }
+.capture-status button { flex-shrink: 0; max-width: 45%; padding: 8px; }
+.capture-review-overlay { position: fixed; inset: 0; z-index: 1100; background: #0009; overflow-y: auto; padding: 20px 12px; }
+.capture-review { max-width: 720px; margin: auto; background: var(--panel); color: var(--ink); padding: 20px; border-radius: 14px; }
+.capture-review p { line-height: 1.5; }
+.capture-evidence-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.capture-evidence { position: relative; margin-bottom: 8px; border: 2px solid var(--accent); }
+.capture-evidence img { display: block; width: 100%; height: auto; }
+.capture-box { position: absolute; border: 3px solid #ffd500; box-shadow: 0 0 0 1px #222; pointer-events: none; }
+.capture-review label { display: block; font-size: .85rem; }
+.capture-review select { display: block; width: 100%; padding: 10px; margin: 4px 0 10px; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; }
+.capture-review fieldset { margin: 12px 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.overlap-count { position: absolute; right: -8px; top: -8px; min-width: 22px; padding: 3px; text-align: center; border-radius: 100%; background: var(--ink); color: var(--panel); font-weight: bold; }
+.overlap-chooser { max-height: 55vh; overflow-y: auto; }
+.overlap-chooser details { border-top: 1px solid var(--line); padding: 8px 0; }
+.overlap-chooser summary { cursor: pointer; line-height: 1.5; }
+.overlap-chooser summary img { width: 40px; height: 40px; object-fit: cover; vertical-align: middle; margin-right: 8px; }
+.overlap-chooser p { font-size: .78rem; }

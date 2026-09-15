@@ -21,6 +21,39 @@ function visibility(value: boolean) {
 }
 
 describe("processing feed", () => {
+  it("polls a capture with no children until private review becomes available", async () => {
+    const load = vi.fn().mockResolvedValueOnce({ sightings: [{ capture_id: "c", processing_state: "processing", sighting_ids: [] }] }).mockResolvedValue({ sightings: [{ capture_id: "c", processing_state: "needs_review", sighting_ids: [] }] });
+    const { result } = renderHook(() => useProcessingFeed(load, true, () => {}));
+    await settle();
+    await advance(3000);
+    expect(result.current.data?.[0].processing_state).toBe("needs_review");
+    await advance(60000);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes a completed feed when returning after a review elsewhere", async () => {
+    const load = vi.fn().mockResolvedValue({ sightings: [{ processing_state: "needs_review" }] });
+    const { rerender } = renderHook(({ enabled }) => useProcessingFeed(load, enabled, () => {}, true), { initialProps: { enabled: true } });
+    await settle();
+    rerender({ enabled: false });
+    load.mockResolvedValue(response("ready"));
+    rerender({ enabled: true });
+    await settle();
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+  it("refreshes settled captures when the browser tab becomes visible again", async () => {
+    const load = vi.fn().mockResolvedValue({ sightings: [{ processing_state: "needs_review" }] });
+    const { result } = renderHook(() => useProcessingFeed(load, true, () => {}, true));
+    await settle();
+    visibility(true);
+    load.mockResolvedValue(response("ready"));
+    visibility(false);
+    await settle();
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(result.current.data?.[0].processing_state).toBe("ready");
+    await advance(60000);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
   it("backs off, refreshes pending records, and stops at ready", async () => {
     const load = vi.fn().mockResolvedValueOnce(response("queued")).mockResolvedValueOnce(response("processing")).mockResolvedValue(response("ready"));
     const { result } = renderHook(() => useProcessingFeed(load, true, () => {}));

@@ -28,7 +28,12 @@ is worth fixing before any of the harder questions about where inference runs.
 """
 
 import logging
+import io
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.tracking import CaptureAnalysis, FrameAnalysis
 
 import numpy as np
 from PIL import Image
@@ -41,6 +46,8 @@ from app.detect_reid import (
     REID_CONF_THRESHOLD,
     _get_session,
     _letterbox,
+    AnimalDetection,
+    animal_detections,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,6 +65,7 @@ class Analysis:
     # The decoded, upright image. Carried so callers can crop without decoding
     # the JPEG a second time.
     image: Image.Image
+    instances: tuple[AnimalDetection, ...] = ()
 
     @property
     def has_animal(self) -> bool:
@@ -117,7 +125,8 @@ def analyse(image_bytes: bytes) -> Analysis:
         if x2i > x1i and y2i > y1i:
             box = (x1i, y1i, x2i, y2i)
 
-    return Analysis(dog_confidence=dog, cat_confidence=cat, box=box, image=img)
+    return Analysis(dog_confidence=dog, cat_confidence=cat, box=box, image=img,
+                    instances=animal_detections(dets, img.size, scale, pad_x, pad_y))
 
 
 def embed_analysis(a: Analysis) -> np.ndarray | None:
@@ -133,3 +142,54 @@ def embed_analysis(a: Analysis) -> np.ndarray | None:
     from app.embed import embed_crop
 
     return embed_crop(a.image.crop(a.box))
+
+
+def analyse_instances(image_bytes: bytes, *, source_id: str = "photo:0",
+                      frame_index: int = 0, timestamp_seconds: float | None = None) -> "FrameAnalysis":
+    """CPU photo fallback with the same per-instance contract as the GPU path."""
+    from app.embed import embed_crop
+    from app.tracking import make_frame
+
+    if not isinstance(image_bytes, bytes) or not 0 < len(image_bytes) <= 32 * 1024 * 1024:
+        raise ValueError("photo exceeds byte budget")
+    with Image.open(io.BytesIO(image_bytes)) as image:
+        if image.width * image.height > 24_000_000 or getattr(image, "n_frames", 1) != 1:
+            raise ValueError("photo exceeds pixel budget or is animated")
+    result = analyse(image_bytes)
+    evidence = []
+    for detection in result.instances:
+        try:
+            crop = result.image.crop(detection.crop_box)
+            scale = 440 / min(crop.size)
+            if max(440, round(crop.width * scale)) * max(440, round(crop.height * scale)) > 24_000_000:
+                raise ValueError("embedding resize exceeds pixel budget")
+            vector = embed_crop(crop)
+            if vector.shape != (2152,) or not np.isfinite(vector).all() or not np.isclose(
+                    np.linalg.norm(vector), 1, atol=1e-5):
+                raise ValueError("invalid instance embedding")
+            evidence.append((detection, vector, None))
+        except Exception:
+            logger.warning("instance embedding failed", exc_info=True)
+            evidence.append((detection, None, "embedding_failed"))
+    return make_frame(source_id, frame_index, timestamp_seconds, *result.image.size,
+                      result.dog_confidence, result.cat_confidence, evidence)
+
+
+def analyse_photos(stored_photos: list[bytes]) -> "CaptureAnalysis":
+    """A photo burst is one capture; repeated views require association review."""
+    from app.tracking import SamplingCoverage, associate_frames
+
+    if not 1 <= len(stored_photos) <= 12:
+        raise ValueError("capture must contain 1..12 photos")
+    frames = []
+    count = 0
+    for index, raw in enumerate(stored_photos):
+        frame = analyse_instances(raw, source_id=f"photo:{index}", frame_index=index)
+        count += len(frame.instances)
+        if count > 96:
+            raise ValueError("capture exceeds instance budget")
+        frames.append(frame)
+    frames = tuple(frames)
+    coverage = SamplingCoverage("photos", len(frames), len(frames), None, None, None,
+                                12, 12, True)
+    return associate_frames(frames, coverage)

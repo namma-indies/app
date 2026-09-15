@@ -327,6 +327,9 @@ async def resolve_proposal(
         )
         if any(r["observer_id"] != observer_id or r["review_status"] != "valid" for r in locked):
             raise HTTPException(409, "sighting ownership or visibility changed")
+        if verdict == "same":
+            from app.matching import ensure_compatible_observations
+            await ensure_compatible_observations(conn, [sighting_id, p["candidate_sighting_id"]])
         identities = {r["individual_id"] for r in locked if r["individual_id"] is not None}
         if individual_id is not None:
             identities.add(individual_id)

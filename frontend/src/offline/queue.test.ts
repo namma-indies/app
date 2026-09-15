@@ -14,6 +14,8 @@ vi.mock("../api", () => ({
   },
 }));
 
+vi.mock("../captureApi", () => ({ postCapture: vi.fn() }));
+import { postCapture } from "../captureApi";
 import { postSighting, UnauthorizedError, HttpError } from "../api";
 import type { PostSightingInput } from "../api";
 
@@ -33,9 +35,43 @@ async function freshQueue() {
 
 beforeEach(() => {
   vi.mocked(postSighting).mockReset();
+  vi.mocked(postCapture).mockReset();
 });
 
 describe("flush", () => {
+  it("keeps endpoint and token across lost capture acknowledgements, without rerouting legacy items", async () => {
+    const { enqueue, flush, pendingCount } = await freshQueue();
+    await enqueue({ ...SAMPLE, upload_endpoint: "capture", video: new Blob(["clip"], { type: "video/mp4" }) });
+    await enqueue(SAMPLE);
+    vi.mocked(postCapture).mockRejectedValueOnce(new TypeError("lost acknowledgement"));
+    await flush();
+    const token = vi.mocked(postCapture).mock.calls[0][0].client_token;
+    expect(token).toBeTruthy();
+    expect(await pendingCount()).toBe(2);
+    vi.mocked(postCapture).mockResolvedValue({ capture_id: "capture", processing_state: "queued", sighting_ids: [] });
+    vi.mocked(postSighting).mockResolvedValue({ sighting_id: "legacy", photo_ids: [] });
+    await flush();
+    expect(vi.mocked(postCapture).mock.calls[1][0].client_token).toBe(token);
+    expect(await vi.mocked(postCapture).mock.calls[1][0].video?.text()).toBe("clip");
+    expect(postSighting).toHaveBeenCalledTimes(1);
+    expect(await pendingCount()).toBe(0);
+  });
+  it("keeps disabled capture intake failures recoverable without falling back to sightings", async () => {
+    const { enqueue, flush, listFailed, retryFailed, pendingCount } = await freshQueue();
+    await enqueue({ ...SAMPLE, upload_endpoint: "capture", photos: [new Blob(["photo"])] });
+    vi.mocked(postCapture).mockRejectedValueOnce(new HttpError(404));
+    await flush();
+    const [failed] = await listFailed();
+    expect(failed.upload_endpoint).toBe("capture");
+    expect(await failed.photos?.[0].text()).toBe("photo");
+    expect(postSighting).not.toHaveBeenCalled();
+    await retryFailed(failed.id);
+    vi.mocked(postCapture).mockResolvedValue({ capture_id: "capture", processing_state: "queued", sighting_ids: [] });
+    await flush();
+    expect(vi.mocked(postCapture).mock.calls[1][0].client_token).toBe(failed.client_token);
+    expect(await pendingCount()).toBe(0);
+    expect(postSighting).not.toHaveBeenCalled();
+  });
   it("deletes an uploaded queued video without waiting for frames or processing", async () => {
     const { enqueue, flush, pendingCount, failedCount } = await freshQueue();
     await enqueue({ ...SAMPLE, photos: undefined, video: new Blob(["clip"], { type: "video/mp4" }) });

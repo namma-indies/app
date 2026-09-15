@@ -25,6 +25,8 @@ from app.routes.match import router as match_router
 from app.routes.moderation import router as moderation_router
 from app.routes.photo_metadata import router as photo_metadata_router
 from app.media_jobs import cpu_consumer, router as media_jobs_router
+from app.routes.capture import router as capture_router
+from app.capture_jobs import router as capture_jobs_router
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +90,8 @@ app.include_router(match_router)
 app.include_router(moderation_router)
 app.include_router(photo_metadata_router)
 app.include_router(media_jobs_router)
+app.include_router(capture_router)
+app.include_router(capture_jobs_router)
 
 
 @app.get("/health")

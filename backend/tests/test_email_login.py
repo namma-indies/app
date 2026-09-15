@@ -90,6 +90,29 @@ async def test_absorbs_sightings_from_matching_passcode_observer(migrated_db):
         "SELECT count(*) FROM sightings WHERE observer_id = $1", new) == 2
     assert await migrated_db.fetchval(
         "SELECT count(*) FROM sightings WHERE observer_id = $1", old) == 0
+    assert await migrated_db.fetchval(
+        "SELECT count(*) FROM captures WHERE observer_id = $1", new) == 2
+    assert await migrated_db.fetchval(
+        "SELECT count(*) FROM captures WHERE observer_id = $1", old) == 0
+
+
+@pytest.mark.asyncio
+async def test_absorbs_unpublished_captures_without_sightings(migrated_db):
+    from app.ids import uuid7
+
+    old = await _passcode_observer(migrated_db, "akash@dognosis.tech")
+    capture_id = uuid7()
+    await migrated_db.execute(
+        "INSERT INTO captures(id,observer_id,kind,processing_state,captured_at,client_token) "
+        "VALUES($1,$2,'video','needs_review',now(),'pending-upload')",
+        capture_id, old,
+    )
+    new = await get_or_create_observer_by_email(migrated_db, email="akash@dognosis.tech")
+    assert await absorb_passcode_observers(
+        migrated_db, target=new, email="akash@dognosis.tech") == 1
+    assert await migrated_db.fetchval(
+        "SELECT observer_id FROM captures WHERE id=$1", capture_id) == new
+    assert await migrated_db.fetchval("SELECT count(*) FROM sightings") == 0
 
 
 @pytest.mark.asyncio
@@ -152,7 +175,7 @@ async def test_absorbed_observer_is_retired_and_absorb_is_idempotent(migrated_db
 
 @pytest.mark.asyncio
 async def test_moves_every_observer_reference_not_just_sightings(migrated_db):
-    """All six FK columns must move, or the retired observer orphans rows."""
+    """Capture ownership must move along with the legacy observer references."""
     from app.ids import uuid7
     old = await _passcode_observer(migrated_db, "akash@dognosis.tech")
     sid = await _sighting(migrated_db, old)

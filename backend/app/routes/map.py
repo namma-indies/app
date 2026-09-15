@@ -95,6 +95,8 @@ async def get_map(
             s.geo_accuracy_m,
             s.attrs,
             s.processing_state,
+            s.capture_id,
+            s.species,
             s.observer_id,
             o.display_name AS observer,
             p.s3_key
@@ -178,6 +180,8 @@ async def get_map(
                 "cell_m": where.cell_m if where else None,
                 "attrs": attrs,
                 "processing_state": row["processing_state"],
+                "capture_id": str(row["capture_id"]) if row["capture_id"] else None,
+                "species": row["species"],
                 "observer": row["observer"],
                 "mine": mine,
                 "photos": [{"thumb_url": thumb_url}] if thumb_url else [],

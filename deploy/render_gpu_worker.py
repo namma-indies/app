@@ -182,7 +182,7 @@ def render(config):
     if mode not in ("image", "pvc"):
         raise ValueError("unsupported runtime mode")
     required = REQUIRED | (PVC_REQUIRED if mode == "pvc" else set())
-    if not required <= config.keys() or config.keys() - required - {"uid", "gid", "runtime_mode", "selector_labels"}:
+    if not required <= config.keys() or config.keys() - required - {"uid", "gid", "runtime_mode", "selector_labels", "multi_animal"}:
         raise ValueError("missing or unknown configuration keys")
     c = dict(config)
     if mode == "pvc":
@@ -217,6 +217,10 @@ def render(config):
         "MEDIA_GPU_DETECTOR_SHA256": c["detector_sha256"],
         "MEDIA_GPU_EMBEDDER_SHA256": c["embedder_sha256"],
     }
+    if "multi_animal" in c:
+        if type(c["multi_animal"]) is not bool:
+            raise ValueError("multi_animal must be a boolean")
+        data["MEDIA_GPU_MULTI_ANIMAL"] = "1" if c["multi_animal"] else "0"
     labels = {"app.kubernetes.io/name": c["name"]}
     selector = selector_labels(c.get("selector_labels", labels), labels)
     labels.update(selector)

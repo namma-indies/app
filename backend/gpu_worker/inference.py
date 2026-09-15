@@ -15,7 +15,10 @@ import math
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.tracking import CaptureAnalysis, FrameAnalysis
 
 import numpy as np
 import onnxruntime as ort
@@ -52,6 +55,9 @@ class Limits:
     keep: int = 12
     max_decoded_frames: int = 3600
     max_result_bytes: int = 256 * 1024 * 1024
+    max_tracking_frames: int = 48
+    max_instances: int = 96
+    max_evidence_per_track: int = 12
 
     def __post_init__(self):
         for name in self.__dataclass_fields__:
@@ -60,6 +66,8 @@ class Limits:
                 raise ValueError(f"{name} must be finite and positive")
             if name != "clip_timeout_seconds" and not isinstance(value, int):
                 raise ValueError(f"{name} must be an integer")
+        if not 2 <= self.max_tracking_frames <= 120 or self.max_instances > 512 or self.max_evidence_per_track > 12:
+            raise ValueError("multi-animal evidence budgets exceed supported caps")
         if not self.keep <= self.max_raw <= 20 or self.keep > 12:
             raise ValueError("frame caps must satisfy keep <= max_raw <= 20; keep <= 12")
 
@@ -245,6 +253,116 @@ class GpuInference:
                     if not np.isfinite(vector).all() or not np.isclose(np.linalg.norm(vector), 1, atol=1e-5):
                         raise ValueError("embedding failed normalization")
             return PhotoInference(dog, cat, box, vector, self.identity)
+        finally:
+            self._lock.release()
+
+    def _analyse_instances(self, raw: bytes, source_id: str, frame_index: int,
+                           timestamp_seconds: float | None) -> FrameAnalysis:
+        from app.tracking import make_frame
+
+        self._validate_photo(raw)
+        image = detect.load_upright(raw)
+        batch, scale, pad_x, pad_y = detect_reid._letterbox(image)
+        output = self._run(self._detector, batch)
+        if (output.ndim != 3 or output.shape[0] != 1 or output.shape[2] != 6
+                or output.shape[1] > 300 or not np.isfinite(output).all()):
+            raise ValueError("invalid detector output")
+        dog = cat = 0.0
+        for *_, confidence, species in output[0]:
+            if not 0 <= confidence <= 1 or int(species) != species or not 0 <= species < 80:
+                raise ValueError("invalid detector confidence or class")
+            if int(species) == detect_reid.COCO_DOG:
+                dog = max(dog, float(confidence))
+            if int(species) == detect_reid.COCO_CAT:
+                cat = max(cat, float(confidence))
+        detections = detect_reid.animal_detections(output[0], image.size, scale, pad_x, pad_y)
+        evidence = []
+        for detection in detections:
+            try:
+                crop = image.crop(detection.crop_box)
+                resize_scale = embed._INPUT / min(crop.size)
+                if (max(embed._INPUT, round(crop.width * resize_scale)) *
+                        max(embed._INPUT, round(crop.height * resize_scale)) > self.limits.max_pixels):
+                    raise ValueError("embedding resize exceeds pixel limit")
+                output = self._run(self._embedder, embed.preprocess(crop))
+                if output.shape != (1, embed.EMBED_DIM):
+                    raise ValueError("invalid instance embedding shape")
+                vector = output[0].astype(np.float32)
+                norm = np.linalg.norm(vector)
+                if not np.isfinite(vector).all() or not np.isfinite(norm) or norm <= 1e-8:
+                    raise ValueError("invalid instance embedding")
+                vector = vector / (norm + 1e-8)
+                if not np.isclose(np.linalg.norm(vector), 1, atol=1e-5):
+                    raise ValueError("instance embedding failed normalization")
+                evidence.append((detection, vector, None))
+            except CudaUnavailable:
+                raise
+            except Exception:
+                # Preserve the detection at its own index. Never reuse a prior
+                # animal's vector or silently drop the failed animal's crop.
+                evidence.append((detection, None, "embedding_failed"))
+        return make_frame(source_id, frame_index, timestamp_seconds, *image.size, dog, cat, evidence)
+
+    def analyse_instances(self, stored_photo: bytes, *, source_id: str = "photo:0",
+                          frame_index: int = 0, timestamp_seconds: float | None = None) -> FrameAnalysis:
+        self._claim()
+        try:
+            return self._analyse_instances(stored_photo, source_id, frame_index, timestamp_seconds)
+        finally:
+            self._lock.release()
+
+    def analyse_photos(self, stored_photos: list[bytes]) -> CaptureAnalysis:
+        from app.tracking import SamplingCoverage, associate_frames
+
+        self._claim()
+        try:
+            if not 1 <= len(stored_photos) <= 12:
+                raise ValueError("capture must contain 1..12 photos")
+            frames = []
+            count = 0
+            for index, raw in enumerate(stored_photos):
+                frame = self._analyse_instances(raw, f"photo:{index}", index, None)
+                count += len(frame.instances)
+                if count > self.limits.max_instances:
+                    raise ValueError("capture exceeds instance budget")
+                frames.append(frame)
+            coverage = SamplingCoverage("photos", len(frames), len(frames), None, None, None, 12, 12, True)
+            return associate_frames(tuple(frames), coverage, max_instances=self.limits.max_instances,
+                                    max_evidence_per_track=self.limits.max_evidence_per_track)
+        finally:
+            self._lock.release()
+
+    def analyse_clip(self, raw: bytes, *, evidence_sink) -> CaptureAnalysis:
+        """GPU-only capture inference; sink consumes sampled source photos once.
+
+        The decoder writes bounded encoded samples to disk. Only one decoded
+        frame is resident during serial inference. The sink is called after
+        tracking, once per selected source (possibly shared by several animals).
+        Its caller owns upload/lease fencing and must not publish until complete.
+        """
+        from app.tracking import associate_frames
+        from gpu_worker.clip import sampled_bounded
+
+        self._claim()
+        try:
+            self._validate_bytes(raw, self.limits.max_clip_bytes)
+            _require_cuda(self._detector)
+            _require_cuda(self._embedder)
+            with sampled_bounded(raw, self.limits) as samples:
+                frames = []
+                count = 0
+                for index, timestamp, photo in samples.frames():
+                    frame = self._analyse_instances(photo.original, f"video:{index}", index, timestamp)
+                    count += len(frame.instances)
+                    if count > self.limits.max_instances:
+                        raise ValueError("capture exceeds instance budget")
+                    frames.append(frame)
+                result = associate_frames(tuple(frames), samples.coverage,
+                    max_instances=self.limits.max_instances,
+                    max_evidence_per_track=self.limits.max_evidence_per_track)
+                for index, timestamp, photo in samples.frames():
+                    evidence_sink(f"video:{index}", photo)
+                return result
         finally:
             self._lock.release()
 

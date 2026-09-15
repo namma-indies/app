@@ -98,6 +98,7 @@ async def me(observer_id: UUID = Depends(require_observer), conn=Depends(get_con
         "id": str(observer_id),
         "display_name": row["display_name"],
         "is_moderator": row["trust_tier"] == "moderator",
+        "multi_animal_enabled": settings.multi_animal_enabled and settings.media_jobs_enabled,
     }
 
 
@@ -123,6 +124,8 @@ async def report_sighting(
         raise HTTPException(status_code=404, detail="no such sighting")
 
     async with conn.transaction():
+        capture_id = await conn.fetchval("SELECT capture_id FROM sightings WHERE id=$1", sighting_id)
+        await conn.execute("SELECT id FROM captures WHERE id=$1 FOR UPDATE", capture_id)
         await conn.execute(
             """
             INSERT INTO sighting_reports (sighting_id, reporter_id, reason, note)
@@ -150,8 +153,10 @@ async def report_sighting(
         # by primary key, so this is "two people agree" and not "two taps".
         await conn.execute(
             "UPDATE sightings SET review_status = 'pending', updated_at = now() "
-            "WHERE id = $1 AND review_status = 'valid' AND reviewed_at IS NULL "
-            "  AND (SELECT count(*) FROM sighting_reports WHERE sighting_id = $1) >= $2",
+            "WHERE (id = $1 OR capture_id=(SELECT capture_id FROM sightings WHERE id=$1)) "
+            "AND review_status = 'valid' AND reviewed_at IS NULL "
+            "AND (SELECT count(DISTINCT r.reporter_id) FROM sighting_reports r JOIN sightings src ON src.id=r.sighting_id "
+            "WHERE src.id=$1 OR src.capture_id=(SELECT capture_id FROM sightings WHERE id=$1)) >= $2",
             sighting_id,
             HIDE_AT_REPORTS,
         )
@@ -250,13 +255,14 @@ async def review_sighting(
     objects stay, and the row keeps its reports -- deletion is not reversible
     and this decision should be.
     """
-    updated = await conn.fetchval(
-        "UPDATE sightings SET review_status = $2, reviewed_at = now(), "
-        "reviewed_by = $3, updated_at = now() WHERE id = $1 RETURNING id",
-        sighting_id,
-        verdict,
-        moderator_id,
-    )
+    async with conn.transaction():
+        capture_id = await conn.fetchval("SELECT capture_id FROM sightings WHERE id=$1", sighting_id)
+        await conn.execute("SELECT id FROM captures WHERE id=$1 FOR UPDATE", capture_id)
+        updated = await conn.fetchval(
+            "UPDATE sightings SET review_status = $2, reviewed_at = now(), "
+            "reviewed_by = $3, updated_at = now() WHERE id = $1 OR capture_id=$4 RETURNING id",
+            sighting_id, verdict, moderator_id, capture_id,
+        )
     if updated is None:
         raise HTTPException(status_code=404, detail="no such sighting")
     logger.info(

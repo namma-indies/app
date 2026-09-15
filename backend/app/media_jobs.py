@@ -241,6 +241,8 @@ async def heartbeat(job_id: UUID, body: Lease, request: Request):
 async def refresh_urls(job_id: UUID, body: URLRequest, request: Request, storage=Depends(get_storage)):
     async with request.app.state.pool.acquire() as conn, conn.transaction():
         job = await locked_lease(conn, job_id, body.lease_token)
+        if job["pipeline_version"] != PIPELINE_VERSION:
+            raise HTTPException(409, "not a legacy media job")
         if body.frames and job["kind"] != "video":
             raise HTTPException(422, "photo jobs cannot upload frames")
         slots = payload_of(job).get("slots", {})
@@ -272,6 +274,8 @@ async def complete_job(conn, storage, job_id, body: Completion, *, cpu=False):
     digest = completion_digest(body)
     async with conn.transaction():
         job = await locked_lease(conn, job_id, body.lease_token, cpu=cpu, allow_done=True)
+        if job["pipeline_version"] != PIPELINE_VERSION:
+            raise HTTPException(409, "not a legacy media job")
         if job["status"] == "done":
             if hmac.compare_digest(job["completion_digest"], digest):
                 return {"status": "done", "outcome": job["terminal_outcome"], "replayed": True}
@@ -357,6 +361,8 @@ async def complete(job_id: UUID, body: Completion, request: Request, storage=Dep
 async def fail_job(conn, job_id, body: Failure, *, cpu=False):
     async with conn.transaction():
         job = await locked_lease(conn, job_id, body.lease_token, cpu=cpu)
+        if job["pipeline_version"] != PIPELINE_VERSION:
+            raise HTTPException(409, "not a legacy media job")
         retry = body.retryable and job["attempts"] < settings.media_max_attempts
         await conn.execute("""UPDATE jobs SET status=$2,last_error=$3,run_after=now()+$4*interval '1 second',
             lease_token_hash=NULL,lease_expires_at=NULL,terminal_outcome=$5,updated_at=now() WHERE id=$1""",
@@ -403,11 +409,17 @@ async def cpu_consumer(pool, storage):
         try:
             async with pool.acquire() as conn:
                 result = await claim_job(conn, "cpu", cpu=True)
+                if result is None:
+                    from app.capture_jobs import claim_capture_job
+                    result = await claim_capture_job(conn, "cpu", cpu=True)
             if result is None:
                 await asyncio.sleep(settings.media_poll_s)
                 continue
             job, token = result
-            work = asyncio.create_task(cpu_process(pool, storage, job, token))
+            from app.capture_contracts import MULTI_PIPELINE_VERSION
+            from app.capture_cpu import cpu_process_capture
+            process = cpu_process_capture if job["pipeline_version"] == MULTI_PIPELINE_VERSION else cpu_process
+            work = asyncio.create_task(process(pool, storage, job, token))
             heartbeat_task = asyncio.create_task(renew(job["id"], token))
             try:
                 done, _ = await asyncio.wait((work, heartbeat_task), return_when=asyncio.FIRST_COMPLETED)
@@ -417,7 +429,9 @@ async def cpu_consumer(pool, storage):
                 logger.warning("photo fallback job failed: %s", job["id"], exc_info=True)
                 async with pool.acquire() as conn:
                     with suppress(HTTPException):
-                        await fail_job(conn, job["id"], Failure(lease_token=token, error="CPU analysis failed"), cpu=True)
+                        from app.capture_jobs import fail_capture_job
+                        fail = fail_capture_job if job["pipeline_version"] == MULTI_PIPELINE_VERSION else fail_job
+                        await fail(conn, job["id"], Failure(lease_token=token, error="CPU analysis failed"), cpu=True)
             finally:
                 for task in (work, heartbeat_task):
                     task.cancel()

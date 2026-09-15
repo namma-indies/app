@@ -6,6 +6,8 @@ import {
   type Sighting,
 } from "../api";
 import DogMap from "../components/DogMap";
+import CaptureReview from "../components/CaptureReview";
+import { getCaptures } from "../captureApi";
 import ReportSheet from "../components/ReportSheet";
 import Dogs from "./Dogs";
 import Moderation from "./Moderation";
@@ -52,6 +54,12 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
   const [scope, setScope] = useState<"mine" | "everyone">("mine");
   const ownFeed = useProcessingFeed(getDex, view === "map" || view === "journal", onUnauthorized);
   const sharedFeed = useProcessingFeed(getMap, view === "map" && scope === "everyone", onUnauthorized);
+  const captureFeed = useProcessingFeed(getCaptures, view === "map" || view === "journal", onUnauthorized, true);
+  const [reviewCaptureId, setReviewCaptureId] = useState<string | null>(null);
+  const childSignature = (captureFeed.data ?? []).flatMap((capture) => capture.sighting_ids).sort().join(",");
+  useEffect(() => {
+    if (childSignature) { ownFeed.refresh(); sharedFeed.refresh(); }
+  }, [childSignature, ownFeed.refresh, sharedFeed.refresh]);
   const { data: sightings } = ownFeed;
   const { data: everyone, setData: setEveryone, error: everyoneError } = sharedFeed;
   const selected = sightings?.find((s) => s.id === selectedId) ?? null;
@@ -151,6 +159,18 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
         )}
       </div>
 
+      {(view === "journal" || view === "map") && <section className="capture-status-list" aria-label="Upload status">
+        {captureFeed.error && <p role="alert">Couldn't load upload progress. <button onClick={captureFeed.refresh}>Try again</button></p>}
+        {captureFeed.paused && <p>Upload processing is still pending. <button onClick={captureFeed.refresh}>Check uploads again</button></p>}
+        {(captureFeed.data ?? []).filter((capture) => capture.processing_state !== "legacy").map((capture) => <div className="capture-status" key={capture.capture_id}>
+          <div><strong>{capture.processing_state === "ready" ? `${capture.sighting_ids.length} animal sighting${capture.sighting_ids.length === 1 ? "" : "s"} saved` : processingLabel(capture.processing_state)}</strong><br /><span>{when(capture.captured_at)} · one upload</span></div>
+          {capture.processing_state === "needs_review" && <button onClick={() => setReviewCaptureId(capture.capture_id)}>Review animals privately</button>}
+          {capture.processing_state === "ready" && <button onClick={() => setReviewCaptureId(capture.capture_id)}>Edit each animal’s details</button>}
+        </div>)}
+      </section>}
+
+      {reviewCaptureId && <CaptureReview captureId={reviewCaptureId} onClose={() => setReviewCaptureId(null)} onUnauthorized={onUnauthorized} onSaved={() => { setReviewCaptureId(null); captureFeed.refresh(); ownFeed.refresh(); sharedFeed.refresh(); }} />}
+
       {ownFeed.error && <p className="hint" role="alert">Couldn't refresh your Journal — showing the last update. <button onClick={ownFeed.refresh}>Try again</button></p>}
       {(view === "journal" || view === "map") && (ownFeed.paused || (scope === "everyone" && sharedFeed.paused)) && (
         <p className="hint">Still processing. Automatic updates paused. <button onClick={() => { ownFeed.refresh(); sharedFeed.refresh(); }}>Check again</button></p>
@@ -199,6 +219,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
               </div>
               <div className="meta">
                 <div className="name anon">— UNIDENTIFIED —</div>
+                {s.capture_id && s.processing_state === "ready" && <button className="link-btn" onClick={(event) => { event.stopPropagation(); setReviewCaptureId(s.capture_id!); }}>Edit animal details</button>}
                 {processingLabel(s.processing_state) && <div className="processing-status">{processingLabel(s.processing_state)}</div>}
                 {s.off_map_reason && (
                   // Yours stays in your dex whatever its status. Being told is

@@ -45,6 +45,7 @@ class Settings(BaseSettings):
 
     # Default-off: deploy schema and worker before deliberately changing intake.
     media_jobs_enabled: bool = False
+    multi_animal_enabled: bool = False
     media_gpu_token: str = ""
     media_cpu_fallback_enabled: bool = True
     media_cpu_grace_s: int = Field(default=5, ge=0, le=3600)

@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { UnauthorizedError, type ProcessingState } from "./api";
+import { UnauthorizedError } from "./api";
 import { isProcessing, UPLOAD_COMPLETE_EVENT } from "./processing";
 
 const MAX_POLLS = 12;
 
 /** Poll only an actively viewed feed. Stop after twelve checks or any error;
  * the last successful data stays visible and a person can explicitly retry. */
-export function useProcessingFeed<T extends { processing_state?: ProcessingState }>(
+export function useProcessingFeed<T extends { processing_state?: string }>(
   load: (signal?: AbortSignal) => Promise<{ sightings: T[] }>,
   enabled: boolean,
   onUnauthorized: () => void,
+  refreshOnResume = false,
 ) {
   const [data, setData] = useState<T[] | null>(null);
   const [error, setError] = useState(false);
@@ -27,6 +28,7 @@ export function useProcessingFeed<T extends { processing_state?: ProcessingState
 
   useEffect(() => {
     if (!enabled) return;
+    if (refreshOnResume) needsRefresh.current = true;
     let disposed = false;
     let polls = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -72,7 +74,10 @@ export function useProcessingFeed<T extends { processing_state?: ProcessingState
 
     function visibility() {
       clearTimeout(timer);
-      if (!document.hidden) schedule();
+      if (!document.hidden) {
+        if (refreshOnResume) needsRefresh.current = true;
+        schedule();
+      }
     }
     schedule();
     document.addEventListener("visibilitychange", visibility);
@@ -83,7 +88,7 @@ export function useProcessingFeed<T extends { processing_state?: ProcessingState
       controller?.abort();
       document.removeEventListener("visibilitychange", visibility);
     };
-  }, [enabled, load, revision]);
+  }, [enabled, load, revision, refreshOnResume]);
 
   useEffect(() => {
     window.addEventListener(UPLOAD_COMPLETE_EVENT, refresh);

@@ -36,6 +36,8 @@ export type ProcessingState = "legacy" | "queued" | "processing" | "ready" | "no
 
 export interface Sighting {
   id: string;
+  capture_id?: string | null;
+  species?: "dog" | "cat" | null;
   captured_at: string;
   processing_state?: ProcessingState;
   /** Present on /dex only, so you can be told when one of yours has been taken
@@ -352,6 +354,7 @@ export interface Me {
   id: string;
   display_name: string | null;
   is_moderator: boolean;
+  multi_animal_enabled?: boolean;
 }
 
 /** Used only to decide whether to render the moderation tab. Every moderation

@@ -46,3 +46,31 @@ async def test_a_row_from_another_model_does_not_count_as_scored(migrated_db):
 
     rows = await migrated_db.fetch(PENDING_SQL, "yolo26x")
     assert [r["id"] for r in rows] == [pid]
+
+
+async def test_legacy_maintenance_excludes_capture_sources_and_animal_evidence(migrated_db):
+    from scripts.backfill_embeddings import PENDING_SQL as EMBEDDING_SQL
+    from scripts.find_duplicate_sightings import SQL, DETAIL_SQL
+
+    sid, legacy = await _photo(migrated_db)
+    for owner in (None, sid):
+        await migrated_db.execute(
+            "INSERT INTO photos(id,sighting_id,capture_id,s3_key,phash) "
+            "VALUES($1,$2,$3,$4,'0000000000000000')",
+            uuid7(), owner, sid, f"capture-{owner}",
+        )
+    sibling_id = uuid7()
+    await migrated_db.execute(
+        "INSERT INTO sightings(id,observer_id,captured_at,capture_id) "
+        "SELECT $1,observer_id,captured_at,capture_id FROM sightings WHERE id=$2",
+        sibling_id, sid,
+    )
+    await migrated_db.execute(
+        "INSERT INTO photos(id,sighting_id,capture_id,s3_key,phash) "
+        "VALUES($1,$2,$3,'sibling-evidence','0000000000000000')",
+        uuid7(), sibling_id, sid,
+    )
+    assert [r["id"] for r in await migrated_db.fetch(PENDING_SQL, "yolo26x")] == [legacy]
+    assert [r["id"] for r in await migrated_db.fetch(EMBEDDING_SQL, "miewid-msv3")] == [legacy]
+    assert not await migrated_db.fetch(SQL)
+    assert not await migrated_db.fetch(DETAIL_SQL)

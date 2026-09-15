@@ -311,6 +311,11 @@ async def create_sighting(
                 "GROUP BY s.id",
                 client_token, observer_id,
             )
+        if existing is None:
+            async with pool.acquire() as conn:
+                capture = await conn.fetchrow("SELECT id,processing_state FROM captures WHERE observer_id=$1 AND client_token=$2", observer_id, client_token)
+            if capture is not None:
+                raise HTTPException(409, {"capture_id": str(capture["id"]), "processing_state": capture["processing_state"], "message": "upload already accepted by /capture; poll its status"})
         if existing is not None:
             logger.info(
                 "duplicate submission for client_token=%s; returning sighting=%s",
@@ -564,6 +569,10 @@ async def create_sighting(
                 client_token, observer_id,
             )
         if winner is None:
+            async with pool.acquire() as conn:
+                capture = await conn.fetchrow("SELECT id,processing_state FROM captures WHERE observer_id=$1 AND client_token=$2", observer_id, client_token)
+            if capture is not None:
+                raise HTTPException(409, {"capture_id": str(capture["id"]), "processing_state": capture["processing_state"], "message": "upload already accepted by /capture; poll its status"})
             raise
         logger.info(
             "concurrent duplicate for client_token=%s; returning sighting=%s",

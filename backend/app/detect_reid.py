@@ -29,14 +29,59 @@ Model: Ultralytics YOLO26x, exported with NMS baked in (output is already
 [x1, y1, x2, y2, conf, cls]). AGPL-3.0 -- see app/ml/NOTICE.md.
 """
 
+import math
 import threading
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import onnxruntime as ort
 from PIL import Image
 
 from app.detect import load_upright
+
+
+@dataclass(frozen=True)
+class AnimalDetection:
+    """An instance, in upright source pixels; raw_box has no crop margin."""
+
+    detection_index: int
+    species: Literal["dog", "cat"]
+    confidence: float
+    raw_box: tuple[float, float, float, float]
+    crop_box: tuple[int, int, int, int]
+
+
+def animal_detections(dets, size, scale=1.0, pad_x=0, pad_y=0) -> tuple[AnimalDetection, ...]:
+    """Preserve every usable NMS animal box, not just the legacy subject.
+
+    Indices refer to detector rows, including non-animal rows, so a failed
+    embedding never shifts subsequent instance identities.
+    """
+    width, height = size
+    instances = []
+    for index, (x1, y1, x2, y2, conf, cls) in enumerate(dets):
+        if not all(math.isfinite(float(v)) for v in (x1, y1, x2, y2, conf, cls)):
+            raise ValueError("non-finite detector output")
+        if not 0 <= conf <= 1 or int(cls) != cls:
+            raise ValueError("invalid detector confidence or class")
+        if conf < REID_CONF_THRESHOLD or int(cls) not in _ANIMAL_CLASSES:
+            continue
+        raw = ((float(x1) - pad_x) / scale, (float(y1) - pad_y) / scale,
+               (float(x2) - pad_x) / scale, (float(y2) - pad_y) / scale)
+        left, top, right, bottom = raw
+        if right <= left or bottom <= top:
+            continue
+        mx, my = BOX_MARGIN * (right - left), BOX_MARGIN * (bottom - top)
+        crop = (max(0, int(left - mx)), max(0, int(top - my)),
+                min(width, int(right + mx)), min(height, int(bottom + my)))
+        if crop[2] <= crop[0] or crop[3] <= crop[1]:
+            continue
+        instances.append(AnimalDetection(index, "dog" if int(cls) == COCO_DOG else "cat",
+                                         float(conf), raw, crop))
+    return tuple(instances)
+
 
 _MODEL_PATH = Path(__file__).resolve().parent / "ml" / "yolo26x.onnx"
 # Written to `detections.model`, the way `embed.MODEL_NAME` is written to

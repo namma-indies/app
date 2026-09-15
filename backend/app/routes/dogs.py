@@ -101,11 +101,12 @@ async def _look_alikes(conn, ids: list[UUID]) -> dict[UUID, list[dict]]:
         return {}
     sql = f"""
         WITH dog_vecs AS (
-            SELECT s.individual_id, e.vec_miew
+            SELECT s.individual_id, s.species, s.capture_id, e.vec_miew
             FROM sightings s
             JOIN photos p ON p.sighting_id = s.id
             JOIN embeddings e ON e.photo_id = p.id
             WHERE s.individual_id = ANY($1::uuid[])
+              AND s.review_status = 'valid'
               AND e.model = $2 AND e.vec_miew IS NOT NULL
         )
         SELECT dv.individual_id AS dog_id,
@@ -121,6 +122,9 @@ async def _look_alikes(conn, ids: list[UUID]) -> dict[UUID, list[dict]]:
               AND e2.vec_miew IS NOT NULL
               AND s2.individual_id IS NOT NULL
               AND s2.individual_id <> dv.individual_id
+              AND s2.review_status = 'valid'
+              AND (dv.species IS NULL OR s2.species IS NULL OR dv.species=s2.species)
+              AND s2.capture_id IS DISTINCT FROM dv.capture_id
             -- Identical cast to ix_embeddings_vec_miew_hnsw, or this silently
             -- becomes a sequential scan over every embedding in the database.
             ORDER BY e2.vec_miew::halfvec({EMBED_DIM}) <=> dv.vec_miew::halfvec({EMBED_DIM})
@@ -202,7 +206,7 @@ async def get_dogs(
                                                p.created_at, p.id) AS rn
             FROM sightings s
             JOIN photos p ON p.sighting_id = s.id
-            WHERE s.individual_id = ANY($1::uuid[])
+            WHERE s.individual_id = ANY($1::uuid[]) AND s.review_status = 'valid'
         ) ranked
         WHERE rn <= $2
         """,
@@ -220,7 +224,7 @@ async def get_dogs(
                ST_X(s.geog::geometry) AS lng,
                s.observer_id
         FROM sightings s
-        WHERE s.individual_id = ANY($1::uuid[]) AND s.geog IS NOT NULL
+        WHERE s.individual_id = ANY($1::uuid[]) AND s.geog IS NOT NULL AND s.review_status = 'valid'
         -- s.id tiebreaks. Two sightings of one dog sharing captured_at would
         -- otherwise leave "latest" to the plan, so the card's location could
         -- change between requests for no reason the reader can see.
@@ -231,7 +235,7 @@ async def get_dogs(
 
     attr_rows = await conn.fetch(
         "SELECT individual_id, attrs FROM sightings "
-        "WHERE individual_id = ANY($1::uuid[])",
+        "WHERE individual_id = ANY($1::uuid[]) AND review_status = 'valid'",
         ids,
     )
 

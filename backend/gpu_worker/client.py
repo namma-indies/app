@@ -85,8 +85,11 @@ class Config:
     max_photo_bytes: int = 32 * 1024 * 1024
     max_clip_bytes: int = 100 * 1024 * 1024
     max_json_bytes: int = 1024 * 1024
+    multi_animal: bool = False
 
     def __post_init__(self):
+        if not isinstance(self.multi_animal, bool):
+            raise ProtocolError()
         https_url(self.api_url)
         parsed = urlsplit(self.api_url)
         if parsed.path not in ("", "/") or parsed.query:
@@ -127,7 +130,10 @@ class Config:
                     raise ProtocolError()
             except OSError:
                 raise ProtocolError() from None
-        return cls(api_url=os.getenv("MEDIA_GPU_API_URL", ""), token=token or "",
+        multi = os.getenv("MEDIA_GPU_MULTI_ANIMAL", "0")
+        if multi not in ("0", "1"):
+            raise ProtocolError()
+        return cls(api_url=os.getenv("MEDIA_GPU_API_URL", ""), token=token or "", multi_animal=multi == "1",
                    storage_origins=tuple(x.strip() for x in
                        os.getenv("MEDIA_GPU_STORAGE_ORIGINS", "").split(",") if x.strip()))
 
@@ -195,7 +201,7 @@ class Worker:
         content = body if isinstance(body, bytes) else json.dumps(body, allow_nan=False).encode()
         async with asyncio.timeout(self.config.request_timeout):
             async with self.api.stream("POST", self.config.api_url.rstrip("/") +
-                    "/internal/media-jobs/" + path, content=content,
+                    ("/internal/capture-jobs/" if self.config.multi_animal else "/internal/media-jobs/") + path, content=content,
                     headers={"Authorization": "Bearer " + self.config.token,
                              "Content-Type": "application/json", "Accept-Encoding": "identity"},
                     follow_redirects=False) as response:
@@ -323,7 +329,56 @@ class Worker:
         return dict(photo_id=str(UUID(photo_id)), index=index, width=width, height=height,
                     phash=phash, dog_confidence=dog, cat_confidence=cat, bbox=bbox, vector=vector)
 
+    async def _process_multi(self, lease):
+        from gpu_worker.multi import prepare_capture
+        from functools import partial
+        import tempfile
+
+        job = lease.job
+        if (job["pipeline_version"] != "stored-webp-q90-yolo26x-miewid-msv3-multi-v2"
+                or job["model"] != MODEL_NAME):
+            raise ProtocolError()
+        sources = job["sources"]
+        if (job["kind"] not in ("photo", "video") or
+                not 1 <= len(sources) <= (1 if job["kind"] == "video" else 12)):
+            raise ProtocolError()
+        raw = []
+        maximum = self.config.max_clip_bytes if job["kind"] == "video" else self.config.max_photo_bytes
+        total = 0
+        for source in sources:
+            value = await self._download(source, maximum, lease)
+            total += len(value)
+            if total > 256 * 1024 * 1024:
+                raise MediaLimit()
+            raw.append(value)
+        with tempfile.TemporaryDirectory(prefix="gpu-evidence-") as directory:
+            prepared = await self._thread(partial(prepare_capture, self.adapter, job, directory), raw, lease)
+            # Request/upload one slot at a time: large source frames and evidence
+            # remain on disk, never a second unbounded in-memory photo list.
+            photo_ids = {}
+            for upload in prepared.uploads:
+                reply = await self._api(job["id"] + "/urls", {
+                    "lease_token": job["lease_token"], "uploads": [upload["spec"]]})
+                slots = reply["uploads"]
+                if len(slots) != 1:
+                    raise ProtocolError()
+                slot, spec = slots[0], upload["spec"]
+                if (slot["kind"] != spec["kind"] or slot["index"] != spec["index"]
+                        or slot["content_type"] != "image/webp"):
+                    raise ProtocolError()
+                photo_ids[(spec["kind"], spec["index"])] = str(UUID(slot["photo_id"]))
+                await self._upload(slot["original_url"], Path(upload["original"]).read_bytes(), lease)
+                await self._upload(slot["thumbnail_url"], Path(upload["thumbnail"]).read_bytes(), lease)
+            body = prepared.completion(photo_ids)
+            body.update(lease_token=job["lease_token"], pipeline_version=job["pipeline_version"], model=MODEL_NAME)
+            payload = json.dumps(body, allow_nan=False).encode()
+            if len(payload) > 8 * 1024 * 1024:
+                raise MediaLimit()
+            await self._complete(lease, payload)
+
     async def _process(self, lease):
+        if self.config.multi_animal:
+            return await self._process_multi(lease)
         job = lease.job
         frames = []
         sources = job["sources"]
@@ -373,6 +428,10 @@ class Worker:
             raise ProtocolError()
         payload = json.dumps(dict(lease_token=job["lease_token"], pipeline_version=PIPELINE_VERSION,
                                   model=MODEL_NAME, frames=frames), allow_nan=False).encode()
+        await self._complete(lease, payload)
+
+    async def _complete(self, lease, payload):
+        job = lease.job
         # Encode once: ambiguous transport errors may replay only this exact
         # completion, never a regenerated analysis or a subsequent fail call.
         lease.completing = True

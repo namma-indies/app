@@ -47,6 +47,19 @@ def test_manifest_contract(config):
     assert "${" not in json.dumps(result)
 
 
+def test_multi_animal_worker_requires_explicit_opt_in(config):
+    old = recipe.render(config)
+    assert "MEDIA_GPU_MULTI_ANIMAL" not in old["items"][0]["data"]
+    enabled = recipe.render(dict(config, multi_animal=True))
+    assert enabled["items"][0]["data"]["MEDIA_GPU_MULTI_ANIMAL"] == "1"
+    assert (old["items"][1]["spec"]["template"]["metadata"]["annotations"]
+            != enabled["items"][1]["spec"]["template"]["metadata"]["annotations"])
+    assert recipe.render(dict(config, multi_animal=False))["items"][0]["data"]["MEDIA_GPU_MULTI_ANIMAL"] == "0"
+    for invalid in ("true", "false", 1, 0, None):
+        with pytest.raises(ValueError):
+            recipe.render(dict(config, multi_animal=invalid))
+
+
 def test_default_selector_unchanged(config):
     spec = recipe.render(config)["items"][1]["spec"]
     assert spec["selector"] == {"matchLabels": {"app.kubernetes.io/name": config["name"]}}
@@ -428,6 +441,30 @@ def test_source_release_contains_worker_import_closure(release_module, tmp_path)
     assert result.returncode == 0, result.stderr
 
 
+def test_release_includes_deferred_worker_imports(release_module):
+    import ast
+
+    for source in release_module.FILES.values():
+        if not source.endswith(".py"):
+            continue
+        tree = ast.parse((ROOT / source).read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                modules = [node.module]
+            else:
+                continue
+            for module in modules:
+                if not module.startswith(("app.", "gpu_worker.")):
+                    continue
+                relative = module.replace(".", "/")
+                assert (relative + ".py" in release_module.FILES
+                        or relative + "/__init__.py" in release_module.FILES), (
+                    f"{source} imports {module}, which is absent from the source release"
+                )
+
+
 def test_image_static_contract():
     dockerfile = (ROOT / "backend/gpu_worker/Dockerfile").read_text()
     assert "FROM nvcr.io/nvidia/pytorch@sha256:" in dockerfile
@@ -439,3 +476,5 @@ def test_image_static_contract():
     assert "USER 10001:10001" in dockerfile
     assert "pip freeze" in dockerfile
     assert "SOURCE_REVISION" in dockerfile
+    assert "backend/gpu_worker/multi.py" in dockerfile
+    assert "backend/app/tracking.py" in dockerfile

@@ -48,9 +48,9 @@ import subprocess
 import sys
 FILES = {
     **{f"gpu_worker/{name}": f"backend/gpu_worker/{name}" for name in (
-        "__init__.py", "__main__.py", "client.py", "clip.py", "inference.py", "supervise.py")},
+        "__init__.py", "__main__.py", "client.py", "clip.py", "inference.py", "supervise.py", "multi.py")},
     **{f"app/{name}": f"backend/app/{name}" for name in (
-        "__init__.py", "analyse.py", "detect.py", "detect_reid.py", "embed.py", "photos.py", "video.py", "config.py")},
+        "__init__.py", "analyse.py", "detect.py", "detect_reid.py", "embed.py", "photos.py", "video.py", "config.py", "tracking.py")},
     "requirements.txt": "backend/gpu_worker/requirements.txt",
 }
 

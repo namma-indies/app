@@ -30,7 +30,7 @@ RUN python -m pip install --no-cache-dir -r /opt/worker/requirements.txt \
 # Direct versions are pinned; installed.txt records the resolved transitive set.
 # This is not a hash-locked dependency build. Archive the built image by digest.
 WORKDIR /opt/worker
-COPY backend/gpu_worker/__init__.py backend/gpu_worker/__main__.py backend/gpu_worker/client.py backend/gpu_worker/clip.py backend/gpu_worker/inference.py backend/gpu_worker/supervise.py ./gpu_worker/
-COPY backend/app/__init__.py backend/app/analyse.py backend/app/detect.py backend/app/detect_reid.py backend/app/embed.py backend/app/photos.py backend/app/video.py backend/app/config.py ./app/
+COPY backend/gpu_worker/__init__.py backend/gpu_worker/__main__.py backend/gpu_worker/client.py backend/gpu_worker/clip.py backend/gpu_worker/inference.py backend/gpu_worker/supervise.py backend/gpu_worker/multi.py ./gpu_worker/
+COPY backend/app/__init__.py backend/app/analyse.py backend/app/detect.py backend/app/detect_reid.py backend/app/embed.py backend/app/photos.py backend/app/video.py backend/app/config.py backend/app/tracking.py ./app/
 USER 10001:10001
 ENTRYPOINT ["/opt/worker-venv/bin/python", "-m", "gpu_worker.supervise"]

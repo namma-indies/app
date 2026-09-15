@@ -92,7 +92,7 @@ PENDING_SQL = """
     FROM photos p
     LEFT JOIN detections d
            ON d.photo_id = p.id AND d.model = $1
-    WHERE d.photo_id IS NULL
+    WHERE p.capture_id IS NULL AND d.photo_id IS NULL
     ORDER BY p.created_at
 """
 

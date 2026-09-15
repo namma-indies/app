@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { processingLabel, UPLOAD_COMPLETE_EVENT } from "../processing";
 import type { PostSightingResponse } from "../api";
+import { multiAnimalIntakeAvailable, type PostCaptureResponse } from "../captureApi";
 import {
   readPhotoMetadata,
   NO_METADATA,
@@ -81,6 +82,14 @@ function isVideoFile(file: File): boolean {
 }
 
 export default function Capture() {
+  const [multiAnimal, setMultiAnimal] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    void multiAnimalIntakeAvailable(controller.signal).then((enabled) => {
+      if (!controller.signal.aborted) setMultiAnimal(enabled);
+    });
+    return () => controller.abort();
+  }, []);
   const fileRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLInputElement>(null);
   // Separate from fileRef because this one must NOT carry `capture`, which
@@ -125,8 +134,8 @@ export default function Capture() {
 
   useEffect(() => {
     function uploaded(event: Event) {
-      const result = (event as CustomEvent<PostSightingResponse>).detail;
-      showToast(processingLabel(result.processing_state) ?? "Uploaded · saved to your Journal");
+      const result = (event as CustomEvent<PostSightingResponse | PostCaptureResponse>).detail;
+      showToast("capture_id" in result ? "Upload saved · check your Journal for separate animal entries or private review" : processingLabel(result.processing_state) ?? "Uploaded · saved to your Journal");
     }
     window.addEventListener(UPLOAD_COMPLETE_EVENT, uploaded);
     return () => {
@@ -399,9 +408,10 @@ export default function Capture() {
       geo_source: geoSource,
       captured_at: capturedAt,
       note: note || undefined,
-      sex: sex || undefined,
-      ear_notch: earNotch || undefined,
-      condition: condition || undefined,
+      sex: multiAnimal ? undefined : sex || undefined,
+      ear_notch: multiAnimal ? undefined : earNotch || undefined,
+      condition: multiAnimal ? undefined : condition || undefined,
+      upload_endpoint: multiAnimal ? "capture" as const : "sighting" as const,
     };
 
     try {
@@ -607,15 +617,16 @@ export default function Capture() {
             />
           </div>
 
-          <button
+          {multiAnimal && <p className="hint">One upload, separate animal entries. Time, location and this note are shared. Add each animal’s details in your Journal after processing; uncertain associations stay private until you review them.</p>}
+          {!multiAnimal && <button
             type="button"
             className="more-toggle"
             onClick={() => setMoreOpen((v) => !v)}
           >
             {moreOpen ? "▾" : "▸"} tell us more (optional)
-          </button>
+          </button>}
 
-          {moreOpen && (
+          {!multiAnimal && moreOpen && (
             <div className="more-fields">
               <div className="field-group">
                 <label>sex</label>
