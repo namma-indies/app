@@ -6,7 +6,8 @@ WORKDIR /build/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
-RUN npm run build
+ARG VITE_MULTI_ANIMAL_ENABLED=false
+RUN VITE_MULTI_ANIMAL_ENABLED=$VITE_MULTI_ANIMAL_ENABLED npm run build
 # produces /build/frontend/dist
 
 # ---- backend runtime stage -------------------------------------------------
