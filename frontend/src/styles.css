@@ -1027,3 +1027,95 @@ button { font-family: inherit; }
 .overlap-chooser summary { cursor: pointer; line-height: 1.5; }
 .overlap-chooser summary img { width: 40px; height: 40px; object-fit: cover; vertical-align: middle; margin-right: 8px; }
 .overlap-chooser p { font-size: .78rem; }
+
+/* --- celebration ---------------------------------------------------------
+   Fires when the server confirms an upload is durably saved. It covers the
+   viewport, so `pointer-events: none` is load-bearing: the map, the shutter
+   and the tab bar all live underneath and must stay usable throughout. */
+.celebration {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.celebration-scene { position: absolute; inset: 0; }
+
+.confetti-piece {
+  position: absolute;
+  top: -8vh;
+  width: 8px;
+  height: 12px;
+  border: 1px solid var(--line);
+  animation-name: confetti-fall;
+  animation-timing-function: linear;
+  animation-fill-mode: both;
+}
+
+@keyframes confetti-fall {
+  from { transform: translateY(-10vh) rotate(0deg); opacity: 1; }
+  to   { transform: translateY(105vh) rotate(var(--spin, 180deg)); opacity: 0.9; }
+}
+
+/* Runs the full width, just above the tab bar. */
+.celebration-runner {
+  position: absolute;
+  left: -14%;
+  animation-name: celebration-run;
+  animation-timing-function: linear;
+  animation-fill-mode: both;
+}
+
+@keyframes celebration-run {
+  from { transform: translateX(0) translateY(0); }
+  25%  { transform: translateX(32vw) translateY(-6px); }
+  50%  { transform: translateX(62vw) translateY(0); }
+  75%  { transform: translateX(92vw) translateY(-6px); }
+  to   { transform: translateX(124vw) translateY(0); }
+}
+
+.celebration-badge {
+  position: absolute;
+  left: 50%;
+  top: 38%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.7rem 1.2rem;
+  background: var(--panel);
+  border: 3px solid var(--line);
+  border-radius: 4px;
+  box-shadow: 4px 4px 0 var(--shadow);
+  text-align: center;
+  animation: pop-in 0.25s ease;
+}
+
+.celebration-badge strong {
+  font-family: "Silkscreen", monospace;
+  font-size: 1rem;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+}
+
+.celebration-badge span {
+  font-family: "Silkscreen", monospace;
+  font-size: 0.56rem;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+/* Someone who asked for less motion gets the message and nothing that moves.
+   The component already skips the scene; this is the belt to that braces, and
+   it also covers a browser that reports the preference after first paint. */
+.celebration-badge.is-quiet { animation: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .celebration-scene { display: none; }
+  .celebration-badge { animation: none; }
+  .confetti-piece,
+  .celebration-runner { animation: none; display: none; }
+}

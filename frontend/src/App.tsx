@@ -4,6 +4,7 @@ import Dex from "./screens/Dex";
 import Stats from "./screens/Stats";
 import SignIn from "./screens/SignIn";
 import { failedCount, flush, setOnFlushed, setOnUnauthorized } from "./offline/queue";
+import Celebration from "./components/Celebration";
 import FailedSightings from "./components/FailedSightings";
 import { getDex, getMe, UnauthorizedError } from "./api";
 import { API_BASE } from "./apiBase";
@@ -173,6 +174,10 @@ export default function App() {
           }}
         />
       )}
+      {/* App-level, not inside Capture: a queue that catches up on reconnect
+          finishes its uploads while the person is on the map or the dex, and
+          that success deserves the same acknowledgement as one they watched. */}
+      <Celebration />
     </div>
   );
 }
