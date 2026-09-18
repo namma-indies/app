@@ -3,6 +3,12 @@ import pytest
 from app.auth.email_login import get_or_create_observer_by_email
 
 
+def test_name_history_authorship_follows_observer_absorption():
+    from app.auth.email_login import _OBSERVER_REFS
+    assert ("individual_names", "proposed_by") in _OBSERVER_REFS
+    assert ("individual_names", "resolved_by") in _OBSERVER_REFS
+
+
 @pytest.mark.asyncio
 async def test_creates_observer_on_first_sight(migrated_db):
     oid = await get_or_create_observer_by_email(

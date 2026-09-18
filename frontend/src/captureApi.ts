@@ -16,7 +16,13 @@ export interface CaptureInstance {
   sighting_id: string | null;
   species: string;
   thumb_url: string;
+  /** Legacy evidence-crop URL, not the uncropped source. */
   source_url?: string;
+  source_thumb_url?: string;
+  source_width?: number;
+  source_height?: number;
+  /** Normalised uncropped source coordinates, independent of the evidence crop. */
+  source_bbox?: [number, number, number, number];
   /** Normalised evidence-crop coordinates, not raw source-image pixels. */
   bbox?: [number, number, number, number];
   timestamp_ms?: number | null;
@@ -24,6 +30,7 @@ export interface CaptureInstance {
 }
 export interface CaptureGroup {
   instance_ids: string[];
+  known_name?: string | null;
   sex?: SightingAttrs["sex"] | null;
   ear_notch?: SightingAttrs["ear_notch"] | null;
   condition?: SightingAttrs["condition"] | null;
@@ -52,6 +59,9 @@ interface WireInstance {
   timestamp_ms: number | null;
   photo_url: string;
   thumb_url: string;
+  source_thumb_url?: string;
+  source_width?: number;
+  source_height?: number;
 }
 interface WireCapture extends CaptureSummary {
   revision: number;
@@ -62,11 +72,20 @@ export function adaptCapture(wire: WireCapture): CaptureDetail {
   return { ...wire, instances: wire.instances.map((instance) => {
     const [x, y, right, bottom] = instance.crop_bbox;
     const [x1, y1, x2, y2] = instance.bbox;
+    const width = instance.source_width, height = instance.source_height;
+    const validSource = !!instance.source_thumb_url && width != null && height != null
+      && Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0
+      && instance.bbox.every(Number.isFinite)
+      && 0 <= x1 && x1 < x2 && x2 <= width && 0 <= y1 && y1 < y2 && y2 <= height;
     return {
       id: instance.instance_id, photo_id: instance.source_photo_id,
       track_id: instance.track_id, sighting_id: instance.sighting_id,
       species: instance.species, thumb_url: instance.thumb_url,
       source_url: instance.photo_url, timestamp_ms: instance.timestamp_ms,
+      ...(validSource ? {
+        source_thumb_url: instance.source_thumb_url, source_width: width, source_height: height,
+        source_bbox: [x1 / width, y1 / height, x2 / width, y2 / height] as [number, number, number, number],
+      } : {}),
       bbox: [(x1 - x) / (right - x), (y1 - y) / (bottom - y), (x2 - x) / (right - x), (y2 - y) / (bottom - y)],
     };
   }) };
@@ -107,6 +126,9 @@ export async function getCapture(id: string, signal?: AbortSignal): Promise<Capt
 }
 export function reviewCapture(id: string, groups: CaptureGroup[], revision: number): Promise<PostCaptureResponse> {
   return request(`/capture/${encodeURIComponent(id)}/review`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groups, revision, publish: true }),
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+      groups: groups.map((group) => group.known_name === undefined ? group : { ...group, known_name: group.known_name?.trim() || null }),
+      revision, publish: true,
+    }),
   });
 }

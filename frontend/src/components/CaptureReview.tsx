@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { UnauthorizedError } from "../api";
 import { getCapture, reviewCapture, type CaptureDetail, type CaptureGroup, type CaptureInstance } from "../captureApi";
 
@@ -17,8 +17,14 @@ export function groupingError(instances: CaptureInstance[], assignments: Record<
   return null;
 }
 
+const evidenceColors = ["#ffda47", "#66d9ff", "#ff8cc6", "#a6ed83", "#c8a2ff", "#ffad66"];
+const evidenceStyle = (index: number): CSSProperties => ({ "--evidence-color": evidenceColors[index % evidenceColors.length] } as CSSProperties);
+const boxStyle = (box: NonNullable<CaptureInstance["bbox"]>): CSSProperties => ({
+  left: `${box[0] * 100}%`, top: `${box[1] * 100}%`, width: `${(box[2] - box[0]) * 100}%`, height: `${(box[3] - box[1]) * 100}%`,
+});
+
 function Evidence({ instance }: { instance: CaptureInstance }) {
-  const box = instance.bbox;
+  const box = instance.source_bbox ? undefined : instance.bbox;
   return <div className="capture-evidence">
     <img src={instance.source_url && box ? instance.source_url : instance.thumb_url} alt={`Highlighted ${instance.species} evidence`} />
     {instance.source_url && box && <span className="capture-box" style={{ left: `${box[0] * 100}%`, top: `${box[1] * 100}%`, width: `${(box[2] - box[0]) * 100}%`, height: `${(box[3] - box[1]) * 100}%` }} />}
@@ -33,6 +39,7 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
   const [attrs, setAttrs] = useState<Record<string, Omit<CaptureGroup, "instance_ids">>>({});
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [revision, setRevision] = useState(0);
   const unauthorizedRef = useRef(onUnauthorized);
   unauthorizedRef.current = onUnauthorized;
@@ -43,6 +50,7 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
     getCapture(captureId, controller.signal).then((result) => {
       if (controller.signal.aborted) return;
       setDetail(result);
+      setSelectedId(result.instances[0]?.id ?? null);
       const tracks = new Map<string, string>();
       const savedAssignments = Object.fromEntries(result.groups.flatMap((group, index) => group.instance_ids.map((id) => [id, String(index + 1)])));
       setAttrs(Object.fromEntries(result.groups.map(({ instance_ids: _ids, ...details }, index) => [String(index + 1), details])));
@@ -58,7 +66,24 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
     });
     return () => controller.abort();
   }, [captureId, revision]);
+  const sources = new Map<string, { instance: CaptureInstance; index: number }[]>();
+  detail?.instances.forEach((instance, index) => {
+    const items = sources.get(instance.photo_id) ?? [];
+    items.push({ instance, index });
+    sources.set(instance.photo_id, items);
+  });
   const groups = [...new Set(Object.values(assignments))].sort((a, b) => Number(a) - Number(b));
+  const speciesCounts = new Map<string, number>();
+  const groupSpecies = new Map(groups.map((group) => [group, new Set(detail?.instances.filter((instance) => assignments[instance.id] === group).map((instance) => instance.species))]));
+  const groupLabels = new Map(groups.map((group) => {
+    const species = groupSpecies.get(group)!;
+    if (species.size !== 1) return [group, `Mixed species group ${group} (split required)`];
+    const name = [...species][0];
+    const number = (speciesCounts.get(name) ?? 0) + 1;
+    speciesCounts.set(name, number);
+    return [group, `${name ? name[0].toUpperCase() + name.slice(1) : "Unknown species"} ${number}`];
+  }));
+  const emptyGroup = detail?.instances.map((_, index) => String(index + 1)).find((group) => !groupSpecies.has(group));
   const invalid = detail ? groupingError(detail.instances, assignments) : null;
   const canSave = !!detail && (detail.processing_state === "needs_review" || detail.processing_state === "ready") && !error && !invalid && !saving && detail.instances.length > 0;
   async function save() {
@@ -82,18 +107,56 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
       {detail && <>
         <p className="hint">Shared time: {new Date(detail.captured_at).toLocaleString()}. Location is shared unchanged across all entries.</p>
         {detail.note && <p>Shared note: {detail.note}</p>}
-        <div className="capture-evidence-grid">{detail.instances.map((instance, index) => <article key={instance.id}>
-          <Evidence instance={instance} />
-          <label>Evidence {index + 1} · {instance.species}{instance.timestamp_ms != null ? ` · ${(instance.timestamp_ms / 1000).toFixed(1)}s` : ""}
-            <select aria-label={`Group for evidence ${index + 1}`} value={assignments[instance.id] ?? ""} disabled={saving || detail.processing_state === "ready"} onChange={(e) => setAssignments((current) => ({ ...current, [instance.id]: e.target.value }))}>
-              {detail.instances.map((_, i) => <option key={i} value={String(i + 1)}>Animal {i + 1}</option>)}
-            </select>
-          </label>
-        </article>)}</div>
+        {detail.instances.length > 0 && <p className="hint">Evidence numbers are detections, not confirmed identities or an animal count. Select evidence below each photo to highlight its region, even when boxes overlap. Dog and cat numbers label groups only within this upload.</p>}
+        {[...sources].map(([photoId, items], sourceIndex) => {
+          const source = items.find(({ instance }) => instance.source_thumb_url && instance.source_bbox)?.instance;
+          const timestamp = items[0].instance.timestamp_ms;
+          return <section className="capture-source" key={photoId} aria-label={`Source photo ${sourceIndex + 1}`}>
+            <h3>Source photo {sourceIndex + 1}{timestamp != null ? ` · ${(timestamp / 1000).toFixed(1)}s` : ""}</h3>
+            {source ? <div className="capture-source-image">
+              <img src={source.source_thumb_url} width={source.source_width} height={source.source_height} alt={`Full uncropped source photo ${sourceIndex + 1}`} />
+              <div aria-hidden="true">{items.map(({ instance, index }) => instance.source_bbox && <span
+                key={instance.id} id={`capture-box-${instance.id}`} className={`capture-box capture-source-box${selectedId === instance.id ? " is-selected" : ""}`}
+                style={{ ...evidenceStyle(index), ...boxStyle(instance.source_bbox) }}>
+                <span className="capture-box-number">{groupLabels.get(assignments[instance.id])} · Evidence {index + 1}</span>
+              </span>)}</div>
+            </div> : <p className="hint">Source overview unavailable. Showing individual evidence crops.</p>}
+            <ul className="capture-evidence-grid">{items.map(({ instance, index }) => <li key={instance.id}>
+              <article id={`capture-evidence-${instance.id}`} className={`capture-evidence-card${selectedId === instance.id ? " is-selected" : ""}`} style={evidenceStyle(index)} aria-label={`Evidence ${index + 1}`}>
+                <button type="button" className="capture-evidence-select" aria-pressed={selectedId === instance.id}
+                  aria-controls={instance.source_bbox ? `capture-box-${instance.id}` : undefined} onClick={() => setSelectedId(instance.id)}>
+                  <span className="capture-evidence-number">{index + 1}</span>
+                  <span>Evidence {index + 1} · {groupLabels.get(assignments[instance.id])}</span>
+                  {selectedId === instance.id && <span className="capture-selection-label">Selected</span>}
+                </button>
+                <Evidence instance={instance} />
+                <label>Group for evidence {index + 1}
+                  <select aria-label={`Group for evidence ${index + 1}`} value={assignments[instance.id] ?? ""} disabled={saving || detail.processing_state === "ready"} onChange={(e) => {
+                    const group = e.target.value;
+                    const species = groupSpecies.get(group);
+                    if (group !== emptyGroup && (species?.size !== 1 || !species.has(instance.species))) return;
+                    if (group === emptyGroup) setAttrs((current) => ({ ...current, [group]: {} }));
+                    setAssignments((current) => ({ ...current, [instance.id]: group }));
+                  }}>
+                    {groups.filter((group) => group === assignments[instance.id] || (groupSpecies.get(group)?.size === 1 && groupSpecies.get(group)?.has(instance.species))).map((group) => <option key={group} value={group} disabled={groupSpecies.get(group)?.size !== 1}>{groupLabels.get(group)}</option>)}
+                    {emptyGroup && <option value={emptyGroup}>New {instance.species || "unknown species"} group</option>}
+                  </select>
+                </label>
+              </article>
+            </li>)}</ul>
+          </section>;
+        })}
         {invalid && <p role="alert">{invalid}</p>}
         <h3>Details for each animal</h3>
-        {groups.map((group) => <fieldset key={group} disabled={saving}>
-          <legend>Animal {group}</legend>
+        <p className="hint" id="known-name-hint">Known names are optional and contributor-supplied. Names don’t confirm identity or merge animals. After a human confirms a match, the name is saved as a proposal in that animal’s naming history, not its official name.</p>
+        {groups.map((group) => <fieldset key={group} disabled={saving} className={selectedId && assignments[selectedId] === group ? "capture-entry-selected" : undefined}>
+          <legend>{groupLabels.get(group)}</legend>
+          <label>Known name (optional)
+            <input type="text" maxLength={80} value={attrs[group]?.known_name ?? ""} aria-describedby="known-name-hint"
+              onChange={(e) => setAttrs((current) => ({ ...current, [group]: { ...current[group], known_name: e.target.value } }))}
+              onBlur={(e) => setAttrs((current) => ({ ...current, [group]: { ...current[group], known_name: e.target.value.trim() || null } }))} />
+          </label>
+          <p className="hint">Evidence {detail.instances.flatMap((instance, index) => assignments[instance.id] === group ? [index + 1] : []).join(", ")}</p>
           {([ ["sex", ["male", "female", "unsure"]], ["ear_notch", ["none", "left", "right", "unsure"]], ["condition", ["healthy", "injured", "unsure"]] ] as const).map(([field, options]) => <label key={field}>{field.replace("_", " ")}
             <select value={attrs[group]?.[field] ?? ""} onChange={(e) => setAttrs((current) => ({ ...current, [group]: { ...current[group], [field]: e.target.value || undefined } }))}>
               <option value="">Not recorded</option>{options.map((value) => <option key={value} value={value}>{value}</option>)}

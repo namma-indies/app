@@ -4,9 +4,10 @@ a human decide about it.
 The decision itself lives in `app.matching`; this layer is transport only.
 """
 
+import json
 import logging
 from typing import Literal
-from uuid import UUID
+from uuid import UUID, uuid5
 
 import numpy as np
 from fastapi import APIRouter, Depends, Form, HTTPException
@@ -241,6 +242,34 @@ async def list_proposals(
     }
 
 
+async def propose_known_names(conn, individual_id, sighting_ids):
+    """Append contributor claims only after an explicit human identity verdict.
+
+    Naming approval is a separate, still-unbuilt policy. Neither the active name
+    nor a naming resolver is inferred from the person confirming the identity.
+    """
+    from pydantic import ValidationError
+    from app.capture_contracts import AnimalDetails
+
+    rows = await conn.fetch("""SELECT s.id,s.attrs,COALESCE(c.observer_id,s.observer_id) AS author
+        FROM sightings s LEFT JOIN captures c ON c.id=s.capture_id
+        WHERE s.individual_id=$1 AND s.id=ANY($2::uuid[])""", individual_id, sighting_ids)
+    for row in rows:
+        attrs = json.loads(row["attrs"]) if isinstance(row["attrs"], str) else row["attrs"]
+        try:
+            name = AnimalDetails(known_name=(attrs or {}).get("known_name")).known_name
+        except ValidationError:
+            continue
+        if name is None:
+            continue
+        # One claim per sighting/name/identity, even across later confirmations.
+        # Keep separate contributors' claims; a shared name is never an identity key.
+        event_id = uuid5(row["id"], json.dumps([str(individual_id), name], ensure_ascii=False))
+        await conn.execute("""INSERT INTO individual_names (id,individual_id,name,proposed_by,status)
+            VALUES ($1,$2,$3,$4,'proposed') ON CONFLICT (id) DO NOTHING""",
+            event_id, individual_id, name, row["author"])
+
+
 @router.post("/proposal/{proposal_id}")
 async def resolve_proposal(
     proposal_id: UUID,
@@ -419,6 +448,8 @@ async def resolve_proposal(
             proposal_id,
             verdict,
         )
+        if verdict == "same":
+            await propose_known_names(conn, individual_id, [sighting_id, p["candidate_sighting_id"]])
 
     return {"status": "ok", "verdict": verdict,
             "individual_id": str(individual_id) if verdict == "same" else None}

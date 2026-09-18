@@ -23,7 +23,8 @@ async def receipt(conn, capture, *, duplicate=False):
 
 
 async def status(conn, storage, capture):
-    rows = await conn.fetch("""SELECT a.*,p.s3_key,src.s3_key AS source_key
+    rows = await conn.fetch("""SELECT a.*,p.s3_key,src.s3_key AS source_key,
+        src.width AS source_width,src.height AS source_height
         FROM animal_instances a JOIN photos p ON p.id=a.evidence_photo_id
         JOIN photos src ON src.id=a.source_photo_id
         WHERE a.capture_id=$1 ORDER BY a.track_id,a.timestamp_ms NULLS FIRST,a.id""", capture["id"])
@@ -33,7 +34,8 @@ async def status(conn, storage, capture):
         track_id=r["track_id"], sighting_id=r["sighting_id"], species=r["species"],
         confidence=r["confidence"], bbox=decoded(r["bbox"]), crop_bbox=decoded(r["crop_bbox"]),
         timestamp_ms=r["timestamp_ms"], photo_url=next(urls), thumb_url=next(urls),
-        source_thumb_url=next(urls), details=AnimalDetails(**decoded(r["details"]))) for r in rows]
+        source_thumb_url=next(urls), source_width=r["source_width"], source_height=r["source_height"],
+        details=AnimalDetails(**decoded(r["details"]))) for r in rows]
     groups = decoded(capture["review_groups"])
     if not groups:
         tracks = {}

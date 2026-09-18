@@ -42,6 +42,21 @@ def test_invalid_instance_rejected(change):
         MultiCompletion.model_validate(body)
 
 
+@pytest.mark.parametrize("value,expected", [(None, None), ("", None), ("  \t ", None), ("  Kaju  ", "Kaju"), ("ಕಾಜು", "ಕಾಜು"), ("a" * 80, "a" * 80)])
+def test_known_name_normalizes_optional_contributor_claim(value, expected):
+    from app.capture_contracts import AnimalDetails
+    assert AnimalDetails(known_name=value).known_name == expected
+    assert AnimalGroup(instance_ids=[uuid4()], known_name=value).known_name == expected
+    assert AnimalDetails().known_name is None
+
+
+@pytest.mark.parametrize("value", ["a" * 81, "Ka\nju", "Ka\x00ju", 42, ["Kaju"]])
+def test_known_name_rejects_invalid_values(value):
+    from app.capture_contracts import AnimalDetails
+    with pytest.raises(ValidationError):
+        AnimalDetails(known_name=value)
+
+
 def test_no_animal_and_embedding_failure_are_distinct():
     assert not result(count=0).instances
     body = result().model_dump()
@@ -155,6 +170,66 @@ async def seed(conn,body,kind="photo"):
     return oid,cid,jid,storage
 
 
+async def test_private_status_returns_source_dimensions_without_signing_original():
+    from app.captures import status
+    from app.routes.capture import get_capture
+    cid, source_id, instance_id, observer_id = uuid4(), uuid4(), uuid4(), uuid4()
+    capture = {"id": cid, "processing_state": "needs_review", "revision": 1,
+        "captured_at": datetime.now(timezone.utc), "attrs": {}, "review_groups": []}
+    row = {"id": instance_id, "source_photo_id": source_id, "track_id": "track-0",
+        "sighting_id": None, "species": "dog", "confidence": 0.9,
+        "bbox": [20, 40, 80, 100], "crop_bbox": [10, 20, 110, 120],
+        "timestamp_ms": 1500, "s3_key": "crop.webp", "source_key": "source.webp",
+        "source_width": 200, "source_height": 400, "details": {}}
+    conn = SimpleNamespace(fetch=AsyncMock(side_effect=[[row], []]), fetchrow=AsyncMock(return_value=None))
+    storage = SimpleNamespace(urls=AsyncMock(side_effect=lambda keys: ["signed:" + key for key in keys]))
+    response = await status(conn, storage, capture)
+    evidence = response.model_dump(mode="json")["instances"][0]
+    assert evidence["source_width"] == 200 and evidence["source_height"] == 400
+    assert evidence["source_thumb_url"] == "signed:source_thumb.webp"
+    assert evidence["bbox"] == row["bbox"] and evidence["crop_bbox"] == row["crop_bbox"]
+    query = conn.fetch.call_args_list[0].args[0]
+    assert "src.width AS source_width" in query and "src.height AS source_height" in query
+    storage.urls.assert_awaited_once_with(["crop.webp", "crop_thumb.webp", "source_thumb.webp"])
+    storage.urls.reset_mock()
+    with pytest.raises(HTTPException) as exc:
+        await get_capture(cid, observer_id, conn, storage)
+    assert exc.value.status_code == 404
+    storage.urls.assert_not_awaited()
+
+
+@pytest.mark.parametrize("name,expected", [("  Kaju  ", "Kaju"), ("   ", None), (None, None)])
+async def test_published_name_edits_only_replace_details_without_matching(monkeypatch, name, expected):
+    import json
+    from app import matching
+    from app.captures import publish_groups
+    a, b, source, capture_id = [uuid4() for _ in range(4)]
+    rows = [{"id": iid, "sighting_id": uuid4(), "source_photo_id": source,
+        "species": species, "phash": "0123456789abcdef", "vec": None,
+        "confidence": 0.9, "evidence_photo_id": uuid4()} for iid, species in [(a, "dog"), (b, "cat")]]
+    conn = SimpleNamespace(fetch=AsyncMock(return_value=rows), execute=AsyncMock())
+    resolve = AsyncMock()
+    monkeypatch.setattr(matching, "resolve_sighting", resolve)
+    capture = {"id": capture_id, "published_at": datetime.now(timezone.utc), "attrs": {"note": "shared"}}
+    groups = [AnimalGroup(instance_ids=[iid], known_name=name) for iid in [a, b]]
+    assert await publish_groups(conn, capture, groups) == [row["sighting_id"] for row in rows]
+    resolve.assert_not_awaited()
+    calls = conn.execute.call_args_list
+    sightings = [call for call in calls if "INSERT INTO sightings" in call.args[0]]
+    assert len(sightings) == 2
+    for call in sightings:
+        attrs = json.loads(call.args[3])
+        assert attrs.get("known_name") == expected
+        assert attrs["note"] == "shared"
+        assert ("known_name" in attrs) == (expected is not None)
+        assert "DO UPDATE SET attrs=EXCLUDED.attrs" in call.args[0]
+    details = [json.loads(call.args[3]) for call in calls if "UPDATE animal_instances" in call.args[0]]
+    assert all(item.get("known_name") == expected for item in details)
+    review = next(call for call in calls if "review_groups=" in call.args[0])
+    assert all(group["known_name"] == expected for group in json.loads(review.args[2]))
+    assert all("individual_names" not in call.args[0] and "INSERT INTO individuals" not in call.args[0] for call in calls)
+
+
 async def test_db_completion_isolated_children_and_replay(migrated_db):
     conn = migrated_db
     body = result()
@@ -186,21 +261,41 @@ async def test_db_private_review_owner_revision_and_publication(migrated_db):
     assert await conn.fetchval("SELECT count(*) FROM sightings WHERE capture_id=$1",cid) == 0
     status = await get_capture(cid,oid,conn,storage)
     assert status.processing_state == "needs_review" and len(status.instances) == 2
-    review = CaptureReview(revision=status.revision,groups=status.groups,publish=False)
+    for evidence in status.instances:
+        assert (evidence.source_width, evidence.source_height) == (100, 80)
+        assert evidence.source_photo_id == body.frames[0].photo_id
+        assert evidence.source_thumb_url == f"signed:source/{evidence.source_photo_id}_thumb.webp"
+        assert evidence.crop_bbox == (0, 0, 10, 10)
+    storage.urls.reset_mock()
+    with pytest.raises(HTTPException) as exc:
+        await get_capture(cid,uuid4(),conn,storage)
+    assert exc.value.status_code == 404
+    storage.urls.assert_not_awaited()
+    named_groups = [AnimalGroup(instance_ids=g.instance_ids, known_name="  Kaju  ") for g in status.groups]
+    review = CaptureReview(revision=status.revision,groups=named_groups,publish=False)
     with pytest.raises(HTTPException) as exc:
         await review_capture(cid,review,uuid4(),conn,storage)
     assert exc.value.status_code == 404
     draft = await review_capture(cid,review,oid,conn,storage)
     assert not draft.sighting_ids
+    assert all(g.known_name == "Kaju" for g in draft.groups)
+    assert await conn.fetchval("SELECT count(*) FROM individual_names") == 0
     with pytest.raises(HTTPException):
         await review_capture(cid,review,oid,conn,storage)
     published = await review_capture(cid,CaptureReview(revision=draft.revision,groups=draft.groups),oid,conn,storage)
     assert len(published.sighting_ids) == 2
     assert published.processing_state == "ready"
-    updated_groups = [group.model_copy(update={"condition": "injured" if index == 0 else "healthy"})
+    assert all(i.details.known_name == "Kaju" for i in published.instances)
+    assert await conn.fetchval("SELECT count(*) FROM sightings WHERE capture_id=$1 AND attrs->>'known_name'='Kaju' AND individual_id IS NULL", cid) == 2
+    assert await conn.fetchval("SELECT count(*) FROM individuals") == 0
+    assert await conn.fetchval("SELECT count(*) FROM individual_names") == 0
+    updated_groups = [group.model_copy(update={"condition": "injured" if index == 0 else "healthy", "known_name": None})
                       for index, group in enumerate(published.groups)]
     updated = await review_capture(cid,CaptureReview(revision=published.revision,groups=updated_groups),oid,conn,storage)
     assert updated.sighting_ids == published.sighting_ids
+    assert all(g.known_name is None for g in updated.groups)
+    assert all(i.details.known_name is None for i in updated.instances)
+    assert await conn.fetchval("SELECT count(*) FROM sightings WHERE capture_id=$1 AND attrs ? 'known_name'", cid) == 0
     for group in updated.groups:
         condition = await conn.fetchval("""SELECT s.attrs->>'condition' FROM sightings s
             JOIN animal_instances a ON a.sighting_id=s.id WHERE a.id=$1""",group.instance_ids[0])
