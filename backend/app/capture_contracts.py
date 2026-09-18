@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from app.media_jobs import EMBED_DIM, MODEL_NAME, Lease, WireModel
 
@@ -24,6 +24,18 @@ Species = Literal["dog", "cat"]
 
 
 class AnimalDetails(WireModel):
+    known_name: str | None = Field(default=None, max_length=80)
+
+    @field_validator("known_name", mode="before")
+    @classmethod
+    def normalize_known_name(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+            if any(ord(char) < 32 or ord(char) == 127 for char in value):
+                raise ValueError("known name must be a single line without control characters")
+            return value or None
+        return value
+
     sex: Literal["male", "female", "unsure"] | None = None
     ear_notch: Literal["none", "left", "right", "unsure"] | None = None
     condition: Literal["healthy", "injured", "unsure"] | None = None
@@ -66,6 +78,8 @@ class InstanceEvidence(WireModel):
     photo_url: str
     thumb_url: str
     source_thumb_url: str
+    source_width: int = Field(gt=0)
+    source_height: int = Field(gt=0)
     details: AnimalDetails
 
 

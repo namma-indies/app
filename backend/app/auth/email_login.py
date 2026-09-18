@@ -46,6 +46,8 @@ _OBSERVER_REFS = (
     ("sightings", "observer_id"),
     ("individuals", "named_by"),
     ("individuals", "created_by_observer"),
+    ("individual_names", "proposed_by"),
+    ("individual_names", "resolved_by"),
     ("match_proposals", "resolved_by"),
     ("confirmations", "observer_id"),
     ("observers", "created_by_observer"),
