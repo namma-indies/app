@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { UPLOAD_COMPLETE_EVENT } from "../processing";
 import userEvent from "@testing-library/user-event";
 
 vi.mock("../offline/queue", () => ({
@@ -17,6 +18,8 @@ vi.mock("../capture/takePhoto", () => ({
   isNative: () => false,
 }));
 
+vi.mock("../captureApi", () => ({ multiAnimalIntakeAvailable: vi.fn() }));
+import { multiAnimalIntakeAvailable } from "../captureApi";
 import { enqueue, flush } from "../offline/queue";
 import { takePhotoIfNative } from "../capture/takePhoto";
 import Capture from "./Capture";
@@ -28,6 +31,7 @@ function makePhoto(name: string): File {
 }
 
 beforeEach(() => {
+  vi.mocked(multiAnimalIntakeAvailable).mockReset().mockResolvedValue(false);
   vi.mocked(enqueue).mockReset().mockResolvedValue(undefined);
   vi.mocked(flush).mockReset().mockResolvedValue(undefined);
   // Default to the web/no-native-camera outcome so existing tests (which
@@ -40,6 +44,41 @@ beforeEach(() => {
     writable: true,
   });
   Object.defineProperty(URL, "revokeObjectURL", { value: () => {}, writable: true });
+});
+
+describe("multi-animal intake", () => {
+  it.each([false, true])("persists the chosen endpoint when capability is %s", async (enabled) => {
+    vi.mocked(multiAnimalIntakeAvailable).mockResolvedValue(enabled);
+    render(<Capture />);
+    await userEvent.upload(screen.getByLabelText("capture photo"), makePhoto("one.jpg"));
+    if (enabled) {
+      expect(screen.getByText(/One upload, separate animal entries/)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /tell us more/ })).not.toBeInTheDocument();
+    } else {
+      expect(screen.getByRole("button", { name: /tell us more/ })).toBeInTheDocument();
+    }
+    await userEvent.click(screen.getByRole("button", { name: /LOG IT/ }));
+    await waitFor(() => expect(enqueue).toHaveBeenCalledOnce());
+    expect(vi.mocked(enqueue).mock.calls[0][0].upload_endpoint).toBe(enabled ? "capture" : "sighting");
+  });
+  it("announces capture receipt without claiming that animal entries are already published", async () => {
+    render(<Capture />);
+    await act(async () => {});
+    act(() => window.dispatchEvent(new CustomEvent(UPLOAD_COMPLETE_EVENT, { detail: { capture_id: "c", sighting_ids: [], processing_state: "queued" } })));
+    expect(screen.getByText("Upload saved · check your Journal for separate animal entries or private review")).toBeInTheDocument();
+  });
+});
+
+describe("upload acknowledgement", () => {
+  it("separates saving on the device from server processing", async () => {
+    render(<Capture />);
+    await userEvent.upload(screen.getByLabelText("capture photo"), makePhoto("one.jpg"));
+    await userEvent.click(screen.getByRole("button", { name: /LOG IT/ }));
+    await waitFor(() => expect(screen.getByText("Saved on this device · waiting to upload")).toBeInTheDocument());
+    act(() => window.dispatchEvent(new CustomEvent(UPLOAD_COMPLETE_EVENT, { detail: { sighting_id: "q", photo_ids: [], processing_state: "queued" } })));
+    expect(screen.getByText("Uploaded · waiting to process")).toBeInTheDocument();
+    expect(screen.queryByText("Saved on this device · waiting to upload")).not.toBeInTheDocument();
+  });
 });
 
 describe("burst photo capture", () => {

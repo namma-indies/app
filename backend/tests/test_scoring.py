@@ -69,10 +69,11 @@ async def test_another_models_scores_are_ignored(migrated_db):
     contribute to a number the surfaces read, or #67 comes straight back."""
     from app.scoring import recompute_animal_confidence
 
+    from app.scoring import save_detection
+
     sid, (pid,) = await _sighting(migrated_db)
-    await migrated_db.execute(
-        "INSERT INTO detections (photo_id, model, dog, cat) VALUES ($1,'yolov8n',0.99,0.0)",
-        pid)
+    await save_detection(migrated_db, pid, 0.99, 0.0, model="yolov8n")
+    assert await migrated_db.fetchval("SELECT model FROM detections WHERE photo_id=$1", pid) == "yolov8n"
     await recompute_animal_confidence(migrated_db, sid)
     assert await migrated_db.fetchval(
         "SELECT animal_confidence FROM sightings WHERE id=$1", sid) is None

@@ -4,9 +4,10 @@ a human decide about it.
 The decision itself lives in `app.matching`; this layer is transport only.
 """
 
+import json
 import logging
 from typing import Literal
-from uuid import UUID
+from uuid import UUID, uuid5
 
 import numpy as np
 from fastapi import APIRouter, Depends, Form, HTTPException
@@ -40,7 +41,7 @@ async def get_match(
     while they are still standing next to the animal.
     """
     row = await conn.fetchrow(
-        "SELECT match_status, individual_id FROM sightings WHERE id=$1", sighting_id
+        "SELECT match_status, individual_id, processing_state FROM sightings WHERE id=$1", sighting_id
     )
     if row is None:
         raise HTTPException(status_code=404, detail="no such sighting")
@@ -58,7 +59,9 @@ async def get_match(
     if not embedded:
         # Distinguishes "not scored yet" from "scored, found nothing" -- the
         # client should keep polling for the former and stop for the latter.
-        return {"status": "pending", "candidates": [], "proposals": []}
+        state = row["processing_state"]
+        status = state if state in ("no_animal", "failed") else "pending"
+        return {"status": status, "processing_state": state, "candidates": [], "proposals": []}
 
     # Read-only from here. Resolution happens once, in the background task that
     # writes the embeddings; running it here meant every poll deleted and
@@ -110,6 +113,7 @@ async def get_match(
         # Straight from the row the background task wrote, rather than a
         # decision recomputed per request.
         "status": row["match_status"] or "unmatched",
+        "processing_state": row["processing_state"],
         "individual_id": str(row["individual_id"]) if row["individual_id"] else None,
         # Ask for a short clip rather than a yes/no: something cleared the bar
         # on too little evidence for the contributor to answer confidently.
@@ -238,6 +242,34 @@ async def list_proposals(
     }
 
 
+async def propose_known_names(conn, individual_id, sighting_ids):
+    """Append contributor claims only after an explicit human identity verdict.
+
+    Naming approval is a separate, still-unbuilt policy. Neither the active name
+    nor a naming resolver is inferred from the person confirming the identity.
+    """
+    from pydantic import ValidationError
+    from app.capture_contracts import AnimalDetails
+
+    rows = await conn.fetch("""SELECT s.id,s.attrs,COALESCE(c.observer_id,s.observer_id) AS author
+        FROM sightings s LEFT JOIN captures c ON c.id=s.capture_id
+        WHERE s.individual_id=$1 AND s.id=ANY($2::uuid[])""", individual_id, sighting_ids)
+    for row in rows:
+        attrs = json.loads(row["attrs"]) if isinstance(row["attrs"], str) else row["attrs"]
+        try:
+            name = AnimalDetails(known_name=(attrs or {}).get("known_name")).known_name
+        except ValidationError:
+            continue
+        if name is None:
+            continue
+        # One claim per sighting/name/identity, even across later confirmations.
+        # Keep separate contributors' claims; a shared name is never an identity key.
+        event_id = uuid5(row["id"], json.dumps([str(individual_id), name], ensure_ascii=False))
+        await conn.execute("""INSERT INTO individual_names (id,individual_id,name,proposed_by,status)
+            VALUES ($1,$2,$3,$4,'proposed') ON CONFLICT (id) DO NOTHING""",
+            event_id, individual_id, name, row["author"])
+
+
 @router.post("/proposal/{proposal_id}")
 async def resolve_proposal(
     proposal_id: UUID,
@@ -313,6 +345,31 @@ async def resolve_proposal(
     individual_id = p["candidate_individual_id"]
 
     async with conn.transaction():
+        from app.matching import lock_matching
+        await lock_matching(conn)
+        current = await conn.fetchrow("SELECT status FROM match_proposals WHERE id=$1 FOR UPDATE", proposal_id)
+        if current is None or current["status"] != "pending":
+            raise HTTPException(409, "proposal was resolved or replaced")
+        locked = await conn.fetch(
+            "SELECT id,individual_id,observer_id,review_status FROM sightings WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE",
+            [sighting_id, p["candidate_sighting_id"]],
+        )
+        if any(r["observer_id"] != observer_id or r["review_status"] != "valid" for r in locked):
+            raise HTTPException(409, "sighting ownership or visibility changed")
+        if verdict == "same":
+            from app.matching import ensure_compatible_observations
+            await ensure_compatible_observations(conn, [sighting_id, p["candidate_sighting_id"]])
+        identities = {r["individual_id"] for r in locked if r["individual_id"] is not None}
+        if individual_id is not None:
+            identities.add(individual_id)
+        if verdict == "same" and len(identities) > 1:
+            raise HTTPException(409, "sightings already have different identities; explicit merge required")
+        if verdict == "same" and identities:
+            individual_id = next(iter(identities))
+            await conn.execute(
+                "UPDATE sightings SET individual_id=$1,match_status='confirmed' WHERE id=ANY($2::uuid[])",
+                individual_id, [sighting_id, p["candidate_sighting_id"]],
+            )
         if verdict == "same":
             if individual_id is None:
                 # Bootstrap case: neither sighting has an identity yet, so this
@@ -374,7 +431,7 @@ async def resolve_proposal(
             )
             if not still_open:
                 await conn.execute(
-                    "UPDATE sightings SET match_status='unmatched' WHERE id=$1",
+                    "UPDATE sightings SET match_status='unmatched' WHERE id=$1 AND match_status<>'confirmed'",
                     sighting_id,
                 )
 
@@ -391,6 +448,8 @@ async def resolve_proposal(
             proposal_id,
             verdict,
         )
+        if verdict == "same":
+            await propose_known_names(conn, individual_id, [sighting_id, p["candidate_sighting_id"]])
 
     return {"status": "ok", "verdict": verdict,
             "individual_id": str(individual_id) if verdict == "same" else None}

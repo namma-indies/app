@@ -85,6 +85,33 @@ class S3Storage:
                 )
         return size
 
+    async def put_url(self, key: str, size: int, expires_s: int) -> str:
+        async with self._client(public=True) as client:
+            return await client.generate_presigned_url(
+                "put_object",
+                Params={"Bucket": self.bucket, "Key": key, "ContentType": "image/webp", "ContentLength": size},
+                ExpiresIn=expires_s,
+            )
+
+    async def publish_checked(self, source: str, target: str, size: int) -> None:
+        from fastapi import HTTPException
+
+        async with self._client() as client:
+            try:
+                info = await client.head_object(Bucket=self.bucket, Key=source)
+                if info["ContentLength"] != size or info.get("ContentType") != "image/webp":
+                    raise HTTPException(422, "staged frame size or content type mismatch")
+                await client.copy_object(
+                    Bucket=self.bucket, Key=target,
+                    CopySource={"Bucket": self.bucket, "Key": source},
+                    CopySourceIfMatch=info["ETag"],
+                )
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code")
+                if code in ("404", "NoSuchKey", "NotFound", "PreconditionFailed", "412"):
+                    raise HTTPException(422, "staged frame missing or changed") from exc
+                raise
+
     async def get(self, key: str) -> bytes:
         """Read an object back. Used by the embedding backfill, which has to
         re-derive vectors from photos that were stored before the model

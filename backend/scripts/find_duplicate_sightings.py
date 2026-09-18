@@ -55,6 +55,7 @@ SELECT s.observer_id,
 FROM sightings s
 JOIN photos p     ON p.sighting_id = s.id
 LEFT JOIN observers o ON o.id = s.observer_id
+WHERE p.capture_id IS NULL AND p.phash IS NOT NULL
 GROUP BY s.observer_id, o.display_name, s.captured_at, p.phash
 HAVING count(DISTINCT s.id) > 1
 ORDER BY count(DISTINCT s.id) DESC, min(s.created_at)
@@ -85,6 +86,7 @@ SELECT s.observer_id, s.captured_at, p.phash,
        array_agg(DISTINCT s.match_status)                        AS statuses
 FROM sightings s
 JOIN photos p ON p.sighting_id = s.id
+WHERE p.capture_id IS NULL AND p.phash IS NOT NULL
 GROUP BY s.observer_id, s.captured_at, p.phash
 HAVING count(DISTINCT s.id) > 1
 ORDER BY min(s.created_at)

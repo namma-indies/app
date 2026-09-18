@@ -1,6 +1,10 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { processingLabel, UPLOAD_COMPLETE_EVENT } from "../processing";
+import type { PostSightingResponse } from "../api";
+import { multiAnimalIntakeAvailable, type PostCaptureResponse } from "../captureApi";
 import {
   readPhotoMetadata,
+  NO_METADATA,
   UnauthorizedError,
   type Condition,
   type EarNotch,
@@ -69,7 +73,23 @@ function Chips<T extends string>({
   );
 }
 
+// Matches the durable API's default media_max_video_bytes. There is no API duration cap.
+const MAX_IMPORT_VIDEO_BYTES = 100 * 1024 * 1024;
+const IMPORT_VIDEO_TYPES = ["video/mp4", "video/quicktime", "video/webm"];
+
+function isVideoFile(file: File): boolean {
+  return file.type.startsWith("video/") || /\.(mp4|mov|webm)$/i.test(file.name);
+}
+
 export default function Capture() {
+  const [multiAnimal, setMultiAnimal] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    void multiAnimalIntakeAvailable(controller.signal).then((enabled) => {
+      if (!controller.signal.aborted) setMultiAnimal(enabled);
+    });
+    return () => controller.abort();
+  }, []);
   const fileRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLInputElement>(null);
   // Separate from fileRef because this one must NOT carry `capture`, which
@@ -93,7 +113,9 @@ export default function Capture() {
   // taken, which overrides the live clock and GPS fix in submit().
   const [origin, setOrigin] = useState<ImportOrigin | null>(null);
   // Non-null while we're asking the person for what the file didn't say.
-  const [asking, setAsking] = useState<{ file: File; md: PhotoMetadata } | null>(null);
+  const [asking, setAsking] = useState<{ file: File; md: PhotoMetadata; request: number } | null>(null);
+  const importRequest = useRef(0);
+  const locationRequest = useRef(0);
   // Where this sighting happened, resolved BEFORE submit rather than during it.
   // The old code called for a fix inside submit(), so a slow lock looked like
   // the save had hung -- and when it timed out the sighting saved with no
@@ -103,10 +125,26 @@ export default function Capture() {
   const [geoFailed, setGeoFailed] = useState(false);
   const [picking, setPicking] = useState(false);
 
+  const toastTimer = useRef<ReturnType<typeof setTimeout>>();
   function showToast(msg: string) {
+    clearTimeout(toastTimer.current);
     setToast(msg);
-    setTimeout(() => setToast(null), 2600);
+    toastTimer.current = setTimeout(() => setToast(null), 6000);
   }
+
+  useEffect(() => {
+    function uploaded(event: Event) {
+      const result = (event as CustomEvent<PostSightingResponse | PostCaptureResponse>).detail;
+      showToast("capture_id" in result ? "Upload saved · check your Journal for separate animal entries or private review" : processingLabel(result.processing_state) ?? "Uploaded · saved to your Journal");
+    }
+    window.addEventListener(UPLOAD_COMPLETE_EVENT, uploaded);
+    return () => {
+      clearTimeout(toastTimer.current);
+      importRequest.current++;
+      locationRequest.current++;
+      window.removeEventListener(UPLOAD_COMPLETE_EVENT, uploaded);
+    };
+  }, []);
 
   /** Start looking as soon as there is evidence in hand.
    *
@@ -118,7 +156,9 @@ export default function Capture() {
     if (place || locating) return;
     setLocating(true);
     setGeoFailed(false);
+    const request = ++locationRequest.current;
     locate().then((got) => {
+      if (request !== locationRequest.current) return;
       setLocating(false);
       if (got.ok) {
         setPlace({
@@ -134,6 +174,9 @@ export default function Capture() {
   }
 
   function addPhoto(f: File) {
+    importRequest.current++;
+    setAsking(null);
+    setOrigin(null);
     beginLocating();
     setPhotos((prev) => (prev.length >= MAX_PHOTOS ? prev : [...prev, f]));
     setPreviewUrls((prev) =>
@@ -150,6 +193,8 @@ export default function Capture() {
   }
 
   function acceptVideo(f: File) {
+    importRequest.current++;
+    setAsking(null);
     beginLocating();
     previewUrls.forEach((url) => URL.revokeObjectURL(url));
     setPhotos([]);
@@ -194,40 +239,50 @@ export default function Capture() {
   }
 
   function removeVideo() {
-    if (videoUrl) URL.revokeObjectURL(videoUrl);
-    setVideo(null);
-    setVideoUrl(null);
-    if (videoRef.current) videoRef.current.value = "";
+    reset();
   }
 
-  /** Replace whatever is staged with a single imported photo.
-   *
-   * One photo per import, not a multi-select: each carries its own capture date
-   * and place, and photos chosen together aren't necessarily from the same
-   * evening or street. Batching them would have to ask per photo or cluster by
-   * EXIF -- deliberately left to the follow-up issue.
-   */
+  /** One file per import: media chosen together need not share a time or place. */
   function stageImport(f: File, o: ImportOrigin) {
     previewUrls.forEach((url) => URL.revokeObjectURL(url));
     if (videoUrl) URL.revokeObjectURL(videoUrl);
-    setVideo(null);
-    setVideoUrl(null);
-    setPhotos([f]);
-    setPreviewUrls([URL.createObjectURL(f)]);
+    const clip = isVideoFile(f);
+    setVideo(clip ? f : null);
+    setVideoUrl(clip ? URL.createObjectURL(f) : null);
+    setPhotos(clip ? [] : [f]);
+    setPreviewUrls(clip ? [] : [URL.createObjectURL(f)]);
+    locationRequest.current++;
+    setLocating(false);
+    setPlace(null);
     setOrigin(o);
   }
 
-  async function onImportFile(f: File) {
+  async function onImportFile(f: File, request = ++importRequest.current) {
+    setAsking(null);
+    if (isVideoFile(f)) {
+      if (f.type && !IMPORT_VIDEO_TYPES.includes(f.type)) {
+        showToast("Choose an MP4, MOV or WebM clip. Export your video in one of these formats.");
+        return;
+      }
+      if (!f.size || f.size > MAX_IMPORT_VIDEO_BYTES) {
+        showToast(f.size ? "This clip is too large. Trim or compress it to 100 MiB or less." : "This clip is empty. Choose another video.");
+        return;
+      }
+      setAsking({ file: f, md: NO_METADATA, request });
+      return;
+    }
     let md: PhotoMetadata;
     try {
       md = await readPhotoMetadata(f);
     } catch (err) {
+      if (request !== importRequest.current) return;
       if (err instanceof UnauthorizedError) {
         showToast("Session expired. Sign in again.");
         return;
       }
-      throw err;
+      md = NO_METADATA;
     }
+    if (request !== importRequest.current) return;
 
     const capturedAt = resolveCapturedAt(md.captured_at_local, md.utc_offset_minutes);
     if (capturedAt && md.has_location && md.lat != null && md.lng != null) {
@@ -238,18 +293,20 @@ export default function Capture() {
     // Stripped of one or both -- the common case for forwards and screenshots,
     // and also what an offline preflight looks like. Ask rather than default to
     // here-and-now, which would poison the 1km prior re-ID matches against.
-    setAsking({ file: f, md });
+    setAsking({ file: f, md, request });
   }
 
   async function onImportPress() {
+    const request = ++importRequest.current;
+    setAsking(null);
     if (isNative()) {
       try {
         const picked = await chooseFromGalleryIfNative();
         // null here means the user dismissed the picker. Falling through to the
         // web file input would reopen a chooser the instant they backed out.
-        if (picked) await onImportFile(picked);
+        if (picked && request === importRequest.current) await onImportFile(picked, request);
       } catch {
-        showToast("Couldn't open your photos. Try again.");
+        if (request === importRequest.current) showToast("Couldn't open your gallery. Try again.");
       }
       return;
     }
@@ -279,6 +336,10 @@ export default function Capture() {
   }
 
   function removePhoto(index: number) {
+    if (photos.length === 1) {
+      reset();
+      return;
+    }
     setPreviewUrls((prev) => {
       URL.revokeObjectURL(prev[index]);
       return prev.filter((_, i) => i !== index);
@@ -287,6 +348,9 @@ export default function Capture() {
   }
 
   function reset() {
+    importRequest.current++;
+    locationRequest.current++;
+    setLocating(false);
     previewUrls.forEach((url) => URL.revokeObjectURL(url));
     setPhotos([]);
     setPreviewUrls([]);
@@ -344,14 +408,15 @@ export default function Capture() {
       geo_source: geoSource,
       captured_at: capturedAt,
       note: note || undefined,
-      sex: sex || undefined,
-      ear_notch: earNotch || undefined,
-      condition: condition || undefined,
+      sex: multiAnimal ? undefined : sex || undefined,
+      ear_notch: multiAnimal ? undefined : earNotch || undefined,
+      condition: multiAnimal ? undefined : condition || undefined,
+      upload_endpoint: multiAnimal ? "capture" as const : "sighting" as const,
     };
 
     try {
       await enqueue(input);
-      showToast("Sighting logged 🐾");
+      showToast("Saved on this device · waiting to upload");
       reset();
       flush().catch(() => {});
     } catch {
@@ -411,7 +476,7 @@ export default function Capture() {
       <input
         ref={importRef}
         type="file"
-        accept="image/*"
+        accept="image/*,video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm"
         aria-label="choose from photos"
         style={{ display: "none" }}
         onChange={onImportChosen}
@@ -436,8 +501,9 @@ export default function Capture() {
           {/* For a dog you photographed before you had the app. The photo keeps
               its own date and place rather than being logged as here-and-now. */}
           <button type="button" className="link-btn" onClick={onImportPress}>
-            or add one from your photos
+            or add a photo or clip from your gallery
           </button>
+          <p className="hint">Choose one photo or a short MP4, MOV or WebM clip (up to 100 MiB).</p>
         </div>
       ) : (
         <>
@@ -551,15 +617,16 @@ export default function Capture() {
             />
           </div>
 
-          <button
+          {multiAnimal && <p className="hint">One upload, separate animal entries. Time, location and this note are shared. Add each animal’s details in your Journal after processing; uncertain associations stay private until you review them.</p>}
+          {!multiAnimal && <button
             type="button"
             className="more-toggle"
             onClick={() => setMoreOpen((v) => !v)}
           >
             {moreOpen ? "▾" : "▸"} tell us more (optional)
-          </button>
+          </button>}
 
-          {moreOpen && (
+          {!multiAnimal && moreOpen && (
             <div className="more-fields">
               <div className="field-group">
                 <label>sex</label>
@@ -605,12 +672,14 @@ export default function Capture() {
 
       {asking && (
         <ImportOriginPrompt
+          key={asking.request}
           md={asking.md}
+          mediaKind={isVideoFile(asking.file) ? "video" : "photo"}
           onConfirm={(o) => {
             stageImport(asking.file, o);
             setAsking(null);
           }}
-          onCancel={() => setAsking(null)}
+          onCancel={() => { importRequest.current++; setAsking(null); }}
         />
       )}
 

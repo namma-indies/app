@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { MappableSighting } from "../api";
+import { processingLabel } from "../processing";
 
 const BANGALORE: [number, number] = [77.59, 12.97];
 const SOURCE_ID = "sightings";
@@ -57,6 +58,7 @@ function toFeature(s: MappableSighting): GeoJSON.Feature<GeoJSON.Point> {
     geometry: { type: "Point", coordinates: [s.lng as number, s.lat as number] },
     properties: {
       id: s.id,
+      processing_state: s.processing_state ?? "legacy",
       thumb: s.photos[0]?.thumb_url ?? "",
       time: new Date(s.captured_at).toLocaleString(),
       note: attrs.note ?? "",
@@ -77,6 +79,7 @@ function toFeature(s: MappableSighting): GeoJSON.Feature<GeoJSON.Point> {
 
 export function popupHtml(p: Record<string, string>): string {
   const tags = p.tags ? p.tags.split("|") : [];
+  const status = processingLabel(p.processing_state);
   // Said plainly rather than implied by a softer pin. Someone reading this map
   // is deciding whether they can go and find this dog, and the honest answer
   // for another person's sighting is "not from here".
@@ -86,7 +89,8 @@ export function popupHtml(p: Record<string, string>): string {
       : "";
   return `
     <div class="map-popup">
-      ${p.thumb ? `<img src="${esc(p.thumb)}" alt="dog sighting" />` : ""}
+      ${p.thumb ? `<img src="${esc(p.thumb)}" alt="dog sighting" />` : `<div class="media-placeholder">${esc(status ?? "Preview unavailable")}</div>`}
+      ${p.thumb && status ? `<div class="processing-status">${esc(status)}</div>` : ""}
       <div class="time">${esc(p.time)}</div>
       ${approx}
       ${p.observer ? `<div class="popup-by">logged by ${esc(p.observer)}</div>` : ""}
@@ -110,6 +114,25 @@ export function popupHtml(p: Record<string, string>): string {
     </div>`;
 }
 
+export function colocatedGroups(sightings: MappableSighting[]): Map<string, MappableSighting[]> {
+  const groups = new Map<string, MappableSighting[]>();
+  for (const sighting of sightings) {
+    if (sighting.lat == null || sighting.lng == null) continue;
+    const key = JSON.stringify([sighting.lng, sighting.lat]);
+    const group = groups.get(key) ?? [];
+    group.push(sighting);
+    groups.set(key, group);
+  }
+  return groups;
+}
+
+export function overlapPopupHtml(sightings: MappableSighting[]): string {
+  return `<div class="overlap-chooser"><strong>${sightings.length} sightings at this map location</strong><p>Choose an observation. These are not necessarily distinct identified animals.</p>${sightings.map((s, index) => {
+    const props = toFeature(s).properties as Record<string, string>;
+    return `<details><summary>${props.thumb ? `<img src="${esc(props.thumb)}" alt="" />` : ""}Sighting ${index + 1} · ${esc(props.time)}</summary>${popupHtml(props)}</details>`;
+  }).join("")}</div>`;
+}
+
 function pinEl(p: Record<string, string>): HTMLElement {
   const el = document.createElement("div");
   // A coarsened sighting gets a soft, dashed edge so the map reads as "roughly
@@ -121,7 +144,9 @@ function pinEl(p: Record<string, string>): HTMLElement {
     img.alt = "dog sighting";
     el.appendChild(img);
   } else {
-    el.textContent = "🐾";
+    el.textContent = p.processing_state === "failed" ? "!" : p.processing_state === "no_animal" ? "—" : "…";
+    el.setAttribute("aria-label", processingLabel(p.processing_state) ?? "Preview unavailable");
+    el.title = processingLabel(p.processing_state) ?? "Preview unavailable";
     el.classList.add("photo-pin-fallback");
   }
   return el;
@@ -191,8 +216,7 @@ export default function DogMap({
         // Roughly two pin-widths, so photos merge only once they'd actually
         // overlap rather than while there's still room between them.
         clusterRadius: 70,
-        // Past this zoom, show every sighting individually even if they stack:
-        // at street level the overlap is the honest picture of the data.
+        // Past this zoom, exact overlaps share a chooser at the real coordinate.
         clusterMaxZoom: 17,
       });
 
@@ -207,9 +231,12 @@ export default function DogMap({
       });
 
       const markers: Record<string, maplibregl.Marker> = {};
+      const signatures: Record<string, string> = {};
       let onScreen: Record<string, maplibregl.Marker> = {};
 
       const updateMarkers = () => {
+        const grouped = colocatedGroups(sightingsRef.current);
+        const byId = new Map([...grouped.entries()].flatMap(([key, group]) => group.map((s) => [s.id, { key, group }] as const)));
         const next: Record<string, maplibregl.Marker> = {};
         for (const f of map.querySourceFeatures(SOURCE_ID)) {
           const coords = (f.geometry as GeoJSON.Point).coordinates as [number, number];
@@ -220,11 +247,23 @@ export default function DogMap({
           };
           // Keyed so the same feature arriving from two overlapping tiles
           // reuses one marker instead of stacking duplicates.
-          const key = props.cluster ? `c${props.cluster_id}` : `s${props.id}`;
+          const entry = props.cluster ? undefined : byId.get(props.id);
+          const coordinateKey = entry?.key ?? JSON.stringify(coords);
+          const colocated = entry?.group ?? [];
+          if (entry) { coords[0] = colocated[0].lng!; coords[1] = colocated[0].lat!; }
+          const key = props.cluster ? `c${props.cluster_id}` : colocated.length > 1 ? `g${coordinateKey}` : `s${props.id}`;
           if (next[key]) continue;
 
-          let marker = markers[key];
+          const signature = JSON.stringify([coords, props.cluster ? props : colocated.length > 1 ? colocated : props]);
+          let marker: maplibregl.Marker | undefined = markers[key];
+          if (marker && signatures[key] !== signature) {
+            marker.remove();
+            delete markers[key];
+            delete onScreen[key];
+            marker = undefined;
+          }
           if (!marker) {
+            signatures[key] = signature;
             if (props.cluster) {
               const el = clusterEl(props.point_count ?? 0);
               const clusterId = props.cluster_id as number;
@@ -239,9 +278,24 @@ export default function DogMap({
               });
               marker = new maplibregl.Marker({ element: el }).setLngLat(coords);
             } else {
-              marker = new maplibregl.Marker({ element: pinEl(props) })
+              const el = pinEl(props);
+              if (colocated.length > 1) {
+                const count = document.createElement("span");
+                count.className = "overlap-count";
+                count.textContent = String(colocated.length);
+                el.appendChild(count);
+              }
+              el.tabIndex = 0;
+              el.setAttribute("role", "button");
+              el.setAttribute("aria-label", colocated.length > 1 ? `Choose from ${colocated.length} sightings at this location` : "Open sighting");
+              const popup = new maplibregl.Popup({ offset: 18, maxWidth: "340px" }).setHTML(colocated.length > 1 ? overlapPopupHtml(colocated) : popupHtml(props));
+              marker = new maplibregl.Marker({ element: el })
                 .setLngLat(coords)
-                .setPopup(new maplibregl.Popup({ offset: 18 }).setHTML(popupHtml(props)));
+                .setPopup(popup);
+              const accessibleMarker = marker;
+              el.addEventListener("keydown", (event) => {
+                if (event.key === "Enter" || event.key === " ") { event.preventDefault(); accessibleMarker.togglePopup(); }
+              });
             }
             markers[key] = marker;
           }
@@ -249,7 +303,11 @@ export default function DogMap({
           if (!onScreen[key]) marker.addTo(map);
         }
         for (const key of Object.keys(onScreen)) {
-          if (!next[key]) onScreen[key].remove();
+          if (!next[key]) {
+            onScreen[key].remove();
+            delete markers[key];
+            delete signatures[key];
+          }
         }
         onScreen = next;
       };

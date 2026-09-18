@@ -56,6 +56,55 @@ beforeEach(() => {
   dogMapProps.mockReset();
 });
 
+describe("processing sightings", () => {
+  it.each([
+    ["queued", "Uploaded · waiting to process"],
+    ["processing", "Uploaded · processing media"],
+    ["failed", "Processing failed · upload saved"],
+    ["no_animal", "No animal detected · matching unavailable"],
+  ])("keeps a zero-photo %s sighting visible in Journal and map", async (state, label) => {
+    getDex.mockResolvedValue({ sightings: [{ ...mine("clip"), photos: [], processing_state: state }] });
+    render(<Dex onUnauthorized={() => {}} />);
+    await waitFor(() => expect(screen.getByText("1 pins")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("JOURNAL"));
+    expect(screen.getByText(label)).toBeInTheDocument();
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+  });
+
+  it("preserves server-supplied coarse precision for a shared queued placeholder", async () => {
+    getDex.mockResolvedValue({ sightings: [] });
+    const queued = { ...theirs("clip", "Observer"), photos: [], processing_state: "queued", precision: "area", cell_m: 1000, geo_accuracy_m: null };
+    getMap.mockResolvedValue({ sightings: [queued] });
+    render(<Dex onUnauthorized={() => {}} />);
+    await waitFor(() => screen.getByText(/NO SIGHTINGS YET/));
+    await userEvent.click(screen.getByText("EVERYONE"));
+    await waitFor(() => expect(dogMapProps.mock.calls[dogMapProps.mock.calls.length - 1]?.[0].sightings).toEqual([queued]));
+  });
+
+  it("retains all uploaded photos when processing fails", async () => {
+    const sighting = mine("failed");
+    sighting.photos.push({ url: "http://x/second.webp", thumb_url: "http://x/second_thumb.webp" });
+    getDex.mockResolvedValue({ sightings: [{ ...sighting, processing_state: "failed" }] });
+    render(<Dex onUnauthorized={() => {}} />);
+    await waitFor(() => screen.getByText("1 pins"));
+    await userEvent.click(screen.getByText("JOURNAL"));
+    expect(screen.getByRole("img")).toHaveAttribute("src", "http://x/failed_thumb.webp");
+    await userEvent.click(screen.getByText("Processing failed · upload saved"));
+    expect(screen.getByAltText("dog sighting 1")).toHaveAttribute("src", "http://x/failed.webp");
+    expect(screen.getByAltText("dog sighting 2")).toHaveAttribute("src", "http://x/second.webp");
+  });
+
+  it("does not turn a failed Journal request into an empty Journal", async () => {
+    getDex.mockRejectedValue(new Error("offline"));
+    render(<Dex onUnauthorized={() => {}} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load your Journal");
+    expect(screen.queryByText(/NO SIGHTINGS YET/)).not.toBeInTheDocument();
+    getDex.mockResolvedValue({ sightings: [mine("recovered")] });
+    await userEvent.click(screen.getByText("Try again"));
+    expect(await screen.findByText("1 pins")).toBeInTheDocument();
+  });
+});
+
 describe("map scope: MINE by default, EVERYONE on request", () => {
   it("starts on MINE and does not fetch the cohort map at all", async () => {
     getDex.mockResolvedValue({ sightings: [mine("a"), mine("b")] });

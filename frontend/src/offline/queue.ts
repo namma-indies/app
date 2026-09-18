@@ -3,13 +3,16 @@
 // pending items to the server whenever it's called (on enqueue, on app
 // open, on the browser's `online` event).
 import { openDB, type IDBPDatabase } from "idb";
+import { postCapture } from "../captureApi";
+import { UPLOAD_COMPLETE_EVENT } from "../processing";
 import { HttpError, postSighting, UnauthorizedError, type PostSightingInput } from "../api";
 
 const DB_NAME = "indiedex-queue";
 const STORE = "pending";
 
 export type QueueStatus = "pending" | "failed";
-export type QueuedItem = PostSightingInput & { id: number; status: QueueStatus };
+export type QueueInput = PostSightingInput & { upload_endpoint?: "sighting" | "capture" };
+export type QueuedItem = QueueInput & { id: number; status: QueueStatus };
 
 /** A photo as stored: raw bytes we own outright, plus the MIME type needed to
  * rebuild an equivalent Blob. */
@@ -17,7 +20,7 @@ type StoredPhoto = { bytes: ArrayBuffer; type: string };
 
 /** The on-disk record. `photo_data` is the current shape; `photos` is the
  * legacy one, kept readable so captures queued by an older build still sync. */
-type StoredItem = Omit<PostSightingInput, "photos" | "video"> & {
+type StoredItem = Omit<QueueInput, "photos" | "video"> & {
   id: number;
   status?: QueueStatus;
   photo_data?: StoredPhoto[];
@@ -92,7 +95,7 @@ function newClientToken(): string {
     .slice(2)}`;
 }
 
-export async function enqueue(input: PostSightingInput): Promise<void> {
+export async function enqueue(input: QueueInput): Promise<void> {
   const db = await getDb();
   const { photos, video, ...rest } = input;
   // Read the bytes now, while the camera's file is still alive. Deferring this
@@ -111,6 +114,7 @@ export async function enqueue(input: PostSightingInput): Promise<void> {
     // Only if the caller did not supply one, so a retry of an item that already
     // has a token keeps it.
     client_token: rest.client_token ?? newClientToken(),
+    upload_endpoint: rest.upload_endpoint ?? "sighting",
     photo_data,
     video_data,
     status: "pending" as QueueStatus,
@@ -214,8 +218,13 @@ export async function flush(): Promise<void> {
         }
         const item = toItem(record);
         try {
-          await postSighting(item);
+          const uploaded = item.upload_endpoint === "capture"
+            ? await postCapture(item)
+            : await postSighting(item);
           await db.delete(STORE, record.id);
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent(UPLOAD_COMPLETE_EVENT, { detail: uploaded }));
+          }
         } catch (err) {
           if (isPermanentFailure(err)) {
             // Write back `stored`, not the reconstructed item: persisting the

@@ -1,5 +1,6 @@
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 import asyncpg
@@ -23,6 +24,9 @@ from app.routes.map import router as map_router
 from app.routes.match import router as match_router
 from app.routes.moderation import router as moderation_router
 from app.routes.photo_metadata import router as photo_metadata_router
+from app.media_jobs import cpu_consumer, router as media_jobs_router
+from app.routes.capture import router as capture_router
+from app.capture_jobs import router as capture_jobs_router
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +55,16 @@ async def lifespan(app: FastAPI):
         await get_storage().ensure_bucket()
     except Exception:
         logger.warning("storage.ensure_bucket failed at startup; continuing", exc_info=True)
+    consumer = None
+    if settings.media_jobs_enabled and settings.media_cpu_fallback_enabled:
+        consumer = asyncio.create_task(cpu_consumer(app.state.pool, get_storage()))
     try:
         yield
     finally:
+        if consumer is not None:
+            consumer.cancel()
+            with suppress(asyncio.CancelledError):
+                await consumer
         await app.state.pool.close()
 
 
@@ -78,6 +89,9 @@ app.include_router(stats_router)
 app.include_router(match_router)
 app.include_router(moderation_router)
 app.include_router(photo_metadata_router)
+app.include_router(media_jobs_router)
+app.include_router(capture_router)
+app.include_router(capture_jobs_router)
 
 
 @app.get("/health")

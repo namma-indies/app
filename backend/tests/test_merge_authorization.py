@@ -163,3 +163,105 @@ async def test_a_multi_frame_sighting_appears_once(authed_client):
 @pytest.mark.asyncio
 async def test_the_queue_needs_a_session(app_client):
     assert (await app_client.get("/proposals")).status_code == 401
+
+
+async def test_known_name_history_is_append_only_attributed_and_replay_safe():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from app.routes.match import propose_known_names
+
+    author, other_author, individual, other_individual = uuid7(), uuid7(), uuid7(), uuid7()
+    a, b = uuid7(), uuid7()
+    conn = SimpleNamespace(fetch=AsyncMock(return_value=[
+        {"id": a, "attrs": '{"known_name":"  Kaju  "}', "author": author},
+        {"id": b, "attrs": {"known_name": "Kaju"}, "author": other_author},
+        {"id": uuid7(), "attrs": {}, "author": author},
+        {"id": uuid7(), "attrs": {"known_name": "   "}, "author": author},
+        {"id": uuid7(), "attrs": {"known_name": 42}, "author": author},
+    ]), execute=AsyncMock())
+    await propose_known_names(conn, individual, [a, b])
+    first = conn.execute.call_args_list[:]
+    assert len(first) == 2
+    assert first[0].args[1] != first[1].args[1]
+    assert first[0].args[2:] == (individual, "Kaju", author)
+    assert first[1].args[2:] == (individual, "Kaju", other_author)
+    assert all("'proposed'" in call.args[0] and "ON CONFLICT (id) DO NOTHING" in call.args[0] for call in first)
+    assert all("UPDATE" not in call.args[0] and "resolved_by" not in call.args[0] for call in first)
+    query = conn.fetch.call_args.args[0]
+    assert "COALESCE(c.observer_id,s.observer_id) AS author" in query
+    await propose_known_names(conn, individual, [a, b])
+    assert conn.execute.call_args_list[2:] == first
+    conn.execute.reset_mock()
+    await propose_known_names(conn, other_individual, [a, b])
+    assert conn.execute.call_args_list[0].args[1] != first[0].args[1]
+
+
+@pytest.mark.parametrize("verdict", ["same", "different"])
+async def test_only_explicit_same_verdict_appends_names(monkeypatch, verdict):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+    from app import matching
+    from app.routes import match
+
+    author, a, b, pid = uuid7(), uuid7(), uuid7(), uuid7()
+    transaction = MagicMock()
+    transaction.return_value.__aenter__ = AsyncMock()
+    transaction.return_value.__aexit__ = AsyncMock(return_value=False)
+    conn = SimpleNamespace(transaction=transaction, execute=AsyncMock(), fetchval=AsyncMock(return_value=0),
+        fetchrow=AsyncMock(side_effect=[{"sighting_id": a, "candidate_sighting_id": b,
+            "candidate_individual_id": None, "status": "pending", "sighting_observer": author,
+            "candidate_observer": author}, {"status": "pending"}]),
+        fetch=AsyncMock(return_value=[{"id": sid, "individual_id": None, "observer_id": author,
+            "review_status": "valid"} for sid in [a, b]]))
+    monkeypatch.setattr(matching, "lock_matching", AsyncMock())
+    monkeypatch.setattr(matching, "ensure_compatible_observations", AsyncMock())
+    append = AsyncMock()
+    monkeypatch.setattr(match, "propose_known_names", append)
+    result = await match.resolve_proposal(pid, verdict, author, conn)
+    if verdict == "same":
+        assert result["individual_id"]
+        assert append.await_args.args[2] == [a, b]
+        assert append.await_args.args[1] is not None
+    else:
+        assert result["individual_id"] is None
+        append.assert_not_awaited()
+        assert all("INSERT INTO individuals" not in call.args[0] for call in conn.execute.call_args_list)
+
+
+async def test_db_confirmation_proposes_names_without_overwriting_canonical_or_history(migrated_db):
+    from uuid import UUID
+    from fastapi import HTTPException
+    from app.routes.match import resolve_proposal
+    conn = migrated_db
+    author, a, b, c, pid, second_pid = [uuid7() for _ in range(6)]
+    await conn.execute("INSERT INTO observers(id) VALUES($1)", author)
+    for sid in [a, b, c]:
+        await conn.execute("""INSERT INTO sightings(id,observer_id,captured_at,attrs)
+            VALUES($1,$2,now(),'{"known_name":"Kaju"}')""", sid, author)
+    async def proposal(id, left, right):
+        await conn.execute("""INSERT INTO match_proposals(id,sighting_id,candidate_sighting_id,score,method,status)
+            VALUES($1,$2,$3,0.5,'test','pending')""", id, left, right)
+    await proposal(pid, a, b)
+    assert await conn.fetchval("SELECT count(*) FROM individuals") == 0
+    assert await conn.fetchval("SELECT count(*) FROM individual_names") == 0
+    response = await resolve_proposal(pid, "same", author, conn)
+    individual = UUID(response["individual_id"])
+    names = await conn.fetch("SELECT * FROM individual_names ORDER BY id")
+    assert len(names) == 2
+    assert all(r["status"] == "proposed" and r["name"] == "Kaju" and r["proposed_by"] == author
+        and r["resolved_by"] is None for r in names)
+    assert await conn.fetchval("SELECT name FROM individuals WHERE id=$1", individual) is None
+    with pytest.raises(HTTPException) as exc:
+        await resolve_proposal(pid, "same", author, conn)
+    assert exc.value.status_code == 409
+    active = uuid7()
+    await conn.execute("""INSERT INTO individual_names(id,individual_id,name,proposed_by,status,resolved_by,resolved_at)
+        VALUES($1,$2,'Original',$3,'active',$3,now())""", active, individual, author)
+    await conn.execute("UPDATE individuals SET name='Original',named_by=$2,named_at=now() WHERE id=$1", individual, author)
+    canonical = await conn.fetchrow("SELECT name,named_by,named_at FROM individuals WHERE id=$1", individual)
+    await proposal(second_pid, c, a)
+    await resolve_proposal(second_pid, "same", author, conn)
+    assert await conn.fetchrow("SELECT name,named_by,named_at FROM individuals WHERE id=$1", individual) == canonical
+    assert await conn.fetchval("SELECT count(*) FROM individual_names") == 4
+    assert await conn.fetch("SELECT * FROM individual_names WHERE id=ANY($1::uuid[]) ORDER BY id", [r["id"] for r in names]) == names
+    assert await conn.fetchval("SELECT status FROM individual_names WHERE id=$1", active) == "active"

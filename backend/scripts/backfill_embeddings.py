@@ -63,7 +63,8 @@ PENDING_SQL = """
     FROM photos p
     LEFT JOIN embeddings e
            ON e.photo_id = p.id AND e.model = $1
-    WHERE e.id IS NULL OR e.vec_miew IS NULL
+    WHERE p.capture_id IS NULL
+      AND (e.id IS NULL OR e.vec_miew IS NULL)
     ORDER BY p.created_at
 """
 

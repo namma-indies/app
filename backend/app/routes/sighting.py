@@ -10,6 +10,8 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
 from app.auth.deps import require_observer
+from app.config import settings
+from app.media_jobs import MAX_PHOTOS, enqueue
 from app.deps import get_storage
 from app.ids import uuid7
 from app.photos import process_photo, ProcessedPhoto, thumb_key
@@ -226,6 +228,17 @@ async def _save_animal_confidence(pool: asyncpg.Pool, sighting_id: UUID) -> None
         )
 
 
+async def _read_bounded(upload: UploadFile, maximum: int) -> bytes:
+    data = bytearray()
+    while chunk := await upload.read(min(1024 * 1024, maximum + 1 - len(data))):
+        data.extend(chunk)
+        if len(data) > maximum:
+            raise HTTPException(413, "media upload exceeds size limit")
+    if not data:
+        raise HTTPException(422, "empty media upload")
+    return bytes(data)
+
+
 @router.post("/sighting")
 async def create_sighting(
     background_tasks: BackgroundTasks,
@@ -292,12 +305,17 @@ async def create_sighting(
     if client_token:
         async with pool.acquire() as conn:
             existing = await conn.fetchrow(
-                "SELECT s.id, array_agg(p.id ORDER BY p.created_at, p.id) AS photo_ids "
+                "SELECT s.id, s.processing_state, array_agg(p.id ORDER BY p.created_at, p.id) AS photo_ids "
                 "FROM sightings s LEFT JOIN photos p ON p.sighting_id = s.id "
                 "WHERE s.client_token = $1 AND s.observer_id = $2 "
                 "GROUP BY s.id",
                 client_token, observer_id,
             )
+        if existing is None:
+            async with pool.acquire() as conn:
+                capture = await conn.fetchrow("SELECT id,processing_state FROM captures WHERE observer_id=$1 AND client_token=$2", observer_id, client_token)
+            if capture is not None:
+                raise HTTPException(409, {"capture_id": str(capture["id"]), "processing_state": capture["processing_state"], "message": "upload already accepted by /capture; poll its status"})
         if existing is not None:
             logger.info(
                 "duplicate submission for client_token=%s; returning sighting=%s",
@@ -309,6 +327,7 @@ async def create_sighting(
                     "sighting_id": str(existing["id"]),
                     "photo_ids": [str(i) for i in (existing["photo_ids"] or []) if i],
                     "duplicate": True,
+                    "processing_state": existing["processing_state"],
                 },
             )
 
@@ -334,7 +353,11 @@ async def create_sighting(
 
     processed_frames: list[ProcessedPhoto]
     raw_video: bytes | None = None
-    if video is not None:
+    if video is not None and settings.media_jobs_enabled:
+        raw_video = await _read_bounded(video, settings.media_max_video_bytes)
+        processed_frames = []
+        raws = []
+    elif video is not None:
         # Read once into a variable: an UploadFile is a stream, so reading it a
         # second time yields b"" -- and the clip is now needed twice, for frame
         # extraction and for storage.
@@ -360,7 +383,12 @@ async def create_sighting(
         # Read once. An UploadFile is a stream: reading it a second time yields
         # b"", so `raws` has to be the single source for both the stored photo
         # and the background tasks.
-        raws = [await f.read() for f in photos]
+        if settings.media_jobs_enabled:
+            if len(photos) > MAX_PHOTOS:
+                raise HTTPException(422, f"at most {MAX_PHOTOS} photos allowed")
+            raws = [await _read_bounded(f, settings.media_max_photo_bytes) for f in photos]
+        else:
+            raws = [await f.read() for f in photos]
         # Off the event loop. process_photo is pure CPU -- EXIF strip, a
         # full-resolution WebP encode, a thumbnail and a phash -- and running it
         # inline blocks every other request for its duration. That is
@@ -418,6 +446,8 @@ async def create_sighting(
         try:
             await storage.put(clip_key, raw_video, video.content_type or "video/mp4")
         except Exception:
+            if settings.media_jobs_enabled:
+                raise HTTPException(503, "clip storage unavailable; retry upload")
             # Same contract as every other optional step here: never lose the
             # sighting over it. The frames are already stored and are what
             # matching uses; a missing clip costs re-processing later, not the
@@ -505,7 +535,12 @@ async def create_sighting(
                         row["phash"],
                     )
 
-            if clip_key is not None:
+                if settings.media_jobs_enabled:
+                    if clip_key is not None:
+                        await conn.execute("UPDATE sightings SET clip_s3_key=$1 WHERE id=$2", clip_key, sighting_id)
+                    await enqueue(conn, sighting_id, "video" if video is not None else "photo")
+
+            if clip_key is not None and not settings.media_jobs_enabled:
                 # A follow-up UPDATE rather than a column in both INSERT
                 # variants: they differ only in whether a geography is
                 # supplied, and adding the same field to each is two places to
@@ -528,12 +563,16 @@ async def create_sighting(
         # pre-check would have.
         async with pool.acquire() as conn:
             winner = await conn.fetchrow(
-                "SELECT s.id, array_agg(p.id ORDER BY p.created_at, p.id) AS photo_ids "
+                "SELECT s.id, s.processing_state, array_agg(p.id ORDER BY p.created_at, p.id) AS photo_ids "
                 "FROM sightings s LEFT JOIN photos p ON p.sighting_id = s.id "
                 "WHERE s.client_token = $1 AND s.observer_id = $2 GROUP BY s.id",
                 client_token, observer_id,
             )
         if winner is None:
+            async with pool.acquire() as conn:
+                capture = await conn.fetchrow("SELECT id,processing_state FROM captures WHERE observer_id=$1 AND client_token=$2", observer_id, client_token)
+            if capture is not None:
+                raise HTTPException(409, {"capture_id": str(capture["id"]), "processing_state": capture["processing_state"], "message": "upload already accepted by /capture; poll its status"})
             raise
         logger.info(
             "concurrent duplicate for client_token=%s; returning sighting=%s",
@@ -545,23 +584,26 @@ async def create_sighting(
                 "sighting_id": str(winner["id"]),
                 "photo_ids": [str(i) for i in (winner["photo_ids"] or []) if i],
                 "duplicate": True,
+                "processing_state": winner["processing_state"],
             },
         )
 
     # One task, one detection pass per photo. This was two tasks racing over
     # the same bytes with two yolo26x forward passes; see _analyse_and_save.
-    background_tasks.add_task(
-        _analyse_and_save,
-        request.app.state.pool,
-        sighting_id,
-        [r["id"] for r in photo_rows],
-        raws,
-    )
+    if not settings.media_jobs_enabled:
+        background_tasks.add_task(
+            _analyse_and_save,
+            request.app.state.pool,
+            sighting_id,
+            [r["id"] for r in photo_rows],
+            raws,
+        )
 
     return JSONResponse(
         status_code=201,
         content={
             "sighting_id": str(sighting_id),
             "photo_ids": [str(r["id"]) for r in photo_rows],
+            "processing_state": "queued" if settings.media_jobs_enabled else "legacy",
         },
     )

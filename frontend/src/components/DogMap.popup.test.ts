@@ -1,11 +1,50 @@
 import { describe, expect, it } from "vitest";
-import { esc, popupHtml } from "./DogMap";
+import { colocatedGroups, esc, overlapPopupHtml, popupHtml } from "./DogMap";
+import type { MappableSighting } from "../api";
+
+describe("co-located observations", () => {
+  const sightings: MappableSighting[] = ["one", "two"].map((id) => ({ id, lat: 12.97, lng: 77.59, captured_at: "2026-09-15T12:00:00Z", attrs: { note: `<${id}>` }, photos: [{ thumb_url: `${id}.webp` }], observer: id, mine: false, precision: "area", cell_m: 1000 }));
+  it("groups exact coordinate overlaps without altering coordinates", () => {
+    const original = JSON.stringify(sightings);
+    const groups = colocatedGroups([...sightings, { ...sightings[0], id: "nearby", lat: 12.97001 }]);
+    expect([...groups.values()].map((g) => g.length)).toEqual([2, 1]);
+    expect(JSON.stringify(sightings)).toBe(original);
+  });
+  it("makes every sibling individually expandable, preserving privacy and report targets", () => {
+    const html = overlapPopupHtml(sightings);
+    expect(html.match(/<details>/g)).toHaveLength(2);
+    expect(html).toContain('data-report="one"');
+    expect(html).toContain('data-report="two"');
+    expect(html.match(/somewhere in this ~1 km area/g)).toHaveLength(2);
+    expect(html).toContain("&lt;one&gt;");
+    expect(html).not.toContain("<one>");
+  });
+});
 
 // The popup is built as an HTML string and handed to setHTML(), so every
 // interpolated value is an injection site. The note is typed by whoever
 // logged the sighting; the photo URL and tags are server-supplied but still
 // land inside attributes. The previous version escaped only "<" in the note,
 // which stops a tag but not an attribute break-out.
+describe("processing placeholders", () => {
+  it.each([
+    ["queued", "Uploaded · waiting to process"],
+    ["processing", "Uploaded · processing media"],
+    ["failed", "Processing failed · upload saved"],
+    ["no_animal", "No animal detected · matching unavailable"],
+  ])("shows %s without inventing an image or exact location", (state, label) => {
+    const html = popupHtml({ thumb: "", time: "1 Aug", tags: "", processing_state: state, precision: "area", approx_km: "1" });
+    expect(html).toContain(label);
+    expect(html).not.toContain("<img");
+    expect(html).toContain("somewhere in this ~1 km area");
+  });
+  it("retains an existing image alongside processing failure", () => {
+    const html = popupHtml({ thumb: "https://example.test/photo.webp", time: "1 Aug", processing_state: "failed" });
+    expect(html).toContain('<img src="https://example.test/photo.webp"');
+    expect(html).toContain("Processing failed");
+  });
+});
+
 describe("popup escaping", () => {
   it("escapes the characters that break out of text and attributes", () => {
     expect(esc(`<b>&"'`)).toBe("&lt;b&gt;&amp;&quot;&#39;");

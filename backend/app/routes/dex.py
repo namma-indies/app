@@ -42,6 +42,9 @@ async def get_dex(
             s.geo_accuracy_m,
             s.attrs,
             s.review_status,
+            s.processing_state,
+            s.capture_id,
+            s.species,
             {animal_present()} AS animal_ok,
             p.id AS photo_id,
             p.s3_key
@@ -76,6 +79,9 @@ async def get_dex(
                 # reasons that can both be true; a person acting is the more
                 # useful one to hear, so it wins.
                 "review_status": row["review_status"],
+                "processing_state": row["processing_state"],
+                "capture_id": str(row["capture_id"]) if row["capture_id"] else None,
+                "species": row["species"],
                 "on_map": _on_map(row),
                 "off_map_reason": _off_map_reason(row),
                 "photos": [],

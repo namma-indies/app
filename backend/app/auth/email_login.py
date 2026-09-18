@@ -42,9 +42,12 @@ async def get_or_create_observer_by_email(
 # Every column anywhere in the schema that points at an observer. A merge has
 # to move all of them -- miss one and retiring the absorbed row orphans data.
 _OBSERVER_REFS = (
+    ("captures", "observer_id"),
     ("sightings", "observer_id"),
     ("individuals", "named_by"),
     ("individuals", "created_by_observer"),
+    ("individual_names", "proposed_by"),
+    ("individual_names", "resolved_by"),
     ("match_proposals", "resolved_by"),
     ("confirmations", "observer_id"),
     ("observers", "created_by_observer"),

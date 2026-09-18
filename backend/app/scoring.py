@@ -1,7 +1,7 @@
 """Persisting what the detector saw, and the one number the surfaces read.
 
 Three code paths analyse a photo -- the capture route, the rescore script,
-and (once #64 lands) the GPU worker's completion handler. All three write the
+and the GPU worker's completion handler. All three write the
 same two things, so both writes live here rather than being restated three
 times and drifting.
 
@@ -16,7 +16,9 @@ from uuid import UUID
 from app.detect_reid import DETECTOR_NAME
 
 
-async def save_detection(conn, photo_id: UUID, dog: float, cat: float) -> None:
+async def save_detection(
+    conn, photo_id: UUID, dog: float, cat: float, *, model: str = DETECTOR_NAME,
+) -> None:
     """Record what the current detector saw in one photo.
 
     An upsert, not an insert: the backfill is re-runnable by design, and a
@@ -32,7 +34,7 @@ async def save_detection(conn, photo_id: UUID, dog: float, cat: float) -> None:
                 created_at = now()
         """,
         photo_id,
-        DETECTOR_NAME,
+        model,
         float(dog),
         float(cat),
     )

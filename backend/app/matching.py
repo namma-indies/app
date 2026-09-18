@@ -148,6 +148,14 @@ async def find_candidates(
                   -- embedding, for a frame the map would not show.
                   AND {animal_present()}
                   AND ({p_excl}::uuid IS NULL OR s.id <> {p_excl}::uuid)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM sightings query WHERE query.id={p_excl}::uuid
+                      AND ((query.species IS NOT NULL AND s.species IS NOT NULL AND query.species<>s.species)
+                          OR (query.capture_id=s.capture_id)
+                          OR EXISTS (SELECT 1 FROM sightings sibling
+                              WHERE sibling.capture_id=query.capture_id AND sibling.id<>query.id
+                              AND sibling.individual_id=s.individual_id AND s.individual_id IS NOT NULL))
+                  )
                   {geo_filter}
                 ORDER BY e.vec_miew::halfvec({EMBED_DIM}) <=> q.v::halfvec({EMBED_DIM})
                 LIMIT {ANN_SHORTLIST}
@@ -216,7 +224,32 @@ class MatchOutcome:
     suggest_video: bool = False
 
 
-async def resolve_sighting(
+async def lock_matching(conn):
+    # A coarse transaction lock is intentional at pilot scale: a verdict can
+    # affect two sightings and an individual, including a resolver's candidate.
+    await conn.execute("SELECT pg_advisory_xact_lock(734821902)")
+
+
+async def ensure_compatible_observations(conn, sighting_ids):
+    """Prevent indirect identity links from undoing capture-local separation."""
+    from fastapi import HTTPException
+    conflict = await conn.fetchval("""WITH involved AS (
+        SELECT * FROM sightings WHERE id=ANY($1::uuid[]) OR individual_id IN (
+            SELECT individual_id FROM sightings WHERE id=ANY($1::uuid[]) AND individual_id IS NOT NULL)
+        ) SELECT EXISTS(SELECT 1 FROM involved a JOIN involved b ON a.id<b.id
+            WHERE (a.species IS NOT NULL AND b.species IS NOT NULL AND a.species<>b.species)
+            OR (a.capture_id IS NOT NULL AND a.capture_id=b.capture_id))""",sighting_ids)
+    if conflict:
+        raise HTTPException(409,"identity would combine separated animals or incompatible species")
+
+
+async def resolve_sighting(conn, sighting_id, **kwargs):
+    async with conn.transaction():
+        await lock_matching(conn)
+        return await _resolve_sighting(conn, sighting_id, **kwargs)
+
+
+async def _resolve_sighting(
     conn: asyncpg.Connection,
     sighting_id: UUID,
     *,
@@ -347,7 +380,8 @@ async def resolve_sighting(
 
     best = cands[0]
 
-    if best.similarity >= auto_merge_min and best.individual_id is not None:
+    is_multi = await conn.fetchval("SELECT EXISTS(SELECT 1 FROM animal_instances WHERE sighting_id=$1)", sighting_id)
+    if not is_multi and best.similarity >= auto_merge_min and best.individual_id is not None:
         await conn.execute(
             "UPDATE sightings SET individual_id=$2, match_status='confirmed' "
             "WHERE id=$1",

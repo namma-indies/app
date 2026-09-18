@@ -29,3 +29,9 @@ frontend/vite.config.local.ts
 frontend/.certs/
 .gstack/
 frontend/vite.config.plainhttp.ts
+
+# Private GPU validation baseline/reports; never build or deploy these as recipes.
+deploy/dgx-runtime.yaml
+backend/gpu_worker/smoke-runtime-validation.txt
+# Renderer inputs/outputs should live outside this checkout; defense in depth.
+deploy/gpu-worker.private.*
