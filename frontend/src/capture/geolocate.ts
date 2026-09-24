@@ -143,3 +143,28 @@ export function howToReEnable(): string {
   }
   return "Click the padlock next to the address bar, find Location, and set it to Allow. Then reload.";
 }
+
+/**
+ * How to make iOS actually put GPS into the photo itself.
+ *
+ * A different hole from the geolocation permission above: the browser fix asks
+ * the OS "where are you", while the camera writes GPS into the file at the
+ * moment of the shot. iOS strips that metadata from photos handed to a web
+ * file input unless Location Services is on for that browser AND the precise
+ * toggle is on. Chrome on iOS is a WKWebView wrapper, so it inherits Safari's
+ * plumbing but has its own permission row in Settings — which is why the
+ * browser name has to be in the words.
+ *
+ * Shown only when a shutter capture has no place at all: it is the difference
+ * between "our bug, the file had GPS" and "Apple's toggle, the file didn't".
+ */
+export function howToEnableCameraLocation(): string {
+  const ua = typeof navigator === "undefined" ? "" : navigator.userAgent;
+  if (/iPhone|iPad|iPod/i.test(ua)) {
+    return "On iPhone, Settings › Apps › your browser (Safari, Chrome or Firefox) › Location: set it to While Using the App, and turn Precise Location on. Then reload — new photos will carry their own place again.";
+  }
+  if (/Android/i.test(ua)) {
+    return "On Android, Settings › Apps › your browser › Permissions › Location: allow it. New photos will carry their own place again.";
+  }
+  return "In your browser settings, allow Location for this site. Then reload.";
+}

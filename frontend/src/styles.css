@@ -881,6 +881,19 @@ button { font-family: inherit; }
 }
 .place-warning { margin: 2px 0 8px; color: var(--terra-dark, #a44a2b); }
 
+/* The placeless-save confirm (#82): the first LOG IT press on a live capture
+   with no place lands here instead of saving. Dashed, like the empty place
+   row, so it reads as "incomplete" rather than a separate dialog. */
+.placeless-confirm {
+  margin: 6px 0 2px;
+  padding: 10px 12px;
+  border: 1px dashed var(--terra-dark, #a44a2b);
+  border-radius: 12px;
+  background: #fffdf8;
+}
+.placeless-confirm .hint { margin: 0 0 6px; }
+.placeless-confirm .hint:last-child { margin-bottom: 0; }
+
 .location-picker {
   width: min(460px, 94vw);
   max-height: 90dvh;
