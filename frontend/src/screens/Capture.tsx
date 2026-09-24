@@ -20,11 +20,10 @@ import { chooseFromGalleryIfNative, isNative, takePhotoIfNative,
 } from "../capture/takePhoto";
 import {
   originFromExif,
-  originFromPerson,
   resolveCapturedAt,
   type ImportOrigin,
 } from "../capture/importOrigin";
-import { locate } from "../capture/geolocate";
+import { howToEnableCameraLocation, locate } from "../capture/geolocate";
 import LocationPicker, { type PickedPlace } from "../components/LocationPicker";
 
 const MAX_PHOTOS = 5;
@@ -116,6 +115,9 @@ export default function Capture() {
   const [asking, setAsking] = useState<{ file: File; md: PhotoMetadata; request: number } | null>(null);
   const importRequest = useRef(0);
   const locationRequest = useRef(0);
+  // Bumps on reset and when a new shutter photo replaces the metadata read, so
+  // a slow preflight for a removed photo can't write into the next capture.
+  const shutterRequest = useRef(0);
   // Where this sighting happened, resolved BEFORE submit rather than during it.
   // The old code called for a fix inside submit(), so a slow lock looked like
   // the save had hung -- and when it timed out the sighting saved with no
@@ -124,6 +126,23 @@ export default function Capture() {
   const [locating, setLocating] = useState(false);
   const [geoFailed, setGeoFailed] = useState(false);
   const [picking, setPicking] = useState(false);
+  // What the shutter photo's OWN file says about where and when. The import
+  // path always read this; the shutter path used to throw it away and only
+  // ask the browser for a live fix, so a phone photo carrying its own GPS
+  // (the normal case on a camera with Location on) saved placeless. #82.
+  // `null` = nothing read yet; a resolved value (even NO_METADATA) is kept so
+  // the file's date/place can override the live clock and fix in submit().
+  const [shutterMd, setShutterMd] = useState<PhotoMetadata | null>(null);
+  // A live capture that ends up with no place at all (file had none, the
+  // browser fix failed) must not save silently — the person confirms the
+  // placeless save instead of it being the default.
+  const [confirmingPlaceless, setConfirmingPlaceless] = useState(false);
+  // True once the shutter file's own EXIF GPS is in hand. A placeless-save
+  // confirm is only warranted when neither the file nor the browser fix gave
+  // us a coordinate.
+  const shutterMdHasLocation = !!(
+    shutterMd && shutterMd.has_location && shutterMd.lat != null && shutterMd.lng != null
+  );
 
   const toastTimer = useRef<ReturnType<typeof setTimeout>>();
   function showToast(msg: string) {
@@ -173,10 +192,46 @@ export default function Capture() {
     });
   }
 
+  /**
+   * The shutter path's half of #82: a photo taken through the camera carries
+   * its OWN GPS and date in EXIF, and that stamp is strictly better than a
+   * browser fix — it records where the shot was actually taken, not where the
+   * browser thinks the phone is. So read it the way the import path does.
+   *
+   * Precedence when they disagree (documenting the open question in the issue):
+   * the file wins over the live fix, matching #22. A live capture is
+   * "now", and the camera's own stamp is the most accurate record of where
+   * "now" was. A place the person sets by hand still beats both — that is an
+   * explicit assertion, not a measurement.
+   *
+   * The read is best-effort: it resolves to NO_METADATA when offline or on a
+   * server error, so a flaky street connection cannot strand a live capture.
+   * That is the same guarantee the import path already has.
+   */
+  function readShutterMetadata(f: File) {
+    const request = ++shutterRequest.current;
+    void readPhotoMetadata(f)
+      .then((md) => {
+        if (request !== shutterRequest.current) return;
+        setShutterMd(md);
+        if (md.has_location && md.lat != null && md.lng != null) {
+          // The file knew where. Use it and stop asking the browser: a live
+          // fix that lands after this must not override the file's own stamp.
+          setPlace({ lat: md.lat, lng: md.lng, source: "pin" });
+          setLocating(false);
+          setGeoFailed(false);
+        }
+      })
+      .catch(() => {
+        if (request === shutterRequest.current) setShutterMd(NO_METADATA);
+      });
+  }
+
   function addPhoto(f: File) {
     importRequest.current++;
     setAsking(null);
     setOrigin(null);
+    readShutterMetadata(f);
     beginLocating();
     setPhotos((prev) => (prev.length >= MAX_PHOTOS ? prev : [...prev, f]));
     setPreviewUrls((prev) =>
@@ -194,6 +249,7 @@ export default function Capture() {
 
   function acceptVideo(f: File) {
     importRequest.current++;
+    shutterRequest.current++;
     setAsking(null);
     beginLocating();
     previewUrls.forEach((url) => URL.revokeObjectURL(url));
@@ -202,7 +258,9 @@ export default function Capture() {
     if (videoUrl) URL.revokeObjectURL(videoUrl);
     setVideo(f);
     setVideoUrl(URL.createObjectURL(f));
-    // A clip is a live capture; it must not inherit an import's date and place.
+    // A clip is a live capture; it must not inherit a shutter photo's EXIF
+    // date and place either (a clip carries no EXIF GPS we trust).
+    setShutterMd(null);
     setOrigin(null);
   }
 
@@ -350,6 +408,7 @@ export default function Capture() {
   function reset() {
     importRequest.current++;
     locationRequest.current++;
+    shutterRequest.current++;
     setLocating(false);
     previewUrls.forEach((url) => URL.revokeObjectURL(url));
     setPhotos([]);
@@ -361,6 +420,8 @@ export default function Capture() {
     if (importRef.current) importRef.current.value = "";
     setOrigin(null);
     setAsking(null);
+    setShutterMd(null);
+    setConfirmingPlaceless(false);
     setPlace(null);
     setGeoFailed(false);
     setPicking(false);
@@ -374,7 +435,22 @@ export default function Capture() {
 
   async function submit() {
     if (photos.length === 0 && !video) return;
+
+    // A live capture with no place at all — the file had none and the browser
+    // fix failed or is still pending — must not save silently. It would land on
+    // the map as invisible (the /map filter is geog IS NOT NULL), the exact loss
+    // #82 is about. So the first LOG IT press surfaces a confirm step instead of
+    // saving. This is "saved-and-flagged", not "blocked": on iOS the camera file
+    // input keeps no camera-roll copy, so refusing the save would lose the photo
+    // entirely — the same reason the capture-time gate was reverted in migration
+    // 0002. The person can still choose to save it placeless.
+    const wouldSavePlaceless = !origin && !place && !locating && !shutterMdHasLocation;
+    if (wouldSavePlaceless && !confirmingPlaceless) {
+      setConfirmingPlaceless(true);
+      return;
+    }
     setSubmitting(true);
+    setConfirmingPlaceless(false);
 
     // An imported photo brought its own when and where. Asking the device again
     // would overwrite them with here-and-now -- and `captured_at`/`geog` are
@@ -388,6 +464,16 @@ export default function Capture() {
     if (origin) {
       ({ captured_at: capturedAt, lat, lng, geo_accuracy_m: accuracy } = origin);
       geoSource = origin.geo_source;
+    } else if (shutterMd && shutterMd.has_location && shutterMd.lat != null && shutterMd.lng != null) {
+      // The shutter photo carried its own GPS. Use the file's own stamp — a
+      // camera's record of where "now" was — rather than the client clock and
+      // the browser fix, which is where #82's silent placeless saves came from.
+      const exifAt = resolveCapturedAt(shutterMd.captured_at_local, shutterMd.utc_offset_minutes);
+      capturedAt = exifAt ?? new Date().toISOString();
+      lat = shutterMd.lat;
+      lng = shutterMd.lng;
+      accuracy = undefined; // EXIF carries no accuracy worth trusting.
+      geoSource = "exif";
     } else {
       capturedAt = new Date().toISOString();
       // Already resolved, or deliberately left empty. Never acquired here:
@@ -600,12 +686,27 @@ export default function Capture() {
               <span className="place-action">{place ? "change" : "set"}</span>
             </button>
           )}
-          {!origin && !place && !locating && (
+          {!origin && !place && !locating && !confirmingPlaceless && (
             /* Said plainly, because the consequence is invisible otherwise: it
                saves fine and then is missing from every map with no error. */
             <p className="hint place-warning">
               Without a place this sighting won't appear on the map.
             </p>
+          )}
+
+          {/* The placeless-save confirm. The first LOG IT press on a live
+              capture with no place lands here instead of saving, so the loss
+              is a choice the person makes, not a default. #82. The primary
+              button below relabels to LOG WITHOUT A PLACE; the place row above
+              is still tappable to set one instead. */}
+          {!origin && confirmingPlaceless && !place && (
+            <div className="placeless-confirm" role="alertdialog">
+              <p className="hint place-warning">
+                This sighting has no place. It will save, but it won't appear
+                on the map.
+              </p>
+              <p className="hint">{howToEnableCameraLocation()}</p>
+            </div>
           )}
 
           <div className="note-field">
@@ -652,7 +753,13 @@ export default function Capture() {
               onClick={() => submit()}
               disabled={submitting}
             >
-              {submitting ? <span className="spinner" /> : "LOG IT"}
+              {submitting ? (
+                <span className="spinner" />
+              ) : confirmingPlaceless ? (
+                "LOG WITHOUT A PLACE"
+              ) : (
+                "LOG IT"
+              )}
             </button>
           </div>
         </>

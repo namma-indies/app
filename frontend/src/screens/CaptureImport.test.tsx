@@ -155,12 +155,18 @@ describe("gallery clips", () => {
   });
 
   it("removing an imported clip clears its metadata before a live capture", async () => {
+    // The live capture that follows the removed clip has no EXIF and no fix,
+    // so it is a placeless save that needs the explicit confirm (#82).
+    readPhotoMetadata.mockResolvedValue(NOTHING);
     render(<Capture />);
     await importFile(clip());
     await confirmTime();
     await userEvent.click(screen.getByText("Remove clip"));
     await userEvent.upload(screen.getByLabelText("capture photo"), oldPhoto("live.jpg"));
     await userEvent.click(screen.getByText("LOG IT"));
+    expect(enqueue).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByText("LOG WITHOUT A PLACE"));
+    await waitFor(() => expect(enqueue).toHaveBeenCalled());
     const sent = vi.mocked(enqueue).mock.calls[0][0];
     expect(sent.video).toBeUndefined();
     expect(Date.now() - new Date(sent.captured_at).getTime()).toBeLessThan(60_000);
@@ -415,16 +421,113 @@ describe("camera-roll import: the photo's own date and place", () => {
     expect(screen.getByText("SPOT AN INDIE")).toBeInTheDocument();
   });
 
-  it("a live camera capture is unaffected — still here and now", async () => {
+  it("a live camera capture with no EXIF is still here and now", async () => {
+    // The shutter path now reads the photo's own EXIF too (#82), but this file
+    // carries nothing and no fix is available, so the capture is a placeless
+    // save that needs the explicit confirm — and it still lands here-and-now.
+    readPhotoMetadata.mockResolvedValue(NOTHING);
     render(<Capture />);
     const input = screen.getByLabelText("capture photo") as HTMLInputElement;
     await userEvent.upload(input, oldPhoto("live.jpg"));
     await userEvent.click(screen.getByText("LOG IT"));
+    expect(enqueue).not.toHaveBeenCalled(); // no place → confirm first
+    await userEvent.click(screen.getByText("LOG WITHOUT A PLACE"));
 
     await waitFor(() => expect(enqueue).toHaveBeenCalled());
     const sent = vi.mocked(enqueue).mock.calls[0][0];
     expect(sent.geo_source).toBe("none"); // no geolocation stubbed in this test
     expect(Date.now() - +new Date(sent.captured_at)).toBeLessThan(60_000);
-    expect(readPhotoMetadata).not.toHaveBeenCalled();
+    expect(readPhotoMetadata).toHaveBeenCalled();
+  });
+});
+
+describe("shutter capture: the photo's own EXIF (#82)", () => {
+  function uploadShutterPhoto(name = "live.jpg") {
+    const input = screen.getByLabelText("capture photo") as HTMLInputElement;
+    return userEvent.upload(input, new File(["x"], name, { type: "image/jpeg" }));
+  }
+
+  it("uses the shutter photo's own GPS and date, not a live fix", async () => {
+    // No geolocation stubbed at all: the only place that can come from is the
+    // file itself. This is the exact loss #82 reports — a phone photo carrying
+    // its own GPS saving placeless.
+    readPhotoMetadata.mockResolvedValue(FULL_EXIF);
+    render(<Capture />);
+
+    await uploadShutterPhoto();
+
+    // The file answered, so no placeless confirm is offered.
+    expect(screen.queryByText("LOG WITHOUT A PLACE")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByText("LOG IT"));
+    await waitFor(() => expect(enqueue).toHaveBeenCalled());
+    const input = vi.mocked(enqueue).mock.calls[0][0];
+
+    expect(input.geo_source).toBe("exif");
+    expect(input.lat).toBeCloseTo(12.9352, 5);
+    expect(input.lng).toBeCloseTo(77.6245, 5);
+    // 18:42:11 +05:30 == 13:12:11Z. The camera's own stamp, not "now".
+    expect(input.captured_at).toBe("2026-08-05T13:12:11.000Z");
+  });
+
+  it("the file's GPS wins when a live fix also arrives", async () => {
+    // #22's argument, confirmed for the shutter: a live capture is "now", and
+    // the camera's own stamp is the most accurate record of where "now" was.
+    readPhotoMetadata.mockResolvedValue(FULL_EXIF);
+    Object.defineProperty(navigator, "geolocation", {
+      value: {
+        getCurrentPosition: (ok: PositionCallback) =>
+          ok({ coords: { latitude: 9.9, longitude: 79.9, accuracy: 5 } } as GeolocationPosition),
+      },
+      configurable: true,
+    });
+    render(<Capture />);
+    await uploadShutterPhoto();
+
+    await userEvent.click(screen.getByText("LOG IT"));
+    await waitFor(() => expect(enqueue).toHaveBeenCalled());
+    const input = vi.mocked(enqueue).mock.calls[0][0];
+    expect(input.geo_source).toBe("exif");
+    expect(input.lat).toBeCloseTo(12.9352, 5);
+  });
+
+  it("offers a placeless confirm when the file has no GPS and no fix is available", async () => {
+    readPhotoMetadata.mockResolvedValue(NOTHING);
+    render(<Capture />);
+    await uploadShutterPhoto();
+
+    // No fix (geolocation is undefined in beforeEach) and no file GPS, so the
+    // first LOG IT press must not save — it surfaces the confirm instead.
+    await userEvent.click(screen.getByText("LOG IT"));
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+    expect(screen.getByText("LOG WITHOUT A PLACE")).toBeInTheDocument();
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("saves placeless only after the person confirms", async () => {
+    readPhotoMetadata.mockResolvedValue(NOTHING);
+    render(<Capture />);
+    await uploadShutterPhoto();
+
+    await userEvent.click(screen.getByText("LOG IT"));
+    expect(enqueue).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByText("LOG WITHOUT A PLACE"));
+
+    await waitFor(() => expect(enqueue).toHaveBeenCalled());
+    const input = vi.mocked(enqueue).mock.calls[0][0];
+    expect(input.geo_source).toBe("none");
+    expect(input.lat).toBeUndefined();
+    expect(input.lng).toBeUndefined();
+  });
+
+  it("shows concrete iOS location instructions on the placeless confirm", async () => {
+    readPhotoMetadata.mockResolvedValue(NOTHING);
+    vi.stubGlobal("navigator", { ...navigator, userAgent: "iPhone; CPU iPhone OS 18_0" });
+    render(<Capture />);
+    await uploadShutterPhoto();
+    await userEvent.click(screen.getByText("LOG IT"));
+
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+    expect(screen.getByText(/Precise Location on/)).toBeInTheDocument();
   });
 });

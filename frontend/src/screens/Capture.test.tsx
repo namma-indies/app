@@ -19,6 +19,15 @@ vi.mock("../capture/takePhoto", () => ({
 }));
 
 vi.mock("../captureApi", () => ({ multiAnimalIntakeAvailable: vi.fn() }));
+
+// The shutter path now reads the photo's own EXIF (#82). These tests drive the
+// shutter with files that carry nothing, so the read must resolve to
+// NO_METADATA (offline shape) rather than the real network call.
+const readPhotoMetadata = vi.fn();
+vi.mock("../api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api")>();
+  return { ...actual, readPhotoMetadata: (f: Blob) => readPhotoMetadata(f) };
+});
 import { multiAnimalIntakeAvailable } from "../captureApi";
 import { enqueue, flush } from "../offline/queue";
 import { takePhotoIfNative } from "../capture/takePhoto";
@@ -34,6 +43,18 @@ beforeEach(() => {
   vi.mocked(multiAnimalIntakeAvailable).mockReset().mockResolvedValue(false);
   vi.mocked(enqueue).mockReset().mockResolvedValue(undefined);
   vi.mocked(flush).mockReset().mockResolvedValue(undefined);
+  readPhotoMetadata.mockReset();
+  // A shutter photo in these tests has no EXIF GPS, so a live capture with no
+  // geolocation stubbed is a placeless save — the first LOG IT press surfaces
+  // the confirm (#82) and a second press is what actually saves.
+  readPhotoMetadata.mockResolvedValue({
+    captured_at_local: null,
+    utc_offset_minutes: null,
+    lat: null,
+    lng: null,
+    has_date: false,
+    has_location: false,
+  });
   // Default to the web/no-native-camera outcome so existing tests (which
   // drive the hidden file input directly) are unaffected.
   vi.mocked(takePhotoIfNative).mockReset().mockResolvedValue(null);
@@ -46,6 +67,16 @@ beforeEach(() => {
   Object.defineProperty(URL, "revokeObjectURL", { value: () => {}, writable: true });
 });
 
+// A live capture with no place now requires an explicit confirm before it
+// saves (#82). These tests don't care about the place, so press the confirm
+// if the first LOG IT didn't save immediately.
+async function logItAndSave() {
+  await userEvent.click(screen.getByRole("button", { name: /LOG IT/ }));
+  const confirm = screen.queryByText("LOG WITHOUT A PLACE");
+  if (confirm) await userEvent.click(confirm);
+  await waitFor(() => expect(enqueue).toHaveBeenCalled());
+}
+
 describe("multi-animal intake", () => {
   it.each([false, true])("persists the chosen endpoint when capability is %s", async (enabled) => {
     vi.mocked(multiAnimalIntakeAvailable).mockResolvedValue(enabled);
@@ -57,7 +88,7 @@ describe("multi-animal intake", () => {
     } else {
       expect(screen.getByRole("button", { name: /tell us more/ })).toBeInTheDocument();
     }
-    await userEvent.click(screen.getByRole("button", { name: /LOG IT/ }));
+    await logItAndSave();
     await waitFor(() => expect(enqueue).toHaveBeenCalledOnce());
     expect(vi.mocked(enqueue).mock.calls[0][0].upload_endpoint).toBe(enabled ? "capture" : "sighting");
   });
@@ -73,7 +104,7 @@ describe("upload acknowledgement", () => {
   it("separates saving on the device from server processing", async () => {
     render(<Capture />);
     await userEvent.upload(screen.getByLabelText("capture photo"), makePhoto("one.jpg"));
-    await userEvent.click(screen.getByRole("button", { name: /LOG IT/ }));
+    await logItAndSave();
     await waitFor(() => expect(screen.getByText("Saved on this device · waiting to upload")).toBeInTheDocument());
     act(() => window.dispatchEvent(new CustomEvent(UPLOAD_COMPLETE_EVENT, { detail: { sighting_id: "q", photo_ids: [], processing_state: "queued" } })));
     expect(screen.getByText("Uploaded · waiting to process")).toBeInTheDocument();
@@ -165,7 +196,7 @@ describe("burst photo capture", () => {
 
     await userEvent.upload(input, makePhoto("one.jpg"));
     await userEvent.upload(input, makePhoto("two.jpg"));
-    await userEvent.click(screen.getByText("LOG IT"));
+    await logItAndSave();
 
     await waitFor(() => expect(enqueue).toHaveBeenCalledTimes(1));
     const sentPhotos = vi.mocked(enqueue).mock.calls[0][0].photos as File[];
