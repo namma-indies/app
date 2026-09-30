@@ -483,6 +483,73 @@ export async function ruleOnAnimal(
   await handle<unknown>(res);
 }
 
+export type AnimalAuditFilter = "all" | "needs_review" | "reviewed" | "no_detection";
+export type AnimalAuditKind = "sighting" | "capture";
+
+export interface AnimalAuditItem {
+  id: string;
+  kind: AnimalAuditKind;
+  captured_at: string;
+  processing_state: string;
+  animal_override: boolean | null;
+  dog: number | null;
+  cat: number | null;
+  thumb_url: string | null;
+}
+
+export interface AnimalAuditEvidence {
+  id: string;
+  evidence_kind: "source" | "crop";
+  photo_url: string;
+  thumb_url: string;
+  width: number;
+  height: number;
+  dog: number | null;
+  cat: number | null;
+  model: string | null;
+  /** Pixel coordinates relative to this displayed source or crop image. */
+  boxes: { bbox: [number, number, number, number]; species: string; confidence: number }[];
+}
+
+export interface AnimalAuditDetail extends AnimalAuditItem {
+  evidence: AnimalAuditEvidence[];
+  clip_url: string | null;
+}
+
+export interface AnimalAuditPage {
+  items: AnimalAuditItem[];
+  next_cursor: string | null;
+}
+
+export async function getAnimalAudit(
+  filter: AnimalAuditFilter,
+  before?: string | null,
+  signal?: AbortSignal,
+): Promise<AnimalAuditPage> {
+  const query = new URLSearchParams({ filter, limit: "20" });
+  if (before) query.set("before", before);
+  return handle<AnimalAuditPage>(await fetch(`${API_BASE}/moderation/animal-audit?${query}`, {
+    credentials: "include", signal,
+  }));
+}
+
+export async function getAnimalAuditDetail(
+  kind: AnimalAuditKind, id: string, signal?: AbortSignal,
+): Promise<AnimalAuditDetail> {
+  return handle<AnimalAuditDetail>(await fetch(
+    `${API_BASE}/moderation/animal-audit/${kind}/${encodeURIComponent(id)}`,
+    { credentials: "include", signal },
+  ));
+}
+
+export async function ruleOnCaptureAnimal(id: string, verdict: "animal" | "no_animal"): Promise<void> {
+  const form = new FormData();
+  form.append("verdict", verdict);
+  await handle<unknown>(await fetch(`${API_BASE}/moderation/animal-audit/capture/${encodeURIComponent(id)}`, {
+    method: "POST", credentials: "include", body: form,
+  }));
+}
+
 // --- stats (moderator dashboard) --------------------------------------------
 
 export interface StatsTotals {

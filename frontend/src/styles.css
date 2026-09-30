@@ -1121,6 +1121,33 @@ button { font-family: inherit; }
   color: var(--muted);
 }
 
+.animal-audit { max-width: 760px; margin: 0 auto; }
+.animal-audit p { line-height: 1.5; }
+.audit-filters { flex-wrap: wrap; margin: 1rem 0; }
+.audit-filters button { min-height: 44px; color: var(--ink); }
+.audit-list { padding: 0; }
+.audit-list .mod-meta { min-width: 0; line-height: 1.6; }
+.audit-list .btn { margin-top: 0.75rem; }
+.audit-verdict { font-weight: 700; }
+.audit-detail { padding: 1rem; border: 2px solid var(--line); background: var(--panel); }
+.audit-detail h3:focus { outline: none; }
+.audit-frame-nav { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
+.audit-frame-nav .btn { font-size: 0.6rem; min-height: 44px; }
+.audit-photo { position: relative; width: 100%; background: var(--frame); }
+.audit-photo > img { display: block; width: 100%; height: auto; }
+.audit-boxes { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.audit-box { position: absolute; border: 3px solid #ffe066; box-shadow: 0 0 0 1px #221b11; }
+.audit-box b { position: absolute; top: 0; left: 0; padding: 2px 4px; color: #221b11; background: #ffe066; font: bold 0.7rem system-ui, sans-serif; white-space: nowrap; }
+.audit-box-cat { border-color: #8dd9ff; }
+.audit-box-cat b { background: #8dd9ff; }
+.audit-box-legend { padding-left: 1.25rem; line-height: 1.6; }
+.audit-clip video { display: block; width: 100%; max-height: 70vh; }
+.audit-warning { border-left: 4px solid var(--accent); background: var(--dust); padding: 0.75rem; }
+.audit-skip { margin-top: 1rem; }
+.audit-note { font-size: 0.82rem; }
+.animal-audit button:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.animal-audit button:disabled { opacity: 0.55; cursor: default; }
+
 /* Someone who asked for less motion gets the message and nothing that moves.
    The component already skips the scene; this is the belt to that braces, and
    it also covers a browser that reports the preference after first paint. */
