@@ -205,8 +205,8 @@ export class UnauthorizedError extends Error {
 // message string, so callers (queue.ts's failure classification) don't have
 // to regex-parse prose that could change independently of this file.
 export class HttpError extends Error {
-  constructor(public status: number) {
-    super(`request failed: ${status}`);
+  constructor(public status: number, public detail?: string) {
+    super(detail ?? `request failed: ${status}`);
   }
 }
 
@@ -548,6 +548,95 @@ export async function ruleOnCaptureAnimal(id: string, verdict: "animal" | "no_an
   await handle<unknown>(await fetch(`${API_BASE}/moderation/animal-audit/capture/${encodeURIComponent(id)}`, {
     method: "POST", credentials: "include", body: form,
   }));
+}
+
+// --- match calibration (labels only, never identity decisions) ---------------
+
+export type CalibrationVerdict = "same" | "different" | "unsure";
+export interface CalibrationBatch {
+  id: string;
+  created_at: string;
+  eligible_pairs: number;
+  sampled_pairs: number;
+  policy: string;
+  model: string;
+  radius_m: number;
+}
+export interface CalibrationPair {
+  id: string;
+  score: number;
+  status: "unreviewed" | CalibrationVerdict | "conflict" | "stale";
+  my_verdict: CalibrationVerdict | null;
+}
+export interface CalibrationPhoto {
+  id: string;
+  photo_url: string;
+  thumb_url: string;
+  width: number | null;
+  height: number | null;
+  /** Pixel coordinates relative to the returned image, including crop images. */
+  bbox: [number, number, number, number] | null;
+}
+export interface CalibrationSide {
+  sighting_id: string;
+  species: string | null;
+  photos: CalibrationPhoto[];
+}
+export interface CalibrationDetail extends CalibrationPair {
+  evidence_token: string;
+  left: CalibrationSide;
+  right: CalibrationSide;
+}
+export interface CalibrationPage {
+  items: CalibrationPair[];
+  next_offset: number | null;
+}
+export interface CalibrationMetrics {
+  eligible_pairs: number;
+  sampled_pairs: number;
+  reviewed_pairs: number;
+  same: number;
+  different: number;
+  unsure: number;
+  conflict: number;
+  stale: number;
+  unreviewed: number;
+  current_threshold: number;
+  cutoffs: { threshold: number; tp: number; fp: number; fn: number; tn: number; precision: number | null; recall: number | null }[];
+  suggested_threshold: number | null;
+  suggestion_note: string;
+}
+const calibrationPath = (batch?: string, pair?: string) => `${API_BASE}/moderation/match-calibration${batch === undefined ? "" : `/${encodeURIComponent(batch)}`}${pair === undefined ? "" : `/pairs/${encodeURIComponent(pair)}`}`;
+
+export async function getCalibrationBatches(signal?: AbortSignal, offset = 0): Promise<{ batches: CalibrationBatch[]; next_offset?: number | null }> {
+  const query = offset ? `?offset=${offset}` : "";
+  return handle(await fetch(`${calibrationPath()}${query}`, { credentials: "include", signal }));
+}
+export async function createCalibrationBatch(sampleSize: number, signal?: AbortSignal): Promise<CalibrationBatch> {
+  const response = await fetch(calibrationPath(), {
+    method: "POST", credentials: "include", signal, headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sample_size: sampleSize }),
+  });
+  if (response.status === 422 || response.status === 503) {
+    const body = await response.json().catch(() => null);
+    throw new HttpError(response.status, typeof body?.detail === "string" ? body.detail : undefined);
+  }
+  return handle(response);
+}
+export async function getCalibrationPairs(batch: string, offset = 0, signal?: AbortSignal): Promise<CalibrationPage> {
+  return handle(await fetch(`${calibrationPath(batch)}/pairs?${new URLSearchParams({ offset: String(offset), limit: "20" })}`, { credentials: "include", signal }));
+}
+export async function getCalibrationDetail(batch: string, pair: string, signal?: AbortSignal): Promise<CalibrationDetail> {
+  return handle(await fetch(calibrationPath(batch, pair), { credentials: "include", signal }));
+}
+export async function labelCalibrationPair(batch: string, pair: string, verdict: CalibrationVerdict, evidenceToken: string, signal?: AbortSignal): Promise<{ status: "ok" }> {
+  return handle(await fetch(`${calibrationPath(batch, pair)}/label`, {
+    method: "POST", credentials: "include", signal, headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ verdict, evidence_token: evidenceToken }),
+  }));
+}
+export async function getCalibrationMetrics(batch: string, signal?: AbortSignal): Promise<CalibrationMetrics> {
+  return handle(await fetch(`${calibrationPath(batch)}/metrics`, { credentials: "include", signal }));
 }
 
 // --- stats (moderator dashboard) --------------------------------------------

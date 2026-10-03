@@ -1121,6 +1121,37 @@ button { font-family: inherit; }
   color: var(--muted);
 }
 
+.moderation-toggle { flex-wrap: wrap; }
+.match-calibration { width: 100%; max-width: 900px; margin: 0 auto; }
+.match-calibration p { line-height: 1.5; }
+.match-calibration button { min-height: 44px; }
+.match-calibration button:disabled { opacity: 0.55; cursor: default; }
+.match-calibration :focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.calibration-create, .calibration-pagination { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin: 1rem 0; }
+.calibration-create input, .calibration-batches select { display: block; width: 100%; padding: 0.7rem; background: var(--panel); color: var(--ink); border: 2px solid var(--line); }
+.calibration-batches { display: block; margin-top: 1rem; }
+.calibration-method { border-left: 4px solid var(--accent); padding: 0.75rem; background: var(--dust); }
+.calibration-pairs { padding-left: 1.5rem; }
+.calibration-pairs li { margin-bottom: 0.75rem; }
+.calibration-detail { margin: 1rem 0; padding: 0.75rem; border: 2px solid var(--line); }
+.calibration-evidence { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; }
+.calibration-evidence h4 { margin-bottom: 0.25rem; }
+.calibration-photo { position: relative; width: 100%; background: var(--frame); }
+.calibration-photo img { display: block; width: 100%; height: auto; }
+.calibration-box { position: absolute; border: 3px solid #ffe066; box-shadow: 0 0 0 1px #221b11; pointer-events: none; }
+.calibration-frame-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; font-size: 0.8rem; }
+.calibration-frame-nav .btn { padding: 0.5rem; font-size: 0.6rem; }
+.calibration-actions { flex-wrap: wrap; margin: 1rem 0; }
+.calibration-counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 0.5rem; }
+.calibration-counts > div { padding: 0.65rem; background: var(--panel); border: 2px solid var(--line); }
+.calibration-counts dt { font-size: 0.8rem; }
+.calibration-counts dd { margin: 0.3rem 0 0; font-weight: bold; font-size: 1.35rem; }
+.calibration-table { overflow-x: auto; }
+.calibration-table table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.calibration-table caption { text-align: left; padding: 0.5rem 0; }
+.calibration-table th, .calibration-table td { padding: 0.6rem; border: 1px solid var(--line); text-align: left; }
+.calibration-current { background: var(--dust); font-weight: bold; }
+
 .animal-audit { max-width: 760px; margin: 0 auto; }
 .animal-audit p { line-height: 1.5; }
 .audit-filters { flex-wrap: wrap; margin: 1rem 0; }

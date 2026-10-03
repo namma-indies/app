@@ -7,6 +7,7 @@ import {
   type ReportReason,
 } from "../api";
 import AnimalAudit from "../components/AnimalAudit";
+import MatchCalibration from "../components/MatchCalibration";
 
 const REASON_LABELS: Record<ReportReason, string> = {
   endangers_dog: "PUTS THE DOG AT RISK",
@@ -17,10 +18,11 @@ const REASON_LABELS: Record<ReportReason, string> = {
 };
 
 export default function Moderation({ onUnauthorized }: { onUnauthorized: () => void }) {
-  const [queue, setQueue] = useState<"reported" | "audit">("reported");
+  const [queue, setQueue] = useState<"reported" | "audit" | "calibration">("reported");
   const [items, setItems] = useState<ModerationItem[] | null>(null);
   const [failedReported, setFailedReported] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+  const [calibrationSaving, setCalibrationSaving] = useState(false);
 
   useEffect(() => {
     getModerationQueue()
@@ -47,16 +49,20 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
   }
 
   const toggle = (
-    <div className="scope-toggle">
-      <button className={queue === "reported" ? "active" : ""} onClick={() => setQueue("reported")}>
+    <div className="scope-toggle moderation-toggle">
+      <button disabled={calibrationSaving} className={queue === "reported" ? "active" : ""} onClick={() => setQueue("reported")}>
         REPORTED
       </button>
-      <button className={queue === "audit" ? "active" : ""} onClick={() => setQueue("audit")}>
+      <button disabled={calibrationSaving} className={queue === "audit" ? "active" : ""} onClick={() => setQueue("audit")}>
         DETECTOR AUDIT
+      </button>
+      <button disabled={calibrationSaving} className={queue === "calibration" ? "active" : ""} aria-pressed={queue === "calibration"} onClick={() => setQueue("calibration")}>
+        MATCH CALIBRATION
       </button>
     </div>
   );
 
+  if (queue === "calibration") return <>{toggle}<MatchCalibration onUnauthorized={onUnauthorized} saving={calibrationSaving} onSavingChange={setCalibrationSaving} /></>;
   if (queue === "audit") return <>{toggle}<AnimalAudit onUnauthorized={onUnauthorized} /></>;
   if (failedReported) return <>{toggle}<div className="empty-state">COULDN'T LOAD THE QUEUE — TRY AGAIN</div></>;
   if (items === null) return <>{toggle}<div className="empty-state">READING REPORTS…</div></>;

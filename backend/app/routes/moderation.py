@@ -63,11 +63,13 @@ from app.detect_reid import DETECTOR_NAME
 from app.photos import thumb_key
 from app.storage.s3 import S3Storage
 from app.routes.animal_audit import router as animal_audit_router
+from app.routes.match_calibration import router as match_calibration_router
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 router.include_router(animal_audit_router)
+router.include_router(match_calibration_router)
 
 # See the module docstring. Distinct reporters needed before a sighting hides;
 # a moderator restores. 1 restores the original hide-on-first-report behaviour.
