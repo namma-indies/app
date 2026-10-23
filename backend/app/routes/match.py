@@ -151,7 +151,7 @@ async def list_proposals(
     conn=Depends(get_conn),
     storage: S3Storage = Depends(get_storage),
 ):
-    """Matches this observer can decide: both sightings are their own.
+    """Matches waiting for a verdict, from anyone's sightings.
 
     Separate from `GET /sighting/{id}/match`, which answers "what about this
     one sighting" and needs the caller to already know which sighting to ask
@@ -160,19 +160,26 @@ async def list_proposals(
     away. Without a list they are unreachable, which is why `individuals` is
     empty in production despite the pipeline running end to end.
 
-    Returns both sides with a thumbnail each, because the question is "are
-    these the same dog" and it cannot be answered from ids and a score.
+    Returns both sides with a thumbnail and a date each, because the question
+    is "are these the same dog" and it cannot be answered from ids and a
+    score. Nothing about where either sighting was taken: issue #45 keeps exact
+    location to animals you photographed, and a pair card is the wrong place
+    to start leaking it. `mine` per side says only what the viewer already
+    knows.
 
-    Cross-observer proposals are excluded rather than shown read-only: an
-    entry you cannot act on, with no route to anyone who can, is a dead end
-    that teaches people the queue is broken. They wait for the adjudication
-    path in issue #29.
+    Open to every observer. It used to list only pairs where the viewer had
+    logged both sightings (issue #29), which left every cross-observer match --
+    the ones that join the population up -- with nobody allowed to decide it.
+    Pairs involving the viewer's own sightings come first, since that is where
+    they remember the animal and the street; within that, by score.
     """
     rows = await conn.fetch(
         f"""
         SELECT mp.id, mp.score,
                a.id AS a_id, a.captured_at AS a_when, pa.s3_key AS a_key,
-               b.id AS b_id, b.captured_at AS b_when, pb.s3_key AS b_key
+               a.observer_id = $1 AS a_mine,
+               b.id AS b_id, b.captured_at AS b_when, pb.s3_key AS b_key,
+               b.observer_id = $1 AS b_mine
         FROM match_proposals mp
         JOIN sightings a ON a.id = mp.sighting_id
         JOIN sightings b ON b.id = mp.candidate_sighting_id
@@ -188,8 +195,6 @@ async def list_proposals(
             ORDER BY created_at, id LIMIT 1
         ) pb ON TRUE
         WHERE mp.status = 'pending'
-          AND a.observer_id = $1
-          AND b.observer_id = $1
           -- Both sides must be showing. A pair where one photo is hidden
           -- pending review is not a question anyone should be answering: a
           -- `same` verdict on it would fold content under review into an
@@ -203,7 +208,10 @@ async def list_proposals(
           -- guard test in test_animal_filter.py.
           AND {animal_present().replace("s.", "a.")}
           AND {animal_present().replace("s.", "b.")}
-        ORDER BY mp.score DESC
+        -- Both sides yours, then one, then none. MAX_REVIEW cuts after the
+        -- sort, so a busy cohort cannot push your own pairs off the end.
+        ORDER BY (a.observer_id = $1)::int + (b.observer_id = $1)::int DESC,
+                 mp.score DESC, mp.id
         LIMIT $2
         """,
         observer_id,
@@ -232,10 +240,12 @@ async def list_proposals(
                 "score": round(float(r["score"]), 4),
                 "a": {"sighting_id": str(r["a_id"]),
                       "date": r["a_when"].date().isoformat(),
-                      "thumb_url": thumb(i, "a")},
+                      "thumb_url": thumb(i, "a"),
+                      "mine": r["a_mine"]},
                 "b": {"sighting_id": str(r["b_id"]),
                       "date": r["b_when"].date().isoformat(),
-                      "thumb_url": thumb(i, "b")},
+                      "thumb_url": thumb(i, "b"),
+                      "mine": r["b_mine"]},
             }
             for i, r in enumerate(rows)
         ],
@@ -291,12 +301,8 @@ async def resolve_proposal(
     p = await conn.fetchrow(
         """
         SELECT mp.sighting_id, mp.candidate_individual_id, mp.candidate_sighting_id,
-               mp.status,
-               s.observer_id AS sighting_observer,
-               cs.observer_id AS candidate_observer
+               mp.status
         FROM match_proposals mp
-        JOIN sightings s ON s.id = mp.sighting_id
-        LEFT JOIN sightings cs ON cs.id = mp.candidate_sighting_id
         WHERE mp.id = $1
         """,
         proposal_id,
@@ -308,39 +314,21 @@ async def resolve_proposal(
 
     # WHO MAY SAY TWO SIGHTINGS ARE ONE DOG
     # -------------------------------------
-    # You may decide about photographs you took. That is standing earned by
-    # contribution rather than granted by a form, which is the model issue #5
-    # describes, and it needs no new schema -- observer_id has always been on
-    # the row.
+    # Anyone signed in. This used to be the observer who logged both
+    # sightings, with a 403 for everyone else until an adjudication path
+    # existed (issue #29). None does yet, so every cross-observer match -- the
+    # ones that join the population up -- sat pending with nobody allowed to
+    # decide it.
     #
-    # It is also the case where the judgement is actually sound: the person who
-    # took both photographs remembers the animal, the street and the day. A
-    # stranger has only the pixels, and MiewID's own numbers say pixels are not
-    # enough -- two different dogs that resemble each other score 0.7122 while
-    # the best score between two sightings of the SAME dog was 0.5532.
+    # The judgement is weaker from a stranger, who has only the pixels, and
+    # MiewID's own numbers say pixels are not enough: two different dogs that
+    # resemble each other score 0.7122, while the best score between two
+    # sightings of the SAME dog was 0.5532. That is answered later by disputes
+    # and by weighting verdicts on who gave them, not by refusing the verdict
+    # now. `confirmations` records who decided, which is the input both need.
     #
-    # Cross-observer merges are deliberately NOT refused outright: they are the
-    # ones that unify the population, and forbidding them would leave every
-    # observer with a private dex that never joins up. They stay `pending` for
-    # an adjudicator instead -- see issue #29. Until that lands this is a 403,
-    # which leaves the proposal untouched and re-decidable rather than
-    # consuming it with a verdict nobody was entitled to give.
-    #
-    # A proposal against an existing individual (candidate_sighting_id NULL) is
-    # not ownable in this sense -- an individual belongs to no one -- so it
-    # takes the same route.
-    both_mine = (
-        p["sighting_observer"] == observer_id
-        and p["candidate_observer"] is not None
-        and p["candidate_observer"] == observer_id
-    )
-    if not both_mine:
-        raise HTTPException(
-            status_code=403,
-            detail="only the observer who logged both sightings can decide this "
-                   "match; it stays open for review",
-        )
-
+    # The 409 checks below stay: a verdict still cannot land on a proposal
+    # that moved, on a sighting under review, or across separated animals.
     sighting_id = p["sighting_id"]
     individual_id = p["candidate_individual_id"]
 
@@ -351,11 +339,13 @@ async def resolve_proposal(
         if current is None or current["status"] != "pending":
             raise HTTPException(409, "proposal was resolved or replaced")
         locked = await conn.fetch(
-            "SELECT id,individual_id,observer_id,review_status FROM sightings WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE",
+            "SELECT id,individual_id,review_status FROM sightings WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE",
             [sighting_id, p["candidate_sighting_id"]],
         )
-        if any(r["observer_id"] != observer_id or r["review_status"] != "valid" for r in locked):
-            raise HTTPException(409, "sighting ownership or visibility changed")
+        # Visibility, not ownership: a sighting reported or taken down since
+        # the queue was read must not be folded into an identity.
+        if any(r["review_status"] != "valid" for r in locked):
+            raise HTTPException(409, "sighting visibility changed")
         if verdict == "same":
             from app.matching import ensure_compatible_observations
             await ensure_compatible_observations(conn, [sighting_id, p["candidate_sighting_id"]])

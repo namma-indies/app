@@ -88,9 +88,9 @@ flowchart TD
     PC -- yes --> PZ["left alone<br/><i>a human verdict outranks the model</i>"]
     PC -- no --> Q{"top similarity"}
     Q -- "≥ 1.01 (unreachable)" --> R["auto-link"]
-    Q -- "≥ 0.50" --> S["match_proposals<br/>+ suggest_video if < 4 frames"]
+    Q -- "≥ 0.40" --> S["match_proposals<br/>+ suggest_video if < 4 frames"]
     Q -- else --> T["unmatched"]
-    S --> U["human verdict — <b>your own sightings only</b><br/>POST /proposal/{id}"]
+    S --> U["human verdict — <b>anyone in the cohort</b>, own pairs first<br/>POST /proposal/{id}"]
     U --> V[("individuals + confirmations")]
     V --> W["GET /dogs — the identities, read back"]
 
@@ -115,7 +115,7 @@ flowchart TD
 | Animal gate | YOLOv8n | **YOLO26x**, dog *and* cat | v8n scored a clearly visible dog at 0.021 where 26x gives 0.800 -- the two models' scores were incomparable until `detections` and the rescore (#67) made the corpus one population again |
 | Embedding | none | **MiewID-msv3**, 2152-d, on the animal crop | Whole-frame embeddings match other streets, not other dogs |
 | Candidate search | none | PostGIS 1 km → HNSW → exact re-rank | HNSW caps at 2000 dims; MiewID is 2152, so ANN runs on a `halfvec` cast and the shortlist is re-scored at full precision |
-| Identity | none | human verdict only, **on your own sightings** | You decide about photographs you took; a stranger has only the pixels. Cross-observer pairs stay pending for an adjudicator (#29) |
+| Identity | none | human verdict only, **from anyone in the cohort** | Own-only (#29) left every cross-observer pair with nobody allowed to decide it. Your own pairs are listed first; `confirmations` records who decided, for disputes and weighting later |
 | Clip | discarded after extraction | **kept in S3** (`sightings.clip_s3_key`) | Once the frames were chosen the clip was gone, so a better model could never re-read the footage |
 | Frame sampling | 2 fps, phash-diverse | **1 fps, every sample kept** | Dedup at hamming 8 discarded frames a second apart: a 5s clip of a sitting dog yielded ONE frame, so "average of five" averaged one vector |
 | Query vector | every frame, max over them | **mean of the frames**, per sighting | Frames from one clip are one view sampled repeatedly; their mean is that view with the noise averaged out |
