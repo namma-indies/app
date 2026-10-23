@@ -176,7 +176,7 @@ def analyse_instances(image_bytes: bytes, *, source_id: str = "photo:0",
 
 
 def analyse_photos(stored_photos: list[bytes]) -> "CaptureAnalysis":
-    """A photo burst is one capture; repeated views require association review."""
+    """A photo burst is one capture; repeated views of co-visible animals require review."""
     from app.tracking import SamplingCoverage, associate_frames
 
     if not 1 <= len(stored_photos) <= 12:

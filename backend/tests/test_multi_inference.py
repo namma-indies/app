@@ -127,12 +127,13 @@ def test_crossing_similar_dogs_never_merge():
                for a in result.associations)
 
 
-def test_occlusion_reentry_and_missing_vectors_are_private():
+def test_occlusion_reentry_and_missing_vectors_still_one_animal():
+    # Nothing was ever seen alongside it, so a gap or a failed embedding does
+    # not make the dog any less the only dog in the capture.
     frames = (frame(0), frame(1, ()), frame(2, failed=True))
     result = associate_frames(frames, coverage(3))
-    assert len(result.tracks) == 2 and result.requires_review
-    assert result.associations[0].reason == "gap_or_reentry"
-    assert result.associations[0].appearance_similarity is None
+    assert not result.requires_review and not result.associations
+    assert [t.instance_ids for t in result.tracks] == [("video:0:0", "video:2:0")]
 
 
 def test_dog_cat_never_associate_and_single_photo_can_publish():
@@ -142,10 +143,63 @@ def test_dog_cat_never_associate_and_single_photo_can_publish():
     assert not result.associations and not result.requires_review
 
 
-def test_same_animal_burst_needs_review_not_duplicate_public_count():
-    result = associate_frames((frame(0), frame(1)), coverage(2))
-    assert result.requires_review and result.associations[0].reason == "uncalibrated"
-    assert len(result.tracks) == 2
+def test_single_dog_across_many_frames_is_one_animal_without_review():
+    frames = tuple(frame(n, positions=(n % 5,)) for n in range(20))
+    result = associate_frames(frames, coverage(20), max_evidence_per_track=12)
+    assert not result.requires_review and not result.associations
+    (track,) = result.tracks
+    assert track.species == "dog" and not track.requires_review
+    assert track.instance_ids == tuple(f"video:{n}:0" for n in range(20))
+    assert track.track_id == "track:video:0:0"
+    assert len(track.evidence_instance_ids) == 12
+
+
+def test_dog_and_cat_together_across_frames_are_two_animals_without_review():
+    frames = tuple(frame(n, ("dog", "cat")) for n in range(3))
+    result = associate_frames(frames, coverage(3))
+    assert not result.requires_review and not result.associations
+    assert {t.species: len(t.instance_ids) for t in result.tracks} == {"dog": 3, "cat": 3}
+    assert not any(t.requires_review for t in result.tracks)
+
+
+def test_two_dogs_together_in_one_frame_of_many_needs_review():
+    # One frame with company is enough: in the others, either dog could be
+    # either one, so the whole capture stays private.
+    frames = (frame(0), frame(1, ("dog", "dog"), (0, 4)), frame(2))
+    result = associate_frames(frames, coverage(3))
+    assert result.requires_review
+    assert len(result.tracks) == 4 and all(len(t.instance_ids) == 1 for t in result.tracks)
+    assert all(t.requires_review for t in result.tracks)
+
+
+def test_only_the_covisible_species_is_held_as_singletons():
+    frames = (frame(0, ("dog", "dog", "cat"), (0, 2, 4)), frame(1, ("dog", "cat"), (0, 4)))
+    result = associate_frames(frames, coverage(2))
+    assert result.requires_review
+    dogs = [t for t in result.tracks if t.species == "dog"]
+    (cat,) = [t for t in result.tracks if t.species == "cat"]
+    assert len(dogs) == 3 and all(t.requires_review for t in dogs)
+    assert cat.instance_ids == ("video:0:2", "video:1:1") and not cat.requires_review
+    assert all(a.from_instance_id.split(":")[2] != "2" for a in result.associations)
+
+
+@pytest.mark.parametrize("frames, review, tracks", [
+    # One frame: two dogs are two animals by construction, nothing to ask.
+    (lambda: (frame(0, ("dog", "dog")),), False, 2),
+    # The pair is only ever seen once; the other frame shows a cat.
+    (lambda: (frame(0, ("dog", "dog")), frame(1, ("cat",))), False, 3),
+    # The pair's frame is followed by empty frames: still nothing to match.
+    (lambda: (frame(0, ("dog", "dog")), frame(1, ()), frame(2, ())), False, 2),
+    # Two frames, one dog each: no frame ever shows two.
+    (lambda: (frame(0), frame(1)), False, 1),
+    # The pair appears in the last frame, after a solo view.
+    (lambda: (frame(0), frame(1, ("dog", "dog"))), True, 3),
+], ids=["single-frame-pair", "pair-then-cat", "pair-then-empty", "solo-burst", "solo-then-pair"])
+def test_review_frame_count_edge_cases(frames, review, tracks):
+    built = frames()
+    result = associate_frames(built, coverage(len(built)))
+    assert result.requires_review is review and len(result.tracks) == tracks
+    assert result.tracking_policy == "covisible-review-v2"
 
 
 def test_tracking_caps_fail_closed_and_reject_shuffled_frames():

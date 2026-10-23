@@ -1,8 +1,14 @@
 """Capture-local evidence, never cross-capture identity or automatic merging.
 
-No street-video association threshold has been calibrated. Each detection is
-therefore a tracklet until a contributor groups instance IDs. Motion/appearance
-rank review suggestions only; even a perfect cosine cannot publish a merge.
+No street-video association threshold has been calibrated, so no score ever
+joins two detections. What joins them is co-visibility: within one capture, a
+species that never shows two animals in the same frame is taken to be one
+animal, and all its detections form one track. Only a species that does show
+two together, and also appears in another frame, is ambiguous -- which of the
+two is which in the other frames is a question a person must answer. Those keep
+singleton tracklets until a contributor groups instance IDs, and motion and
+appearance only rank review suggestions; even a perfect cosine cannot publish
+a merge.
 """
 from __future__ import annotations
 
@@ -82,7 +88,7 @@ class CaptureAnalysis:
     coverage: SamplingCoverage
     requires_review: bool
     schema_version: int = 2
-    tracking_policy: str = "uncalibrated-tracklets-v1"
+    tracking_policy: str = "covisible-review-v2"
 
 
 def make_frame(source_id: str, frame_index: int, timestamp_seconds: float | None,
@@ -106,12 +112,14 @@ def _centre(instance: AnimalInstance, frame: FrameAnalysis) -> np.ndarray:
 
 def associate_frames(frames: tuple[FrameAnalysis, ...], coverage: SamplingCoverage,
                      *, max_instances: int = 96, max_evidence_per_track: int = 12) -> CaptureAnalysis:
-    """Bounded, deterministic review proposals without averaging any vectors.
+    """Bounded, deterministic tracks and review proposals without averaging any vectors.
 
-    Candidate ranking uses normalized source-plane displacement and appearance;
-    species is a hard constraint. A gap (including an empty sampled frame),
-    competing animals, or missing embeddings gets its own review reason. All
-    uncalibrated links remain private, including apparent single-animal bursts.
+    Species is a hard constraint. A species is ambiguous only when some frame
+    shows two or more of it AND it appears in more than one frame; any
+    ambiguous species sends the whole capture to review. Candidate ranking for
+    those uses normalized source-plane displacement and appearance, and a gap
+    (including an empty sampled frame), competing animals, or missing
+    embeddings gets its own review reason.
     """
     if max_instances < 1 or max_evidence_per_track < 1:
         raise ValueError("invalid tracking budget")
@@ -128,19 +136,27 @@ def associate_frames(frames: tuple[FrameAnalysis, ...], coverage: SamplingCovera
         raise ValueError("capture exceeds instance budget; no partial animal result")
     if len({instance.instance_id for instance in instances}) != len(instances):
         raise ValueError("duplicate instance identity")
+    covisible, seen_in = set(), {}
+    for frame in frames:
+        for species in ("dog", "cat"):
+            count = sum(i.detection.species == species for i in frame.instances)
+            if count:
+                seen_in[species] = seen_in.get(species, 0) + 1
+            if count > 1:
+                covisible.add(species)
+    # Two dogs in a single frame are two animals by construction and the review
+    # UI cannot merge them, so there is nothing to ask. The question only exists
+    # once they reappear elsewhere and could be either one.
+    ambiguous = {species for species in covisible if seen_in[species] > 1}
     associations = []
     previous: dict[str, tuple[int, FrameAnalysis, tuple[AnimalInstance, ...]]] = {}
-    review_ids = set()
     for ordinal, frame in enumerate(frames):
         for species in ("dog", "cat"):
             current = tuple(i for i in frame.instances if i.detection.species == species)
-            if not current:
+            if not current or species not in ambiguous:
                 continue
             if species in previous:
                 old_ordinal, old_frame, candidates = previous[species]
-                # All same-species observations across frames are potentially
-                # repeated views, including candidates omitted from the top-3 UI.
-                review_ids.update(i.instance_id for i in (*candidates, *current))
                 for instance in current:
                     ranked = []
                     for candidate in candidates:
@@ -160,9 +176,18 @@ def associate_frames(frames: tuple[FrameAnalysis, ...], coverage: SamplingCovera
                                            instance.instance_id, motion, similarity, reason)))
                     associations.extend(item[2] for item in sorted(ranked, key=lambda item: item[:2])[:3])
             previous[species] = ordinal, frame, current
-    # Singleton evidence is intentional, not an assertion that each tracklet is
-    # a unique animal. The publication layer must honor requires_review.
-    tracks = tuple(Tracklet(f"track:{i.instance_id}", i.detection.species,
-                           (i.instance_id,), (i.instance_id,)[:max_evidence_per_track],
-                           i.instance_id in review_ids) for i in instances)
-    return CaptureAnalysis(frames, tracks, tuple(associations), coverage, bool(review_ids))
+    # Co-visible species stay singletons. For an ambiguous one that is not an
+    # assertion that each tracklet is a unique animal, and the publication layer
+    # must honor requires_review. Every other species is one track named after
+    # its first detection, so the ID stays stable and within the wire pattern.
+    members: dict[str, tuple[str, list[str]]] = {}
+    first_of: dict[str, str] = {}
+    for i in instances:
+        species = i.detection.species
+        track_id = f"track:{i.instance_id}"
+        if species not in covisible:
+            track_id = first_of.setdefault(species, track_id)
+        members.setdefault(track_id, (species, []))[1].append(i.instance_id)
+    tracks = tuple(Tracklet(track_id, species, tuple(ids), tuple(ids[:max_evidence_per_track]),
+                            species in ambiguous) for track_id, (species, ids) in members.items())
+    return CaptureAnalysis(frames, tracks, tuple(associations), coverage, bool(ambiguous))
