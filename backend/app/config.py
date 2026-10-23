@@ -78,11 +78,26 @@ class Settings(BaseSettings):
     # plausible match goes to a human instead of being silently merged.
     # Fit these to real verdicts in `confirmations` before lowering.
     reid_auto_merge_min: float = 1.01   # >= this: link automatically
-    reid_propose_min: float = 0.50      # >= this: engage a human
+    reid_propose_min: float = 0.40      # >= this: engage a human
     reid_max_candidates: int = 5
 
-    # WHY 0.50, AND WHAT IT COSTS
-    # ---------------------------
+    # WHY 0.40
+    # --------
+    # Lowered from 0.50 on street data (2026-10-23). Of 102 embedded sightings
+    # in production, only 7 had any non-duplicate look-alike at >= 0.50, while
+    # 45 sat between 0.40 and 0.50 -- 25 of those within reid_radius_m. The
+    # best genuine pair ever measured scored 0.5532, so real re-sightings were
+    # landing just under the bar and never reaching anyone. At 0.50 the queue
+    # was nearly empty, which is the 0.71 failure below in a milder form.
+    # The lab table puts 0.40 at 64.3% of true matches for 24.0% precision:
+    # three in four prompts wrong, answered by a person looking at two photos.
+    # Lowering it does not re-ask about sightings already resolved. Resolution
+    # runs once per upload, and `backfill_embeddings.py --resolve` only
+    # resolves sightings it has just embedded, so existing pairs stay unasked
+    # until something re-resolves them.
+    #
+    # WHY 0.50 WAS CHOSEN, AND WHAT IT COST
+    # -------------------------------------
     # Lowered from 0.71 once merging had a surface (#29, #30). At 0.71 this
     # system raises almost nothing -- two prompts in the measured run, both
     # wrong -- so a review queue built on it is empty on the first day and every
