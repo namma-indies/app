@@ -435,6 +435,10 @@ async def create_sighting(
                 "width": p.width,
                 "height": p.height,
                 "phash": p.phash,
+                # A photo someone chose, not a frame sampled from their clip:
+                # only the former can be "the same photo picked twice", which is
+                # what the identical-photo rule links on (app.identical).
+                "content_sha256": None if video is not None else p.content_sha256,
             }
         )
 
@@ -524,8 +528,9 @@ async def create_sighting(
                 for row in photo_rows:
                     await conn.execute(
                         """
-                        INSERT INTO photos (id, sighting_id, s3_key, width, height, phash)
-                        VALUES ($1, $2, $3, $4, $5, $6)
+                        INSERT INTO photos (id, sighting_id, s3_key, width, height,
+                                            phash, content_sha256)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7)
                         """,
                         row["id"],
                         sighting_id,
@@ -533,6 +538,7 @@ async def create_sighting(
                         row["width"],
                         row["height"],
                         row["phash"],
+                        row["content_sha256"],
                     )
 
                 if settings.media_jobs_enabled:

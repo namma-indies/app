@@ -148,6 +148,9 @@ async def publish_slot(conn,storage,job,slot,width,height,phash):
     for src,dst,size in ((slot["key"],key,slot["spec"]["original_bytes"]),
             (thumb_key(slot["key"]),thumb_key(key),slot["spec"]["thumbnail_bytes"])):
         await storage.publish_checked(src,dst,size)
+    # No content_sha256: these are crops and clip frames, derived rather than
+    # chosen, and published by S3 copy so the server never holds the bytes.
+    # Identity-by-identical-photo reaches them through their source photo.
     await conn.execute("INSERT INTO photos(id,capture_id,s3_key,width,height,phash) VALUES($1,$2,$3,$4,$5,$6)",
         pid,job["capture_id"],key,width,height,phash)
     return pid

@@ -29,6 +29,7 @@ ACTIONS = {
     "find-duplicates": "remote-find-duplicates.sh",
     "seed-models": "remote-seed-models.sh",
     "backup-db": "remote-backup-db.sh",
+    "merge-identical": "remote-merge-identical.sh",
 }
 
 
@@ -43,7 +44,7 @@ def box(tmp_path):
             "#!/usr/bin/env bash\n"
             f'echo "RAN {script}"\n'
             'echo "BRANCH=${BRANCH:-} DRY_RUN=${DRY_RUN:-} EXTRA_ARGS=${EXTRA_ARGS:-}"\n'
-            'echo "DETAIL=${DETAIL:-} UPLOAD=${UPLOAD:-} MODE=${MODE:-}"\n'
+            'echo "DETAIL=${DETAIL:-} UPLOAD=${UPLOAD:-} MODE=${MODE:-} APPLY=${APPLY:-}"\n'
             'cat > /tmp/should-never-exist-stdin 2>/dev/null || true\n'
         )
     return tmp_path
@@ -78,6 +79,8 @@ def run(box, command, stdin=""):
         ("seed-models upload", "remote-seed-models.sh"),
         ("seed-models no-upload", "remote-seed-models.sh"),
         ("backup-db", "remote-backup-db.sh"),
+        ("merge-identical dry-run", "remote-merge-identical.sh"),
+        ("merge-identical apply", "remote-merge-identical.sh"),
     ],
 )
 def test_allowed_actions_reach_their_script(box, command, script):
@@ -127,6 +130,9 @@ def test_every_allowed_action_is_covered_by_a_case(box):
         "find-duplicates loud",
         "seed-models yes",
         "backup-db now",
+        "merge-identical",                   # mode is required
+        "merge-identical run",               # it is 'apply', not 'run'
+        "merge-identical apply now",         # arity
         "unknown-action",
     ],
 )
@@ -177,3 +183,11 @@ def test_rescore_modes_reach_the_script_with_the_right_arguments(box):
     r = run(box, "rescore run 1.5")
     assert "MODE=run" in r.stdout
     assert "EXTRA_ARGS=--sleep 1.5" in r.stdout
+
+
+def test_merge_identical_writes_only_when_asked(box):
+    """`apply` is the only word that lets the merge write. Anything the wrapper
+    does not recognise is refused rather than read as a dry run, and the
+    script's own default is the dry run."""
+    assert "APPLY=false" in run(box, "merge-identical dry-run").stdout
+    assert "APPLY=true" in run(box, "merge-identical apply").stdout

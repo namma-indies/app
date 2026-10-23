@@ -48,7 +48,8 @@ deny() {
     echo "this key may only run: deploy | deploy-staging <branch> |" >&2
     echo "  backfill <dry-run|run> [sleep] |" >&2
     echo "  rescore <dry-run|run|histogram> [sleep] |" >&2
-    echo "  find-duplicates [detail] | seed-models <upload|no-upload>" >&2
+    echo "  find-duplicates [detail] | seed-models <upload|no-upload> |" >&2
+    echo "  merge-identical <dry-run|apply>" >&2
     exit 2
 }
 
@@ -133,6 +134,16 @@ case "$action" in
         *)      deny "find-duplicates takes only 'detail'" ;;
       esac
       DETAIL="$detail" run "$DEPLOY/remote-find-duplicates.sh"
+      ;;
+
+  merge-identical)
+      case "$a1" in
+        dry-run) apply=false ;;
+        apply)   apply=true ;;
+        *)       deny "merge-identical needs 'dry-run' or 'apply'" ;;
+      esac
+      [ -z "$a2" ] || deny "merge-identical takes one argument"
+      APPLY="$apply" run "$DEPLOY/remote-merge-identical.sh"
       ;;
 
   seed-models)

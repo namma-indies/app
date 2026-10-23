@@ -118,7 +118,7 @@ async def create_capture(request: Request, photos: list[UploadFile] | None = Fil
             key = f"captures/{capture_id}/sources/{pid}.webp"
             await storage.put(key,p.original,p.content_type)
             await storage.put(thumb_key(key),p.thumbnail,p.content_type)
-            rows.append((pid,key,p.width,p.height,p.phash))
+            rows.append((pid,key,p.width,p.height,p.phash,p.content_sha256))
     attrs = {"note":note} if note else {}
     if video is not None:
         attrs["source"] = "video"
@@ -132,9 +132,12 @@ async def create_capture(request: Request, photos: list[UploadFile] | None = Fil
                     $10,$11,$12::jsonb,$13) RETURNING *""",capture_id,observer_id,client_token,
                 "video" if video is not None else "photo",captured_at,reported_at,has_geo,lng,lat,
                 geo_source,geo_accuracy_m,json.dumps(attrs),clip_key)
-            for pid,key,width,height,phash in rows:
-                await conn.execute("""INSERT INTO photos(id,capture_id,s3_key,width,height,phash)
-                    VALUES($1,$2,$3,$4,$5,$6)""",pid,capture_id,key,width,height,phash)
+            # Sources carry the content hash; the crops and clip frames the
+            # worker publishes later do not. The identical-photo rule reaches a
+            # capture's sightings through these (app.identical).
+            for pid,key,width,height,phash,sha in rows:
+                await conn.execute("""INSERT INTO photos(id,capture_id,s3_key,width,height,phash,content_sha256)
+                    VALUES($1,$2,$3,$4,$5,$6,$7)""",pid,capture_id,key,width,height,phash,sha)
             await conn.execute("""INSERT INTO jobs(id,kind,capture_id,pipeline_version,run_after,cpu_eligible_at)
                 VALUES($1,$2,$3,$4,now(),now()+$5*interval '1 second')""",uuid7(),
                 "video" if video is not None else "photo",capture_id,MULTI_PIPELINE_VERSION,settings.media_cpu_grace_s)

@@ -15,6 +15,7 @@ being 66% smaller than JPEG q95 on a real 12MP phone capture (674 kB vs
 which matters if this number is ever pushed lower.
 """
 
+import hashlib
 import io
 from dataclasses import dataclass
 
@@ -60,6 +61,18 @@ class ProcessedPhoto:
     height: int
     phash: str  # perceptual hash hex (imagehash.phash)
     content_type: str  # "image/webp"
+
+    @property
+    def content_sha256(self) -> str:
+        """sha256 of `original`, the bytes actually stored -- not of the upload,
+        which is never kept and so could never be backfilled. The encode is
+        deterministic, so one photo picked twice hashes the same both times.
+        See migration 0016 for why this, not phash, is what identity rests on.
+
+        Derived rather than a field so every constructor of this class (the
+        GPU worker rebuilds it from serialised frames) gets it for free and it
+        can never disagree with `original`."""
+        return hashlib.sha256(self.original).hexdigest()
 
 
 def process_photo(raw: bytes) -> ProcessedPhoto:
