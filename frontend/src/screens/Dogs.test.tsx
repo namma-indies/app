@@ -2,13 +2,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 vi.mock("../api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api")>()),
   getDogs: vi.fn(),
+  // Dogs asks how many matches are waiting on every mount. Empty unless a
+  // test says otherwise; the matches block below restores this after itself.
+  getProposals: vi.fn(async () => ({ proposals: [], propose_min: 0.4 })),
 }));
 
-import { getDogs, UnauthorizedError, type Dog, type DogsResponse } from "../api";
+import { getDogs, getProposals, UnauthorizedError, type Dog, type DogsResponse, type Proposal } from "../api";
 import Dogs from "./Dogs";
 
 // See the note in Explore.test.tsx: no shared beforeEach resetting the mock.
@@ -200,5 +204,62 @@ describe("Dogs location precision", () => {
     );
     render(<Dogs onUnauthorized={() => {}} />);
     expect(await screen.findByText(/NO LOCATION RECORDED/)).toBeInTheDocument();
+  });
+});
+
+// --- matches waiting ---------------------------------------------------------
+// There is no MATCHES tab. The queue opens from the top of this screen, which
+// is where a verdict's result shows up.
+describe("Dogs matches waiting", () => {
+  const pair: Proposal = {
+    id: "p1",
+    score: 0.44,
+    a: { sighting_id: "s1", date: "2026-07-01", thumb_url: null },
+    b: { sighting_id: "s2", date: "2026-07-09", thumb_url: null },
+  };
+  afterEach(() => {
+    vi.mocked(getProposals).mockResolvedValue({ proposals: [], propose_min: 0.4 });
+  });
+
+  it("says how many pairs are waiting", async () => {
+    vi.mocked(getDogs).mockResolvedValue(resp([dog()]));
+    vi.mocked(getProposals).mockResolvedValue({ proposals: [pair, { ...pair, id: "p2" }], propose_min: 0.4 });
+    render(<Dogs onUnauthorized={() => {}} />);
+    expect(await screen.findByText("2 MATCHES WAITING")).toBeInTheDocument();
+  });
+
+  it("shows the way in even before the first dog exists", async () => {
+    // The first dog only appears once someone answers a match, so an empty
+    // catalogue is exactly when this button matters most.
+    vi.mocked(getDogs).mockResolvedValue(resp([]));
+    vi.mocked(getProposals).mockResolvedValue({ proposals: [pair], propose_min: 0.4 });
+    render(<Dogs onUnauthorized={() => {}} />);
+    expect(await screen.findByText("1 MATCH WAITING")).toBeInTheDocument();
+    expect(screen.getByText(/NO DOGS IDENTIFIED YET/)).toBeInTheDocument();
+  });
+
+  it("stays out of the way when nothing is waiting", async () => {
+    vi.mocked(getDogs).mockResolvedValue(resp([dog()]));
+    render(<Dogs onUnauthorized={() => {}} />);
+    await screen.findByText(/NO\. 001/);
+    expect(screen.queryByText(/WAITING/)).not.toBeInTheDocument();
+  });
+
+  it("opens the pairs in place and goes back to the list", async () => {
+    vi.mocked(getDogs).mockResolvedValue(resp([dog()]));
+    vi.mocked(getProposals).mockResolvedValue({ proposals: [pair], propose_min: 0.4 });
+    render(<Dogs onUnauthorized={() => {}} />);
+    await userEvent.click(await screen.findByText("1 MATCH WAITING"));
+    expect(await screen.findByText("SAME DOG")).toBeInTheDocument();
+    await userEvent.click(screen.getByText("← Back to dogs"));
+    expect(await screen.findByText(/1 INDIE IDENTIFIED/)).toBeInTheDocument();
+  });
+
+  it("still shows the dogs if the match count fails", async () => {
+    vi.mocked(getDogs).mockResolvedValue(resp([dog()]));
+    vi.mocked(getProposals).mockRejectedValue(new Error("offline"));
+    render(<Dogs onUnauthorized={() => {}} />);
+    expect(await screen.findByText(/1 INDIE IDENTIFIED/)).toBeInTheDocument();
+    expect(screen.queryByText(/WAITING/)).not.toBeInTheDocument();
   });
 });

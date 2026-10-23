@@ -12,6 +12,7 @@ vi.mock("../api", async (importOriginal) => ({
 
 import {
   getProposals,
+  HttpError,
   resolveProposal,
   UnauthorizedError,
   type Proposal,
@@ -32,7 +33,7 @@ function proposal(over: Partial<Proposal> = {}): Proposal {
 }
 
 function resp(proposals: Proposal[]): ProposalsResponse {
-  return { proposals, propose_min: 0.71 };
+  return { proposals, propose_min: 0.4 };
 }
 
 describe("Review", () => {
@@ -82,8 +83,54 @@ describe("Review", () => {
     vi.mocked(getProposals).mockResolvedValue(resp([]));
     render(<Review onUnauthorized={() => {}} />);
     await waitFor(() =>
-      expect(screen.getByText(/MATCHES APPEAR WHEN TWO OF YOUR SIGHTINGS LOOK ALIKE/))
+      expect(screen.getByText(/MATCHES APPEAR WHEN TWO SIGHTINGS LOOK ALIKE/))
         .toBeInTheDocument());
+  });
+
+  it("marks which photo is yours", async () => {
+    vi.mocked(getProposals).mockResolvedValue(resp([proposal({
+      a: { sighting_id: "s1", date: "2026-07-01", thumb_url: "https://x.test/a_thumb.webp", mine: true },
+      b: { sighting_id: "s2", date: "2026-07-09", thumb_url: "https://x.test/b_thumb.webp", mine: false },
+    })]));
+    render(<Review onUnauthorized={() => {}} />);
+    expect(await screen.findByText("2026-07-01 · YOUR PHOTO")).toBeInTheDocument();
+    expect(screen.getByText("2026-07-09")).toBeInTheDocument();
+  });
+
+  it("drops a pair someone else answered first instead of failing the queue", async () => {
+    // Everyone works one queue, so a 409 is two people on one pair -- ordinary.
+    vi.mocked(getProposals).mockResolvedValue(resp([proposal(), proposal({ id: "p2" })]));
+    vi.mocked(resolveProposal).mockRejectedValueOnce(new HttpError(409));
+    const onDecided = vi.fn();
+    render(<Review onUnauthorized={() => {}} onDecided={onDecided} />);
+    await waitFor(() => expect(screen.getAllByText("DIFFERENT DOGS")).toHaveLength(2));
+    await userEvent.click(screen.getAllByText("DIFFERENT DOGS")[0]);
+    expect(await screen.findByText(/Someone may have answered it first/)).toBeInTheDocument();
+    expect(screen.getAllByText("DIFFERENT DOGS")).toHaveLength(1);
+    expect(screen.queryByText(/COULDN'T LOAD/)).not.toBeInTheDocument();
+    expect(onDecided).toHaveBeenCalled();
+  });
+
+  it("tells the caller after each verdict, so the dogs list can refresh", async () => {
+    vi.mocked(getProposals).mockResolvedValue(resp([proposal()]));
+    vi.mocked(resolveProposal).mockResolvedValue(undefined);
+    const onDecided = vi.fn();
+    render(<Review onUnauthorized={() => {}} onDecided={onDecided} />);
+    await userEvent.click(await screen.findByText("DIFFERENT DOGS"));
+    await waitFor(() => expect(onDecided).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Saved as two different dogs.")).toBeInTheDocument();
+  });
+
+  it("offers a way back only when opened from somewhere", async () => {
+    vi.mocked(getProposals).mockResolvedValue(resp([proposal()]));
+    const onBack = vi.fn();
+    const { unmount } = render(<Review onUnauthorized={() => {}} />);
+    await screen.findByText("SAME DOG");
+    expect(screen.queryByText("← Back to dogs")).not.toBeInTheDocument();
+    unmount();
+    render(<Review onUnauthorized={() => {}} onBack={onBack} />);
+    await userEvent.click(await screen.findByText("← Back to dogs"));
+    expect(onBack).toHaveBeenCalled();
   });
 
   it("escalates a 401", async () => {
