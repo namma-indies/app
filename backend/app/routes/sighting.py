@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 from datetime import datetime
@@ -546,6 +547,16 @@ async def create_sighting(
                         row["height"],
                         row["phash"],
                         row["content_sha256"],
+                    )
+
+                if raw_video is not None:
+                    # On the capture the insert trigger just made for this
+                    # sighting. Before resolution, which is what reads it: the
+                    # same clip uploaded twice is the same dog (app.identical).
+                    await conn.execute(
+                        "UPDATE captures SET clip_sha256 = $1 "
+                        "WHERE id = (SELECT capture_id FROM sightings WHERE id = $2)",
+                        hashlib.sha256(raw_video).hexdigest(), sighting_id,
                     )
 
                 if settings.media_jobs_enabled:

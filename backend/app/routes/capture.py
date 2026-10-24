@@ -1,3 +1,4 @@
+import hashlib
 import json
 import math
 from datetime import datetime
@@ -99,9 +100,12 @@ async def create_capture(request: Request, photos: list[UploadFile] | None = Fil
         raise HTTPException(422,"invalid accuracy")
     capture_id = uuid7()
     rows = []
-    clip_key = None
+    clip_key = clip_sha = None
     if video is not None:
         raw = await _read_bounded(video,settings.media_max_video_bytes)
+        # Of the bytes stored, which are the upload as sent: the same file
+        # uploaded twice is the same dog (app.identical, migration 0018).
+        clip_sha = hashlib.sha256(raw).hexdigest()
         clip_key = f"captures/{capture_id}/clip.mp4"
         await storage.put(clip_key,raw,video.content_type or "video/mp4")
     else:
@@ -131,12 +135,12 @@ async def create_capture(request: Request, photos: list[UploadFile] | None = Fil
     try:
         async with pool.acquire() as conn, conn.transaction():
             capture = await conn.fetchrow("""INSERT INTO captures(id,observer_id,client_token,kind,
-                captured_at,reported_at,geog,geo_source,geo_accuracy_m,attrs,clip_s3_key)
+                captured_at,reported_at,geog,geo_source,geo_accuracy_m,attrs,clip_s3_key,clip_sha256)
                 VALUES($1,$2,$3,$4,$5,$6,
                     CASE WHEN $7::bool THEN ST_SetSRID(ST_MakePoint($8,$9),4326)::geography ELSE NULL END,
-                    $10,$11,$12::jsonb,$13) RETURNING *""",capture_id,observer_id,client_token,
+                    $10,$11,$12::jsonb,$13,$14) RETURNING *""",capture_id,observer_id,client_token,
                 "video" if video is not None else "photo",captured_at,reported_at,has_geo,lng,lat,
-                geo_source,geo_accuracy_m,json.dumps(attrs),clip_key)
+                geo_source,geo_accuracy_m,json.dumps(attrs),clip_key,clip_sha)
             # Sources carry the content hash; the crops and clip frames the
             # worker publishes later do not. The identical-photo rule reaches a
             # capture's sightings through these (app.identical).
