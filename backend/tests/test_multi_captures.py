@@ -370,3 +370,76 @@ async def test_db_upload_gate_and_cross_endpoint_idempotency(migrated_db,monkeyp
     kwargs["client_token"] = "legacy-token"
     replay = await create_capture(**kwargs)
     assert replay["capture_id"] == legacy and replay["sighting_ids"] == [legacy]
+
+
+def tracked(*frames):
+    """Run the real tracking policy and shape its result as a worker completion would."""
+    import numpy as np
+    from app.detect_reid import AnimalDetection
+    from app.tracking import SamplingCoverage, associate_frames, make_frame
+    built, axis = [], 0
+    for ordinal, species in enumerate(frames):
+        evidence = []
+        for n, name in enumerate(species):
+            vector = np.zeros(2152)
+            vector[axis] = 1.0
+            axis += 1
+            evidence.append((AnimalDetection(detection_index=n, species=name, confidence=0.9,
+                raw_box=(20*n+1, 1, 20*n+9, 9), crop_box=(20*n, 0, 20*n+10, 10)), vector, None))
+        built.append(make_frame(f"photo:{ordinal}", ordinal, None, 100, 80, 0.9, 0, evidence))
+    analysis = associate_frames(tuple(built), SamplingCoverage("photos", len(built), len(built),
+        None, None, None, 12, 12, True))
+    tracks = {iid: t.track_id for t in analysis.tracks for iid in t.instance_ids}
+    sources = [SourceFrame(photo_id=uuid4(), width=100, height=80, phash="0123456789abcdef",
+        dog_confidence=0.9, cat_confidence=0.0) for _ in built]
+    observed = [(f, i) for f in built for i in f.instances]
+    instances = [{"index": index, "source_photo_id": sources[f.frame_index].photo_id,
+        "track_id": tracks[i.instance_id], "species": i.detection.species, "confidence": 0.9,
+        "bbox": tuple(int(v) for v in i.detection.raw_box), "crop_bbox": i.detection.crop_box,
+        "width": 10, "height": 10, "phash": "0123456789abcdef", "vector": i.vector.tolist()}
+        for index, (f, i) in enumerate(observed)]
+    return MultiCompletion(lease_token="x"*43, pipeline_version=MULTI_PIPELINE_VERSION,
+        model="miewid-msv3", frames=sources, instances=instances, needs_review=analysis.requires_review)
+
+
+async def test_db_single_dog_burst_publishes_one_animal_with_mean_vector(migrated_db):
+    import json
+    import numpy as np
+    conn = migrated_db
+    body = tracked(("dog",), ("dog",), ("dog",))
+    oid,cid,jid,storage = await seed(conn,body)
+    assert (await complete_capture_job(conn,storage,jid,body))["outcome"] == "ready"
+    (child,) = await conn.fetch("SELECT id,species,vec_miew::text AS vec FROM sightings WHERE capture_id=$1",cid)
+    assert child["species"] == "dog"
+    # The sighting's probe is the normalised mean of every view, not the first.
+    vec = np.asarray([float(v) for v in child["vec"].strip("[]").split(",")])
+    np.testing.assert_allclose(vec[:3], [1/np.sqrt(3)]*3, atol=1e-6)
+    assert await conn.fetchval("SELECT count(*) FROM animal_instances WHERE sighting_id=$1",child["id"]) == 3
+    # resolve_sighting counts frames from embedded photos on the sighting, so
+    # the burst is no longer judged thin evidence one view at a time.
+    assert await conn.fetchval("""SELECT count(*) FROM photos p JOIN embeddings e ON e.photo_id=p.id
+        WHERE p.sighting_id=$1""",child["id"]) == 3
+    groups = json.loads(await conn.fetchval("SELECT review_groups FROM captures WHERE id=$1",cid))
+    assert [len(g["instance_ids"]) for g in groups] == [3]
+
+
+async def test_db_dog_and_cat_together_publish_two_animals(migrated_db):
+    conn = migrated_db
+    body = tracked(("dog","cat"), ("dog","cat"))
+    oid,cid,jid,storage = await seed(conn,body)
+    assert (await complete_capture_job(conn,storage,jid,body))["outcome"] == "ready"
+    rows = await conn.fetch("""SELECT s.species,count(a.id) AS views FROM sightings s
+        JOIN animal_instances a ON a.sighting_id=s.id WHERE s.capture_id=$1 GROUP BY s.id,s.species""",cid)
+    assert sorted((r["species"],r["views"]) for r in rows) == [("cat",2),("dog",2)]
+
+
+async def test_db_two_dogs_in_one_frame_hold_the_capture_for_review(migrated_db):
+    from app.routes.capture import get_capture
+    conn = migrated_db
+    body = tracked(("dog","dog"), ("dog",))
+    oid,cid,jid,storage = await seed(conn,body)
+    assert (await complete_capture_job(conn,storage,jid,body))["outcome"] == "needs_review"
+    assert await conn.fetchval("SELECT count(*) FROM sightings WHERE capture_id=$1",cid) == 0
+    status = await get_capture(cid,oid,conn,storage)
+    assert status.processing_state == "needs_review"
+    assert sorted(len(g.instance_ids) for g in status.groups) == [1,1,1]
