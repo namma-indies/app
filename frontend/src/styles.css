@@ -940,6 +940,20 @@ button { font-family: inherit; }
   flex-direction: column;
   gap: 10px;
 }
+/* Place search above the pick map (#80). */
+.place-search { display: flex; gap: 8px; }
+.place-search input {
+  flex: 1; min-width: 0; padding: 10px 12px; font: inherit;
+  border: 1px solid var(--line, #d8c4a6); border-radius: 10px; background: #fff;
+}
+.place-search .btn { flex: none; width: auto; padding-inline: 14px; }
+.place-results { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.place-results button {
+  width: 100%; text-align: left; display: flex; flex-direction: column; gap: 2px;
+  padding: 8px 12px; font: inherit; cursor: pointer;
+  border: 1px solid var(--line, #d8c4a6); border-radius: 10px; background: #fff;
+}
+.place-results span { font-size: 0.8rem; color: var(--muted, #7a6a58); }
 .pick-map-wrap { position: relative; height: min(46dvh, 340px); }
 .pick-map { position: absolute; inset: 0; border-radius: 12px; overflow: hidden; }
 /* Fixed over a moving map. A draggable marker sits under the thumb dragging it. */

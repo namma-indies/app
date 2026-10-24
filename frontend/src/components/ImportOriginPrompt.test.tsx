@@ -16,8 +16,10 @@ const mapCentre = { lat: 10.2381, lng: 77.4892 };
 vi.mock("maplibre-gl", () => ({ default: { Map: class {
   on(_event: string, callback: () => void) { callback(); }
   getCenter() { return mapCentre; }
+  getZoom() { return 16; }
+  addControl() {}
   remove() {}
-} } }));
+}, GeolocateControl: class {} } }));
 
 afterEach(cleanup);
 beforeEach(() => locate.mockReset().mockResolvedValue({ ok: false, reason: "unavailable" }));
