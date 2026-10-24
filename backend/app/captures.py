@@ -10,6 +10,7 @@ from app.config import settings
 from app.ids import uuid7
 from app.media_jobs import MODEL_NAME, vector_text
 from app.photos import thumb_key
+from app.suggestions import open_for_capture
 
 
 def decoded(value):
@@ -44,7 +45,7 @@ async def status(conn, storage, capture):
         groups = [AnimalGroup(instance_ids=ids) for ids in tracks.values()]
     return CaptureStatus(**await receipt(conn, capture), revision=capture["revision"],
         captured_at=capture["captured_at"], note=decoded(capture["attrs"]).get("note"),
-        instances=instances, groups=groups)
+        instances=instances, groups=groups, suggestions=await open_for_capture(conn, capture["id"]))
 
 
 def validate_groups(rows, groups):

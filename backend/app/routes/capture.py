@@ -16,7 +16,8 @@ from app.config import settings
 from app.deps import get_conn, get_storage
 from app.ids import uuid7
 from app.photos import process_photo, thumb_key
-from app.routes.sighting import _read_bounded
+from app.routes.sighting import _read_bounded, read_voice_note
+from app.transcription_jobs import enqueue_transcription
 
 router = APIRouter()
 
@@ -71,7 +72,8 @@ async def review_capture(capture_id: UUID, body: CaptureReview,
 
 @router.post("/capture", response_model=CaptureReceipt, status_code=201)
 async def create_capture(request: Request, photos: list[UploadFile] | None = File(None),
-        video: UploadFile | None = File(None), lat: float | None = Form(None),
+        video: UploadFile | None = File(None), audio: UploadFile | None = File(None),
+        lat: float | None = Form(None),
         lng: float | None = Form(None), geo_accuracy_m: float | None = Form(None),
         client_token: str | None = Form(None, max_length=200),
         geo_source: Literal["device_gps", "pin", "none", "exif"] = Form(...),
@@ -98,6 +100,10 @@ async def create_capture(request: Request, photos: list[UploadFile] | None = Fil
         raise HTTPException(422,"invalid longitude")
     if geo_accuracy_m is not None and (not math.isfinite(geo_accuracy_m) or geo_accuracy_m < 0):
         raise HTTPException(422,"invalid accuracy")
+    # A clip's own sound is its note (#96); a separate one rides only with photos.
+    if audio is not None and video is not None:
+        raise HTTPException(422,"a clip's own sound is its note; send no separate voice note")
+    voice_note = await read_voice_note(audio) if audio is not None else None
     capture_id = uuid7()
     rows = []
     clip_key = clip_sha = None
@@ -124,6 +130,11 @@ async def create_capture(request: Request, photos: list[UploadFile] | None = Fil
             await storage.put(key,p.original,p.content_type)
             await storage.put(thumb_key(key),p.thumbnail,p.content_type)
             rows.append((pid,key,p.width,p.height,p.phash,p.content_sha256))
+    audio_key = None
+    if voice_note is not None:
+        raw_audio,audio_ext,audio_type = voice_note
+        audio_key = f"captures/{capture_id}/audio.{audio_ext}"
+        await storage.put(audio_key,raw_audio,audio_type)
     attrs = {"note":note} if note else {}
     if video is not None:
         attrs["source"] = "video"
@@ -135,12 +146,16 @@ async def create_capture(request: Request, photos: list[UploadFile] | None = Fil
     try:
         async with pool.acquire() as conn, conn.transaction():
             capture = await conn.fetchrow("""INSERT INTO captures(id,observer_id,client_token,kind,
-                captured_at,reported_at,geog,geo_source,geo_accuracy_m,attrs,clip_s3_key,clip_sha256)
+                captured_at,reported_at,geog,geo_source,geo_accuracy_m,attrs,clip_s3_key,clip_sha256,audio_s3_key)
                 VALUES($1,$2,$3,$4,$5,$6,
                     CASE WHEN $7::bool THEN ST_SetSRID(ST_MakePoint($8,$9),4326)::geography ELSE NULL END,
-                    $10,$11,$12::jsonb,$13,$14) RETURNING *""",capture_id,observer_id,client_token,
+                    $10,$11,$12::jsonb,$13,$14,$15) RETURNING *""",capture_id,observer_id,client_token,
                 "video" if video is not None else "photo",captured_at,reported_at,has_geo,lng,lat,
-                geo_source,geo_accuracy_m,json.dumps(attrs),clip_key,clip_sha)
+                geo_source,geo_accuracy_m,json.dumps(attrs),clip_key,clip_sha,audio_key)
+            if audio_key is not None:
+                await enqueue_transcription(conn,capture_id,"note",audio_key)
+            if clip_key is not None:
+                await enqueue_transcription(conn,capture_id,"clip",clip_key)
             # Sources carry the content hash; the crops and clip frames the
             # worker publishes later do not. The identical-photo rule reaches a
             # capture's sightings through these (app.identical).

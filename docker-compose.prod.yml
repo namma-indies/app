@@ -17,6 +17,7 @@ services:
       context: .
       args:
         VITE_MULTI_ANIMAL_ENABLED: ${VITE_MULTI_ANIMAL_ENABLED:-false}
+        VITE_VOICE_NOTES_ENABLED: ${VITE_VOICE_NOTES_ENABLED:-false}
     restart: unless-stopped
     env_file: .env
     environment:

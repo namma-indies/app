@@ -77,6 +77,8 @@
 	<string>Namma Indies saves a copy of each sighting photo to your camera roll.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Namma Indies may need to read a photo you choose when logging a sighting.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Namma Indies records sound with your clips, and a voice note when you choose to add one about a dog.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Namma Indies uses your location to record where you spotted the dog.</string>
 </dict>

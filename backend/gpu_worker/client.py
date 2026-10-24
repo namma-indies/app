@@ -7,7 +7,9 @@ entrypoint; ``serve(adapter)`` loads HTTP configuration and handles SIGTERM.
 from __future__ import annotations
 
 import asyncio
+import base64
 from contextlib import suppress
+import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
@@ -26,6 +28,11 @@ import httpx
 
 PIPELINE_VERSION = "stored-webp-q90-yolo26x-miewid-msv3-v1"
 MODEL_NAME = "miewid-msv3"
+TRANSCRIBE_PIPELINE_VERSION = "whisper-cpp-large-v3-vad-v1"
+WHISPER_MODEL = "ggml-large-v3"
+TRANSCRIBE_ROUTE = "/internal/transcription-jobs/"
+SUGGEST_ROUTE = "/internal/suggestion-jobs/"
+MAX_SUGGEST_IMAGES = 8
 
 
 class WorkerError(Exception):
@@ -85,10 +92,15 @@ class Config:
     max_photo_bytes: int = 32 * 1024 * 1024
     max_clip_bytes: int = 100 * 1024 * 1024
     max_json_bytes: int = 1024 * 1024
+    max_audio_bytes: int = 8 * 1024 * 1024
+    # An animal's evidence thumbnail: 512 px WebP, far under this.
+    max_image_bytes: int = 2 * 1024 * 1024
     multi_animal: bool = False
+    transcribe: bool = False
+    suggest: bool = False
 
     def __post_init__(self):
-        if not isinstance(self.multi_animal, bool):
+        if not all(isinstance(getattr(self, flag), bool) for flag in ("multi_animal", "transcribe", "suggest")):
             raise ProtocolError()
         https_url(self.api_url)
         parsed = urlsplit(self.api_url)
@@ -107,11 +119,13 @@ class Config:
             raise ProtocolError()
         for name in ("request_timeout", "job_timeout", "heartbeat_interval", "idle_delay",
                      "error_delay", "max_backoff", "retry_delay", "max_photo_bytes",
-                     "max_clip_bytes", "max_json_bytes", "completion_attempts"):
+                     "max_clip_bytes", "max_json_bytes", "max_audio_bytes", "max_image_bytes",
+                     "completion_attempts"):
             value = getattr(self, name)
             if isinstance(value, bool) or not math.isfinite(value) or value <= 0:
                 raise ProtocolError()
-        for name in ("max_photo_bytes", "max_clip_bytes", "max_json_bytes", "completion_attempts"):
+        for name in ("max_photo_bytes", "max_clip_bytes", "max_json_bytes", "max_audio_bytes",
+                     "max_image_bytes", "completion_attempts"):
             if not isinstance(getattr(self, name), int):
                 raise ProtocolError()
         if self.completion_attempts > 5:
@@ -131,9 +145,12 @@ class Config:
             except OSError:
                 raise ProtocolError() from None
         multi = os.getenv("MEDIA_GPU_MULTI_ANIMAL", "0")
-        if multi not in ("0", "1"):
+        transcribe = os.getenv("MEDIA_GPU_TRANSCRIBE", "0")
+        suggest = os.getenv("MEDIA_GPU_SUGGEST", "0")
+        if any(flag not in ("0", "1") for flag in (multi, transcribe, suggest)):
             raise ProtocolError()
         return cls(api_url=os.getenv("MEDIA_GPU_API_URL", ""), token=token or "", multi_animal=multi == "1",
+                   transcribe=transcribe == "1", suggest=suggest == "1",
                    storage_origins=tuple(x.strip() for x in
                        os.getenv("MEDIA_GPU_STORAGE_ORIGINS", "").split(",") if x.strip()))
 
@@ -143,12 +160,22 @@ class Adapter(Protocol):
     def extract_clip(self, raw: bytes) -> list[Any]: ...
 
 
+class Transcriber(Protocol):
+    def transcribe(self, raw: bytes) -> Any: ...
+
+
+class Model(Protocol):
+    def complete(self, body: dict) -> str: ...
+
+
 @dataclass
 class Lease:
     job: dict
     deadline: float
     lost: bool = False
     completing: bool = False
+    # Which queue the job came from; None is the image pipeline's own.
+    route: str | None = None
 
     def check(self):
         if self.lost or asyncio.get_running_loop().time() >= self.deadline:
@@ -173,9 +200,12 @@ def expiry_deadline(value: str, started: float) -> float:
 
 class Worker:
     def __init__(self, config: Config, adapter: Adapter, *,
+                 transcriber: Transcriber | None = None, model: Model | None = None,
                  api_transport: httpx.AsyncBaseTransport | None = None,
                  storage_transport: httpx.AsyncBaseTransport | None = None):
-        self.config, self.adapter = config, adapter
+        if config.transcribe != (transcriber is not None) or config.suggest != (model is not None):
+            raise ProtocolError()
+        self.config, self.adapter, self.transcriber, self.model = config, adapter, transcriber, model
         # HTTPX logs complete presigned query strings even at INFO. This
         # dedicated worker intentionally emits no HTTP-library diagnostics.
         for name in ("httpx", "httpcore"):
@@ -197,11 +227,11 @@ class Worker:
         await self.api.aclose()
         await self.storage.aclose()
 
-    async def _api(self, path: str, body: dict | bytes) -> dict:
+    async def _api(self, path: str, body: dict | bytes, route: str | None = None) -> dict:
         content = body if isinstance(body, bytes) else json.dumps(body, allow_nan=False).encode()
+        route = route or ("/internal/capture-jobs/" if self.config.multi_animal else "/internal/media-jobs/")
         async with asyncio.timeout(self.config.request_timeout):
-            async with self.api.stream("POST", self.config.api_url.rstrip("/") +
-                    ("/internal/capture-jobs/" if self.config.multi_animal else "/internal/media-jobs/") + path, content=content,
+            async with self.api.stream("POST", self.config.api_url.rstrip("/") + route + path, content=content,
                     headers={"Authorization": "Bearer " + self.config.token,
                              "Content-Type": "application/json", "Accept-Encoding": "identity"},
                     follow_redirects=False) as response:
@@ -297,7 +327,7 @@ class Worker:
             try:
                 async with asyncio.timeout(lease.deadline - asyncio.get_running_loop().time()):
                     reply = await self._api(lease.job["id"] + "/heartbeat",
-                                            {"lease_token": lease.job["lease_token"]})
+                                            {"lease_token": lease.job["lease_token"]}, lease.route)
                 lease.check()
                 lease.deadline = expiry_deadline(reply["lease_expires_at"], started)
             except Exception:
@@ -376,7 +406,68 @@ class Worker:
                 raise MediaLimit()
             await self._complete(lease, payload)
 
+    async def _process_transcription(self, lease):
+        job = lease.job
+        if (job["pipeline_version"] != TRANSCRIBE_PIPELINE_VERSION or job["model"] != WHISPER_MODEL
+                or job["kind"] not in ("note", "clip")):
+            raise ProtocolError()
+        maximum = self.config.max_clip_bytes if job["kind"] == "clip" else self.config.max_audio_bytes
+        raw = await self._download(job["source"], maximum, lease)
+        heard = await self._thread(self.transcriber.transcribe, raw, lease)
+        payload = json.dumps(dict(
+            lease_token=job["lease_token"], pipeline_version=TRANSCRIBE_PIPELINE_VERSION,
+            model=WHISPER_MODEL, outcome=heard.outcome, language=heard.language,
+            text=heard.text, segments=heard.segments), allow_nan=False).encode()
+        if len(payload) > 4 * 1024 * 1024:
+            raise MediaLimit()
+        await self._complete(lease, payload)
+
+    @staticmethod
+    def _image_type(raw: bytes) -> str:
+        if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+            return "image/webp"
+        if raw[:3] == b"\xff\xd8\xff":
+            return "image/jpeg"
+        if raw[:8] == b"\x89PNG\r\n\x1a\n":
+            return "image/png"
+        raise MediaLimit()
+
+    async def _process_suggestion(self, lease):
+        """Run the API's ready-made request on the local model, images inlined.
+
+        The request's prompt, schema and checks belong to the API; this side
+        only fixes what must be local (no model fetches, no thinking pass,
+        bounded output) and returns the answer unparsed.
+        """
+        request = lease.job["request"]
+        if (not isinstance(request, dict) or not isinstance(request.get("messages"), list)
+                or not isinstance(request.get("response_format"), dict)):
+            raise ProtocolError()
+        messages = copy.deepcopy(request["messages"])
+        parts = [part for message in messages if isinstance(message, dict)
+                 and isinstance(message.get("content"), list)
+                 for part in message["content"] if isinstance(part, dict) and part.get("type") == "image_url"]
+        if len(parts) > MAX_SUGGEST_IMAGES:
+            raise MediaLimit()
+        for part in parts:
+            raw = await self._download({"url": part["image_url"]["url"]}, self.config.max_image_bytes, lease)
+            part["image_url"] = {"url": f"data:{self._image_type(raw)};base64," + base64.b64encode(raw).decode()}
+        body = {"model": "local", "messages": messages, "response_format": request["response_format"],
+                "temperature": 0, "max_tokens": 1024,
+                # Qwen3.8 reasons before answering unless told not to, and on
+                # llama-server only the chat template flag stops it.
+                "chat_template_kwargs": {"enable_thinking": False}}
+        content = await self._thread(self.model.complete, body, lease)
+        payload = json.dumps(dict(lease_token=lease.job["lease_token"], content=content)).encode()
+        if len(payload) > 128 * 1024:
+            raise MediaLimit()
+        await self._complete(lease, payload)
+
     async def _process(self, lease):
+        if lease.route == TRANSCRIBE_ROUTE:
+            return await self._process_transcription(lease)
+        if lease.route == SUGGEST_ROUTE:
+            return await self._process_suggestion(lease)
         if self.config.multi_animal:
             return await self._process_multi(lease)
         job = lease.job
@@ -438,7 +529,7 @@ class Worker:
         for attempt in range(self.config.completion_attempts):
             lease.check()
             try:
-                reply = await self._api(job["id"] + "/complete", payload)
+                reply = await self._api(job["id"] + "/complete", payload, lease.route)
                 if reply.get("status") != "done":
                     raise ProtocolError()
                 return
@@ -453,13 +544,21 @@ class Worker:
                 return False
             started = asyncio.get_running_loop().time()
             reply = await self._api("claim", {"owner": self.config.owner})
-            job = reply["job"]
+            job, route = reply["job"], None
+            # Images first: a sighting waits on them to appear and be matched;
+            # nothing waits on a transcript, and suggestions need one.
+            for queue, enabled in ((TRANSCRIBE_ROUTE, self.transcriber is not None),
+                                   (SUGGEST_ROUTE, self.model is not None)):
+                if job is None and enabled:
+                    started = asyncio.get_running_loop().time()
+                    reply = await self._api("claim", {"owner": self.config.owner}, queue)
+                    job, route = reply["job"], queue
             if job is None:
                 return False
             job_id = str(UUID(job["id"]))
             if job_id != job["id"] or not isinstance(job["lease_token"], str) or not 32 <= len(job["lease_token"]) <= 128:
                 raise ProtocolError()
-            lease = Lease(job, expiry_deadline(job["lease_expires_at"], started))
+            lease = Lease(job, expiry_deadline(job["lease_expires_at"], started), route=route)
             work = asyncio.create_task(self._process(lease))
             heartbeat = asyncio.create_task(self._heartbeat(lease))
             try:
@@ -484,7 +583,7 @@ class Worker:
                     retryable = error.retryable if isinstance(error, WorkerError) else not isinstance(error, ValueError)
                     with suppress(Exception):
                         await self._api(job_id + "/fail", dict(lease_token=job["lease_token"],
-                                                              error=code, retryable=retryable))
+                                                              error=code, retryable=retryable), route)
             finally:
                 work.cancel()
                 heartbeat.cancel()
@@ -511,13 +610,14 @@ class Worker:
                     await asyncio.wait_for(self.stop.wait(), delay * random.uniform(0.8, 1.2))
 
 
-async def serve(adapter: Adapter, config: Config | None = None):
+async def serve(adapter: Adapter, config: Config | None = None,
+                transcriber: Transcriber | None = None, model: Model | None = None):
     """SIGTERM stops claims; the current job drains within its job timeout.
 
     Native GPU hangs require a supervisor's hard kill after the grace period:
     Python cannot forcibly terminate a thread executing a CUDA call.
     """
-    async with Worker(config or Config.from_env(), adapter) as worker:
+    async with Worker(config or Config.from_env(), adapter, transcriber=transcriber, model=model) as worker:
         loop = asyncio.get_running_loop()
         signals = (signal.SIGTERM, signal.SIGINT)
         for sig in signals:

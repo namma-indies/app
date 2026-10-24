@@ -181,7 +181,8 @@ async def test_private_status_returns_source_dimensions_without_signing_original
         "bbox": [20, 40, 80, 100], "crop_bbox": [10, 20, 110, 120],
         "timestamp_ms": 1500, "s3_key": "crop.webp", "source_key": "source.webp",
         "source_width": 200, "source_height": 400, "details": {}}
-    conn = SimpleNamespace(fetch=AsyncMock(side_effect=[[row], []]), fetchrow=AsyncMock(return_value=None))
+    # Instances, the receipt's sightings, then open voice-note suggestions.
+    conn = SimpleNamespace(fetch=AsyncMock(side_effect=[[row], [], []]), fetchrow=AsyncMock(return_value=None))
     storage = SimpleNamespace(urls=AsyncMock(side_effect=lambda keys: ["signed:" + key for key in keys]))
     response = await status(conn, storage, capture)
     evidence = response.model_dump(mode="json")["instances"][0]
@@ -352,7 +353,7 @@ async def test_db_upload_gate_and_cross_endpoint_idempotency(migrated_db,monkeyp
     await conn.execute("INSERT INTO observers(id) VALUES($1)",oid)
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=FakePool(conn))))
     storage = SimpleNamespace(put=AsyncMock())
-    kwargs = dict(request=request,photos=None,video=UploadFile(io.BytesIO(b"video")),lat=None,lng=None,
+    kwargs = dict(request=request,photos=None,video=UploadFile(io.BytesIO(b"video")),audio=None,lat=None,lng=None,
         geo_accuracy_m=None,client_token="capture-token",geo_source="none",captured_at=datetime.now(timezone.utc),
         reported_at=None,note="shared",observer_id=oid,storage=storage)
     monkeypatch.setattr(settings,"multi_animal_enabled",False)

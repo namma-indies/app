@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -68,6 +70,33 @@ class Settings(BaseSettings):
     media_max_attempts: int = Field(default=8, ge=1, le=100)
     media_max_video_bytes: int = Field(default=100 * 1024 * 1024, gt=0, le=500 * 1024 * 1024)
     media_max_photo_bytes: int = Field(default=20 * 1024 * 1024, gt=0, le=50 * 1024 * 1024)
+    # A voice note is capped at 60 s on the client; even uncompressed 16-bit
+    # mono at 48 kHz is ~5.8 MB, and the AAC/Opus a phone actually records is
+    # well under 1 MB.
+    # Voice notes and clip sound go to the GPU worker's whisper.cpp
+    # (app/transcription_jobs.py). Off until a worker with the model is running:
+    # with nothing to drain it, the queue would only grow.
+    transcription_enabled: bool = False
+    # Suggested animal details from a transcript (app/suggestions.py), via an
+    # OpenAI-compatible chat endpoint. Off unless enabled AND a key is set.
+    # The base URL takes OpenRouter too; the model must take image input and
+    # strict json_schema output (photos tell multi-animal notes apart).
+    suggestions_enabled: bool = False
+    suggest_api_key: str = ""
+    suggest_base_url: str = "https://api.openai.com/v1"
+    suggest_model: str = "gpt-6-luna"
+    # Reading a few sentences for four fields needs little reasoning; empty
+    # omits the parameter for endpoints that do not take it.
+    suggest_reasoning_effort: str = "low"
+    # Where the model runs: "worker" is the local Qwen3.8 on the DGX slice
+    # (needs no key; the worker must be rendered with the llama_* pins),
+    # "api" is the endpoint above.
+    suggest_via: Literal["worker", "api"] = "worker"
+    # Recorded on each suggestion made on the worker path.
+    suggest_local_model: str = "qwen3.8-27b-ud-q4_k_xl"
+    suggest_timeout_s: int = Field(default=60, ge=5, le=600)
+    suggest_poll_s: float = Field(default=5.0, ge=0.5, le=600)
+    media_max_audio_bytes: int = Field(default=8 * 1024 * 1024, gt=0, le=50 * 1024 * 1024)
 
     # --- re-identification -------------------------------------------------
     # Candidate scope for a new sighting. Street dogs hold small territories,

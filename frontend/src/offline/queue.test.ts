@@ -72,6 +72,20 @@ describe("flush", () => {
     expect(await pendingCount()).toBe(0);
     expect(postSighting).not.toHaveBeenCalled();
   });
+  it("keeps a voice note recorded offline and sends it when the queue flushes", async () => {
+    const { enqueue, flush, pendingCount } = await freshQueue();
+    const photo = new Blob(["photo"], { type: "image/jpeg" });
+    await enqueue({ ...SAMPLE, photos: [photo], audio: new Blob(["she is asleep"], { type: "audio/mp4" }) });
+    vi.mocked(postSighting).mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    await flush();
+    expect(await pendingCount()).toBe(1);
+    vi.mocked(postSighting).mockResolvedValue({ sighting_id: "s", photo_ids: [] });
+    await flush();
+    const sent = vi.mocked(postSighting).mock.calls[1][0];
+    expect(sent.audio?.type).toBe("audio/mp4");
+    expect(await sent.audio?.text()).toBe("she is asleep");
+    expect(await pendingCount()).toBe(0);
+  });
   it("deletes an uploaded queued video without waiting for frames or processing", async () => {
     const { enqueue, flush, pendingCount, failedCount } = await freshQueue();
     await enqueue({ ...SAMPLE, photos: undefined, video: new Blob(["clip"], { type: "video/mp4" }) });

@@ -28,6 +28,9 @@ from app.media_jobs import cpu_consumer, router as media_jobs_router
 from app.routes.capture import router as capture_router
 from app.routes.social import router as social_router
 from app.capture_jobs import router as capture_jobs_router
+from app.transcription_jobs import router as transcription_jobs_router
+from app.suggestions import (consumer as suggestion_consumer, router as suggestions_router,
+                             suggestions_running, worker_router as suggestion_jobs_router)
 
 logger = logging.getLogger(__name__)
 
@@ -59,13 +62,17 @@ async def lifespan(app: FastAPI):
     consumer = None
     if settings.media_jobs_enabled and settings.media_cpu_fallback_enabled:
         consumer = asyncio.create_task(cpu_consumer(app.state.pool, get_storage()))
+    suggester = None
+    if suggestions_running():
+        suggester = asyncio.create_task(suggestion_consumer(app.state.pool, get_storage()))
     try:
         yield
     finally:
-        if consumer is not None:
-            consumer.cancel()
-            with suppress(asyncio.CancelledError):
-                await consumer
+        for task in (consumer, suggester):
+            if task is not None:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
         await app.state.pool.close()
 
 
@@ -94,6 +101,9 @@ app.include_router(media_jobs_router)
 app.include_router(capture_router)
 app.include_router(social_router)
 app.include_router(capture_jobs_router)
+app.include_router(transcription_jobs_router)
+app.include_router(suggestions_router)
+app.include_router(suggestion_jobs_router)
 
 
 @app.get("/health")

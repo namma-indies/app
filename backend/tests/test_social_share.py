@@ -81,8 +81,8 @@ async def test_capture_share_flag_carries_to_published_sightings(migrated_db, mo
     monkeypatch.setattr(settings, "media_jobs_enabled", True)
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=FakePool(conn))))
     received = await create_capture(
-        request=request, photos=None, video=UploadFile(io.BytesIO(b"video")), lat=None,
-        lng=None, geo_accuracy_m=None, client_token="t", geo_source="none",
+        request=request, photos=None, video=UploadFile(io.BytesIO(b"video")), audio=None,
+        lat=None, lng=None, geo_accuracy_m=None, client_token="t", geo_source="none",
         captured_at=datetime.now(timezone.utc), reported_at=None, note=None,
         share_with_team=True, observer_id=oid, storage=SimpleNamespace(put=AsyncMock()))
     attrs = await conn.fetchval("SELECT attrs->>'share_with_team' FROM captures WHERE id=$1",

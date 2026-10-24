@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { UnauthorizedError } from "../api";
-import { getCapture, reviewCapture, type CaptureDetail, type CaptureGroup, type CaptureInstance } from "../captureApi";
+import { decideSuggestion, UnauthorizedError } from "../api";
+import { getCapture, reviewCapture, type CaptureDetail, type CaptureGroup, type CaptureInstance, type CaptureSuggestion } from "../captureApi";
 
 export function groupingError(instances: CaptureInstance[], assignments: Record<string, string>): string | null {
   if (instances.some((instance) => !assignments[instance.id])) return "Every box needs an animal.";
@@ -18,6 +18,7 @@ export function groupingError(instances: CaptureInstance[], assignments: Record<
 }
 
 const FIELD_LABELS = { sex: "Sex", ear_notch: "Ear notch", condition: "Condition" } as const;
+const SUGGESTION_LABELS = { ...FIELD_LABELS, known_name: "Name" } as const;
 const evidenceColors = ["#ffda47", "#66d9ff", "#ff8cc6", "#a6ed83", "#c8a2ff", "#ffad66"];
 const evidenceStyle = (index: number): CSSProperties => ({ "--evidence-color": evidenceColors[index % evidenceColors.length] } as CSSProperties);
 const boxStyle = (box: NonNullable<CaptureInstance["bbox"]>): CSSProperties => ({
@@ -42,12 +43,16 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
   const [saving, setSaving] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [revision, setRevision] = useState(0);
+  // Voice-note suggestions the observer has answered in this sheet. Nothing is
+  // decided until the sheet saves: "used" only fills the field in.
+  const [answers, setAnswers] = useState<Record<string, "used" | "dismissed">>({});
   const unauthorizedRef = useRef(onUnauthorized);
   unauthorizedRef.current = onUnauthorized;
   useEffect(() => {
     const controller = new AbortController();
     setError(null);
     setDetail(null);
+    setAnswers({});
     getCapture(captureId, controller.signal).then((result) => {
       if (controller.signal.aborted) return;
       setDetail(result);
@@ -86,12 +91,25 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
   }));
   const emptyGroup = detail?.instances.map((_, index) => String(index + 1)).find((group) => !groupSpecies.has(group));
   const invalid = detail ? groupingError(detail.instances, assignments) : null;
+  // Offered under whichever animal its box is now grouped into, while that
+  // detail is still blank there and the observer hasn't answered it.
+  const suggestionsFor = (group: string): CaptureSuggestion[] => (detail?.suggestions ?? []).filter((suggestion) =>
+    assignments[suggestion.instance_id] === group && !answers[suggestion.id] && !attrs[group]?.[suggestion.field]);
   const canSave = !!detail && (detail.processing_state === "needs_review" || detail.processing_state === "ready") && !error && !invalid && !saving && detail.instances.length > 0;
   async function save() {
     if (!detail || !canSave) return;
     setSaving(true); setError(null);
     try {
       await reviewCapture(captureId, groups.map((group) => ({ ...attrs[group], instance_ids: detail.instances.filter((instance) => assignments[instance.id] === group).map((instance) => instance.id) })), detail.revision);
+      // Bookkeeping after the save that actually decided: what was finally
+      // chosen for a suggestion that was used, or that it was turned down.
+      // Best effort -- a lost record must not undo or block the save.
+      await Promise.allSettled((detail.suggestions ?? []).flatMap((suggestion) => {
+        const answer = answers[suggestion.id];
+        if (!answer) return [];
+        const chosen = attrs[assignments[suggestion.instance_id]]?.[suggestion.field];
+        return [decideSuggestion(suggestion.id, answer === "used" && chosen ? { verdict: "choose", value: chosen } : { verdict: "dismiss" })];
+      }));
       onSaved();
     } catch (err) {
       if (err instanceof UnauthorizedError) unauthorizedRef.current();
@@ -154,6 +172,18 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
         <p className="hint" id="known-name-hint">If people call this animal something, add it. A name doesn’t decide which dog this is. Once the dog is matched, it’s kept as a suggested name.</p>
         {groups.map((group) => <fieldset key={group} disabled={saving} className={selectedId && assignments[selectedId] === group ? "capture-entry-selected" : undefined}>
           <legend>{groupLabels.get(group)}</legend>
+          {suggestionsFor(group).length > 0 && <div className="voice-suggestions">
+            <p className="spot-label">FROM YOUR VOICE NOTE</p>
+            {suggestionsFor(group).map((suggestion) => <p className="voice-suggestion" key={suggestion.id}>
+              {SUGGESTION_LABELS[suggestion.field]}: <strong>{suggestion.value}</strong>{" "}
+              <span className="suggestion-quote">“{suggestion.quote}”</span>{" "}
+              <button type="button" className="link-btn" aria-label={`Use ${suggestion.value} for ${SUGGESTION_LABELS[suggestion.field].toLowerCase()}`} onClick={() => {
+                setAttrs((current) => ({ ...current, [group]: { ...current[group], [suggestion.field]: suggestion.value } }));
+                setAnswers((current) => ({ ...current, [suggestion.id]: "used" }));
+              }}>use</button>{" "}
+              <button type="button" className="link-btn" onClick={() => setAnswers((current) => ({ ...current, [suggestion.id]: "dismissed" }))}>not this</button>
+            </p>)}
+          </div>}
           <label>Known name (optional)
             <input type="text" maxLength={80} value={attrs[group]?.known_name ?? ""} aria-describedby="known-name-hint"
               onChange={(e) => setAttrs((current) => ({ ...current, [group]: { ...current[group], known_name: e.target.value } }))}

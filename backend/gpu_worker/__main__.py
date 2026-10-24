@@ -2,6 +2,15 @@
 
 Required: MEDIA_GPU_{DETECTOR,EMBEDDER}_{PATH,SHA256}, MEDIA_GPU_API_URL,
 MEDIA_GPU_STORAGE_ORIGINS, and exactly one of MEDIA_GPU_TOKEN / TOKEN_FILE.
+With MEDIA_GPU_TRANSCRIBE=1, also MEDIA_GPU_WHISPER_{BIN,MODEL,VAD}_{PATH,SHA256}:
+a statically linked whisper-cli, ggml-large-v3 and a silero VAD model. The
+binary is pinned and snapshotted exactly like a model, then run from the copy.
+With MEDIA_GPU_SUGGEST=1, also MEDIA_GPU_LLAMA_{BIN,MODEL,MMPROJ}_{PATH,SHA256}:
+llama-server and a Qwen3.8 GGUF with its vision projector. At ~18 GB those two
+are verified in place instead of copied: hashed through a descriptor opened
+without following symlinks, which is then handed to llama-server, so the bytes
+it maps are the bytes that were hashed (barring an in-place rewrite by a PVC
+writer, which remain trusted as everywhere else here).
 Models must be nonempty, singly-linked regular files under absolute,
 symlink-free paths. Private verified snapshots prevent path replacement between
 verification and ORT loading; allow temporary disk space for both model files.
@@ -9,7 +18,7 @@ verification and ORT loading; allow temporary disk space for both model files.
 from __future__ import annotations
 
 import asyncio
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import hashlib
 import hmac
 import os
@@ -61,7 +70,17 @@ def _open_model(path: Path):
         os.close(directory)
 
 
-def _snapshot(spec: tuple[Path, str], destination: Path) -> None:
+def _verified_descriptor(spec: tuple[Path, str], stack: ExitStack) -> int:
+    """Hash a pinned file through a descriptor kept open for the process's life."""
+    path, expected = spec
+    source = stack.enter_context(_open_model(path))
+    actual = hashlib.file_digest(source, "sha256").hexdigest()
+    if not hmac.compare_digest(actual, expected):
+        raise BootstrapError("model_hash_mismatch")
+    return source.fileno()
+
+
+def _snapshot(spec: tuple[Path, str], destination: Path, *, executable: bool = False) -> None:
     path, expected = spec
     with _open_model(path) as source, destination.open("xb") as output:
         shutil.copyfileobj(source, output, length=1024 * 1024)
@@ -69,7 +88,7 @@ def _snapshot(spec: tuple[Path, str], destination: Path) -> None:
         actual = hashlib.file_digest(snapshot, "sha256").hexdigest()
     if not hmac.compare_digest(actual, expected):
         raise BootstrapError("model_hash_mismatch")
-    destination.chmod(0o400)
+    destination.chmod(0o500 if executable else 0o400)
 
 
 @contextmanager
@@ -95,23 +114,55 @@ def _quiet_startup():
 
 
 async def run() -> None:
-    with _quiet_startup():
-        detector_spec = _model_spec("DETECTOR")
-        embedder_spec = _model_spec("EMBEDDER")
-        from gpu_worker.client import Config, serve
+    with ExitStack() as stack:
+        with _quiet_startup():
+            detector_spec = _model_spec("DETECTOR")
+            embedder_spec = _model_spec("EMBEDDER")
+            from gpu_worker.client import Config, serve
 
-        config = Config.from_env()
-        with tempfile.TemporaryDirectory(prefix="gpu-models-") as directory:
-            root = Path(directory)
-            detector, embedder = root / "detector.onnx", root / "embedder.onnx"
-            _snapshot(detector_spec, detector)
-            _snapshot(embedder_spec, embedder)
-            # Importing application settings can itself raise with secret values.
-            # Both hashes must pass before importing or constructing ORT sessions.
-            from gpu_worker.inference import GpuInference
+            config = Config.from_env()
+            whisper_specs = ({name: _model_spec("WHISPER_" + name) for name in ("BIN", "MODEL", "VAD")}
+                             if config.transcribe else None)
+            llama_specs = ({name: _model_spec("LLAMA_" + name) for name in ("BIN", "MODEL", "MMPROJ")}
+                           if config.suggest else None)
+            with tempfile.TemporaryDirectory(prefix="gpu-models-") as directory:
+                root = Path(directory)
+                detector, embedder = root / "detector.onnx", root / "embedder.onnx"
+                _snapshot(detector_spec, detector)
+                _snapshot(embedder_spec, embedder)
+                # Importing application settings can itself raise with secret values.
+                # Both hashes must pass before importing or constructing ORT sessions.
+                from gpu_worker.inference import GpuInference
 
-            adapter = GpuInference.from_paths(detector, embedder)
-    await serve(adapter, config=config)
+                adapter = GpuInference.from_paths(detector, embedder)
+            transcriber = None
+            if whisper_specs is not None:
+                # Unlike the ONNX copies, these outlive startup: whisper-cli is
+                # a fresh process per job and reads the verified copies each time.
+                from gpu_worker.transcribe import Transcriber
+
+                root = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="gpu-whisper-")))
+                binary, model, vad = root / "whisper-cli", root / "whisper.bin", root / "vad.bin"
+                _snapshot(whisper_specs["BIN"], binary, executable=True)
+                _snapshot(whisper_specs["MODEL"], model)
+                _snapshot(whisper_specs["VAD"], vad)
+                transcriber = Transcriber(binary, model, vad)
+            local_model = None
+            if llama_specs is not None:
+                from gpu_worker.llm import LocalModel
+
+                root = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="gpu-llama-")))
+                binary = root / "llama-server"
+                _snapshot(llama_specs["BIN"], binary, executable=True)
+                weights = _verified_descriptor(llama_specs["MODEL"], stack)
+                projector = _verified_descriptor(llama_specs["MMPROJ"], stack)
+                local_model = LocalModel(binary, f"/proc/self/fd/{weights}", f"/proc/self/fd/{projector}",
+                                         pass_fds=(weights, projector))
+                # Loading ~18 GB onto the slice; inside the supervisor's 420 s
+                # startup allowance.
+                local_model.start()
+                stack.callback(local_model.stop)
+        await serve(adapter, config=config, transcriber=transcriber, model=local_model)
 
 
 def main() -> int:

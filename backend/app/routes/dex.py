@@ -8,6 +8,7 @@ from app.auth.deps import require_observer
 from app.deps import get_conn, get_storage
 from app.photos import thumb_key
 from app.storage.s3 import S3Storage
+from app.transcription_jobs import PIPELINE_VERSION as TRANSCRIBE_PIPELINE
 
 router = APIRouter()
 
@@ -47,6 +48,9 @@ async def get_dex(
             s.capture_id,
             c.processing_state = 'ready' AS details_editable,
             s.species,
+            -- A /capture upload keeps its note on the capture, which all its
+            -- published sightings share.
+            COALESCE(s.audio_s3_key, c.audio_s3_key) AS audio_s3_key,
             {animal_present()} AS animal_ok,
             p.id AS photo_id,
             p.s3_key
@@ -94,6 +98,7 @@ async def get_dex(
                 "on_map": _on_map(row),
                 "off_map_reason": _off_map_reason(row),
                 "photos": [],
+                "_audio_key": row["audio_s3_key"],
             }
             order.append(sid)
         if row["photo_id"] is not None:
@@ -112,5 +117,50 @@ async def get_dex(
         del photo["_key"]
         photo["url"] = url
         photo["thumb_url"] = thumb_url
+
+    # Present only so the observer can hear that their note arrived (#96).
+    with_audio = [s for s in sightings.values() if s["_audio_key"]]
+    audio_urls = dict(zip(
+        map(id, with_audio), await storage.urls([s["_audio_key"] for s in with_audio])
+    ))
+    for sighting in sightings.values():
+        del sighting["_audio_key"]
+        sighting["audio_url"] = audio_urls.get(id(sighting))
+
+    # What the GPU worker heard in the note or the clip. Returned, not yet
+    # shown: it is the input to suggested field values the observer confirms.
+    capture_ids = {s["capture_id"] for s in sightings.values() if s["capture_id"]}
+    heard: dict[str, list[dict]] = {}
+    if capture_ids:
+        for row in await conn.fetch(
+            "SELECT capture_id, source, language, text FROM voice_transcripts "
+            "WHERE capture_id = ANY($1::uuid[]) AND pipeline_version = $2 "
+            "AND outcome = 'transcribed' ORDER BY source DESC",
+            list(capture_ids), TRANSCRIBE_PIPELINE,
+        ):
+            heard.setdefault(str(row["capture_id"]), []).append(
+                {"source": row["source"], "language": row["language"], "text": row["text"]})
+    for sighting in sightings.values():
+        sighting["voice_transcripts"] = heard.get(sighting["capture_id"], [])
+
+    # Details a model read from that transcript, for the observer to confirm
+    # or correct (app/suggestions.py). Only for a detail still left blank: a
+    # value the observer chose themselves is never second-guessed.
+    offered: dict[str, list[dict]] = {}
+    if capture_ids:
+        for row in await conn.fetch(
+            "SELECT id, capture_id, field, value, quote FROM detail_suggestions "
+            "WHERE capture_id = ANY($1::uuid[]) AND status = 'open' AND instance_id IS NULL "
+            "ORDER BY field",
+            list(capture_ids),
+        ):
+            offered.setdefault(str(row["capture_id"]), []).append(
+                {"id": str(row["id"]), "field": row["field"], "value": row["value"],
+                 "quote": row["quote"]})
+    for sighting in sightings.values():
+        sighting["suggestions"] = [
+            o for o in offered.get(sighting["capture_id"], [])
+            if sighting["capture_id"] == sighting["id"] and not sighting["attrs"].get(o["field"])
+        ]
 
     return {"sightings": [sightings[sid] for sid in order]}
