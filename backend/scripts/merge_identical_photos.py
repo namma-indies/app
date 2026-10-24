@@ -16,7 +16,9 @@ Two phases:
 2. **Link.** Every embedded sighting whose photo also appears in another
    sighting goes through `link_identical`, the function resolution calls, so
    the backfill cannot disagree with live behaviour. Pending proposals the
-   links answer are deleted as part of it.
+   links answer are deleted, the later copy of each photo is marked
+   `duplicate_of` the earlier so it counts once, and known names are proposed
+   for the dog -- all as part of it.
 
 **Dry-run is the default** and writes nothing. It still does all the work --
 reads S3, hashes, links -- inside a transaction it then rolls back, so the
@@ -113,6 +115,7 @@ class Report:
     individuals_minted: int = 0
     links_to_existing: int = 0
     proposals_cleared: int = 0
+    duplicates_marked: int = 0
     pending_before: int = 0
     pending_after: int = 0
     skipped: Counter = field(default_factory=Counter)
@@ -173,6 +176,7 @@ async def run(pool: asyncpg.Pool, storage, *, apply: bool) -> Report:
                         rep.skipped[out.reason] += 1
                         continue
                     rep.proposals_cleared += out.proposals_cleared
+                    rep.duplicates_marked += len(out.duplicates_marked)
                     if out.newly_linked:
                         rep.sightings_linked += len(out.newly_linked)
                         if out.minted:
@@ -196,6 +200,8 @@ def describe(rep: Report, *, apply: bool) -> str:
         f"sightings sharing a photo with another: {rep.duplicated_sightings}",
         f"sightings {verb}linked: {rep.sightings_linked} "
         f"({rep.individuals_minted} new dog(s), {rep.links_to_existing} onto an existing one)",
+        f"copies {verb}hidden from /map, /dogs and /stats (kept in /dex): "
+        f"{rep.duplicates_marked}",
         f"skipped, left to a person: {skipped}",
         f"pending proposals {verb}cleared: {rep.proposals_cleared} "
         f"({rep.pending_before} -> {rep.pending_after})",

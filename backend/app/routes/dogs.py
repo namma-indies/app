@@ -207,6 +207,8 @@ async def get_dogs(
             FROM sightings s
             JOIN photos p ON p.sighting_id = s.id
             WHERE s.individual_id = ANY($1::uuid[]) AND s.review_status = 'valid'
+              -- The same photo submitted twice is shown once (app.identical).
+              AND s.duplicate_of IS NULL
         ) ranked
         WHERE rn <= $2
         """,
@@ -225,6 +227,7 @@ async def get_dogs(
                s.observer_id
         FROM sightings s
         WHERE s.individual_id = ANY($1::uuid[]) AND s.geog IS NOT NULL AND s.review_status = 'valid'
+          AND s.duplicate_of IS NULL
         -- s.id tiebreaks. Two sightings of one dog sharing captured_at would
         -- otherwise leave "latest" to the plan, so the card's location could
         -- change between requests for no reason the reader can see.

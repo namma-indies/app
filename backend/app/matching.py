@@ -142,6 +142,9 @@ async def find_candidates(
                   -- state, and dropping candidates on every report would make
                   -- re-ID quality depend on who tapped what.
                   AND s.review_status <> 'rejected'
+                  -- A duplicate is its original's photo again; offering both
+                  -- asks the same question twice.
+                  AND s.duplicate_of IS NULL
                   -- A photo with no animal in it must not seed an identity.
                   -- Note this is a different knob from the box threshold:
                   -- REID_CONF_THRESHOLD = 0.10 can produce a box, and so an

@@ -36,6 +36,19 @@ ordinary proposal, and a person, when:
 * either side is rejected by a moderator, or ruled to hold no animal. A
   takedown that still seeds identities is a decision that did not stick.
 
+A PHOTO LOGGED TWICE COUNTS ONCE
+-------------------------------
+Linking says the two are one dog; it would still say the dog was seen twice.
+So a copy that adds no photo of its own -- every photo it holds is also in an
+earlier sighting -- is marked `duplicate_of` that earlier sighting and drops
+out of /map, /dogs and /stats (`countable_sighting()`). It stays in its
+contributor's /dex. "Earlier" is submission order (`created_at`), so live it is
+almost always the new upload that is the copy. A sighting with any photo the
+other lacks is a second observation and keeps counting.
+
+Known names carry over: a contributor's typed name is proposed for the dog,
+exactly as after a human verdict, and stays a proposal.
+
 It never un-links anything. A sighting is only ever moved from no identity to
 one, so a human-confirmed row is untouched by construction, not by care.
 
@@ -80,6 +93,30 @@ _EVIDENCE = """
     FROM owned o
 """
 
+# A sighting's photos as hashes, plus whether it has any uploaded photo with
+# no hash -- one that predates the backfill. Such a sighting may hold a photo
+# nothing else does, so it is never judged a copy. Crops are excluded from that
+# test: a /capture sighting holds only crops, and is judged by its sources.
+_HASH_SETS = """
+    SELECT s.id, s.created_at, s.duplicate_of,
+           ARRAY(
+               SELECT p.content_sha256 FROM photos p
+               WHERE p.sighting_id = s.id AND p.content_sha256 IS NOT NULL
+               UNION
+               SELECT src.content_sha256 FROM animal_instances a
+               JOIN photos src ON src.id = a.source_photo_id
+               WHERE a.sighting_id = s.id AND src.content_sha256 IS NOT NULL
+           ) AS hashes,
+           EXISTS (
+               SELECT 1 FROM photos p
+               WHERE p.sighting_id = s.id AND p.content_sha256 IS NULL
+                 AND NOT EXISTS (SELECT 1 FROM animal_instances a
+                                 WHERE a.evidence_photo_id = p.id)
+           ) AS unhashed
+    FROM sightings s WHERE s.id = ANY($1::uuid[])
+    ORDER BY s.created_at, s.id
+"""
+
 _MY_HASHES = """
     SELECT p.content_sha256 FROM photos p
     WHERE p.sighting_id = $1 AND p.content_sha256 IS NOT NULL
@@ -101,6 +138,7 @@ class IdenticalOutcome:
     newly_linked: list[UUID] = field(default_factory=list)
     minted: bool = False
     proposals_cleared: int = 0
+    duplicates_marked: list[UUID] = field(default_factory=list)
 
 
 async def link_identical(
@@ -163,8 +201,9 @@ async def link_identical(
     newly = [s for s in group if live[s]["individual_id"] is None]
     if not newly:
         # Already one dog -- a human said so, or an earlier pass of this rule.
-        # Still worth tidying the queue below, so fall through with no writes
-        # to sightings.
+        # Nothing to link, but the copy may still need marking and the queue
+        # tidying below: a human `same` on a duplicate pair links it without
+        # making it count once.
         individual_id = next(iter(identities))
         minted = False
     elif identities:
@@ -226,11 +265,56 @@ async def link_identical(
                 partner_hash.get(s) or partner_hash[partners[0]],
             )
 
+    duplicates = await mark_duplicates(conn, group)
     cleared = await clear_settled_proposals(conn, individual_id)
+
+    # Same call, same table, same `proposed` status as after a human `same`:
+    # the name is a contributor's claim about this dog, and the link only
+    # settles which dog that is. Approval is still a separate, unbuilt policy.
+    # Idempotent per sighting/name/identity, so re-running proposes nothing new.
+    from app.routes.match import propose_known_names
+    await propose_known_names(conn, individual_id, group)
+
     return IdenticalOutcome(
         "linked", individual_id=individual_id, partners=partners,
         newly_linked=newly, minted=minted, proposals_cleared=cleared,
+        duplicates_marked=duplicates,
     )
+
+
+async def mark_duplicates(conn: asyncpg.Connection, group: list[UUID]) -> list[UUID]:
+    """Mark each sighting that adds no photo of its own as a copy of the
+    earliest sighting that already holds all of them. Returns those marked.
+
+    Only ever between sightings already linked to one dog, which is what makes
+    hiding the copy safe: the dog keeps every photo, once.
+    """
+    rows = await conn.fetch(_HASH_SETS, group)
+    originals: list = []  # earlier sightings that count, oldest first
+    marked: list[UUID] = []
+    for r in rows:
+        mine = set(r["hashes"])
+        if r["duplicate_of"] is not None:
+            continue  # already a copy; never an original for anything new
+        original = None
+        if mine and not r["unhashed"]:
+            original = next((o for o in originals if mine <= set(o["hashes"])), None)
+        if original is None:
+            originals.append(r)
+            continue
+        await conn.execute(
+            "UPDATE sightings SET duplicate_of = $2, updated_at = now() "
+            "WHERE id = $1 AND duplicate_of IS NULL",
+            r["id"], original["id"],
+        )
+        # Anything that was a copy of this one is a copy of its original now,
+        # so no chain of copies points at a sighting that no longer counts.
+        await conn.execute(
+            "UPDATE sightings SET duplicate_of = $2 WHERE duplicate_of = $1",
+            r["id"], original["id"],
+        )
+        marked.append(r["id"])
+    return marked
 
 
 async def clear_settled_proposals(conn: asyncpg.Connection, individual_id: UUID) -> int:

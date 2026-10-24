@@ -254,6 +254,133 @@ async def test_clears_the_proposal_it_answered_and_nothing_else(migrated_db):
 
 
 # ---------------------------------------------------------------------------
+# A photo logged twice counts once
+# ---------------------------------------------------------------------------
+
+async def _dup(conn, sid):
+    return await conn.fetchval("SELECT duplicate_of FROM sightings WHERE id=$1", sid)
+
+
+@pytest.mark.asyncio
+async def test_the_later_copy_is_marked_and_the_original_is_not(migrated_db):
+    conn = migrated_db
+    oid = await _observer(conn)
+    first = await _sighting(conn, oid)
+    again = await _sighting(conn, oid)
+
+    await _resolve(conn, again)
+
+    assert await _dup(conn, again) == first
+    assert await _dup(conn, first) is None
+    assert await conn.fetchval("SELECT count(*) FROM sightings") == 2, "nothing is deleted"
+
+
+@pytest.mark.asyncio
+async def test_a_sighting_with_a_photo_of_its_own_still_counts(migrated_db):
+    """Linked, because they share a photo; not hidden, because the second
+    sighting holds a photo the first does not -- it is a second observation."""
+    conn = migrated_db
+    oid = await _observer(conn)
+    first = await _sighting(conn, oid)
+    more = await _sighting(conn, oid)
+    await conn.execute(
+        "INSERT INTO photos (id, sighting_id, s3_key, content_sha256) VALUES ($1,$2,'x.webp',$3)",
+        uuid7(), more, OTHER_SHA)
+
+    outcome = await _resolve(conn, more)
+
+    assert outcome.status == "confirmed"
+    assert await _dup(conn, more) is None and await _dup(conn, first) is None
+
+
+@pytest.mark.asyncio
+async def test_a_third_copy_points_at_the_original_not_at_a_copy(migrated_db):
+    conn = migrated_db
+    oid = await _observer(conn)
+    first = await _sighting(conn, oid)
+    second = await _sighting(conn, oid)
+    await _resolve(conn, second)
+    third = await _sighting(conn, oid)
+
+    await _resolve(conn, third)
+
+    assert await _dup(conn, second) == first
+    assert await _dup(conn, third) == first
+
+
+@pytest.mark.asyncio
+async def test_copies_are_never_offered_as_candidates(migrated_db):
+    """A copy is its original's photo again; proposing both asks one question
+    twice."""
+    conn = migrated_db
+    oid = await _observer(conn)
+    first = await _sighting(conn, oid)
+    again = await _sighting(conn, oid)
+    await _resolve(conn, again)
+    lookalike = await _sighting(conn, oid, sha=OTHER_SHA)
+
+    outcome = await _resolve(conn, lookalike)
+
+    assert outcome.status == "proposed"
+    assert [c.sighting_id for c in outcome.candidates] == [first]
+
+
+@pytest.mark.asyncio
+async def test_the_dog_is_seen_once_on_every_public_surface(authed_client):
+    """/dogs, /map and /stats all read `countable_sighting()`; a dog must not be
+    "seen twice" because one photo was submitted twice."""
+    client, oid = authed_client
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as conn:
+        first = await _sighting(conn, oid)
+        again = await _sighting(conn, oid)
+        await conn.execute(
+            "UPDATE sightings SET geog=ST_SetSRID(ST_MakePoint(77.59,12.97),4326)::geography, "
+            "geo_source='device_gps'")
+        await _resolve(conn, again)
+        assert await _dup(conn, again) == first
+
+    dogs = (await client.get("/dogs")).json()["dogs"]
+    assert len(dogs) == 1
+    assert dogs[0]["sighting_count"] == 1
+    assert len(dogs[0]["photos"]) == 1
+
+    pins = (await client.get("/map")).json()["sightings"]
+    assert [p["id"] for p in pins] == [str(first)]
+
+    totals = (await client.get("/stats")).json()["totals"]
+    assert (totals["sightings"], totals["confirmed_individuals"]) == (1, 1)
+
+    # Still theirs: the contributor did submit it twice, and /dex says so.
+    dex = (await client.get("/dex")).json()
+    assert len(dex["sightings"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Known names carry over
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_typed_name_is_proposed_for_the_dog(migrated_db):
+    """Exactly as after a human `same`: proposed, never made the dog's name."""
+    conn = migrated_db
+    oid = await _observer(conn)
+    first = await _sighting(conn, oid)
+    [named] = await _capture(conn, oid)
+    await conn.execute(
+        """UPDATE sightings SET attrs='{"known_name":"Kaju"}' WHERE id=$1""", named)
+
+    outcome = await _resolve(conn, named)
+    await _link(conn, first)  # a second pass proposes nothing new
+
+    rows = await conn.fetch("SELECT individual_id, name, status, proposed_by FROM individual_names")
+    assert [(r["individual_id"], r["name"], r["status"], r["proposed_by"]) for r in rows] == [
+        (outcome.individual_id, "Kaju", "proposed", oid)]
+    assert await conn.fetchval(
+        "SELECT name FROM individuals WHERE id=$1", outcome.individual_id) is None
+
+
+# ---------------------------------------------------------------------------
 # It steps aside
 # ---------------------------------------------------------------------------
 
@@ -430,7 +557,8 @@ async def test_backfill_dry_run_writes_nothing_and_apply_matches_it(migrated_db)
         # Clip frames are not photos anyone picked, and are never hashed.
         assert (dry.to_hash, dry.hashed) == (2, 2)
         assert dry.sightings_linked == 2 and dry.individuals_minted == 1
-        assert dry.proposals_cleared == 1
+        assert dry.proposals_cleared == 1 and dry.duplicates_marked == 1
+        assert await conn.fetchval("SELECT count(*) FROM sightings WHERE duplicate_of IS NOT NULL") == 0
         assert await conn.fetchval("SELECT count(*) FROM photos WHERE content_sha256 IS NOT NULL") == 0
         assert await conn.fetchval("SELECT count(*) FROM individuals") == 0
         assert await conn.fetchval("SELECT count(*) FROM auto_links") == 0
@@ -441,6 +569,8 @@ async def test_backfill_dry_run_writes_nothing_and_apply_matches_it(migrated_db)
         assert (real.sightings_linked, real.individuals_minted, real.proposals_cleared) == (2, 1, 1)
         assert (await _state(conn, a))["individual_id"] == (await _state(conn, b))["individual_id"] is not None
         assert (await _state(conn, clip))["individual_id"] is None
+        assert await conn.fetchval("SELECT duplicate_of FROM sightings WHERE id=$1", b) == a
+        assert await conn.fetchval("SELECT duplicate_of FROM sightings WHERE id=$1", a) is None
         assert await _pending(conn) == 0
 
         again = await run(pool, storage, apply=True)

@@ -34,6 +34,15 @@ always says "same" would poison it with pairs nobody judged. One row per
 sighting the rule linked, naming the sighting whose photo justified it, so a
 bad link can be found and undone.
 
+`sightings.duplicate_of` is how a photo logged twice counts once. The later
+copy points at the earlier one and drops out of every public count and surface
+-- /map, /dogs, /stats -- while staying in its contributor's /dex, because they
+did submit it. Nothing is deleted: photographs are irreplaceable, and the app
+has no S3 delete anyway. A column on the row rather than a join through
+`auto_links`, because every read path already filters `sightings` by its own
+columns, and `countable_sighting()` is one line to extend. SET NULL on delete,
+so losing the original brings the copy back rather than hiding the dog.
+
 Revision ID: 0016_photo_content_hash
 Revises: 0015_multi_animal_captures
 Create Date: 2026-10-23
@@ -71,10 +80,15 @@ def upgrade() -> None:
         """
     )
     op.execute("CREATE INDEX ix_auto_links_sighting ON auto_links (sighting_id);")
+    op.execute(
+        "ALTER TABLE sightings ADD COLUMN duplicate_of uuid "
+        "REFERENCES sightings(id) ON DELETE SET NULL;"
+    )
     op.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON auto_links TO app_rw;")
 
 
 def downgrade() -> None:
+    op.execute("ALTER TABLE sightings DROP COLUMN IF EXISTS duplicate_of;")
     op.execute("DROP TABLE IF EXISTS auto_links;")
     op.execute("DROP INDEX IF EXISTS ix_photos_content_sha256;")
     op.execute("ALTER TABLE photos DROP COLUMN IF EXISTS content_sha256;")
