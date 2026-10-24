@@ -37,29 +37,42 @@ jobs:
             -e POSTGRES_PASSWORD=dev \
             -p 5432:5432 indiedex-test-db
           for i in $(seq 1 40); do
-            docker exec test-db pg_isready -U postgres && exit 0
+            if docker exec test-db pg_isready -U postgres; then
+              docker exec test-db psql -U postgres -v ON_ERROR_STOP=1 -c 'CREATE ROLE app_rw NOLOGIN'
+              exit 0
+            fi
             sleep 2
           done
           echo "postgres never became ready" >&2
           docker logs test-db
           exit 1
 
-      # The suite exercises the real storage layer -- presigned URLs, bucket
-      # creation, uploads -- so it needs an S3 endpoint. Same image and same
-      # credentials as docker-compose.dev.yml, on the default port, so
-      # app/config.py's defaults just work with no env override.
+      # Official container pulls are unavailable. Build the official source at
+      # RELEASE.2025-10-15T17-29-55Z instead; keep real S3/presigning tests.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.8'
+          cache: false
+
+      - name: Build pinned MinIO
+        env:
+          GOBIN: ${{ runner.temp }}/minio-bin
+        run: go install github.com/minio/minio@9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a
+
       - name: Start MinIO
+        env:
+          MINIO_ROOT_USER: minio
+          MINIO_ROOT_PASSWORD: minio123
         run: |
-          docker run -d --name minio \
-            -e MINIO_ROOT_USER=minio \
-            -e MINIO_ROOT_PASSWORD=minio123 \
-            -p 9000:9000 quay.io/minio/minio server /data
+          mkdir -p "$RUNNER_TEMP/minio-data"
+          nohup "$RUNNER_TEMP/minio-bin/minio" server "$RUNNER_TEMP/minio-data" \
+            --address 127.0.0.1:9000 > "$RUNNER_TEMP/minio.log" 2>&1 &
           for i in $(seq 1 30); do
             curl -sf http://localhost:9000/minio/health/live && exit 0
             sleep 2
           done
           echo "minio never became ready" >&2
-          docker logs minio
+          cat "$RUNNER_TEMP/minio.log"
           exit 1
 
       - uses: astral-sh/setup-uv@v3
