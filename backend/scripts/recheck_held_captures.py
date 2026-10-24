@@ -43,6 +43,7 @@ class Report:
     published: int = 0
     sightings: int = 0
     still_held: int = 0
+    failed: int = 0
 
 
 class _DryRun(Exception):
@@ -63,7 +64,15 @@ async def run(pool: asyncpg.Pool, *, apply: bool) -> Report:
                     "ORDER BY created_at, id FOR UPDATE")
                 rep.held = len(captures)
                 for capture in captures:
-                    sids = await recheck_held(conn, capture)
+                    # A savepoint per capture: one that will not publish is
+                    # logged and left held, not allowed to undo the rest.
+                    try:
+                        async with conn.transaction():
+                            sids = await recheck_held(conn, capture)
+                    except Exception:
+                        log.warning("capture=%s: could not publish", capture["id"], exc_info=True)
+                        rep.failed += 1
+                        continue
                     if sids is None:
                         rep.still_held += 1
                         continue
@@ -84,6 +93,7 @@ def describe(rep: Report, *, apply: bool) -> str:
         f"uploads held for review: {rep.held}",
         f"{verb}published: {rep.published} ({rep.sightings} animal sighting(s))",
         f"still need a person: {rep.still_held}",
+        f"failed, left held: {rep.failed}",
     ])
 
 
@@ -99,7 +109,7 @@ async def main() -> int:
     finally:
         await pool.close()
     print(describe(rep, apply=args.apply))
-    return 0
+    return 0 if rep.failed == 0 else 1
 
 
 if __name__ == "__main__":

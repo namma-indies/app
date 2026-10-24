@@ -108,3 +108,46 @@ async def test_script_dry_run_writes_nothing_and_apply_publishes(migrated_db):
         await pool.close()
     assert len(await _published(conn, single)) == 1
     assert await _published(conn, pair) == []
+
+
+@pytest.mark.asyncio
+async def test_two_dogs_in_one_photo_publish_as_two_dogs(migrated_db):
+    """Co-visible but never reappearing: two animals by construction, so each
+    box is its own dog -- not one group, which publication would refuse."""
+    conn = migrated_db
+    cid = await _held_capture(conn, ("dog", "dog"))
+    sids = await _recheck(conn, cid)
+    assert len(sids) == 2
+    assert [(r["species"], r["n"]) for r in await _published(conn, cid)] == [("dog", 1), ("dog", 1)]
+
+
+@pytest.mark.asyncio
+async def test_two_dogs_together_and_a_cat_elsewhere_publish_three_animals(migrated_db):
+    conn = migrated_db
+    cid = await _held_capture(conn, ("dog", "dog"), ("cat",), ("cat",))
+    await _recheck(conn, cid)
+    assert sorted((r["species"], r["n"]) for r in await _published(conn, cid)) == [
+        ("cat", 2), ("dog", 1), ("dog", 1)]
+
+
+@pytest.mark.asyncio
+async def test_script_carries_on_past_a_capture_it_cannot_publish(migrated_db, monkeypatch):
+    import app.captures as captures
+    from scripts.recheck_held_captures import run
+    conn = migrated_db
+    bad = await _held_capture(conn, ("dog",), ("dog",))
+    good = await _held_capture(conn, ("dog",), ("dog",))
+    real = captures.recheck_held
+
+    async def flaky(c, capture):
+        if capture["id"] == bad:
+            raise RuntimeError("boom")
+        return await real(c, capture)
+    monkeypatch.setattr(captures, "recheck_held", flaky)
+    pool = await asyncpg.create_pool(settings.test_database_url, min_size=1, max_size=2)
+    try:
+        rep = await run(pool, apply=True)
+    finally:
+        await pool.close()
+    assert (rep.published, rep.failed) == (1, 1)
+    assert len(await _published(conn, good)) == 1

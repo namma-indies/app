@@ -65,7 +65,7 @@ function UploadEntry({ capture, onReview }: { capture: CaptureSummary; onReview:
           <div className="line">We need you to say which photos show which animal before this goes on the map.</div>
           <button className="link-btn" onClick={(event) => { event.stopPropagation(); onReview(); }}>Separate the animals</button>
         </> : <div className="processing-status">{processingLabel(capture.processing_state)}</div>}
-        <div className="line">uploaded {when(capture.captured_at)}</div>
+        <div className="line">taken {when(capture.captured_at)}</div>
       </div>
     </article>
   );
@@ -106,8 +106,8 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
   const [sharedNow, setSharedNow] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    // Failure is not surfaced: not being a moderator and the call failing look
-    // the same from here, and both mean "do not show the tab".
+    // Failure is not surfaced: lacking consent and the call failing look the
+    // same from here, and both mean "do not offer the share toggle".
     getMe()
       .then((me) => setCanShare(me.can_share_socially === true))
       .catch(() => {});

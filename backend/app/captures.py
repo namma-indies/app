@@ -130,8 +130,9 @@ async def recheck_held(conn, capture):
     sighting ids, or None when it still needs a person: some species is
     ambiguous (`tracking.covisibility`), or someone has already saved a draft
     of their own sorting, which says something the stored species cannot.
-    Otherwise every animal of a species is one animal -- what the worker's
-    tracker does for a species that is never co-visible.
+    Otherwise it groups as the worker's tracker does: every animal of a
+    species never seen twice in one frame is one animal, and each box of a
+    co-visible species (two in one frame, never seen again) is its own.
     """
     if capture["processing_state"] != "needs_review" or decoded(capture["review_groups"]):
         return None
@@ -143,11 +144,13 @@ async def recheck_held(conn, capture):
     frames = {}
     for r in rows:
         frames.setdefault(r["source_photo_id"], []).append(r["species"])
-    if covisibility(frames.values())[1]:
+    covisible, ambiguous = covisibility(frames.values())
+    if ambiguous:
         return None
-    by_species = {}
+    groups = {}
     for r in rows:
-        by_species.setdefault(r["species"], []).append(r["id"])
-    sids = await publish_groups(conn, capture, [AnimalGroup(instance_ids=ids) for ids in by_species.values()])
+        key = r["id"] if r["species"] in covisible else r["species"]
+        groups.setdefault(key, []).append(r["id"])
+    sids = await publish_groups(conn, capture, [AnimalGroup(instance_ids=ids) for ids in groups.values()])
     await conn.execute("UPDATE captures SET revision=revision+1 WHERE id=$1", capture["id"])
     return sids

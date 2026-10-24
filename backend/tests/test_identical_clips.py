@@ -239,3 +239,31 @@ async def test_backfill_hashes_stored_clips_and_links_their_copies(migrated_db):
         "WHERE s.id = ANY($1::uuid[])", sids) == 1
     assert await conn.fetchval(
         "SELECT count(*) FROM sightings WHERE id = ANY($1::uuid[]) AND duplicate_of IS NULL", sids) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_held_copy_showing_two_dogs_stops_the_other_copies_linking(migrated_db):
+    """The /sighting pipeline only looks at the biggest animal. If a /capture
+    copy of the same clip found two dogs in one frame -- even one still held,
+    with no sightings yet -- no copy may say which dog it is."""
+    conn = migrated_db
+    oid = await _observer(conn)
+    cid, frame = uuid7(), uuid7()
+    await conn.execute(
+        "INSERT INTO captures (id, observer_id, kind, captured_at, processing_state, clip_sha256) "
+        "VALUES ($1,$2,'video',now(),'needs_review',$3)", cid, oid, CLIP)
+    await conn.execute(
+        "INSERT INTO photos (id, capture_id, s3_key) VALUES ($1,$2,$3)", frame, cid, "f.webp")
+    for n in range(2):
+        crop = uuid7()
+        await conn.execute(
+            "INSERT INTO photos (id, capture_id, s3_key) VALUES ($1,$2,$3)", crop, cid, f"c{n}.webp")
+        await conn.execute(
+            """INSERT INTO animal_instances (id, capture_id, source_photo_id, evidence_photo_id,
+               track_id, species, confidence, bbox, crop_bbox)
+               VALUES ($1,$2,$3,$4,$5,'dog',0.9,'[0,0,1,1]','[0,0,1,1]')""",
+            uuid7(), cid, frame, crop, f"t{n}")
+    await _clip_sighting(conn, oid)
+    again = await _clip_sighting(conn, oid)
+    out = await _link(conn, again)
+    assert out.status == "skipped" and out.reason == "multi_animal"

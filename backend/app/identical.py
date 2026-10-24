@@ -138,6 +138,21 @@ _CLIP_EVIDENCE = """
     WHERE c.clip_sha256 = $1
 """
 
+# Whether any copy of the clip was found to hold two animals in one frame, or
+# published more than one. Read from the captures, not through their
+# sightings: a copy still held for review has none, and is exactly the copy
+# that knows the clip holds two dogs. A /sighting copy only ever looked at the
+# biggest animal, so on its own it cannot tell -- the same accepted risk as a
+# /sighting photo with no /capture copy.
+_CLIP_AMBIGUOUS = """
+    SELECT EXISTS (
+        SELECT 1 FROM captures c WHERE c.clip_sha256 = $1 AND (
+            (SELECT count(*) FROM sightings x WHERE x.capture_id = c.id) > 1
+            OR EXISTS (SELECT 1 FROM animal_instances a WHERE a.capture_id = c.id
+                       GROUP BY a.source_photo_id HAVING count(*) > 1))
+    )
+"""
+
 _MY_CLIP = """
     SELECT c.clip_sha256 FROM sightings s JOIN captures c ON c.id = s.capture_id
     WHERE s.id = $1 AND c.clip_sha256 IS NOT NULL
@@ -186,7 +201,8 @@ async def link_identical(
     evidence = [(r["sighting_id"], (METHOD, r["content_sha256"]), r["animals"])
                 for r in (await conn.fetch(_EVIDENCE, hashes) if hashes else [])]
     if clip is not None:
-        evidence += [(r["sighting_id"], (CLIP_METHOD, clip), r["animals"])
+        several = await conn.fetchval(_CLIP_AMBIGUOUS, clip)
+        evidence += [(r["sighting_id"], (CLIP_METHOD, clip), 2 if several else r["animals"])
                      for r in await conn.fetch(_CLIP_EVIDENCE, clip)]
 
     ambiguous = {key for _, key, animals in evidence if animals > 1}
