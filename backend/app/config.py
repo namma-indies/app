@@ -46,6 +46,19 @@ class Settings(BaseSettings):
     # Default-off: deploy schema and worker before deliberately changing intake.
     media_jobs_enabled: bool = False
     multi_animal_enabled: bool = False
+    # The daily @nammaindies post. Off means a dry run: the timer still fires
+    # and logs what it would have posted, and nothing reaches X. The four X
+    # values are OAuth 1.0a for the @nammaindies account and live only in the
+    # box .env -- this repo is public.
+    social_posting_enabled: bool = False
+    x_api_key: str = ""
+    x_api_secret: str = ""
+    x_access_token: str = ""
+    x_access_token_secret: str = ""
+    # Which `areas` kind names the place in a caption, and the calendar a
+    # "day" is counted in for one-post-a-day.
+    social_area_kind: str = "bbmp_ward"
+    social_timezone: str = "Asia/Kolkata"
     media_gpu_token: str = ""
     media_cpu_fallback_enabled: bool = True
     media_cpu_grace_s: int = Field(default=5, ge=0, le=3600)

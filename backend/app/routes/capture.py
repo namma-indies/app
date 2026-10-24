@@ -76,6 +76,7 @@ async def create_capture(request: Request, photos: list[UploadFile] | None = Fil
         geo_source: Literal["device_gps", "pin", "none", "exif"] = Form(...),
         captured_at: datetime = Form(...), reported_at: datetime | None = Form(None),
         note: str | None = Form(None, max_length=4000),
+        share_with_team: bool = Form(False),
         observer_id: UUID = Depends(require_observer), storage=Depends(get_storage)):
     pool = request.app.state.pool
     # A disabled intake must still acknowledge a previously accepted upload.
@@ -122,6 +123,10 @@ async def create_capture(request: Request, photos: list[UploadFile] | None = Fil
     attrs = {"note":note} if note else {}
     if video is not None:
         attrs["source"] = "video"
+    # Carried on the capture until publication creates its sightings; consent
+    # is checked there, when the share actually lands (captures.publish_groups).
+    if share_with_team:
+        attrs["share_with_team"] = True
     has_geo = geo_source != "none" and lat is not None and lng is not None
     try:
         async with pool.acquire() as conn, conn.transaction():

@@ -3,6 +3,7 @@ import { processingLabel, UPLOAD_COMPLETE_EVENT } from "../processing";
 import type { PostSightingResponse } from "../api";
 import { multiAnimalIntakeAvailable, type PostCaptureResponse } from "../captureApi";
 import {
+  canShareSocially,
   readPhotoMetadata,
   NO_METADATA,
   UnauthorizedError,
@@ -86,6 +87,17 @@ export default function Capture() {
     const controller = new AbortController();
     void multiAnimalIntakeAvailable(controller.signal).then((enabled) => {
       if (!controller.signal.aborted) setMultiAnimal(enabled);
+    });
+    return () => controller.abort();
+  }, []);
+  // Offered only to someone who has agreed to be posted on @nammaindies; for
+  // everyone else the option does not exist (design: 2026-10-24 x daily post).
+  const [canShare, setCanShare] = useState(false);
+  const [shareWithTeam, setShareWithTeam] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    void canShareSocially(controller.signal).then((ok) => {
+      if (!controller.signal.aborted) setCanShare(ok);
     });
     return () => controller.abort();
   }, []);
@@ -426,6 +438,7 @@ export default function Capture() {
     setGeoFailed(false);
     setPicking(false);
     setNote("");
+    setShareWithTeam(false);
     setSex(null);
     setEarNotch(null);
     setCondition(null);
@@ -494,6 +507,7 @@ export default function Capture() {
       geo_source: geoSource,
       captured_at: capturedAt,
       note: note || undefined,
+      share_with_team: canShare && shareWithTeam ? true : undefined,
       sex: multiAnimal ? undefined : sex || undefined,
       ear_notch: multiAnimal ? undefined : earNotch || undefined,
       condition: multiAnimal ? undefined : condition || undefined,
@@ -717,6 +731,17 @@ export default function Capture() {
               onChange={(e) => setNote(e.target.value)}
             />
           </div>
+
+          {canShare && (
+            <label className="share-toggle">
+              <input
+                type="checkbox"
+                checked={shareWithTeam}
+                onChange={(e) => setShareWithTeam(e.target.checked)}
+              />
+              Share with the Namma Indies team
+            </label>
+          )}
 
           {multiAnimal && <p className="hint">One upload, separate animal entries. Time, location and this note are shared. Add each animal’s details in your Journal after processing; uncertain associations stay private until you review them.</p>}
           {!multiAnimal && <button

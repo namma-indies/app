@@ -3,6 +3,8 @@ import {
   getDex,
   getMap,
   getMe,
+  setSightingShared,
+  UnauthorizedError,
   type Sighting,
 } from "../api";
 import DogMap from "../components/DogMap";
@@ -11,6 +13,7 @@ import { getCaptures } from "../captureApi";
 import ReportSheet from "../components/ReportSheet";
 import Dogs from "./Dogs";
 import Moderation from "./Moderation";
+import Social from "./Social";
 import { useProcessingFeed } from "../useProcessingFeed";
 import { processingLabel } from "../processing";
 
@@ -46,7 +49,7 @@ function where(s: Sighting): string {
 export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) {
   // Matches have no tab of their own: they open from inside DOGS, where the
   // dog a verdict makes or grows shows up.
-  const [view, setView] = useState<"map" | "journal" | "dogs" | "flags">("map");
+  const [view, setView] = useState<"map" | "journal" | "dogs" | "flags" | "posts">("map");
   const [selectedId, setSelected] = useState<string | null>(null);
   // The map can show the whole cohort's sightings, not just the viewer's.
   // Defaults to MINE: that renders straight from the /dex data already loaded
@@ -69,14 +72,31 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
   // Only decides whether the FLAGS tab renders. The endpoints behind it check
   // the tier themselves -- a client-side flag is a suggestion.
   const [isModerator, setIsModerator] = useState(false);
+  // Same reasoning: only someone who may be posted sees the share toggle.
+  const [canShare, setCanShare] = useState(false);
+  // Local overrides after a toggle, so the button answers at once instead of
+  // waiting for the next /dex refresh.
+  const [sharedNow, setSharedNow] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     // Failure is not surfaced: not being a moderator and the call failing look
     // the same from here, and both mean "do not show the tab".
     getMe()
-      .then((me) => setIsModerator(me.is_moderator))
+      .then((me) => {
+        setIsModerator(me.is_moderator);
+        setCanShare(me.can_share_socially === true);
+      })
       .catch(() => {});
   }, []);
+
+  async function toggleShared(id: string, shared: boolean) {
+    try {
+      const result = await setSightingShared(id, shared);
+      setSharedNow((cur) => ({ ...cur, [id]: result.shared }));
+    } catch (err) {
+      if (err instanceof UnauthorizedError) onUnauthorized();
+    }
+  }
 
   // Catalog numbers are assigned in the order sightings were first logged —
   // a life-list. Displayed newest-first.
@@ -155,6 +175,11 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
             FLAGS
           </button>
         )}
+        {isModerator && (
+          <button className={view === "posts" ? "active" : ""} onClick={() => setView("posts")}>
+            POSTS
+          </button>
+        )}
       </div>
 
       {(view === "journal" || view === "map") && <section className="capture-status-list" aria-label="Upload status">
@@ -176,6 +201,8 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
 
       {view === "flags" ? (
         <Moderation onUnauthorized={onUnauthorized} />
+      ) : view === "posts" ? (
+        <Social onUnauthorized={onUnauthorized} />
       ) : view === "dogs" ? (
         <Dogs onUnauthorized={onUnauthorized} />
       ) : view === "map" ? (
@@ -216,6 +243,18 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
               <div className="meta">
                 <div className="name anon">— UNIDENTIFIED —</div>
                 {s.capture_id && s.processing_state === "ready" && <button className="link-btn" onClick={(event) => { event.stopPropagation(); setReviewCaptureId(s.capture_id!); }}>Edit animal details</button>}
+                {canShare && (() => {
+                  const shared = sharedNow[s.id] ?? s.shared_with_team === true;
+                  return (
+                    <button
+                      className={shared ? "link-btn share-on" : "link-btn"}
+                      aria-pressed={shared}
+                      onClick={(event) => { event.stopPropagation(); void toggleShared(s.id, !shared); }}
+                    >
+                      {shared ? "Shared with the team" : "Share with the team"}
+                    </button>
+                  );
+                })()}
                 {processingLabel(s.processing_state) && <div className="processing-status">{processingLabel(s.processing_state)}</div>}
                 {s.off_map_reason && (
                   // Yours stays in your dex whatever its status. Being told is

@@ -91,3 +91,42 @@ can write to that checkout, which includes the deploy itself.
 
 Re-run the `install` line after any change to this file. It is the one script
 here that a deploy does not update, by design.
+
+## The daily @nammaindies post
+
+`social-post.timer` runs `remote-social-post.sh` at 09:00 IST, which runs
+`backend/scripts/post_daily.py` in the app container. Design:
+`docs/specs/2026-10-24-x-daily-post-design.md`.
+
+It needs the four X values in the box `.env` (`X_API_KEY`, `X_API_SECRET`,
+`X_ACCESS_TOKEN`, `X_ACCESS_TOKEN_SECRET`) and posts only when
+`SOCIAL_POSTING_ENABLED=true`. Without that it is a dry run that logs what it
+would have posted. Install once, the same way as the backup timer:
+
+```sh
+sudo cp ~/app/deploy/social-post.service ~/app/deploy/social-post.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now social-post.timer
+systemctl list-timers social-post.timer      # next run should be 03:30 UTC
+```
+
+Run it by hand, and read what it did:
+
+```sh
+sudo systemctl start social-post.service
+journalctl -u social-post.service -n 20 --no-pager
+```
+
+The unit is marked **failed** in two cases, both of which need a person:
+a post that X refused (it is retried tomorrow; the error shows on the POSTS
+screen), and a post that was started but never confirmed (`posting`). The
+second blocks every later post until someone has checked @nammaindies on X
+and resolved the row, because retrying could post the same dog twice:
+
+```sql
+-- the post is on X: record it
+UPDATE social_picks SET status='posted', x_post_id='<id from the post URL>',
+  posted_at=now(), posted_on=current_date WHERE id='<pick id>';
+-- the post is not on X: put it back in the queue
+UPDATE social_picks SET status='queued' WHERE id='<pick id>';
+```
