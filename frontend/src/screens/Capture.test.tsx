@@ -24,9 +24,10 @@ vi.mock("../captureApi", () => ({ multiAnimalIntakeAvailable: vi.fn() }));
 // shutter with files that carry nothing, so the read must resolve to
 // NO_METADATA (offline shape) rather than the real network call.
 const readPhotoMetadata = vi.fn();
+const canShareSocially = vi.fn();
 vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();
-  return { ...actual, readPhotoMetadata: (f: Blob) => readPhotoMetadata(f) };
+  return { ...actual, readPhotoMetadata: (f: Blob) => readPhotoMetadata(f), canShareSocially: () => canShareSocially() };
 });
 import { multiAnimalIntakeAvailable } from "../captureApi";
 import { enqueue, flush } from "../offline/queue";
@@ -44,6 +45,7 @@ beforeEach(() => {
   vi.mocked(enqueue).mockReset().mockResolvedValue(undefined);
   vi.mocked(flush).mockReset().mockResolvedValue(undefined);
   readPhotoMetadata.mockReset();
+  canShareSocially.mockReset().mockResolvedValue(false);
   // A shutter photo in these tests has no EXIF GPS, so a live capture with no
   // geolocation stubbed is a placeless save — the first LOG IT press surfaces
   // the confirm (#82) and a second press is what actually saves.
@@ -201,5 +203,33 @@ describe("burst photo capture", () => {
     await waitFor(() => expect(enqueue).toHaveBeenCalledTimes(1));
     const sentPhotos = vi.mocked(enqueue).mock.calls[0][0].photos as File[];
     expect(sentPhotos.map((p) => p.name)).toEqual(["one.jpg", "two.jpg"]);
+  });
+});
+
+describe("sharing with the Namma Indies team", () => {
+  it("hides share option without consent", async () => {
+    render(<Capture />);
+    await userEvent.upload(screen.getByLabelText("capture photo"), makePhoto("one.jpg"));
+    expect(screen.queryByLabelText("Share with the Namma Indies team")).not.toBeInTheDocument();
+  });
+
+  it("sends share_with_team when ticked", async () => {
+    canShareSocially.mockResolvedValue(true);
+    render(<Capture />);
+    await userEvent.upload(screen.getByLabelText("capture photo"), makePhoto("one.jpg"));
+    const box = await screen.findByLabelText("Share with the Namma Indies team");
+    expect(box).not.toBeChecked();
+    await userEvent.click(box);
+    await logItAndSave();
+    expect(vi.mocked(enqueue).mock.calls[0][0].share_with_team).toBe(true);
+  });
+
+  it("does not share when left unticked", async () => {
+    canShareSocially.mockResolvedValue(true);
+    render(<Capture />);
+    await userEvent.upload(screen.getByLabelText("capture photo"), makePhoto("one.jpg"));
+    await screen.findByLabelText("Share with the Namma Indies team");
+    await logItAndSave();
+    expect(vi.mocked(enqueue).mock.calls[0][0].share_with_team).toBeUndefined();
   });
 });

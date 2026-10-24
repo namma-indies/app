@@ -90,7 +90,8 @@ async def me(observer_id: UUID = Depends(require_observer), conn=Depends(get_con
     endpoint checks the tier itself, because a client-side flag is a suggestion.
     """
     row = await conn.fetchrow(
-        "SELECT display_name, trust_tier FROM observers WHERE id = $1", observer_id
+        "SELECT display_name, trust_tier, social_consent, x_handle FROM observers WHERE id = $1",
+        observer_id,
     )
     if row is None:
         raise HTTPException(status_code=401)
@@ -98,6 +99,9 @@ async def me(observer_id: UUID = Depends(require_observer), conn=Depends(get_con
         "id": str(observer_id),
         "display_name": row["display_name"],
         "is_moderator": row["trust_tier"] == "moderator",
+        # Whether to offer "share with the Namma Indies team" at all: only to
+        # someone who has agreed to be posted and has a handle to be credited.
+        "can_share_socially": bool(row["social_consent"] and row["x_handle"]),
         "multi_animal_enabled": settings.multi_animal_enabled and settings.media_jobs_enabled,
     }
 

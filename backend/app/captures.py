@@ -98,6 +98,15 @@ async def publish_groups(conn, capture, groups):
             capture["id"],sid,json.dumps(attrs),members[0]["species"],members[0]["phash"],
             max(r["confidence"] for r in members),
             max(r["confidence"] if r["species"] == "dog" else 0 for r in members),mean)
+        # The share chosen at capture time lands once, when the sighting is
+        # created. Editing details re-runs publication, and re-applying it then
+        # would undo a share the contributor has since withdrawn (and clear a
+        # posted sighting's take-down flag). A group whose instances already
+        # point at a sighting is a re-publication.
+        created = members[0]["sighting_id"] is None
+        if created and attrs.get("share_with_team") is True and capture["observer_id"] is not None:
+            from app.social import mark_shared
+            await mark_shared(conn, sid, capture["observer_id"])
         await conn.execute("UPDATE animal_instances SET sighting_id=$2,details=$3::jsonb WHERE id=ANY($1::uuid[])",
             group.instance_ids,sid,json.dumps(details))
         await conn.execute("UPDATE photos SET sighting_id=$2 WHERE id=ANY($1::uuid[])",

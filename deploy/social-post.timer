@@ -1,0 +1,14 @@
+[Unit]
+Description=Daily @nammaindies post
+
+[Timer]
+# 09:00 IST. One post a day; scripts/post_daily.py is a no-op on a day that
+# has already posted, so a second firing is harmless.
+OnCalendar=*-*-* 03:30:00 UTC
+# Fire on boot if the box was down at 09:00, so an outage costs a late post
+# rather than a lost day. The once-a-day guard makes the catch-up safe.
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

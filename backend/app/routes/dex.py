@@ -42,6 +42,7 @@ async def get_dex(
             s.geo_accuracy_m,
             s.attrs,
             s.review_status,
+            s.shared_with_team_at IS NOT NULL AS shared_with_team,
             s.processing_state,
             s.capture_id,
             s.species,
@@ -79,6 +80,8 @@ async def get_dex(
                 # reasons that can both be true; a person acting is the more
                 # useful one to hear, so it wins.
                 "review_status": row["review_status"],
+                # Drives the Journal's "share with the team" toggle.
+                "shared_with_team": row["shared_with_team"],
                 "processing_state": row["processing_state"],
                 "capture_id": str(row["capture_id"]) if row["capture_id"] else None,
                 "species": row["species"],

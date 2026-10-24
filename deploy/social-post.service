@@ -1,0 +1,10 @@
+[Unit]
+Description=Post today's shared sighting to @nammaindies
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/app
+ExecStart=/usr/bin/env bash /home/ubuntu/app/deploy/remote-social-post.sh

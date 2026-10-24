@@ -16,6 +16,7 @@ from app.deps import get_storage
 from app.ids import uuid7
 from app.photos import process_photo, ProcessedPhoto, thumb_key
 from app.scoring import recompute_animal_confidence
+from app.social import mark_shared
 from app.storage.s3 import S3Storage
 from app.video import extract_diverse_frames
 
@@ -260,6 +261,9 @@ async def create_sighting(
     captured_at: datetime = Form(...),
     reported_at: datetime | None = Form(None),
     note: str | None = Form(None),
+    # Offer this sighting to the team for the daily @nammaindies post. Ignored
+    # unless the observer has consented -- see app/social.py.
+    share_with_team: bool = Form(False),
     sex: Literal["male", "female", "unsure"] | None = Form(None),
     ear_notch: Literal["none", "left", "right", "unsure"] | None = Form(None),
     condition: Literal["healthy", "injured", "unsure"] | None = Form(None),
@@ -524,6 +528,9 @@ async def create_sighting(
                         json.dumps(attrs),
                         client_token,
                     )
+
+                if share_with_team:
+                    await mark_shared(conn, sighting_id, observer_id)
 
                 for row in photo_rows:
                     await conn.execute(

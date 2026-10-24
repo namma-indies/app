@@ -48,6 +48,8 @@ export interface Sighting {
   geo_accuracy_m: number | null;
   attrs: SightingAttrs;
   photos: Photo[];
+  /** Present on /dex only. Offered to the team for the daily X post. */
+  shared_with_team?: boolean;
   /** Present on /dex only. Whether this appears on the shared map at all. */
   on_map?: boolean;
   /** Why it does not: a person reported it, a moderator hid it, or the
@@ -184,6 +186,9 @@ export interface PostSightingInput {
   sex?: Sex;
   ear_notch?: EarNotch;
   condition?: Condition;
+  /** Offer this sighting to the Namma Indies team for the daily @nammaindies
+   * post. Only sent when ticked; the server ignores it without consent. */
+  share_with_team?: boolean;
 }
 
 export interface PostSightingResponse {
@@ -240,6 +245,7 @@ export function buildSightingForm(input: PostSightingInput): FormData {
   if (input.sex) form.append("sex", input.sex);
   if (input.ear_notch) form.append("ear_notch", input.ear_notch);
   if (input.condition) form.append("condition", input.condition);
+  if (input.share_with_team) form.append("share_with_team", "true");
   return form;
 }
 
@@ -358,6 +364,9 @@ export interface Me {
   display_name: string | null;
   is_moderator: boolean;
   multi_animal_enabled?: boolean;
+  /** Has agreed to be posted on @nammaindies and has a handle to be credited
+   * by. Decides whether "share with the Namma Indies team" is offered at all. */
+  can_share_socially?: boolean;
 }
 
 /** Used only to decide whether to render the moderation tab. Every moderation
@@ -365,6 +374,112 @@ export interface Me {
 export async function getMe(): Promise<Me> {
   const res = await fetch(`${API_BASE}/me`, { credentials: "include" });
   return handle<Me>(res);
+}
+
+/** Whether to offer sharing on the capture screen. Never throws: a failed
+ * lookup just means the option isn't shown, which loses nothing. */
+export async function canShareSocially(signal?: AbortSignal): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/me`, { credentials: "include", signal });
+    if (!res.ok) return false;
+    return ((await res.json()) as Me).can_share_socially === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Offer one of your sightings to the team, or take it back. */
+export async function setSightingShared(sightingId: string, shared: boolean): Promise<{ shared: boolean }> {
+  const res = await fetch(`${API_BASE}/sighting/${sightingId}/share`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ shared }),
+  });
+  return handle<{ shared: boolean }>(res);
+}
+
+// --- the daily @nammaindies post (moderators) ------------------------------
+
+export interface SocialShared {
+  sighting_id: string;
+  captured_at: string;
+  species: "dog" | "cat" | null;
+  handle: string;
+  /** Null when no ward covers the sighting: the caption then carries a literal
+   * "{area}" that the moderator must replace before it can be queued. */
+  area: string | null;
+  default_caption: string;
+  /** Full-size `url`: the moderator checks exactly what would be posted. */
+  photos: { photo_id: string; url: string; thumb_url: string }[];
+}
+
+export interface SocialPick {
+  id: string;
+  sighting_id: string;
+  photo_id: string;
+  thumb_url: string;
+  caption: string;
+  status: "queued" | "posting" | "posted";
+  picked_at: string;
+  posted_at: string | null;
+  x_post_id: string | null;
+  last_error: string | null;
+  /** Posted, and the sighting has since been taken down, hidden as a copy or
+   * unshared. The app never deletes from X; this is the prompt to. */
+  flagged: boolean;
+}
+
+export interface SocialQueue {
+  queued: SocialPick[];
+  attention: SocialPick[];
+  posted: SocialPick[];
+}
+
+/** A refusal the moderator should read (409/422 carry a sentence in
+ * `detail`), surfaced as the error's message. */
+async function handleWithDetail<T>(res: Response): Promise<T> {
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok) {
+    let detail: unknown;
+    try {
+      detail = ((await res.json()) as { detail?: unknown }).detail;
+    } catch {
+      /* no body */
+    }
+    throw new Error(typeof detail === "string" ? detail : `request failed: ${res.status}`);
+  }
+  return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
+}
+
+function sendJson(path: string, method: string, body?: unknown): Promise<Response> {
+  return fetch(`${API_BASE}${path}`, {
+    method,
+    credentials: "include",
+    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+export async function getSocialShared(): Promise<{ items: SocialShared[] }> {
+  return handle(await fetch(`${API_BASE}/social/shared`, { credentials: "include" }));
+}
+
+export async function getSocialQueue(): Promise<SocialQueue> {
+  return handle(await fetch(`${API_BASE}/social/queue`, { credentials: "include" }));
+}
+
+export async function pickForSocial(sightingId: string, photoId: string, caption: string): Promise<{ id: string }> {
+  return handleWithDetail(await sendJson("/social/pick", "POST",
+    { sighting_id: sightingId, photo_id: photoId, caption }));
+}
+
+export async function passForSocial(sightingId: string): Promise<void> {
+  await handleWithDetail(await sendJson("/social/pass", "POST", { sighting_id: sightingId }));
+}
+
+export async function removeSocialPick(pickId: string): Promise<void> {
+  await handleWithDetail(await sendJson(`/social/pick/${pickId}`, "DELETE"));
 }
 
 // --- reporting --------------------------------------------------------------
