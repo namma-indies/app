@@ -110,6 +110,25 @@ jobs:
       - name: Sync web build into the Capacitor iOS project
         run: npx cap sync ios
 
+      - name: Load the ios-certs deploy key
+        # fastlane match clones namma-indies/ios-certs over SSH (see Matchfile).
+        # A read-only deploy key scoped to that one repo, rather than a personal
+        # token: a PAT expires and takes every release down with it, and it can
+        # read everything its owner can.
+        env:
+          MATCH_DEPLOY_KEY: ${{ secrets.MATCH_DEPLOY_KEY }}
+        run: |
+          if [ -z "$MATCH_DEPLOY_KEY" ]; then
+            echo "MATCH_DEPLOY_KEY secret is not set -- see ops OPERATIONS.md, iOS signing" >&2
+            exit 1
+          fi
+          eval "$(ssh-agent -s)"
+          echo "$MATCH_DEPLOY_KEY" | ssh-add -
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          mkdir -p ~/.ssh
+          # GitHub's published ed25519 host key, pinned rather than keyscanned.
+          echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' >> ~/.ssh/known_hosts
+
       - name: Build and upload to TestFlight
         id: upload
         working-directory: frontend/ios
@@ -119,7 +138,6 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_TEAM_ID: ${{ secrets.ASC_TEAM_ID }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
-          MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
           # Only set on a tag. App Store Connect treats the marketing version as
           # an App Store *version* record, so stamping a dispatched build 0.0.N
           # would litter it with junk versions; untagged builds keep whatever the
