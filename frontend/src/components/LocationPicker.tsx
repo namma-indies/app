@@ -47,6 +47,42 @@ export interface PickedPlace {
 
 const BANGALORE: [number, number] = [77.5946, 12.9716];
 
+/** Below this, a pin is cheap to drop and easy to be kilometres off. A tap at
+ *  zoom 11 can cover an entire town; the candidate search the server runs on
+ *  `geog` wants street-level precision, not "somewhere near here". */
+const MIN_PICK_ZOOM = 14;
+
+const LAST_PLACE_KEY = "indiedex:lastPinnedPlace";
+
+/** Where the map centres when nobody has picked anything for THIS sighting
+ *  yet. Falling back to a hardcoded Bangalore pin was fine in the office; a
+ *  tester opening the map cold out in Kodaikanal had to pan across a few
+ *  hundred kilometres before reaching their own street. */
+function readLastPinnedPlace(): { lat: number; lng: number } | null {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    const raw = localStorage.getItem(LAST_PLACE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.lat === "number" && typeof parsed?.lng === "number") {
+      return { lat: parsed.lat, lng: parsed.lng };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLastPinnedPlace(p: { lat: number; lng: number }): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(LAST_PLACE_KEY, JSON.stringify(p));
+  } catch {
+    // Private browsing / full quota: losing this is a convenience lost, not
+    // a correctness problem, so there's nothing to surface to the person.
+  }
+}
+
 type Mode = "choose" | "map" | "coords";
 
 export default function LocationPicker({
@@ -69,7 +105,7 @@ export default function LocationPicker({
   const mapRef = useRef<maplibregl.Map | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const centreRef = useRef<{ lat: number; lng: number }>(
-    initial ?? { lat: BANGALORE[1], lng: BANGALORE[0] },
+    initial ?? readLastPinnedPlace() ?? { lat: BANGALORE[1], lng: BANGALORE[0] },
   );
 
   useEffect(() => {
@@ -80,16 +116,28 @@ export default function LocationPicker({
 
   useEffect(() => {
     if (mode !== "map" || !containerRef.current || mapRef.current) return;
+    const knownPlace = initial ?? readLastPinnedPlace();
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: basemapStyle(),
       center: [centreRef.current.lng, centreRef.current.lat],
-      zoom: initial ? 16 : 11,
+      zoom: knownPlace ? 16 : 11,
       attributionControl: { compact: true },
     });
     mapRef.current = map;
+    // Lets a person centre the map on themselves instead of hand-panning to
+    // it -- the same fix as "USE MY LOCATION" above, but available once
+    // they're already in map mode rather than only from the choose screen.
+    map.addControl(
+      new maplibregl.GeolocateControl({
+        positionOptions: { enableHighAccuracy: true },
+        trackUserLocation: false,
+      }),
+      "top-right",
+    );
     // The centre IS the pin, so it has to be read on every move rather than
-    // from a marker object that does not exist.
+    // from a marker object that does not exist. Covers GeolocateControl's own
+    // pan too, since that fires "move" like any other.
     map.on("move", () => {
       const c = map.getCenter();
       centreRef.current = { lat: c.lat, lng: c.lng };
@@ -144,7 +192,19 @@ export default function LocationPicker({
       setError("Longitude must be between -180 and 180.");
       return;
     }
+    writeLastPinnedPlace({ lat: la, lng: ln });
     onPick({ lat: la, lng: ln, source: "pin" });
+  }
+
+  function useMapPick() {
+    const zoom = mapRef.current?.getZoom() ?? 0;
+    if (zoom < MIN_PICK_ZOOM) {
+      setError("Zoom in closer first — a pin dropped this far out could be off by kilometres.");
+      return;
+    }
+    const picked = { lat: centreRef.current.lat, lng: centreRef.current.lng };
+    writeLastPinnedPlace(picked);
+    onPick({ ...picked, source: "pin" });
   }
 
   return (
@@ -194,6 +254,11 @@ export default function LocationPicker({
         {mode === "map" && (
           <>
             <p className="hint">Move the map so the cross is on the spot.</p>
+            {error && (
+              <p className="hint import-error" role="alert">
+                {error}
+              </p>
+            )}
             <div className="pick-map-wrap">
               <div ref={containerRef} className="pick-map" />
               {/* Fixed crosshair over a moving map. A draggable marker would sit
@@ -201,19 +266,13 @@ export default function LocationPicker({
               <div className="pick-crosshair" aria-hidden="true">✛</div>
             </div>
             <div className="actions-row">
-              <button className="btn btn-secondary" onClick={() => setMode("choose")}>
+              <button
+                className="btn btn-secondary"
+                onClick={() => { setMode("choose"); setError(null); }}
+              >
                 BACK
               </button>
-              <button
-                className="btn btn-primary"
-                onClick={() =>
-                  onPick({
-                    lat: centreRef.current.lat,
-                    lng: centreRef.current.lng,
-                    source: "pin",
-                  })
-                }
-              >
+              <button className="btn btn-primary" onClick={useMapPick}>
                 USE THIS SPOT
               </button>
             </div>
