@@ -45,6 +45,7 @@ at all" path is closed.
 | `find-duplicates [detail]` | `remote-find-duplicates.sh` |
 | `seed-models <upload\|no-upload>` | `remote-seed-models.sh` |
 | `backup-db` | `remote-backup-db.sh` |
+| `merge-identical <dry-run\|apply>` | `remote-merge-identical.sh` |
 
 Words rather than flags, so the grammar is matched against literals instead of
 parsed. `backend/tests/test_authorized_command.py` runs the real script and

@@ -74,6 +74,22 @@ deliberately unreachable — so every identity comes from a human verdict. The
 measurements below say that is not conservatism, it is the only defensible
 setting at this data density.
 
+**The one exception is not a score: the same photograph.** A photo whose
+`photos.content_sha256` matches a photo in another sighting is the same dog, by
+product decision, and `resolve_sighting` links the two before any proposal is
+written (`app/identical.py`), across observers too. 32 of 33 pending proposals
+on 2026-10-23 were exactly that. It steps aside to an ordinary proposal when the
+photo holds more than one animal, when the sightings are already different
+dogs, or when `observations_compatible` refuses. Those links are recorded in
+`auto_links`, never in `confirmations`, which stays human verdicts only. A copy
+that adds no photo of its own is marked `sightings.duplicate_of` the earlier
+one and leaves /map, /dogs and /stats via `countable_sighting()` (it stays in
+its contributor's /dex), so one photo logged twice counts once; nothing is
+deleted. Known names are proposed for the dog exactly as after a human `same`. The
+hash is of the stored WebP, not the upload, so it can be backfilled — the
+**Merge identical photos** workflow does that for the existing corpus
+(dry-run by default).
+
 ---
 
 ## Routes

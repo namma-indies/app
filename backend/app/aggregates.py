@@ -47,8 +47,12 @@ def countable_sighting() -> str:
     `pending` means someone reported this and no human has looked yet -- the
     whole point of that state is that it waits somewhere other than a public
     surface.
+
+    `duplicate_of IS NULL`: a photo submitted twice is one observation, so the
+    later copy does not count again (app.identical, migration 0016). It still
+    exists, and still shows in its contributor's own /dex.
     """
-    return f"s.review_status = 'valid' AND {animal_present()}"
+    return f"s.review_status = 'valid' AND s.duplicate_of IS NULL AND {animal_present()}"
 
 
 # Bangalore. `captured_at` is timestamptz and date_trunc would otherwise bucket

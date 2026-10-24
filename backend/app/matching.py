@@ -142,6 +142,9 @@ async def find_candidates(
                   -- state, and dropping candidates on every report would make
                   -- re-ID quality depend on who tapped what.
                   AND s.review_status <> 'rejected'
+                  -- A duplicate is its original's photo again; offering both
+                  -- asks the same question twice.
+                  AND s.duplicate_of IS NULL
                   -- A photo with no animal in it must not seed an identity.
                   -- Note this is a different knob from the box threshold:
                   -- REID_CONF_THRESHOLD = 0.10 can produce a box, and so an
@@ -230,16 +233,23 @@ async def lock_matching(conn):
     await conn.execute("SELECT pg_advisory_xact_lock(734821902)")
 
 
-async def ensure_compatible_observations(conn, sighting_ids):
-    """Prevent indirect identity links from undoing capture-local separation."""
-    from fastapi import HTTPException
+async def observations_compatible(conn, sighting_ids) -> bool:
+    """Could these sightings, and everyone already sharing an identity with
+    them, be one animal? A bool for callers that fall back rather than refuse
+    -- the identical-photo rule in `app.identical` asks before it links."""
     conflict = await conn.fetchval("""WITH involved AS (
         SELECT * FROM sightings WHERE id=ANY($1::uuid[]) OR individual_id IN (
             SELECT individual_id FROM sightings WHERE id=ANY($1::uuid[]) AND individual_id IS NOT NULL)
         ) SELECT EXISTS(SELECT 1 FROM involved a JOIN involved b ON a.id<b.id
             WHERE (a.species IS NOT NULL AND b.species IS NOT NULL AND a.species<>b.species)
             OR (a.capture_id IS NOT NULL AND a.capture_id=b.capture_id))""",sighting_ids)
-    if conflict:
+    return not conflict
+
+
+async def ensure_compatible_observations(conn, sighting_ids):
+    """Prevent indirect identity links from undoing capture-local separation."""
+    from fastapi import HTTPException
+    if not await observations_compatible(conn, sighting_ids):
         raise HTTPException(409,"identity would combine separated animals or incompatible species")
 
 
@@ -267,6 +277,11 @@ async def _resolve_sighting(
       similarity >= auto_merge_min   link to that individual        ('confirmed')
       similarity >= propose_min      write match_proposals, ask     ('proposed')
       otherwise                      leave alone                    ('unmatched')
+
+    Ahead of all three: a photo byte-identical to one in another sighting
+    links the two outright ('confirmed'), see app.identical. That is not a
+    score clearing a bar -- it is the same photograph, and it is the one
+    identity this function mints.
 
     Deliberately does NOT mint a new `individual` for the unmatched case. An
     individual is an identity claim, and creating one per unmatched sighting
@@ -349,9 +364,11 @@ async def _resolve_sighting(
     # over existing sightings, and it is exactly what you run after a model or
     # threshold change -- both of which move scores, which is the case that
     # triggers it. Since auto_merge_min is deliberately unreachable, a human
-    # verdict is the ONLY way a sighting becomes 'confirmed', so this destroyed
-    # the scarcest data in the system: the labelled pairs the thresholds are
-    # meant to be fitted against.
+    # verdict was then the ONLY way a sighting became 'confirmed', so this
+    # destroyed the scarcest data in the system: the labelled pairs the
+    # thresholds are meant to be fitted against. (The identical-photo rule now
+    # confirms too; its links are recorded in `auto_links`, not as verdicts,
+    # and are just as sticky here.)
     #
     # `confirmations` keeps the audit trail, so the loss is recoverable in
     # principle -- but nothing reads it back, and the dog quietly loses the
@@ -367,6 +384,15 @@ async def _resolve_sighting(
         "DELETE FROM match_proposals WHERE sighting_id = $1 AND status = 'pending'",
         sighting_id,
     )
+
+    # The same photograph in another sighting is the same dog, whatever the
+    # score says -- so it is settled here, before any proposal is written, and
+    # never reaches the review queue. Falls through to ordinary proposals when
+    # the rule cannot say which animal is meant; see app.identical.
+    from app.identical import link_identical
+    linked = await link_identical(conn, sighting_id, new_uuid=new_uuid)
+    if linked is not None and linked.status == "linked":
+        return MatchOutcome("confirmed", linked.individual_id, cands, [])
 
     if not cands:
         await conn.execute(

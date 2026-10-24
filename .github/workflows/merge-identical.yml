@@ -1,0 +1,68 @@
+name: Merge identical photos
+# Hashes existing photos and links every pair of sightings that share a
+# byte-identical one, clearing the pending proposals that asked about them. On
+# 2026-10-23 that was 32 of the 33 proposals in the review queue. See
+# backend/scripts/merge_identical_photos.py.
+#
+# Modelled on backfill.yml, which is modelled on deploy.yml: settings are
+# prepended to the script on stdin rather than passed as an env prefix, because
+# the deploy key's forced command discards the client's command string. Read
+# deploy/remote-backfill.sh before simplifying that into
+# `ssh host "APPLY=true ..."`.
+#
+# Manual only, and dry-run by default: a dry run does the whole job inside a
+# transaction and rolls it back, so its counts are what a real run would do.
+#
+# The box's forced command (~/authorized-command.sh) is deliberately the one
+# script a deploy does not refresh, and `merge-identical` is a new action. If
+# the box is already on that wrapper, it refuses this workflow until someone
+# runs `install -m 0755 ~/app/deploy/authorized-command.sh
+# ~/authorized-command.sh` there once. Under the old `command="bash -s"`
+# pinning it runs from stdin as before.
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Write the hashes and links. Unticked counts and writes nothing.
+        type: boolean
+        default: false
+
+concurrency:
+  # Shares the backfill's group: both take the matching lock and write
+  # identities, and neither should interleave with the other.
+  group: backfill-production
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Merge identical photos on argos
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_TARGET: ${{ secrets.DEPLOY_SSH_TARGET }}
+          APPLY: ${{ inputs.apply }}
+        run: |
+          set -euo pipefail
+          key_file="$(mktemp)"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$key_file"
+          chmod 600 "$key_file"
+          [ "$APPLY" = "true" ] && mode=apply || mode=dry-run
+
+          # Settings through stdin, prepended to the script -- NOT an env
+          # prefix on the ssh command, which a forced command discards, leaving
+          # APPLY unset and a real run quietly executing as a dry run.
+          # The command string names an ACTION while the script is still piped
+          # on stdin, so this works either side of the box being switched from
+          # `command="bash -s"` to deploy/authorized-command.sh.
+          {
+            printf 'APPLY=%s\n' "$APPLY"
+            cat deploy/remote-merge-identical.sh
+          } | ssh -i "$key_file" -o BatchMode=yes -o ConnectTimeout=15 \
+                -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
+                "$DEPLOY_SSH_TARGET" "merge-identical $mode"
