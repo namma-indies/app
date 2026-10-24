@@ -18,6 +18,10 @@ why that, and not the upload). A /sighting photo carries it directly. A
 /capture sighting holds only per-animal crops, so it is matched through the
 *source* photo its animal instances were cut from.
 
+A clip is matched as a whole, on `captures.clip_sha256` (migration 0018): its
+frames are sampled, not chosen, and carry no hash of their own. Clip and photo
+hashes are kept apart -- a clip never links to a photo.
+
 WHEN IT STEPS ASIDE
 -------------------
 A rule that is never wrong has to know when it is not sure. It falls back to an
@@ -27,7 +31,8 @@ ordinary proposal, and a person, when:
   nothing about which dog either sighting is. Judged on the photo, not the
   sighting: if any copy of those bytes was found to hold two instances, every
   copy is ambiguous, including a /sighting copy whose pipeline only ever
-  looked at the biggest box.
+  looked at the biggest box. For a clip, the test is whether any copy of it
+  published more than one animal.
 * **the sightings already belong to different dogs.** Folding two identities
   together is a merge of individuals, which nothing here is entitled to do --
   and a human verdict may be what put either one there.
@@ -68,6 +73,7 @@ import asyncpg
 from app.aggregates import animal_present
 
 METHOD = "identical_photo"
+CLIP_METHOD = "identical_clip"
 
 # Which sighting each hashed photo is evidence for. A /sighting photo belongs to
 # its sighting directly. A /capture source belongs to whichever sightings its
@@ -106,15 +112,50 @@ _HASH_SETS = """
                SELECT src.content_sha256 FROM animal_instances a
                JOIN photos src ON src.id = a.source_photo_id
                WHERE a.sighting_id = s.id AND src.content_sha256 IS NOT NULL
+               UNION
+               -- Prefixed so a clip's hash can never stand in for a photo's.
+               SELECT 'clip:' || c.clip_sha256 WHERE c.clip_sha256 IS NOT NULL
            ) AS hashes,
-           EXISTS (
+           -- A hashed clip covers the frames sampled from it.
+           c.clip_sha256 IS NULL AND EXISTS (
                SELECT 1 FROM photos p
                WHERE p.sighting_id = s.id AND p.content_sha256 IS NULL
                  AND NOT EXISTS (SELECT 1 FROM animal_instances a
                                  WHERE a.evidence_photo_id = p.id)
            ) AS unhashed
-    FROM sightings s WHERE s.id = ANY($1::uuid[])
+    FROM sightings s LEFT JOIN captures c ON c.id = s.capture_id
+    WHERE s.id = ANY($1::uuid[])
     ORDER BY s.created_at, s.id
+"""
+
+# Every sighting published from a capture whose clip has this hash. `animals`
+# is how many sightings that capture published: a clip that held two dogs says
+# both copies are the same pair, not which dog is which.
+_CLIP_EVIDENCE = """
+    SELECT s.id AS sighting_id, c.clip_sha256 AS content_sha256,
+           (SELECT count(*) FROM sightings x WHERE x.capture_id = c.id) AS animals
+    FROM captures c JOIN sightings s ON s.capture_id = c.id
+    WHERE c.clip_sha256 = $1
+"""
+
+# Whether any copy of the clip was found to hold two animals in one frame, or
+# published more than one. Read from the captures, not through their
+# sightings: a copy still held for review has none, and is exactly the copy
+# that knows the clip holds two dogs. A /sighting copy only ever looked at the
+# biggest animal, so on its own it cannot tell -- the same accepted risk as a
+# /sighting photo with no /capture copy.
+_CLIP_AMBIGUOUS = """
+    SELECT EXISTS (
+        SELECT 1 FROM captures c WHERE c.clip_sha256 = $1 AND (
+            (SELECT count(*) FROM sightings x WHERE x.capture_id = c.id) > 1
+            OR EXISTS (SELECT 1 FROM animal_instances a WHERE a.capture_id = c.id
+                       GROUP BY a.source_photo_id HAVING count(*) > 1))
+    )
+"""
+
+_MY_CLIP = """
+    SELECT c.clip_sha256 FROM sightings s JOIN captures c ON c.id = s.capture_id
+    WHERE s.id = $1 AND c.clip_sha256 IS NOT NULL
 """
 
 _MY_HASHES = """
@@ -146,26 +187,34 @@ async def link_identical(
 ) -> IdenticalOutcome | None:
     """Link `sighting_id` with every sighting holding one of its photos.
 
-    None means the rule has nothing to say -- no hashed photo, or no other
-    sighting has one -- and the caller carries on exactly as before. A
+    None means the rule has nothing to say -- no hashed photo or clip, or no
+    other sighting has one -- and the caller carries on exactly as before. A
     'skipped' outcome means it found a copy and declined, so the pair goes
     to a person.
     """
     hashes = [r["content_sha256"] for r in await conn.fetch(_MY_HASHES, sighting_id)]
-    if not hashes:
+    clip = await conn.fetchval(_MY_CLIP, sighting_id)
+    if not hashes and clip is None:
         return None
-    evidence = await conn.fetch(_EVIDENCE, hashes)
+    # Keyed by (method, hash), so a photo and a clip that happened to share a
+    # digest are still two different pieces of evidence.
+    evidence = [(r["sighting_id"], (METHOD, r["content_sha256"]), r["animals"])
+                for r in (await conn.fetch(_EVIDENCE, hashes) if hashes else [])]
+    if clip is not None:
+        several = await conn.fetchval(_CLIP_AMBIGUOUS, clip)
+        evidence += [(r["sighting_id"], (CLIP_METHOD, clip), 2 if several else r["animals"])
+                     for r in await conn.fetch(_CLIP_EVIDENCE, clip)]
 
-    ambiguous = {r["content_sha256"] for r in evidence if r["animals"] > 1}
-    partner_hash: dict[UUID, str] = {}
+    ambiguous = {key for _, key, animals in evidence if animals > 1}
+    partner_hash: dict[UUID, tuple[str, str]] = {}
     declined = False
-    for r in evidence:
-        if r["sighting_id"] == sighting_id:
+    for sid, key, _ in evidence:
+        if sid == sighting_id:
             continue
-        if r["content_sha256"] in ambiguous:
+        if key in ambiguous:
             declined = True
             continue
-        partner_hash.setdefault(r["sighting_id"], r["content_sha256"])
+        partner_hash.setdefault(sid, key)
     if not partner_hash:
         return IdenticalOutcome("skipped", reason="multi_animal") if declined else None
 
@@ -239,7 +288,7 @@ async def link_identical(
             SELECT $1, 'model', NULL, $2, 'active', MIN(captured_at), MAX(captured_at)
             FROM sightings WHERE id = ANY($3::uuid[])
             """,
-            individual_id, METHOD, group,
+            individual_id, partner_hash[partners[0]][0], group,
         )
 
     if newly:
@@ -255,14 +304,14 @@ async def link_identical(
             # The resolving sighting is justified by its first partner; every
             # partner by the resolving sighting. Enough to find the pair again.
             matched = partners[0] if s == sighting_id else sighting_id
+            method, sha = partner_hash.get(s) or partner_hash[partners[0]]
             await conn.execute(
                 """
                 INSERT INTO auto_links (id, sighting_id, individual_id,
                                         matched_sighting_id, method, content_sha256)
                 VALUES ($1, $2, $3, $4, $5, $6)
                 """,
-                new_uuid(), s, individual_id, matched, METHOD,
-                partner_hash.get(s) or partner_hash[partners[0]],
+                new_uuid(), s, individual_id, matched, method, sha,
             )
 
     duplicates = await mark_duplicates(conn, group)

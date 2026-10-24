@@ -8,6 +8,8 @@ export interface CaptureSummary {
   captured_at: string;
   sighting_ids: string[];
   note: string | null;
+  /** A picture to show beside it in the Journal: the first animal's frame. */
+  thumb_url?: string;
 }
 export interface CaptureInstance {
   id: string;
@@ -114,7 +116,9 @@ export function postCapture(input: PostSightingInput): Promise<PostCaptureRespon
 export async function getCaptures(signal?: AbortSignal): Promise<{ sightings: CaptureSummary[] }> {
   try {
     const result = await request<{ items: WireCapture[] }>("/captures", { signal });
-    return { sightings: result.items };
+    return { sightings: result.items.map(({ instances, groups: _groups, revision: _revision, ...summary }) => ({
+      ...summary, thumb_url: instances?.[0]?.source_thumb_url ?? instances?.[0]?.thumb_url,
+    })) };
   } catch (err) {
     // Readers stay available after intake is disabled; old servers have no route.
     if (err instanceof HttpError && err.status === 404) return { sightings: [] };

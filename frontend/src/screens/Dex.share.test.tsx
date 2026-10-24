@@ -39,15 +39,17 @@ describe("sharing from the Journal", () => {
   });
 });
 
-describe("the POSTS tab", () => {
-  it.each([true, false])("is shown only to moderators (moderator=%s)", async (moderator) => {
+describe("INDIEDEX's tabs", () => {
+  it.each([true, false])("are MAP, JOURNAL and DOGS for everyone (moderator=%s)", async (moderator) => {
     vi.mocked(getDex).mockResolvedValue({ sightings: [] });
     vi.mocked(getMe).mockResolvedValue({ is_moderator: moderator } as Awaited<ReturnType<typeof getMe>>);
     vi.mocked(getMap).mockResolvedValue({ sightings: [] });
     vi.mocked(getCaptures).mockResolvedValue({ sightings: [] });
     render(<Dex onUnauthorized={() => {}} />);
     await screen.findByRole("button", { name: "JOURNAL" });
-    if (moderator) expect(await screen.findByRole("button", { name: "POSTS" })).toBeInTheDocument();
-    else await waitFor(() => expect(screen.queryByRole("button", { name: "POSTS" })).not.toBeInTheDocument());
+    await waitFor(() => expect(getMe).toHaveBeenCalled());
+    // FLAGS and POSTS live under ADMIN now.
+    expect(screen.queryByRole("button", { name: "FLAGS" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "POSTS" })).not.toBeInTheDocument();
   });
 });

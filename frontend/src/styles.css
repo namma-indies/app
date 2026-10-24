@@ -1166,3 +1166,9 @@ button { font-family: inherit; }
   .confetti-piece,
   .celebration-runner { animation: none; display: none; }
 }
+
+/* An upload waiting on its contributor: the one Journal entry with a job to do. */
+.spec.needs-review { border-color: var(--accent); box-shadow: 3px 3px 0 var(--accent); }
+.spec.needs-review .no { background: var(--accent); }
+.spec.needs-review .name { color: var(--accent); }
+.spec.upload-entry:not(.needs-review) { cursor: default; }

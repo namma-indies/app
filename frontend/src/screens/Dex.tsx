@@ -9,11 +9,9 @@ import {
 } from "../api";
 import DogMap from "../components/DogMap";
 import CaptureReview from "../components/CaptureReview";
-import { getCaptures } from "../captureApi";
+import { getCaptures, type CaptureSummary } from "../captureApi";
 import ReportSheet from "../components/ReportSheet";
 import Dogs from "./Dogs";
-import Moderation from "./Moderation";
-import Social from "./Social";
 import { useProcessingFeed } from "../useProcessingFeed";
 import { processingLabel } from "../processing";
 
@@ -46,10 +44,37 @@ function where(s: Sighting): string {
   return "no GPS";
 }
 
+const UNFINISHED = new Set<CaptureSummary["processing_state"]>(["queued", "processing", "failed", "needs_review"]);
+
+/** An upload that is not a sighting yet. One that needs its contributor stands
+ * out, in the Journal where their sightings are, rather than as a banner over
+ * the map. */
+function UploadEntry({ capture, onReview }: { capture: CaptureSummary; onReview: () => void }) {
+  const needsYou = capture.processing_state === "needs_review";
+  return (
+    <article className={needsYou ? "spec upload-entry needs-review" : "spec upload-entry"}
+      aria-label={needsYou ? "Upload that needs you" : "Upload in progress"}
+      onClick={needsYou ? onReview : undefined}>
+      <div className="frame">
+        {capture.thumb_url ? <img src={capture.thumb_url} alt="your upload" /> : <div className="media-placeholder">No preview yet</div>}
+        {needsYou && <span className="no">NEEDS YOU</span>}
+      </div>
+      <div className="meta">
+        {needsYou ? <>
+          <div className="name">TWO ANIMALS IN ONE SHOT</div>
+          <div className="line">We need you to say which photos show which animal before this goes on the map.</div>
+          <button className="link-btn" onClick={(event) => { event.stopPropagation(); onReview(); }}>Separate the animals</button>
+        </> : <div className="processing-status">{processingLabel(capture.processing_state)}</div>}
+        <div className="line">taken {when(capture.captured_at)}</div>
+      </div>
+    </article>
+  );
+}
+
 export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) {
   // Matches have no tab of their own: they open from inside DOGS, where the
-  // dog a verdict makes or grows shows up.
-  const [view, setView] = useState<"map" | "journal" | "dogs" | "flags" | "posts">("map");
+  // dog a verdict makes or grows shows up. FLAGS and POSTS live under ADMIN.
+  const [view, setView] = useState<"map" | "journal" | "dogs">("map");
   const [selectedId, setSelected] = useState<string | null>(null);
   // The map can show the whole cohort's sightings, not just the viewer's.
   // Defaults to MINE: that renders straight from the /dex data already loaded
@@ -59,6 +84,10 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
   const ownFeed = useProcessingFeed(getDex, view === "map" || view === "journal", onUnauthorized);
   const sharedFeed = useProcessingFeed(getMap, view === "map" && scope === "everyone", onUnauthorized);
   const captureFeed = useProcessingFeed(getCaptures, view === "map" || view === "journal", onUnauthorized, true);
+  // Only uploads that are not yet sightings get a Journal entry of their own.
+  // A finished one is already there as its sightings, and one with no animal
+  // in it has nothing left to do.
+  const pendingUploads = (captureFeed.data ?? []).filter((capture) => UNFINISHED.has(capture.processing_state));
   const [reviewCaptureId, setReviewCaptureId] = useState<string | null>(null);
   const childSignature = (captureFeed.data ?? []).flatMap((capture) => capture.sighting_ids).sort().join(",");
   useEffect(() => {
@@ -69,23 +98,18 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
   const selected = sightings?.find((s) => s.id === selectedId) ?? null;
   // Set while someone is reporting a sighting from a map popup.
   const [reporting, setReporting] = useState<string | null>(null);
-  // Only decides whether the FLAGS tab renders. The endpoints behind it check
-  // the tier themselves -- a client-side flag is a suggestion.
-  const [isModerator, setIsModerator] = useState(false);
-  // Same reasoning: only someone who may be posted sees the share toggle.
+  // Only someone who may be posted sees the share toggle. The endpoint checks
+  // consent itself -- a client-side flag is a suggestion.
   const [canShare, setCanShare] = useState(false);
   // Local overrides after a toggle, so the button answers at once instead of
   // waiting for the next /dex refresh.
   const [sharedNow, setSharedNow] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    // Failure is not surfaced: not being a moderator and the call failing look
-    // the same from here, and both mean "do not show the tab".
+    // Failure is not surfaced: lacking consent and the call failing look the
+    // same from here, and both mean "do not offer the share toggle".
     getMe()
-      .then((me) => {
-        setIsModerator(me.is_moderator);
-        setCanShare(me.can_share_socially === true);
-      })
+      .then((me) => setCanShare(me.can_share_socially === true))
       .catch(() => {});
   }, []);
 
@@ -170,27 +194,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
         <button className={view === "dogs" ? "active" : ""} onClick={() => setView("dogs")}>
           DOGS
         </button>
-        {isModerator && (
-          <button className={view === "flags" ? "active" : ""} onClick={() => setView("flags")}>
-            FLAGS
-          </button>
-        )}
-        {isModerator && (
-          <button className={view === "posts" ? "active" : ""} onClick={() => setView("posts")}>
-            POSTS
-          </button>
-        )}
       </div>
-
-      {(view === "journal" || view === "map") && <section className="capture-status-list" aria-label="Upload status">
-        {captureFeed.error && <p role="alert">Couldn't load upload progress. <button onClick={captureFeed.refresh}>Try again</button></p>}
-        {captureFeed.paused && <p>Upload processing is still pending. <button onClick={captureFeed.refresh}>Check uploads again</button></p>}
-        {(captureFeed.data ?? []).filter((capture) => capture.processing_state !== "legacy").map((capture) => <div className="capture-status" key={capture.capture_id}>
-          <div><strong>{capture.processing_state === "ready" ? `${capture.sighting_ids.length} animal sighting${capture.sighting_ids.length === 1 ? "" : "s"} saved` : processingLabel(capture.processing_state)}</strong><br /><span>{when(capture.captured_at)} · one upload</span></div>
-          {capture.processing_state === "needs_review" && <button onClick={() => setReviewCaptureId(capture.capture_id)}>Review animals privately</button>}
-          {capture.processing_state === "ready" && <button onClick={() => setReviewCaptureId(capture.capture_id)}>Edit each animal’s details</button>}
-        </div>)}
-      </section>}
 
       {reviewCaptureId && <CaptureReview captureId={reviewCaptureId} onClose={() => setReviewCaptureId(null)} onUnauthorized={onUnauthorized} onSaved={() => { setReviewCaptureId(null); captureFeed.refresh(); ownFeed.refresh(); sharedFeed.refresh(); }} />}
 
@@ -199,11 +203,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
         <p className="hint">Still processing. Automatic updates paused. <button onClick={() => { ownFeed.refresh(); sharedFeed.refresh(); }}>Check again</button></p>
       )}
 
-      {view === "flags" ? (
-        <Moderation onUnauthorized={onUnauthorized} />
-      ) : view === "posts" ? (
-        <Social onUnauthorized={onUnauthorized} />
-      ) : view === "dogs" ? (
+      {view === "dogs" ? (
         <Dogs onUnauthorized={onUnauthorized} />
       ) : view === "map" ? (
         <>
@@ -223,7 +223,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
           </div>
           {mapBody}
         </>
-      ) : sightings.length === 0 ? (
+      ) : sightings.length === 0 && pendingUploads.length === 0 ? (
         <div className="empty-state">
           <span className="big">🐾</span>
           NO SIGHTINGS YET —<br />
@@ -234,6 +234,9 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
           <div className="journal-head">
             YOUR GUIDE · {sightings.length} SIGHTING{sightings.length === 1 ? "" : "S"}
           </div>
+          {captureFeed.error && <p className="hint" role="alert">Couldn't load upload progress. <button onClick={captureFeed.refresh}>Try again</button></p>}
+          {captureFeed.paused && <p className="hint">Upload processing is still pending. <button onClick={captureFeed.refresh}>Check uploads again</button></p>}
+          {pendingUploads.map((capture) => <UploadEntry key={capture.capture_id} capture={capture} onReview={() => setReviewCaptureId(capture.capture_id)} />)}
           {shown.map((s) => (
             <div key={s.id} className="spec" onClick={() => setSelected(s.id)}>
               <div className="frame">
@@ -242,7 +245,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
               </div>
               <div className="meta">
                 <div className="name anon">— UNIDENTIFIED —</div>
-                {s.capture_id && s.processing_state === "ready" && <button className="link-btn" onClick={(event) => { event.stopPropagation(); setReviewCaptureId(s.capture_id!); }}>Edit animal details</button>}
+                {s.capture_id && s.details_editable && <button className="link-btn" onClick={(event) => { event.stopPropagation(); setReviewCaptureId(s.capture_id!); }}>Edit animal details</button>}
                 {canShare && (() => {
                   const shared = sharedNow[s.id] ?? s.shared_with_team === true;
                   return (

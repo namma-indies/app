@@ -146,3 +146,23 @@ async def test_a_normal_sighting_is_on_the_map(authed_client):
     item = (await client.get("/dex")).json()["sightings"][0]
     assert item["on_map"] is True
     assert item["off_map_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_only_a_published_capture_has_details_to_edit(authed_client):
+    """'Edit animal details' opens the capture's per-animal sheet. A /sighting
+    upload's capture is a legacy stand-in with no animals in it, so offering
+    the sheet there opens an empty page with nothing to press."""
+    client, oid = authed_client
+    legacy = await _post(client)
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as c:
+        cid = await c.fetchval("SELECT capture_id FROM sightings WHERE id=$1", legacy)
+        await c.execute("UPDATE sightings SET processing_state='ready' WHERE id=$1", legacy)
+    items = {s["id"]: s for s in (await client.get("/dex")).json()["sightings"]}
+    assert items[legacy]["details_editable"] is False
+
+    async with pool.acquire() as c:
+        await c.execute("UPDATE captures SET processing_state='ready' WHERE id=$1", cid)
+    items = {s["id"]: s for s in (await client.get("/dex")).json()["sightings"]}
+    assert items[legacy]["details_editable"] is True

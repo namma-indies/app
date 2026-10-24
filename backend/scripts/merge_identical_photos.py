@@ -12,7 +12,8 @@ Two phases:
    and hashed. The stored object is exactly what the live path hashes (see
    migration 0016), so backfilled and live rows mean the same thing. Only
    uploaded photos -- not clip frames, not evidence crops -- the same set the
-   live path writes.
+   live path writes. Every stored clip with no `captures.clip_sha256` is
+   hashed the same way (migration 0018).
 2. **Link.** Every embedded sighting whose photo also appears in another
    sighting goes through `link_identical`, the function resolution calls, so
    the backfill cannot disagree with live behaviour. Pending proposals the
@@ -88,6 +89,10 @@ DUPLICATED_SQL = """
         SELECT a.sighting_id, src.content_sha256 FROM animal_instances a
         JOIN photos src ON src.id = a.source_photo_id
         WHERE a.sighting_id IS NOT NULL AND src.content_sha256 IS NOT NULL
+        UNION
+        SELECT s.id, 'clip:' || c.clip_sha256 FROM sightings s
+        JOIN captures c ON c.id = s.capture_id
+        WHERE c.clip_sha256 IS NOT NULL
     ),
     dup AS (
         SELECT content_sha256 FROM ev
@@ -102,6 +107,21 @@ DUPLICATED_SQL = """
     ORDER BY s.created_at, s.id
 """
 
+# Captures holding a clip and no clip hash. A /capture clip's key is on the
+# capture; a /sighting clip's is on the sighting (0015 copied the older ones
+# onto their legacy capture, later ones were never copied).
+UNHASHED_CLIPS_SQL = """
+    SELECT c.id, COALESCE(c.clip_s3_key, (
+               SELECT s.clip_s3_key FROM sightings s
+               WHERE s.capture_id = c.id AND s.clip_s3_key IS NOT NULL
+               ORDER BY s.created_at, s.id LIMIT 1)) AS s3_key
+    FROM captures c
+    WHERE c.clip_sha256 IS NULL
+      AND (c.clip_s3_key IS NOT NULL OR EXISTS (
+            SELECT 1 FROM sightings s WHERE s.capture_id = c.id AND s.clip_s3_key IS NOT NULL))
+    ORDER BY c.created_at, c.id
+"""
+
 PENDING_SQL = "SELECT count(*) FROM match_proposals WHERE status = 'pending'"
 
 
@@ -109,6 +129,8 @@ PENDING_SQL = "SELECT count(*) FROM match_proposals WHERE status = 'pending'"
 class Report:
     to_hash: int = 0
     hashed: int = 0
+    clips_to_hash: int = 0
+    clips_hashed: int = 0
     unreadable: int = 0
     duplicated_sightings: int = 0
     sightings_linked: int = 0
@@ -151,6 +173,21 @@ async def run(pool: asyncpg.Pool, storage, *, apply: bool) -> Report:
     rep.hashed = len(hashes)
 
     async with pool.acquire() as conn:
+        clip_rows = await conn.fetch(UNHASHED_CLIPS_SQL)
+    rep.clips_to_hash = len(clip_rows)
+    log.info("%d stored clip(s) have no content hash", rep.clips_to_hash)
+    clip_hashes: list[tuple] = []
+    for r in clip_rows:
+        try:
+            data = await storage.get(r["s3_key"])
+        except Exception:
+            log.warning("capture=%s: could not read %s", r["id"], r["s3_key"], exc_info=True)
+            rep.unreadable += 1
+            continue
+        clip_hashes.append((r["id"], hashlib.sha256(data).hexdigest()))
+    rep.clips_hashed = len(clip_hashes)
+
+    async with pool.acquire() as conn:
         try:
             async with conn.transaction():
                 await lock_matching(conn)
@@ -165,6 +202,15 @@ async def run(pool: asyncpg.Pool, storage, *, apply: bool) -> Report:
                         WHERE p.id = h.id AND p.content_sha256 IS NULL
                         """,
                         [h[0] for h in hashes], [h[1] for h in hashes],
+                    )
+                if clip_hashes:
+                    await conn.execute(
+                        """
+                        UPDATE captures c SET clip_sha256 = h.sha
+                        FROM unnest($1::uuid[], $2::text[]) AS h(id, sha)
+                        WHERE c.id = h.id AND c.clip_sha256 IS NULL
+                        """,
+                        [h[0] for h in clip_hashes], [h[1] for h in clip_hashes],
                     )
                 sids = [r["id"] for r in await conn.fetch(DUPLICATED_SQL, MODEL_NAME)]
                 rep.duplicated_sightings = len(sids)
@@ -196,7 +242,8 @@ def describe(rep: Report, *, apply: bool) -> str:
     skipped = ", ".join(f"{k} {v}" for k, v in sorted(rep.skipped.items())) or "none"
     return "\n".join([
         f"{'APPLIED' if apply else 'DRY RUN -- nothing written'}",
-        f"photos hashed: {rep.hashed} of {rep.to_hash} ({rep.unreadable} unreadable)",
+        f"photos hashed: {rep.hashed} of {rep.to_hash}, clips hashed: "
+        f"{rep.clips_hashed} of {rep.clips_to_hash} ({rep.unreadable} unreadable)",
         f"sightings sharing a photo with another: {rep.duplicated_sightings}",
         f"sightings {verb}linked: {rep.sightings_linked} "
         f"({rep.individuals_minted} new dog(s), {rep.links_to_existing} onto an existing one)",

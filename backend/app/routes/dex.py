@@ -45,11 +45,13 @@ async def get_dex(
             s.shared_with_team_at IS NOT NULL AS shared_with_team,
             s.processing_state,
             s.capture_id,
+            c.processing_state = 'ready' AS details_editable,
             s.species,
             {animal_present()} AS animal_ok,
             p.id AS photo_id,
             p.s3_key
         FROM sightings s
+        LEFT JOIN captures c ON c.id = s.capture_id
         LEFT JOIN photos p ON p.sighting_id = s.id
         WHERE s.observer_id = $1
         -- p.id breaks the tie: photos of one sighting share created_at exactly
@@ -84,6 +86,10 @@ async def get_dex(
                 "shared_with_team": row["shared_with_team"],
                 "processing_state": row["processing_state"],
                 "capture_id": str(row["capture_id"]) if row["capture_id"] else None,
+                # Whether the capture has per-animal details to edit. A
+                # /sighting upload's capture is a 'legacy' stand-in with no
+                # animals, and its sheet would be empty.
+                "details_editable": row["details_editable"] is True,
                 "species": row["species"],
                 "on_map": _on_map(row),
                 "off_map_reason": _off_map_reason(row),
