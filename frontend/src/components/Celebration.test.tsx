@@ -172,3 +172,70 @@ describe("cleanup", () => {
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 });
+
+describe("a burst and a streak (#81)", () => {
+  class MemoryStorage {
+    private store = new Map<string, string>();
+    getItem(k: string) { return this.store.has(k) ? this.store.get(k)! : null; }
+    setItem(k: string, v: string) { this.store.set(k, String(v)); }
+    removeItem(k: string) { this.store.delete(k); }
+    clear() { this.store.clear(); }
+  }
+  const NOW = Date.parse("2026-10-24T08:00:00Z");
+  const capturedMinutesAgo = (m: number) => ({ processing_state: "queued", captured_at: new Date(NOW - m * 60_000).toISOString() });
+
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", new MemoryStorage());
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("says how many were logged in one burst, as one celebration", () => {
+    render(<Celebration />);
+    uploadAcknowledged(capturedMinutesAgo(300));
+    uploadAcknowledged(capturedMinutesAgo(200));
+    uploadAcknowledged(capturedMinutesAgo(100));
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.getByRole("status")).toHaveTextContent("3 logged!");
+  });
+
+  it("throws a bigger party for a bigger burst", () => {
+    render(<Celebration />);
+    uploadAcknowledged(capturedMinutesAgo(300));
+    const single = document.querySelectorAll(".confetti-piece").length;
+    uploadAcknowledged(capturedMinutesAgo(200));
+    uploadAcknowledged(capturedMinutesAgo(100));
+    expect(document.querySelectorAll(".confetti-piece").length).toBeGreaterThan(single);
+    expect(document.querySelectorAll(".celebration-runner")).toHaveLength(4);
+  });
+
+  it("opens the streak card on the fifth sighting of a quick run, and it outlasts the confetti", () => {
+    render(<Celebration />);
+    for (const m of [12, 9, 6, 3]) uploadAcknowledged(capturedMinutesAgo(m));
+    expect(screen.queryByRole("dialog", { name: "Hot streak" })).not.toBeInTheDocument();
+    uploadAcknowledged(capturedMinutesAgo(0));
+    const card = screen.getByRole("dialog", { name: "Hot streak" });
+    expect(card).toHaveTextContent("5");
+    expect(card).toHaveTextContent("sightings logged in 12 minutes");
+    act(() => void vi.advanceTimersByTime(CELEBRATION_MS + 50));
+    expect(screen.getByRole("dialog", { name: "Hot streak" })).toBeInTheDocument();
+    act(() => screen.getByRole("button", { name: "NICE" }).click());
+    expect(screen.queryByRole("dialog", { name: "Hot streak" })).not.toBeInTheDocument();
+  });
+
+  it("claims sightings, never animals, and carries no coordinates", () => {
+    render(<Celebration />);
+    for (const m of [12, 9, 6, 3, 0]) uploadAcknowledged(capturedMinutesAgo(m));
+    const said = screen.getByRole("dialog", { name: "Hot streak" }).textContent ?? "";
+    expect(said).not.toMatch(/\bdogs?\b|\bcats?\b|animal|identif|match/i);
+    expect(said).not.toMatch(/\d+\.\d{3,}/); // nothing like 12.9716
+  });
+
+  it("gives reduced motion the same card, still", () => {
+    setReducedMotion(true);
+    render(<Celebration />);
+    for (const m of [12, 9, 6, 3, 0]) uploadAcknowledged(capturedMinutesAgo(m));
+    expect(screen.getByRole("dialog", { name: "Hot streak" })).toBeInTheDocument();
+    expect(document.querySelector(".celebration-scene")).toBeNull();
+  });
+});
