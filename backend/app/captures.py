@@ -121,3 +121,33 @@ async def publish_groups(conn, capture, groups):
                 radius_m=settings.reid_radius_m,max_candidates=settings.reid_max_candidates,new_uuid=uuid7,
                 thin_evidence_frames=settings.reid_thin_evidence_frames)
     return sids
+
+
+async def recheck_held(conn, capture):
+    """Publish a held capture if today's rule would not have held it.
+
+    Caller holds the matching lock and the capture row. Returns the published
+    sighting ids, or None when it still needs a person: some species is
+    ambiguous (`tracking.covisibility`), or someone has already saved a draft
+    of their own sorting, which says something the stored species cannot.
+    Otherwise every animal of a species is one animal -- what the worker's
+    tracker does for a species that is never co-visible.
+    """
+    if capture["processing_state"] != "needs_review" or decoded(capture["review_groups"]):
+        return None
+    from app.tracking import covisibility
+    rows = await conn.fetch("SELECT id,source_photo_id,species FROM animal_instances "
+        "WHERE capture_id=$1 ORDER BY id", capture["id"])
+    if not rows:
+        return None
+    frames = {}
+    for r in rows:
+        frames.setdefault(r["source_photo_id"], []).append(r["species"])
+    if covisibility(frames.values())[1]:
+        return None
+    by_species = {}
+    for r in rows:
+        by_species.setdefault(r["species"], []).append(r["id"])
+    sids = await publish_groups(conn, capture, [AnimalGroup(instance_ids=ids) for ids in by_species.values()])
+    await conn.execute("UPDATE captures SET revision=revision+1 WHERE id=$1", capture["id"])
+    return sids

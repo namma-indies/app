@@ -13,6 +13,7 @@ a merge.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Iterable
 from typing import Literal
 import math
 
@@ -110,6 +111,28 @@ def _centre(instance: AnimalInstance, frame: FrameAnalysis) -> np.ndarray:
     return np.array([(x1 + x2) / (2 * frame.width), (y1 + y2) / (2 * frame.height)])
 
 
+def covisibility(frames: Iterable[Iterable[str]]) -> tuple[set[str], set[str]]:
+    """(co-visible, ambiguous) species, from the species of each frame's animals.
+
+    Co-visible: some frame shows two or more of it. Ambiguous: co-visible AND
+    seen in more than one frame. Two dogs in a single frame are two animals by
+    construction and the review UI cannot merge them, so there is nothing to
+    ask. The question only exists once they reappear elsewhere and could be
+    either one. Shared with the re-check of held captures
+    (`captures.recheck_held`), which has only the stored species to go on.
+    """
+    covisible, seen_in = set(), {}
+    for species_in_frame in frames:
+        counts: dict[str, int] = {}
+        for species in species_in_frame:
+            counts[species] = counts.get(species, 0) + 1
+        for species, count in counts.items():
+            seen_in[species] = seen_in.get(species, 0) + 1
+            if count > 1:
+                covisible.add(species)
+    return covisible, {species for species in covisible if seen_in[species] > 1}
+
+
 def associate_frames(frames: tuple[FrameAnalysis, ...], coverage: SamplingCoverage,
                      *, max_instances: int = 96, max_evidence_per_track: int = 12) -> CaptureAnalysis:
     """Bounded, deterministic tracks and review proposals without averaging any vectors.
@@ -136,18 +159,8 @@ def associate_frames(frames: tuple[FrameAnalysis, ...], coverage: SamplingCovera
         raise ValueError("capture exceeds instance budget; no partial animal result")
     if len({instance.instance_id for instance in instances}) != len(instances):
         raise ValueError("duplicate instance identity")
-    covisible, seen_in = set(), {}
-    for frame in frames:
-        for species in ("dog", "cat"):
-            count = sum(i.detection.species == species for i in frame.instances)
-            if count:
-                seen_in[species] = seen_in.get(species, 0) + 1
-            if count > 1:
-                covisible.add(species)
-    # Two dogs in a single frame are two animals by construction and the review
-    # UI cannot merge them, so there is nothing to ask. The question only exists
-    # once they reappear elsewhere and could be either one.
-    ambiguous = {species for species in covisible if seen_in[species] > 1}
+    covisible, ambiguous = covisibility(
+        [i.detection.species for i in frame.instances] for frame in frames)
     associations = []
     previous: dict[str, tuple[int, FrameAnalysis, tuple[AnimalInstance, ...]]] = {}
     for ordinal, frame in enumerate(frames):
