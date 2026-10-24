@@ -123,6 +123,9 @@ platform :ios do
       distribute_build(version: version, build_number: build_number,
                        groups: groups, notes: notes)
     rescue StandardError => e
+      # A prompt in CI is a configuration bug, never a processing delay, so it
+      # must not be retried into a timeout that points somewhere else.
+      raise if e.message.to_s.include?("non-interactive mode")
       attempts += 1
       raise if attempts >= MAX_DISTRIBUTE_ATTEMPTS
       UI.important("Not distributable yet (attempt #{attempts}/#{MAX_DISTRIBUTE_ATTEMPTS}): " \
@@ -135,6 +138,11 @@ platform :ios do
   private_lane :distribute_build do |options|
     upload_to_testflight(
       app_identifier: APP_ID,
+      # Required here, not optional. With no .ipa to read it from, pilot asks
+      # for the platform on stdin -- and in CI that prompt raises, which the
+      # retry loop then mistook for "still processing" for all 40 attempts.
+      # That is how v1.2.1's first distribute run spent 40 minutes doing nothing.
+      app_platform: "ios",
       # No binary in hand: this only flips an already-uploaded build over to a
       # group. `distribute_external` is incompatible with
       # skip_waiting_for_build_processing, which is exactly why it could never
