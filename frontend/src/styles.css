@@ -741,6 +741,20 @@ button { font-family: inherit; }
    same animal", so nothing may suggest an answer before the person looks --
    which is also why the two buttons are the same size. */
 .review { display: flex; flex-direction: column; gap: 0.85rem; margin-top: 0.25rem; }
+.review-back { align-self: flex-start; padding-left: 0; }
+
+/* The way into the queue, at the top of DOGS. A full-width card rather than a
+   link, because for a tester this is the one thing on the screen to do. */
+.matches-waiting {
+  display: flex; flex-direction: column; gap: 0.25rem; align-items: flex-start;
+  width: 100%; text-align: left; cursor: pointer;
+  background: var(--accent); color: var(--panel);
+  border: 3px solid var(--line); border-radius: 4px;
+  box-shadow: 3px 3px 0 var(--shadow); padding: 0.7rem;
+}
+.matches-waiting:active { transform: translate(1px, 1px); }
+.matches-count { font-family: "Silkscreen", monospace; font-size: 0.72rem; }
+.matches-sub { font-size: 0.85rem; }
 
 .match-card {
   background: var(--panel); border: 3px solid var(--line); border-radius: 4px;

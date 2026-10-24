@@ -1,13 +1,18 @@
-import { useEffect, useState } from "react";
-import { getDogs, UnauthorizedError, type Dog, type DogsResponse } from "../api";
+import { useCallback, useEffect, useState } from "react";
+import { getDogs, getProposals, UnauthorizedError, type Dog, type DogsResponse } from "../api";
+import Review from "./Review";
 
-/** The catalogue of identified individuals.
+/** The catalogue of identified individuals, and the matches that feed it.
  *
  * Distinct from the journal on purpose. The journal is a log — every time
  * anyone saw anything, newest first. This is the population: one card per
- * animal, however many times it has been seen. A dog only appears here once a
- * human has confirmed two sightings are the same animal, so the list is the
+ * animal, however many times they have been seen. A dog only appears here once
+ * a human has confirmed two sightings are the same animal, so the list is the
  * visible output of the re-ID work rather than a second view of the same rows.
+ *
+ * The matches waiting for that confirmation live here too, behind one button
+ * at the top, rather than in a tab of their own. A verdict is what makes or
+ * grows a dog, so the place you give it is the place you see the result.
  */
 
 const TAG_LABELS: Record<string, string> = {
@@ -60,16 +65,64 @@ function whereLine(d: Dog): string {
 export default function Dogs({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [data, setData] = useState<DogsResponse | null>(null);
   const [failed, setFailed] = useState(false);
+  // How many pairs are waiting. A failed count only hides the button: the
+  // dogs themselves loaded, and the list is still worth showing.
+  const [waiting, setWaiting] = useState(0);
+  const [reviewing, setReviewing] = useState(false);
 
-  useEffect(() => {
+  const loadDogs = useCallback(() => {
     getDogs()
-      .then(setData)
+      .then((d) => {
+        setData(d);
+        setFailed(false);
+      })
       .catch((err) => {
         if (err instanceof UnauthorizedError) onUnauthorized();
         else setFailed(true);
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const loadWaiting = useCallback(() => {
+    getProposals()
+      .then((r) => setWaiting(r.proposals.length))
+      .catch((err) => {
+        if (err instanceof UnauthorizedError) onUnauthorized();
+        else setWaiting(0);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    loadDogs();
+    loadWaiting();
+  }, [loadDogs, loadWaiting]);
+
+  if (reviewing) {
+    return (
+      <Review
+        onUnauthorized={onUnauthorized}
+        // Refetch after every verdict, so a new or grown dog is already in the
+        // list when the person goes back to it.
+        onDecided={loadDogs}
+        onBack={() => {
+          setReviewing(false);
+          loadDogs();
+          loadWaiting();
+        }}
+      />
+    );
+  }
+
+  const matchesButton =
+    waiting > 0 ? (
+      <button className="matches-waiting" onClick={() => setReviewing(true)}>
+        <span className="matches-count">
+          {waiting} MATCH{waiting === 1 ? "" : "ES"} WAITING
+        </span>
+        <span className="matches-sub">Two photos that might be one dog. Take a look.</span>
+      </button>
+    ) : null;
 
   if (failed) return <div className="empty-state">COULDN'T LOAD THE DOGS — TRY AGAIN</div>;
   if (data === null) return <div className="empty-state">READING THE CATALOGUE…</div>;
@@ -79,16 +132,20 @@ export default function Dogs({ onUnauthorized }: { onUnauthorized: () => void })
 
   if (dogs.length === 0) {
     return (
-      <div className="empty-state">
-        <span className="big">🐕</span>
-        NO DOGS IDENTIFIED YET —<br />
-        CONFIRM A MATCH AND THE FIRST ONE APPEARS HERE
+      <div className="dogs">
+        {matchesButton}
+        <div className="empty-state">
+          <span className="big">🐕</span>
+          NO DOGS IDENTIFIED YET —<br />
+          CONFIRM A MATCH AND THE FIRST ONE APPEARS HERE
+        </div>
       </div>
     );
   }
 
   return (
     <div className="dogs">
+      {matchesButton}
       <div className="journal-head">
         {dogs.length} INDIE{dogs.length === 1 ? "" : "S"} IDENTIFIED
       </div>

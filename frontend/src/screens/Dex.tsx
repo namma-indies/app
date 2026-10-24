@@ -11,7 +11,6 @@ import { getCaptures } from "../captureApi";
 import ReportSheet from "../components/ReportSheet";
 import Dogs from "./Dogs";
 import Moderation from "./Moderation";
-import Review from "./Review";
 import { useProcessingFeed } from "../useProcessingFeed";
 import { processingLabel } from "../processing";
 
@@ -45,7 +44,9 @@ function where(s: Sighting): string {
 }
 
 export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) {
-  const [view, setView] = useState<"map" | "journal" | "dogs" | "review" | "flags">("map");
+  // Matches have no tab of their own: they open from inside DOGS, where the
+  // dog a verdict makes or grows shows up.
+  const [view, setView] = useState<"map" | "journal" | "dogs" | "flags">("map");
   const [selectedId, setSelected] = useState<string | null>(null);
   // The map can show the whole cohort's sightings, not just the viewer's.
   // Defaults to MINE: that renders straight from the /dex data already loaded
@@ -149,9 +150,6 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
         <button className={view === "dogs" ? "active" : ""} onClick={() => setView("dogs")}>
           DOGS
         </button>
-        <button className={view === "review" ? "active" : ""} onClick={() => setView("review")}>
-          MATCHES
-        </button>
         {isModerator && (
           <button className={view === "flags" ? "active" : ""} onClick={() => setView("flags")}>
             FLAGS
@@ -178,8 +176,6 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
 
       {view === "flags" ? (
         <Moderation onUnauthorized={onUnauthorized} />
-      ) : view === "review" ? (
-        <Review onUnauthorized={onUnauthorized} />
       ) : view === "dogs" ? (
         <Dogs onUnauthorized={onUnauthorized} />
       ) : view === "map" ? (

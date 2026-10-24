@@ -308,6 +308,9 @@ export interface MatchSide {
   sighting_id: string;
   date: string;
   thumb_url: string | null;
+  /** The viewer logged this side. Nothing about where it was taken is sent
+   * for either side (issue #45). */
+  mine?: boolean;
 }
 
 /** A pair the model thinks might be one dog, awaiting a human. */

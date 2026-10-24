@@ -1,10 +1,12 @@
 """Who may say two sightings are one dog.
 
-`POST /proposal/{id}` mints individuals, and it used to accept any signed-in
-observer -- while the join passcode is a shared string handed around over
-WhatsApp. These pin the ownership rule from issue #29: you decide about
-photographs you took, and everything else stays open rather than being consumed
-by a verdict nobody was entitled to give.
+Anyone signed in. `POST /proposal/{id}` mints individuals, and for a while only
+the observer who logged both sightings could call it (issue #29). That left
+every cross-observer match pending with nobody allowed to decide it, so the
+rule went. What replaces it later is disputes and verdicts weighted by who gave
+them; what these pin now is that a stranger's verdict lands, that it is
+recorded against them, and that the queue shows your own pairs first without
+showing anyone where someone else's dog was.
 """
 
 import io
@@ -74,57 +76,148 @@ async def test_you_may_merge_two_sightings_you_logged(authed_client):
     assert len(linked) == 1 and None not in linked, "both sightings join one individual"
 
 
+async def _as(client, oid):
+    client.cookies.set("session", issue_session(oid))
+
+
 @pytest.mark.asyncio
-async def test_you_may_not_merge_someone_elses_sighting(authed_client):
-    """The case the ownership rule exists for: a stranger has only the pixels,
-    and the model's own numbers say pixels are not enough."""
+async def test_you_may_merge_someone_elses_sighting_with_yours(authed_client):
     client, oid_a = authed_client
     mine = await _post(client)
     oid_b = await _observer(client)
-    client.cookies.set("session", issue_session(oid_b))
+    await _as(client, oid_b)
     theirs = await _post(client)
-    client.cookies.set("session", issue_session(oid_a))
+    await _as(client, oid_a)
 
     pid = await _proposal(client, mine, theirs)
     r = await client.post(f"/proposal/{pid}", data={"verdict": "same"})
-    assert r.status_code == 403
+    assert r.status_code == 200
+    async with (await _pool(client)).acquire() as c:
+        linked = {row["individual_id"] for row in await c.fetch(
+            "SELECT individual_id FROM sightings WHERE id = ANY($1::uuid[])", [mine, theirs])}
+    assert len(linked) == 1 and None not in linked
 
 
 @pytest.mark.asyncio
-async def test_a_refused_verdict_leaves_the_proposal_decidable(authed_client):
-    """403 must not consume the row. These are the cross-observer matches that
-    unify the population -- they wait for an adjudicator, they do not die."""
-    client, oid_a = authed_client
-    mine = await _post(client)
-    oid_b = await _observer(client)
-    client.cookies.set("session", issue_session(oid_b))
-    theirs = await _post(client)
-    client.cookies.set("session", issue_session(oid_a))
+async def test_a_stranger_may_decide_a_pair_they_took_neither_of(authed_client):
+    """The case the old rule refused outright. The verdict lands, and
+    `confirmations` says who gave it -- that row is what disputes and
+    reputation weighting will read."""
+    client, _ = authed_client
+    oid_b, oid_c = await _observer(client, "B"), await _observer(client, "C")
+    await _as(client, oid_b)
+    a, b = await _post(client), await _post(client)
+    pid = await _proposal(client, a, b)
 
-    pid = await _proposal(client, mine, theirs)
-    await client.post(f"/proposal/{pid}", data={"verdict": "same"})
+    await _as(client, oid_c)
+    assert pid in [p["id"] for p in (await client.get("/proposals")).json()["proposals"]]
+    r = await client.post(f"/proposal/{pid}", data={"verdict": "same"})
+    assert r.status_code == 200
 
     async with (await _pool(client)).acquire() as c:
-        status = await c.fetchval("SELECT status FROM match_proposals WHERE id=$1::uuid", pid)
-    assert status == "pending"
+        status, resolver = await c.fetchrow(
+            "SELECT status, resolved_by FROM match_proposals WHERE id=$1::uuid", pid)
+        decider = await c.fetchval(
+            "SELECT observer_id FROM confirmations WHERE proposal_id=$1::uuid", pid)
+        maker = await c.fetchval(
+            "SELECT i.created_by_observer FROM individuals i "
+            "JOIN sightings s ON s.individual_id = i.id WHERE s.id=$1::uuid", a)
+    assert status == "confirmed"
+    assert resolver == oid_c and decider == oid_c and maker == oid_c
 
 
 @pytest.mark.asyncio
-async def test_the_queue_lists_only_what_you_can_act_on(authed_client):
+async def test_a_strangers_different_verdict_is_recorded_too(authed_client):
+    client, _ = authed_client
+    oid_b, oid_c = await _observer(client, "B"), await _observer(client, "C")
+    await _as(client, oid_b)
+    a, b = await _post(client), await _post(client)
+    pid = await _proposal(client, a, b)
+
+    await _as(client, oid_c)
+    r = await client.post(f"/proposal/{pid}", data={"verdict": "different"})
+    assert r.status_code == 200
+    async with (await _pool(client)).acquire() as c:
+        row = await c.fetchrow(
+            "SELECT observer_id, verdict FROM confirmations WHERE proposal_id=$1::uuid", pid)
+    assert row["observer_id"] == oid_c and row["verdict"] == "different"
+
+
+@pytest.mark.asyncio
+async def test_a_second_verdict_on_the_same_pair_is_a_conflict(authed_client):
+    """With everyone working one queue, two people answering the same pair is
+    ordinary. The second gets a 409 rather than overwriting the first."""
     client, oid_a = authed_client
     a, b = await _post(client), await _post(client)
-    mine = await _proposal(client, a, b)
+    pid = await _proposal(client, a, b)
+    assert (await client.post(f"/proposal/{pid}", data={"verdict": "different"})).status_code == 200
 
+    await _as(client, await _observer(client))
+    r = await client.post(f"/proposal/{pid}", data={"verdict": "same"})
+    assert r.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_a_hidden_sighting_still_blocks_the_verdict(authed_client):
+    """Ownership went; visibility did not. A sighting reported since the queue
+    was read must not be folded into an identity, whoever is deciding."""
+    client, _ = authed_client
     oid_b = await _observer(client)
-    client.cookies.set("session", issue_session(oid_b))
-    theirs = await _post(client)
-    client.cookies.set("session", issue_session(oid_a))
-    cross = await _proposal(client, a, theirs)
+    await _as(client, oid_b)
+    a, b = await _post(client), await _post(client)
+    pid = await _proposal(client, a, b)
+    async with (await _pool(client)).acquire() as c:
+        await c.execute("UPDATE sightings SET review_status='pending' WHERE id=$1::uuid", b)
+
+    await _as(client, await _observer(client, "C"))
+    r = await client.post(f"/proposal/{pid}", data={"verdict": "same"})
+    assert r.status_code == 409
+    async with (await _pool(client)).acquire() as c:
+        assert await c.fetchval(
+            "SELECT status FROM match_proposals WHERE id=$1::uuid", pid) == "pending"
+
+
+@pytest.mark.asyncio
+async def test_the_queue_shows_everyones_pairs_with_your_own_first(authed_client):
+    client, oid_a = authed_client
+    a1, a2 = await _post(client), await _post(client)
+    oid_b = await _observer(client)
+    await _as(client, oid_b)
+    b1, b2 = await _post(client), await _post(client)
+    await _as(client, oid_a)
+
+    # Scores chosen so that ordering by score alone would put these in the
+    # reverse of the expected order.
+    both_mine = await _proposal(client, a1, a2, score=0.41)
+    one_mine = await _proposal(client, a1, b1, score=0.45)
+    none_mine = await _proposal(client, b1, b2, score=0.60)
+    none_mine_low = await _proposal(client, b2, b1, score=0.42)
 
     body = (await client.get("/proposals")).json()
     ids = [p["id"] for p in body["proposals"]]
-    assert mine in ids
-    assert cross not in ids, "a row you cannot act on is a dead end, not a queue entry"
+    assert ids == [both_mine, one_mine, none_mine, none_mine_low]
+
+    by_id = {p["id"]: p for p in body["proposals"]}
+    assert by_id[one_mine]["a"]["mine"] is True
+    assert by_id[one_mine]["b"]["mine"] is False
+    assert not by_id[none_mine]["a"]["mine"] and not by_id[none_mine]["b"]["mine"]
+
+
+@pytest.mark.asyncio
+async def test_the_queue_says_nothing_about_where(authed_client):
+    """Issue #45: exact location only for animals you photographed. A pair card
+    is a thumbnail and a date for each side, and must stay that way for other
+    people's sightings."""
+    client, oid_a = authed_client
+    await _as(client, await _observer(client))
+    a, b = await _post(client), await _post(client)
+    await _proposal(client, a, b)
+    await _as(client, oid_a)
+
+    p = (await client.get("/proposals")).json()["proposals"][0]
+    for side in (p["a"], p["b"]):
+        assert set(side) == {"sighting_id", "date", "thumb_url", "mine"}
+    assert set(p) == {"id", "score", "a", "b"}
 
 
 @pytest.mark.asyncio
