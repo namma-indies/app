@@ -37,6 +37,9 @@ export type ProcessingState = "legacy" | "queued" | "processing" | "ready" | "no
 export interface Sighting {
   id: string;
   capture_id?: string | null;
+  /** The capture has per-animal details to edit. False for a /sighting
+   * upload, whose capture is a stand-in with no animals in it. */
+  details_editable?: boolean;
   species?: "dog" | "cat" | null;
   captured_at: string;
   processing_state?: ProcessingState;

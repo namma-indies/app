@@ -42,6 +42,13 @@ describe("capture API boundary", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ok({ items: [{ capture_id: "pending", processing_state: "processing", sighting_ids: [] }] })));
     expect((await getCaptures()).sightings[0].capture_id).toBe("pending");
   });
+  it("gives each upload in the list the first animal's frame as its picture", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ok({ items: [{ capture_id: "held", processing_state: "needs_review", sighting_ids: [],
+      instances: [{ thumb_url: "crop_t.webp", source_thumb_url: "frame_t.webp" }], groups: [], revision: 1 }] })));
+    const [item] = (await getCaptures()).sightings;
+    expect(item.thumb_url).toBe("frame_t.webp");
+    expect(item).not.toHaveProperty("instances");
+  });
   it("sends a complete revision-checked publication review", async () => {
     const fetch = vi.fn().mockResolvedValue(ok({ capture_id: "c", sighting_ids: ["a", "b"], processing_state: "ready" }));
     vi.stubGlobal("fetch", fetch);

@@ -3,20 +3,21 @@ import { UnauthorizedError } from "../api";
 import { getCapture, reviewCapture, type CaptureDetail, type CaptureGroup, type CaptureInstance } from "../captureApi";
 
 export function groupingError(instances: CaptureInstance[], assignments: Record<string, string>): string | null {
-  if (instances.some((instance) => !assignments[instance.id])) return "Assign every highlighted animal to a group.";
+  if (instances.some((instance) => !assignments[instance.id])) return "Every box needs an animal.";
   for (let i = 0; i < instances.length; i++) {
     for (let j = i + 1; j < instances.length; j++) {
       const a = instances[i], b = instances[j];
       if (assignments[a.id] !== assignments[b.id]) continue;
       if (a.photo_id === b.photo_id || a.co_visible_instance_ids?.includes(b.id) || b.co_visible_instance_ids?.includes(a.id)) {
-        return "Animals visible together must belong to different groups.";
+        return "Two boxes in the same photo are two different animals, so they can’t share a group.";
       }
-      if (a.species !== b.species) return "Different species must belong to different groups.";
+      if (a.species !== b.species) return "Different species can’t share a group.";
     }
   }
   return null;
 }
 
+const FIELD_LABELS = { sex: "Sex", ear_notch: "Ear notch", condition: "Condition" } as const;
 const evidenceColors = ["#ffda47", "#66d9ff", "#ff8cc6", "#a6ed83", "#c8a2ff", "#ffad66"];
 const evidenceStyle = (index: number): CSSProperties => ({ "--evidence-color": evidenceColors[index % evidenceColors.length] } as CSSProperties);
 const boxStyle = (box: NonNullable<CaptureInstance["bbox"]>): CSSProperties => ({
@@ -26,7 +27,7 @@ const boxStyle = (box: NonNullable<CaptureInstance["bbox"]>): CSSProperties => (
 function Evidence({ instance }: { instance: CaptureInstance }) {
   const box = instance.source_bbox ? undefined : instance.bbox;
   return <div className="capture-evidence">
-    <img src={instance.source_url && box ? instance.source_url : instance.thumb_url} alt={`Highlighted ${instance.species} evidence`} />
+    <img src={instance.source_url && box ? instance.source_url : instance.thumb_url} alt={`Box showing a ${instance.species}`} />
     {instance.source_url && box && <span className="capture-box" style={{ left: `${box[0] * 100}%`, top: `${box[1] * 100}%`, width: `${(box[2] - box[0]) * 100}%`, height: `${(box[3] - box[1]) * 100}%` }} />}
   </div>;
 }
@@ -62,7 +63,7 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
     }).catch((err: unknown) => {
       if (controller.signal.aborted) return;
       if (err instanceof UnauthorizedError) unauthorizedRef.current();
-      setError("Couldn't load the private evidence. Try again.");
+      setError("Couldn’t load this upload.");
     });
     return () => controller.abort();
   }, [captureId, revision]);
@@ -77,7 +78,7 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
   const groupSpecies = new Map(groups.map((group) => [group, new Set(detail?.instances.filter((instance) => assignments[instance.id] === group).map((instance) => instance.species))]));
   const groupLabels = new Map(groups.map((group) => {
     const species = groupSpecies.get(group)!;
-    if (species.size !== 1) return [group, `Mixed species group ${group} (split required)`];
+    if (species.size !== 1) return [group, `Mixed group ${group} (needs splitting)`];
     const name = [...species][0];
     const number = (speciesCounts.get(name) ?? 0) + 1;
     speciesCounts.set(name, number);
@@ -94,44 +95,46 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
       onSaved();
     } catch (err) {
       if (err instanceof UnauthorizedError) unauthorizedRef.current();
-      setError("Couldn't confirm that this review saved. Reload evidence to check its latest status before retrying.");
+      setError("Couldn’t tell whether that saved. Reload to check before trying again.");
     } finally { setSaving(false); }
   }
-  return <div className="capture-review-overlay" role="dialog" aria-modal="true" aria-label="Review animals in upload">
+  return <div className="capture-review-overlay" role="dialog" aria-modal="true" aria-label={detail?.processing_state === "ready" ? "Animal details" : "Separate the animals"}>
     <section className="capture-review">
       <button className="link-btn" onClick={onClose} disabled={saving}>Close</button>
-      <h2>Separate the animals</h2>
-      <p>{detail?.processing_state === "ready" ? "Published associations are locked; you can update each animal’s details." : "Private review before publication. Put views of the same animal in one group. Split an incorrect association by assigning its evidence to another group."} These groups apply only to this upload, not identities across uploads.</p>
-      {error && <p role="alert">{error} <button disabled={saving} onClick={() => setRevision((n) => n + 1)}>Reload evidence</button></p>}
-      {!detail && !error && <p>Loading private evidence…</p>}
+      <h2>{detail?.processing_state === "ready" ? "Animal details" : "Separate the animals"}</h2>
+      {detail?.processing_state === "ready"
+        ? <p>Add what you know about each animal in this upload. You can change it any time.</p>
+        : <p>More than one animal shows up at the same moment in this upload, so we can’t tell on our own which photos show which. Each box below is one animal we found. Put every box of the same animal in the same group, then publish. Only you can see this upload until you do.</p>}
+      {error && <p role="alert">{error} <button disabled={saving} onClick={() => setRevision((n) => n + 1)}>Reload</button></p>}
+      {!detail && !error && <p>Loading your photos…</p>}
       {detail && <>
-        <p className="hint">Shared time: {new Date(detail.captured_at).toLocaleString()}. Location is shared unchanged across all entries.</p>
-        {detail.note && <p>Shared note: {detail.note}</p>}
-        {detail.instances.length > 0 && <p className="hint">Evidence numbers are detections, not confirmed identities or an animal count. Select evidence below each photo to highlight its region, even when boxes overlap. Dog and cat numbers label groups only within this upload.</p>}
+        <p className="hint">Taken {new Date(detail.captured_at).toLocaleString()}. Every animal from this upload shares this time and place.</p>
+        {detail.note && <p>Your note: {detail.note}</p>}
+        {detail.instances.length > 0 && <p className="hint">Tap a box to see where it is in the photo. The numbers only tell the boxes apart; they aren’t a count of animals.</p>}
         {[...sources].map(([photoId, items], sourceIndex) => {
           const source = items.find(({ instance }) => instance.source_thumb_url && instance.source_bbox)?.instance;
           const timestamp = items[0].instance.timestamp_ms;
-          return <section className="capture-source" key={photoId} aria-label={`Source photo ${sourceIndex + 1}`}>
-            <h3>Source photo {sourceIndex + 1}{timestamp != null ? ` · ${(timestamp / 1000).toFixed(1)}s` : ""}</h3>
+          return <section className="capture-source" key={photoId} aria-label={`Photo ${sourceIndex + 1}`}>
+            <h3>Photo {sourceIndex + 1}{timestamp != null ? ` · ${(timestamp / 1000).toFixed(1)}s` : ""}</h3>
             {source ? <div className="capture-source-image">
-              <img src={source.source_thumb_url} width={source.source_width} height={source.source_height} alt={`Full uncropped source photo ${sourceIndex + 1}`} />
+              <img src={source.source_thumb_url} width={source.source_width} height={source.source_height} alt={`Whole photo ${sourceIndex + 1}`} />
               <div aria-hidden="true">{items.map(({ instance, index }) => instance.source_bbox && <span
                 key={instance.id} id={`capture-box-${instance.id}`} className={`capture-box capture-source-box${selectedId === instance.id ? " is-selected" : ""}`}
                 style={{ ...evidenceStyle(index), ...boxStyle(instance.source_bbox) }}>
-                <span className="capture-box-number">{groupLabels.get(assignments[instance.id])} · Evidence {index + 1}</span>
+                <span className="capture-box-number">{groupLabels.get(assignments[instance.id])} · Box {index + 1}</span>
               </span>)}</div>
-            </div> : <p className="hint">Source overview unavailable. Showing individual evidence crops.</p>}
+            </div> : <p className="hint">Couldn’t show the whole photo, so here are the boxes on their own.</p>}
             <ul className="capture-evidence-grid">{items.map(({ instance, index }) => <li key={instance.id}>
-              <article id={`capture-evidence-${instance.id}`} className={`capture-evidence-card${selectedId === instance.id ? " is-selected" : ""}`} style={evidenceStyle(index)} aria-label={`Evidence ${index + 1}`}>
+              <article id={`capture-evidence-${instance.id}`} className={`capture-evidence-card${selectedId === instance.id ? " is-selected" : ""}`} style={evidenceStyle(index)} aria-label={`Box ${index + 1}`}>
                 <button type="button" className="capture-evidence-select" aria-pressed={selectedId === instance.id}
                   aria-controls={instance.source_bbox ? `capture-box-${instance.id}` : undefined} onClick={() => setSelectedId(instance.id)}>
                   <span className="capture-evidence-number">{index + 1}</span>
-                  <span>Evidence {index + 1} · {groupLabels.get(assignments[instance.id])}</span>
+                  <span>Box {index + 1} · {groupLabels.get(assignments[instance.id])}</span>
                   {selectedId === instance.id && <span className="capture-selection-label">Selected</span>}
                 </button>
                 <Evidence instance={instance} />
-                <label>Group for evidence {index + 1}
-                  <select aria-label={`Group for evidence ${index + 1}`} value={assignments[instance.id] ?? ""} disabled={saving || detail.processing_state === "ready"} onChange={(e) => {
+                <label>Which animal is box {index + 1}?
+                  <select aria-label={`Which animal is box ${index + 1}?`} value={assignments[instance.id] ?? ""} disabled={saving || detail.processing_state === "ready"} onChange={(e) => {
                     const group = e.target.value;
                     const species = groupSpecies.get(group);
                     if (group !== emptyGroup && (species?.size !== 1 || !species.has(instance.species))) return;
@@ -139,7 +142,7 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
                     setAssignments((current) => ({ ...current, [instance.id]: group }));
                   }}>
                     {groups.filter((group) => group === assignments[instance.id] || (groupSpecies.get(group)?.size === 1 && groupSpecies.get(group)?.has(instance.species))).map((group) => <option key={group} value={group} disabled={groupSpecies.get(group)?.size !== 1}>{groupLabels.get(group)}</option>)}
-                    {emptyGroup && <option value={emptyGroup}>New {instance.species || "unknown species"} group</option>}
+                    {emptyGroup && <option value={emptyGroup}>A new {instance.species || "animal"}</option>}
                   </select>
                 </label>
               </article>
@@ -148,7 +151,7 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
         })}
         {invalid && <p role="alert">{invalid}</p>}
         <h3>Details for each animal</h3>
-        <p className="hint" id="known-name-hint">Known names are optional and contributor-supplied. Names don’t confirm identity or merge animals. After a human confirms a match, the name is saved as a proposal in that animal’s naming history, not its official name.</p>
+        <p className="hint" id="known-name-hint">If people call this animal something, add it. A name doesn’t decide which dog this is. Once the dog is matched, it’s kept as a suggested name.</p>
         {groups.map((group) => <fieldset key={group} disabled={saving} className={selectedId && assignments[selectedId] === group ? "capture-entry-selected" : undefined}>
           <legend>{groupLabels.get(group)}</legend>
           <label>Known name (optional)
@@ -156,14 +159,14 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
               onChange={(e) => setAttrs((current) => ({ ...current, [group]: { ...current[group], known_name: e.target.value } }))}
               onBlur={(e) => setAttrs((current) => ({ ...current, [group]: { ...current[group], known_name: e.target.value.trim() || null } }))} />
           </label>
-          <p className="hint">Evidence {detail.instances.flatMap((instance, index) => assignments[instance.id] === group ? [index + 1] : []).join(", ")}</p>
-          {([ ["sex", ["male", "female", "unsure"]], ["ear_notch", ["none", "left", "right", "unsure"]], ["condition", ["healthy", "injured", "unsure"]] ] as const).map(([field, options]) => <label key={field}>{field.replace("_", " ")}
+          <p className="hint">Box {detail.instances.flatMap((instance, index) => assignments[instance.id] === group ? [index + 1] : []).join(", ")}</p>
+          {([ ["sex", ["male", "female", "unsure"]], ["ear_notch", ["none", "left", "right", "unsure"]], ["condition", ["healthy", "injured", "unsure"]] ] as const).map(([field, options]) => <label key={field}>{FIELD_LABELS[field]}
             <select value={attrs[group]?.[field] ?? ""} onChange={(e) => setAttrs((current) => ({ ...current, [group]: { ...current[group], [field]: e.target.value || undefined } }))}>
               <option value="">Not recorded</option>{options.map((value) => <option key={value} value={value}>{value}</option>)}
             </select>
           </label>)}
         </fieldset>)}
-        <button className="btn btn-primary" disabled={!canSave} onClick={() => void save()}>{saving ? "Saving…" : detail.processing_state === "ready" ? "Save animal details" : `Publish ${groups.length} animal ${groups.length === 1 ? "sighting" : "sightings"}`}</button>
+        <button className="btn btn-primary" disabled={!canSave} onClick={() => void save()}>{saving ? "Saving…" : detail.processing_state === "ready" ? "Save animal details" : `Publish ${groups.length} ${groups.length === 1 ? "animal" : "animals"}`}</button>
       </>}
     </section>
   </div>;

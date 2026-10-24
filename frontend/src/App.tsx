@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import Capture from "./screens/Capture";
 import Dex from "./screens/Dex";
-import Stats from "./screens/Stats";
+import Admin from "./screens/Admin";
 import SignIn from "./screens/SignIn";
 import { failedCount, flush, setOnFlushed, setOnUnauthorized } from "./offline/queue";
 import Celebration from "./components/Celebration";
@@ -11,7 +11,7 @@ import { API_BASE } from "./apiBase";
 import { listenForAuthLinks } from "./deepLink";
 import mark from "./assets/mark.svg";
 
-type Tab = "capture" | "dex" | "stats";
+type Tab = "capture" | "dex" | "admin";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("capture");
@@ -144,8 +144,8 @@ export default function App() {
       <div className="screen">
         {tab === "capture" ? (
           <Capture />
-        ) : tab === "stats" ? (
-          <Stats onUnauthorized={() => setUnauthorized(true)} />
+        ) : tab === "admin" ? (
+          <Admin onUnauthorized={() => setUnauthorized(true)} />
         ) : (
           <Dex onUnauthorized={() => setUnauthorized(true)} />
         )}
@@ -160,9 +160,9 @@ export default function App() {
           INDIEDEX
         </button>
         {isModerator && (
-          <button className={tab === "stats" ? "active" : ""} onClick={() => setTab("stats")}>
-            <span className="icon">📊</span>
-            NUMBERS
+          <button className={tab === "admin" ? "active" : ""} onClick={() => setTab("admin")}>
+            <span className="icon">🛠️</span>
+            ADMIN
           </button>
         )}
       </div>
