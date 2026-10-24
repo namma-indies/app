@@ -238,6 +238,14 @@ class Settings(BaseSettings):
     area_min_sightings_default: int = 5
     area_min_observers_default: int = 2
 
+    # --- place search (#80) -------------------------------------------------
+    # OpenStreetMap's public Nominatim by default; its terms want an
+    # identifying User-Agent with a contact. Point the URL at a self-hosted
+    # Nominatim (or anything with the same /search reply) to move off it.
+    geocode_url: str = "https://nominatim.openstreetmap.org/search"
+    geocode_user_agent: str = "NammaIndies/1.0 (+https://nammaindies.org; nammaindies@gmail.com)"
+    geocode_timeout_s: float = Field(default=8.0, gt=0, le=60)
+
     # --- rate limiting -----------------------------------------------------
     # In-process fixed windows. The container runs a single uvicorn with no
     # --workers, so the counts are exact. Two consequences, neither a bug but
@@ -249,6 +257,12 @@ class Settings(BaseSettings):
     # ration anything.
     rl_stats_times: int = 60
     rl_stats_window_s: int = 60
+
+    # Place search on the pick-on-a-map screen (#80). Per person, and loose:
+    # a few tries to find a street is normal. The geocoder's own 1/s ceiling
+    # is enforced separately, for the whole service, in routes/places.py.
+    rl_places_times: int = 30
+    rl_places_window_s: int = 60
 
     # The reason rate limiting is in this change at all: this path had no
     # throttle of any kind and sits in front of production SES, so it was both

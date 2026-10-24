@@ -3,6 +3,7 @@ import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { basemapStyle } from "./DogMap";
 import { howToReEnable, locate, permissionState } from "../capture/geolocate";
+import { HttpError, searchPlaces, type FoundPlace } from "../api";
 
 /**
  * Saying where a sighting happened, when the phone cannot say it for you.
@@ -25,7 +26,10 @@ import { howToReEnable, locate, permissionState } from "../capture/geolocate";
  *   recent cached fix and falls back to a coarse one instead of giving up.
  * - A pin on a map, for "I know where I am, the phone doesn't". Pan-under-a-
  *   fixed-crosshair rather than a draggable marker: on a phone your thumb
- *   covers a marker you are dragging, and the crosshair stays visible.
+ *   covers a marker you are dragging, and the crosshair stays visible. A
+ *   place search sits above it (#80): typing "Domlur 5th cross" lands on the
+ *   street instead of pinching down to it from a whole city, which on a phone
+ *   is where pins went wrong.
  * - Typed coordinates, because the person who asked for this had them.
  *
  * PERMISSION IS A ONE-WAY DOOR IN A BROWSER
@@ -53,6 +57,10 @@ const BANGALORE: [number, number] = [77.5946, 12.9716];
 const MIN_PICK_ZOOM = 14;
 
 const LAST_PLACE_KEY = "indiedex:lastPinnedPlace";
+
+/** Where a chosen search result lands: street level, past MIN_PICK_ZOOM, so
+ *  the person only has to nudge the cross onto the exact spot. */
+const FOUND_PLACE_ZOOM = 17;
 
 /** Where the map centres when nobody has picked anything for THIS sighting
  *  yet. Falling back to a hardcoded Bangalore pin was fine in the office; a
@@ -100,6 +108,10 @@ export default function LocationPicker({
   const [denied, setDenied] = useState(false);
   const [lat, setLat] = useState(initial ? String(initial.lat) : "");
   const [lng, setLng] = useState(initial ? String(initial.lng) : "");
+  const [query, setQuery] = useState("");
+  const [found, setFound] = useState<FoundPlace[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searchNote, setSearchNote] = useState<string | null>(null);
 
   const active = useRef(true);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -196,6 +208,41 @@ export default function LocationPicker({
     onPick({ lat: la, lng: ln, source: "pin" });
   }
 
+  async function findPlace(e: React.FormEvent) {
+    e.preventDefault();
+    const q = query.trim();
+    if (q.length < 2) return;
+    setSearching(true);
+    setSearchNote(null);
+    setFound(null);
+    try {
+      const places = await searchPlaces(q, centreRef.current);
+      if (!active.current) return;
+      setFound(places);
+      if (places.length === 0) {
+        setSearchNote(`Nothing found for "${q}". Try a nearby landmark, area or road name.`);
+      }
+    } catch (err) {
+      if (!active.current) return;
+      // Either way the map still works; say so rather than leave them stuck.
+      setSearchNote(
+        err instanceof HttpError && err.status === 503
+          ? "Search isn't working right now. You can still move the map by hand."
+          : "Search needs a connection. You can still move the map by hand.",
+      );
+    } finally {
+      if (active.current) setSearching(false);
+    }
+  }
+
+  function goToPlace(place: FoundPlace) {
+    centreRef.current = { lat: place.lat, lng: place.lng };
+    mapRef.current?.jumpTo({ center: [place.lng, place.lat], zoom: FOUND_PLACE_ZOOM });
+    setFound(null);
+    setSearchNote(null);
+    setError(null);
+  }
+
   function useMapPick() {
     const zoom = mapRef.current?.getZoom() ?? 0;
     if (zoom < MIN_PICK_ZOOM) {
@@ -253,7 +300,33 @@ export default function LocationPicker({
 
         {mode === "map" && (
           <>
-            <p className="hint">Move the map so the cross is on the spot.</p>
+            <form className="place-search" role="search" onSubmit={findPlace}>
+              <input
+                type="search"
+                aria-label="Search for a place"
+                placeholder="Search a place, e.g. Domlur 5th cross"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                enterKeyHint="search"
+              />
+              <button className="btn btn-secondary" type="submit" disabled={searching || query.trim().length < 2}>
+                {searching ? "…" : "SEARCH"}
+              </button>
+            </form>
+            {found && found.length > 0 && (
+              <ul className="place-results" aria-label="Places found">
+                {found.map((place) => (
+                  <li key={`${place.lat},${place.lng},${place.name}`}>
+                    <button type="button" onClick={() => goToPlace(place)}>
+                      <strong>{place.name}</strong>
+                      {place.detail && <span>{place.detail}</span>}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {searchNote && <p className="hint">{searchNote}</p>}
+            <p className="hint">Search for the place, then move the map so the cross is on the exact spot.</p>
             {error && (
               <p className="hint import-error" role="alert">
                 {error}

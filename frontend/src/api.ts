@@ -654,6 +654,32 @@ export interface StatsObserver {
   last_sighting_at: string | null;
 }
 
+/** A place a typed search found, for the pick-on-a-map screen (#80). */
+export interface FoundPlace {
+  /** The first part of the place's name, e.g. "5th Cross Road". */
+  name: string;
+  /** Enough of the rest to tell two results apart, e.g. "Domlur, Bengaluru". */
+  detail: string;
+  lat: number;
+  lng: number;
+}
+
+/** Search for a place by name. `near` (where the map is now) ranks nearby
+ * results first without hiding the rest. Goes through our server, which
+ * caches and paces requests to the geocoder for everyone. */
+export async function searchPlaces(
+  q: string,
+  near?: { lat: number; lng: number },
+): Promise<FoundPlace[]> {
+  const params = new URLSearchParams({ q });
+  if (near) {
+    params.set("lat", near.lat.toFixed(4));
+    params.set("lng", near.lng.toFixed(4));
+  }
+  const res = await fetch(`${API_BASE}/places?${params}`, { credentials: "include" });
+  return (await handle<{ places: FoundPlace[] }>(res)).places;
+}
+
 export async function getStats(kind?: string): Promise<Stats> {
   const q = kind ? `?kind=${encodeURIComponent(kind)}` : "";
   const res = await fetch(`${API_BASE}/stats${q}`, { credentials: "include" });

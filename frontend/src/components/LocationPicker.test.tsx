@@ -62,6 +62,11 @@ vi.mock("maplibre-gl", () => {
     setZoomForTest(z: number) {
       this.zoom = z;
     }
+    jumpTo(opts: { center: [number, number]; zoom: number }) {
+      this.center = { lng: opts.center[0], lat: opts.center[1] };
+      this.zoom = opts.zoom;
+      (this.handlers.move ?? []).forEach((cb) => cb());
+    }
     panForTest(lng: number, lat: number) {
       this.center = { lng, lat };
       (this.handlers.move ?? []).forEach((cb) => cb());
@@ -80,6 +85,9 @@ vi.mock("maplibre-gl", () => {
 
 import maplibregl from "maplibre-gl";
 import LocationPicker from "./LocationPicker";
+import { HttpError, searchPlaces } from "../api";
+
+vi.mock("../api", async (original) => ({ ...await original<typeof import("../api")>(), searchPlaces: vi.fn() }));
 
 type FakeMapT = {
   center: { lng: number; lat: number };
@@ -166,5 +174,57 @@ describe("the pick map", () => {
       lat: 11.1,
       lng: 77.1,
     });
+  });
+});
+
+describe("place search (#80)", () => {
+  const DOMLUR = { name: "5th Cross Road", detail: "Domlur, Bengaluru", lat: 12.9601, lng: 77.6387 };
+  beforeEach(() => {
+    vi.mocked(searchPlaces).mockReset();
+  });
+
+  it("jumps the map to a searched place, close enough to pin", async () => {
+    vi.mocked(searchPlaces).mockResolvedValue([DOMLUR]);
+    const onPick = vi.fn();
+    render(<LocationPicker initial={null} onPick={onPick} onClose={() => {}} />);
+    const map = await openPickMap();
+    await userEvent.type(screen.getByLabelText("Search for a place"), "Domlur 5th cross{Enter}");
+
+    // Ranked near where the map already is.
+    expect(searchPlaces).toHaveBeenCalledWith("Domlur 5th cross", { lat: 12.9716, lng: 77.5946 });
+    await userEvent.click(await screen.findByRole("button", { name: /5th Cross Road/ }));
+    expect(map.center).toEqual({ lng: 77.6387, lat: 12.9601 });
+    expect(map.zoom).toBe(17);
+    expect(screen.queryByRole("list", { name: "Places found" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByText("USE THIS SPOT"));
+    expect(onPick).toHaveBeenCalledWith({ lat: 12.9601, lng: 77.6387, source: "pin" });
+  });
+
+  it("says when nothing matched", async () => {
+    vi.mocked(searchPlaces).mockResolvedValue([]);
+    render(<LocationPicker initial={null} onPick={() => {}} onClose={() => {}} />);
+    await openPickMap();
+    await userEvent.type(screen.getByLabelText("Search for a place"), "Yuva Hollow Bricks{Enter}");
+    expect(await screen.findByText(/Nothing found for "Yuva Hollow Bricks"/)).toBeInTheDocument();
+  });
+
+  it("keeps the map usable when search is down or offline", async () => {
+    vi.mocked(searchPlaces).mockRejectedValueOnce(new HttpError(503)).mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    render(<LocationPicker initial={null} onPick={() => {}} onClose={() => {}} />);
+    await openPickMap();
+    const box = screen.getByLabelText("Search for a place");
+    await userEvent.type(box, "Kodaikanal{Enter}");
+    expect(await screen.findByText(/Search isn't working right now/)).toBeInTheDocument();
+    await userEvent.type(box, "{Enter}");
+    expect(await screen.findByText(/Search needs a connection/)).toBeInTheDocument();
+    expect(screen.getByText("USE THIS SPOT")).toBeInTheDocument();
+  });
+
+  it("does not search for a single character", async () => {
+    render(<LocationPicker initial={null} onPick={() => {}} onClose={() => {}} />);
+    await openPickMap();
+    await userEvent.type(screen.getByLabelText("Search for a place"), "a{Enter}");
+    expect(searchPlaces).not.toHaveBeenCalled();
   });
 });
