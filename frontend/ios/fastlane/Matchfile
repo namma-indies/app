@@ -1,4 +1,8 @@
-git_url("https://github.com/namma-indies/ios-certs.git")
+# SSH, not HTTPS: CI authenticates with a read-only deploy key on ios-certs
+# (secret MATCH_DEPLOY_KEY). The HTTPS URL depended on a personal access token
+# in MATCH_GIT_BASIC_AUTHORIZATION, which expired silently and failed the
+# v1.2.0 release at "could not read Username". Deploy keys don't expire.
+git_url("git@github.com:namma-indies/ios-certs.git")
 storage_mode("git")
 type("appstore")
 app_identifier(["org.nammaindies.app"])
