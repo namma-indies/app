@@ -2,12 +2,16 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { decideSuggestion, UnauthorizedError } from "../api";
 import { getCapture, reviewCapture, type CaptureDetail, type CaptureGroup, type CaptureInstance, type CaptureSuggestion } from "../captureApi";
 
+/** The choice for a box that shows no animal: a doubled box, or a detector
+ * mistake. It is left out of every group and publishes nothing (#105). */
+export const NOT_AN_ANIMAL = "none";
+
 export function groupingError(instances: CaptureInstance[], assignments: Record<string, string>): string | null {
   if (instances.some((instance) => !assignments[instance.id])) return "Every box needs an animal.";
   for (let i = 0; i < instances.length; i++) {
     for (let j = i + 1; j < instances.length; j++) {
       const a = instances[i], b = instances[j];
-      if (assignments[a.id] !== assignments[b.id]) continue;
+      if (assignments[a.id] !== assignments[b.id] || assignments[a.id] === NOT_AN_ANIMAL) continue;
       if (a.photo_id === b.photo_id || a.co_visible_instance_ids?.includes(b.id) || b.co_visible_instance_ids?.includes(a.id)) {
         return "Two boxes in the same photo are two different animals, so they can’t share a group.";
       }
@@ -58,7 +62,10 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
       setDetail(result);
       setSelectedId(result.instances[0]?.id ?? null);
       const tracks = new Map<string, string>();
-      const savedAssignments = Object.fromEntries(result.groups.flatMap((group, index) => group.instance_ids.map((id) => [id, String(index + 1)])));
+      const savedAssignments: Record<string, string> = Object.fromEntries([
+        ...result.groups.flatMap((group, index) => group.instance_ids.map((id) => [id, String(index + 1)])),
+        ...(result.excluded_instance_ids ?? []).map((id) => [id, NOT_AN_ANIMAL]),
+      ]);
       setAttrs(Object.fromEntries(result.groups.map(({ instance_ids: _ids, ...details }, index) => [String(index + 1), details])));
       setAssignments(Object.fromEntries(result.instances.map((instance) => {
         const key = instance.track_id ?? instance.id;
@@ -78,7 +85,9 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
     items.push({ instance, index });
     sources.set(instance.photo_id, items);
   });
-  const groups = [...new Set(Object.values(assignments))].sort((a, b) => Number(a) - Number(b));
+  const groups = [...new Set(Object.values(assignments))].filter((group) => group !== NOT_AN_ANIMAL).sort((a, b) => Number(a) - Number(b));
+  const excluded = detail?.instances.filter((instance) => assignments[instance.id] === NOT_AN_ANIMAL).map((instance) => instance.id) ?? [];
+  const boxLabel = (instance: CaptureInstance) => assignments[instance.id] === NOT_AN_ANIMAL ? "Not an animal" : groupLabels.get(assignments[instance.id]);
   const speciesCounts = new Map<string, number>();
   const groupSpecies = new Map(groups.map((group) => [group, new Set(detail?.instances.filter((instance) => assignments[instance.id] === group).map((instance) => instance.species))]));
   const groupLabels = new Map(groups.map((group) => {
@@ -98,9 +107,10 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
   const canSave = !!detail && (detail.processing_state === "needs_review" || detail.processing_state === "ready") && !error && !invalid && !saving && detail.instances.length > 0;
   async function save() {
     if (!detail || !canSave) return;
+    if (!groups.length && !confirm("None of these boxes is an animal, so this upload will be discarded. It won’t appear anywhere.")) return;
     setSaving(true); setError(null);
     try {
-      await reviewCapture(captureId, groups.map((group) => ({ ...attrs[group], instance_ids: detail.instances.filter((instance) => assignments[instance.id] === group).map((instance) => instance.id) })), detail.revision);
+      await reviewCapture(captureId, groups.map((group) => ({ ...attrs[group], instance_ids: detail.instances.filter((instance) => assignments[instance.id] === group).map((instance) => instance.id) })), detail.revision, excluded);
       // Bookkeeping after the save that actually decided: what was finally
       // chosen for a suggestion that was used, or that it was turned down.
       // Best effort -- a lost record must not undo or block the save.
@@ -139,15 +149,15 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
               <div aria-hidden="true">{items.map(({ instance, index }) => instance.source_bbox && <span
                 key={instance.id} id={`capture-box-${instance.id}`} className={`capture-box capture-source-box${selectedId === instance.id ? " is-selected" : ""}`}
                 style={{ ...evidenceStyle(index), ...boxStyle(instance.source_bbox) }}>
-                <span className="capture-box-number">{groupLabels.get(assignments[instance.id])} · Box {index + 1}</span>
+                <span className="capture-box-number">{boxLabel(instance)} · Box {index + 1}</span>
               </span>)}</div>
             </div> : <p className="hint">Couldn’t show the whole photo, so here are the boxes on their own.</p>}
             <ul className="capture-evidence-grid">{items.map(({ instance, index }) => <li key={instance.id}>
-              <article id={`capture-evidence-${instance.id}`} className={`capture-evidence-card${selectedId === instance.id ? " is-selected" : ""}`} style={evidenceStyle(index)} aria-label={`Box ${index + 1}`}>
+              <article id={`capture-evidence-${instance.id}`} className={`capture-evidence-card${selectedId === instance.id ? " is-selected" : ""}${assignments[instance.id] === NOT_AN_ANIMAL ? " is-excluded" : ""}`} style={evidenceStyle(index)} aria-label={`Box ${index + 1}`}>
                 <button type="button" className="capture-evidence-select" aria-pressed={selectedId === instance.id}
                   aria-controls={instance.source_bbox ? `capture-box-${instance.id}` : undefined} onClick={() => setSelectedId(instance.id)}>
                   <span className="capture-evidence-number">{index + 1}</span>
-                  <span>Box {index + 1} · {groupLabels.get(assignments[instance.id])}</span>
+                  <span>Box {index + 1} · {boxLabel(instance)}</span>
                   {selectedId === instance.id && <span className="capture-selection-label">Selected</span>}
                 </button>
                 <Evidence instance={instance} />
@@ -155,12 +165,13 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
                   <select aria-label={`Which animal is box ${index + 1}?`} value={assignments[instance.id] ?? ""} disabled={saving || detail.processing_state === "ready"} onChange={(e) => {
                     const group = e.target.value;
                     const species = groupSpecies.get(group);
-                    if (group !== emptyGroup && (species?.size !== 1 || !species.has(instance.species))) return;
+                    if (group !== emptyGroup && group !== NOT_AN_ANIMAL && (species?.size !== 1 || !species.has(instance.species))) return;
                     if (group === emptyGroup) setAttrs((current) => ({ ...current, [group]: {} }));
                     setAssignments((current) => ({ ...current, [instance.id]: group }));
                   }}>
                     {groups.filter((group) => group === assignments[instance.id] || (groupSpecies.get(group)?.size === 1 && groupSpecies.get(group)?.has(instance.species))).map((group) => <option key={group} value={group} disabled={groupSpecies.get(group)?.size !== 1}>{groupLabels.get(group)}</option>)}
                     {emptyGroup && <option value={emptyGroup}>A new {instance.species || "animal"}</option>}
+                    <option value={NOT_AN_ANIMAL}>Not an animal (leave out)</option>
                   </select>
                 </label>
               </article>
@@ -196,7 +207,7 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
             </select>
           </label>)}
         </fieldset>)}
-        <button className="btn btn-primary" disabled={!canSave} onClick={() => void save()}>{saving ? "Saving…" : detail.processing_state === "ready" ? "Save animal details" : `Publish ${groups.length} ${groups.length === 1 ? "animal" : "animals"}`}</button>
+        <button className="btn btn-primary" disabled={!canSave} onClick={() => void save()}>{saving ? "Saving…" : detail.processing_state === "ready" ? "Save animal details" : groups.length === 0 ? "Discard this upload" : `Publish ${groups.length} ${groups.length === 1 ? "animal" : "animals"}`}</button>
       </>}
     </section>
   </div>;

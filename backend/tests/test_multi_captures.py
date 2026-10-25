@@ -90,6 +90,22 @@ def test_review_requires_exact_nonoverlapping_species_safe_partition():
         validate_groups(rows,[AnimalGroup(instance_ids=[a,b])])
 
 
+def test_review_can_leave_out_a_box_that_is_not_an_animal():
+    # A doubled box on one dog (#105): the second is excluded, not a second dog.
+    a,b,source = uuid4(),uuid4(),uuid4()
+    rows = [{"id":a,"source_photo_id":source,"species":"dog"},
+            {"id":b,"source_photo_id":source,"species":"dog"}]
+    validate_groups(rows,[AnimalGroup(instance_ids=[a])],[b])
+    validate_groups(rows,[],[a,b])
+    for groups,excluded in (([AnimalGroup(instance_ids=[a])],[]),([AnimalGroup(instance_ids=[a,b])],[b])):
+        with pytest.raises(HTTPException):
+            validate_groups(rows,groups,excluded)
+    for bad in ({"groups":[{"instance_ids":[a]}],"excluded_instance_ids":[a]},
+                {"groups":[],"excluded_instance_ids":[]}):
+        with pytest.raises(ValidationError):
+            CaptureReview(revision=0,**bad)
+
+
 async def test_v1_and_v2_claims_are_disjoint():
     old,new = FakeConnection(),FakeConnection()
     await claim_job(old,"old")
@@ -304,6 +320,57 @@ async def test_db_private_review_owner_revision_and_publication(migrated_db):
     with pytest.raises(HTTPException) as exc:
         await review_capture(cid,CaptureReview(revision=updated.revision,groups=updated.groups,publish=False),oid,conn,storage)
     assert exc.value.status_code == 409
+
+
+async def test_db_excluded_box_publishes_nothing_and_stays_excluded(migrated_db):
+    from app.routes.capture import review_capture
+    conn = migrated_db
+    body = result(needs_review=True)
+    oid,cid,jid,storage = await seed(conn,body)
+    await complete_capture_job(conn,storage,jid,body)
+    status = await get_capture_status(conn,cid,oid,storage)
+    keep,drop = status.instances[0].instance_id,status.instances[1].instance_id
+    published = await review_capture(cid,CaptureReview(revision=status.revision,
+        groups=[AnimalGroup(instance_ids=[keep])],excluded_instance_ids=[drop]),oid,conn,storage)
+    assert published.processing_state == "ready" and len(published.sighting_ids) == 1
+    assert published.excluded_instance_ids == [drop]
+    assert await conn.fetchval("SELECT sighting_id FROM animal_instances WHERE id=$1",drop) is None
+    # Saving details again keeps the box out; it cannot be brought back in.
+    again = await review_capture(cid,CaptureReview(revision=published.revision,
+        groups=published.groups,excluded_instance_ids=[drop]),oid,conn,storage)
+    assert again.sighting_ids == published.sighting_ids
+    with pytest.raises(HTTPException) as exc:
+        await review_capture(cid,CaptureReview(revision=again.revision,groups=[
+            *again.groups,AnimalGroup(instance_ids=[drop])]),oid,conn,storage)
+    assert exc.value.status_code == 409
+
+
+async def test_db_excluding_every_box_discards_the_upload(migrated_db):
+    from app.routes.capture import review_capture
+    conn = migrated_db
+    body = result(needs_review=True)
+    oid,cid,jid,storage = await seed(conn,body)
+    await complete_capture_job(conn,storage,jid,body)
+    status = await get_capture_status(conn,cid,oid,storage)
+    every = [i.instance_id for i in status.instances]
+    with pytest.raises(HTTPException) as exc:
+        await review_capture(cid,CaptureReview(revision=status.revision,groups=[],
+            excluded_instance_ids=every,publish=False),oid,conn,storage)
+    assert exc.value.status_code == 422
+    discarded = await review_capture(cid,CaptureReview(revision=status.revision,groups=[],
+        excluded_instance_ids=every),oid,conn,storage)
+    assert discarded.processing_state == "no_animal" and not discarded.sighting_ids
+    assert sorted(discarded.excluded_instance_ids) == sorted(every) and not discarded.groups
+    assert await conn.fetchval("SELECT count(*) FROM sightings WHERE capture_id=$1",cid) == 0
+    with pytest.raises(HTTPException) as exc:
+        await review_capture(cid,CaptureReview(revision=discarded.revision,
+            groups=[AnimalGroup(instance_ids=every[:1])],excluded_instance_ids=every[1:]),oid,conn,storage)
+    assert exc.value.status_code == 409
+
+
+async def get_capture_status(conn,cid,oid,storage):
+    from app.routes.capture import get_capture
+    return await get_capture(cid,oid,conn,storage)
 
 
 async def test_db_noanimal_failure_and_stale_completion(migrated_db):

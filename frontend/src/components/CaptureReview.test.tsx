@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import CaptureReview, { groupingError } from "./CaptureReview";
+import CaptureReview, { groupingError, NOT_AN_ANIMAL } from "./CaptureReview";
 import { getCapture, reviewCapture, type CaptureDetail, type CaptureInstance } from "../captureApi";
 vi.mock("../captureApi", () => ({ getCapture: vi.fn(), reviewCapture: vi.fn() }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
@@ -126,7 +126,7 @@ describe("private grouping review", () => {
     await userEvent.type(dogName, "  Kaju  ");
     await userEvent.type(catName, "Kaju");
     await userEvent.click(screen.getByRole("button", { name: "Publish 2 animals" }));
-    expect(reviewCapture).toHaveBeenCalledWith("c", [{ instance_ids: ["a", "c"], known_name: "Kaju" }, { instance_ids: ["b"], known_name: "Kaju" }], 2);
+    expect(reviewCapture).toHaveBeenCalledWith("c", [{ instance_ids: ["a", "c"], known_name: "Kaju" }, { instance_ids: ["b"], known_name: "Kaju" }], 2, []);
   });
   it("does not copy a removed group's name onto a newly split animal", async () => {
     vi.mocked(getCapture).mockResolvedValue({ ...detail, groups: [{ instance_ids: ["a", "c"], known_name: "Kaju" }, { instance_ids: ["b"] }] });
@@ -145,7 +145,7 @@ describe("private grouping review", () => {
     expect(input).toHaveValue("Kaju");
     await userEvent.clear(input);
     await userEvent.click(screen.getByRole("button", { name: "Save animal details" }));
-    expect(reviewCapture).toHaveBeenCalledWith("c", [{ instance_ids: ["a", "c"], known_name: null }, { instance_ids: ["b"] }], 2);
+    expect(reviewCapture).toHaveBeenCalledWith("c", [{ instance_ids: ["a", "c"], known_name: null }, { instance_ids: ["b"] }], 2, []);
   });
   it("rejects co-visible merges and incomplete assignments", () => {
     expect(groupingError(detail.instances, { a: "1", b: "1", c: "2" })).toMatch(/same photo are two different animals/);
@@ -164,8 +164,40 @@ describe("private grouping review", () => {
     await userEvent.selectOptions(screen.getAllByLabelText("Sex")[0], "female");
     await userEvent.selectOptions(screen.getAllByLabelText("Condition")[1], "injured");
     await userEvent.click(screen.getByRole("button", { name: "Publish 2 animals" }));
-    expect(reviewCapture).toHaveBeenCalledWith("c", [{ instance_ids: ["a"], sex: "female" }, { instance_ids: ["b", "c"], condition: "injured" }], 2);
+    expect(reviewCapture).toHaveBeenCalledWith("c", [{ instance_ids: ["a"], sex: "female" }, { instance_ids: ["b", "c"], condition: "injured" }], 2, []);
     expect(onSaved).toHaveBeenCalledOnce();
+  });
+  it("leaves a doubled box out instead of publishing it as a second animal", async () => {
+    // Two boxes on one dog in one photo can never share an animal (#105).
+    expect(groupingError(detail.instances, { a: "1", b: NOT_AN_ANIMAL, c: "1" })).toBeNull();
+    vi.mocked(getCapture).mockResolvedValue(detail);
+    vi.mocked(reviewCapture).mockResolvedValue({ capture_id: "c", sighting_ids: ["s1"], processing_state: "ready" });
+    render(<CaptureReview captureId="c" onClose={() => {}} onSaved={() => {}} onUnauthorized={() => {}} />);
+    await screen.findByText("Details for each animal");
+    await userEvent.selectOptions(screen.getByLabelText("Which animal is box 2?"), NOT_AN_ANIMAL);
+    expect(screen.getByRole("article", { name: "Box 2" })).toHaveClass("is-excluded");
+    await userEvent.click(screen.getByRole("button", { name: "Publish 1 animal" }));
+    expect(reviewCapture).toHaveBeenCalledWith("c", [{ instance_ids: ["a", "c"] }], 2, ["b"]);
+  });
+  it("discards the upload only after confirming when no box is an animal", async () => {
+    vi.mocked(getCapture).mockResolvedValue(detail);
+    vi.mocked(reviewCapture).mockResolvedValue({ capture_id: "c", sighting_ids: [], processing_state: "no_animal" });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    render(<CaptureReview captureId="c" onClose={() => {}} onSaved={() => {}} onUnauthorized={() => {}} />);
+    await screen.findByText("Details for each animal");
+    for (const box of [1, 2, 3]) await userEvent.selectOptions(screen.getByLabelText(`Which animal is box ${box}?`), NOT_AN_ANIMAL);
+    await userEvent.click(screen.getByRole("button", { name: "Discard this upload" }));
+    expect(reviewCapture).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Discard this upload" }));
+    expect(reviewCapture).toHaveBeenCalledWith("c", [], 2, ["a", "b", "c"]);
+    confirm.mockRestore();
+  });
+  it("shows a saved exclusion as not an animal", async () => {
+    vi.mocked(getCapture).mockResolvedValue({ ...detail, processing_state: "ready", groups: [{ instance_ids: ["a", "c"] }], excluded_instance_ids: ["b"] });
+    render(<CaptureReview captureId="c" onClose={() => {}} onSaved={() => {}} onUnauthorized={() => {}} />);
+    await screen.findByText("Details for each animal");
+    expect(screen.getByLabelText("Which animal is box 2?")).toHaveValue(NOT_AN_ANIMAL);
+    expect(screen.getByRole("button", { name: "Save animal details" })).toBeEnabled();
   });
   it("blocks publication of co-visible animals assigned to the same group", async () => {
     vi.mocked(getCapture).mockResolvedValue(detail);

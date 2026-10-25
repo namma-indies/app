@@ -4,9 +4,11 @@ POST /capture: legacy multipart fields except animal details, 1..12 photos or
 one video (not both), 201 CaptureReceipt.
 GET /captures: {items: CaptureStatus[]} (owner only, newest first).
 GET /capture/{id}: CaptureStatus (owner only, works when intake is disabled).
-POST /capture/{id}/review: CaptureReview -> CaptureStatus. A complete partition is
-required. publish=false saves a private draft; publish=true publishes atomically.
-After publication grouping is immutable, but the same groups can update details.
+POST /capture/{id}/review: CaptureReview -> CaptureStatus. Every box is either in
+exactly one group or excluded as not an animal. publish=false saves a private
+draft; publish=true publishes atomically, and excluding every box discards the
+upload (no_animal). After publication grouping is immutable, but the same groups
+can update details.
 """
 from datetime import datetime
 from typing import Literal
@@ -48,12 +50,15 @@ class AnimalGroup(AnimalDetails):
 class CaptureReview(WireModel):
     revision: int = Field(ge=0)
     publish: bool = True
-    groups: list[AnimalGroup] = Field(min_length=1, max_length=MAX_INSTANCES)
+    groups: list[AnimalGroup] = Field(max_length=MAX_INSTANCES)
+    # Boxes the observer says show no animal: a doubled box, or a detector
+    # mistake. They publish nothing.
+    excluded_instance_ids: list[UUID] = Field(default_factory=list, max_length=MAX_INSTANCES)
 
     @model_validator(mode="after")
     def unique_instances(self):
-        ids = [i for g in self.groups for i in g.instance_ids]
-        if len(ids) != len(set(ids)) or len(ids) > MAX_INSTANCES:
+        ids = [i for g in self.groups for i in g.instance_ids] + self.excluded_instance_ids
+        if not ids or len(ids) != len(set(ids)) or len(ids) > MAX_INSTANCES:
             raise ValueError("instance IDs must form a unique bounded partition")
         return self
 
@@ -99,6 +104,7 @@ class CaptureStatus(CaptureReceipt):
     note: str | None
     instances: list[InstanceEvidence]
     groups: list[AnimalGroup]
+    excluded_instance_ids: list[UUID] = Field(default_factory=list)
     suggestions: list[DetailSuggestion] = Field(default_factory=list)
 
 

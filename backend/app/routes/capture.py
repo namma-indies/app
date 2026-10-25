@@ -58,10 +58,12 @@ async def review_capture(capture_id: UUID, body: CaptureReview,
         if capture["processing_state"] not in ("needs_review", "ready"):
             raise HTTPException(409, "capture is not ready for association review")
         rows = await conn.fetch("SELECT * FROM animal_instances WHERE capture_id=$1",capture_id)
-        validate_groups(rows,body.groups)
+        validate_groups(rows,body.groups,body.excluded_instance_ids)
         if body.publish:
-            await publish_groups(conn,capture,body.groups)
+            await publish_groups(conn,capture,body.groups,body.excluded_instance_ids)
         else:
+            if not body.groups:
+                raise HTTPException(422,"discarding every box is a publish, not a draft")
             if capture["published_at"]:
                 raise HTTPException(409,"published captures cannot return to draft")
             await conn.execute("UPDATE captures SET review_groups=$2::jsonb WHERE id=$1",capture_id,

@@ -1093,6 +1093,7 @@ button { font-family: inherit; }
 .capture-evidence-grid > li { min-width: 0; }
 .capture-evidence-card { border: 2px solid var(--line); border-radius: 8px; padding: 8px; }
 .capture-evidence-card.is-selected { border-color: var(--ink); outline: 2px solid var(--ink); }
+.capture-evidence-card.is-excluded .capture-evidence { opacity: .4; }
 .capture-evidence-select { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; width: 100%; min-height: 48px; margin-bottom: 8px; padding: 8px; text-align: left; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; }
 .capture-evidence-select:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
 .capture-evidence-number { background: var(--evidence-color); color: #111; padding: 3px 7px; border: 1px solid #111; font-weight: 800; }

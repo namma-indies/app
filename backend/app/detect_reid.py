@@ -80,7 +80,33 @@ def animal_detections(dets, size, scale=1.0, pad_x=0, pad_y=0) -> tuple[AnimalDe
             continue
         instances.append(AnimalDetection(index, "dog" if int(cls) == COCO_DOG else "cat",
                                          float(conf), raw, crop))
-    return tuple(instances)
+    return _without_duplicates(instances)
+
+
+def _iou(a, b) -> float:
+    w = min(a[2], b[2]) - max(a[0], b[0])
+    h = min(a[3], b[3]) - max(a[1], b[1])
+    if w <= 0 or h <= 0:
+        return 0.0
+    inter = w * h
+    return inter / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter)
+
+
+def _without_duplicates(instances) -> tuple[AnimalDetection, ...]:
+    """One box per animal: drop a box that nearly coincides with a more
+    confident one, whatever either is labelled.
+
+    The export's NMS runs per class, so an indie scored as both dog and cat
+    comes out as two boxes; the end-to-end head also doubles a box now and
+    then. Left in, the review sheet must publish one dog as two, because two
+    boxes in one photo can never share an animal. Overlap this high is rare
+    between two real animals, even ones lying together.
+    """
+    kept = []
+    for det in sorted(instances, key=lambda d: (-d.confidence, d.detection_index)):
+        if all(_iou(det.raw_box, k.raw_box) <= DUPLICATE_IOU for k in kept):
+            kept.append(det)
+    return tuple(sorted(kept, key=lambda d: d.detection_index))
 
 
 _MODEL_PATH = Path(__file__).resolve().parent / "ml" / "yolo26x.onnx"
@@ -104,6 +130,9 @@ _ANIMAL_CLASSES = frozenset({COCO_CAT, COCO_DOG})
 REID_CONF_THRESHOLD = 0.10
 
 BOX_MARGIN = 0.10  # matches the validated offline crop recipe
+
+# Two animal boxes overlapping more than this are one animal (`_without_duplicates`).
+DUPLICATE_IOU = 0.7
 
 _session: ort.InferenceSession | None = None
 _lock = threading.Lock()
