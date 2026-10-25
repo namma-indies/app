@@ -51,6 +51,8 @@ export interface CaptureDetail extends CaptureSummary {
   revision: number;
   instances: CaptureInstance[];
   groups: CaptureGroup[];
+  /** Boxes the observer marked as not an animal (#105). */
+  excluded_instance_ids?: string[];
 }
 export interface PostCaptureResponse {
   capture_id: string;
@@ -80,6 +82,7 @@ interface WireCapture extends CaptureSummary {
   revision: number;
   instances: WireInstance[];
   groups: CaptureGroup[];
+  excluded_instance_ids?: string[];
 }
 export function adaptCapture(wire: WireCapture): CaptureDetail {
   return { ...wire, instances: wire.instances.map((instance) => {
@@ -139,10 +142,11 @@ export async function getCaptures(signal?: AbortSignal): Promise<{ sightings: Ca
 export async function getCapture(id: string, signal?: AbortSignal): Promise<CaptureDetail> {
   return adaptCapture(await request<WireCapture>(`/capture/${encodeURIComponent(id)}`, { signal }));
 }
-export function reviewCapture(id: string, groups: CaptureGroup[], revision: number): Promise<PostCaptureResponse> {
+export function reviewCapture(id: string, groups: CaptureGroup[], revision: number, excluded: string[] = []): Promise<PostCaptureResponse> {
   return request(`/capture/${encodeURIComponent(id)}/review`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
       groups: groups.map((group) => group.known_name === undefined ? group : { ...group, known_name: group.known_name?.trim() || null }),
+      ...(excluded.length ? { excluded_instance_ids: excluded } : {}),
       revision, publish: true,
     }),
   });

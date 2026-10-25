@@ -70,6 +70,24 @@ def test_two_animals_have_independent_crops_species_and_vectors(species):
     assert adapter._detector.calls == 1 and adapter._embedder.calls == 2
 
 
+def test_one_dog_boxed_as_dog_and_cat_is_one_animal():
+    # The export's NMS is per class: an indie scored both ways comes out twice.
+    adapter = worker([[[40, 100, 240, 500, .4, 15], [42, 104, 238, 496, .8, 16]]])
+    frame = adapter.analyse_instances(raw())
+    assert [i.detection.species for i in frame.instances] == ["dog"]
+    assert frame.instances[0].detection.confidence == pytest.approx(.8)
+    assert adapter._embedder.calls == 1
+
+
+def test_a_doubled_box_is_dropped_but_overlapping_dogs_are_kept():
+    adapter = worker([[[40, 100, 240, 500, .9, 16], [50, 110, 245, 505, .5, 16],
+                       [160, 100, 360, 500, .6, 16]]])
+    boxes = [i.detection.raw_box for i in adapter.analyse_instances(raw()).instances]
+    # The second nearly coincides with the first; the third, a dog lying
+    # partly over it (IoU 0.25), is a second animal.
+    assert boxes == [(40, 100, 240, 500), (160, 100, 360, 500)]
+
+
 def test_legacy_still_embeds_only_largest():
     adapter = worker()
     result = adapter.analyse_photo(raw())

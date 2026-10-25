@@ -1,6 +1,6 @@
 """Capture publication: no sighting exists publicly until its association is settled."""
 import json
-from uuid import uuid5
+from uuid import UUID, uuid5
 
 import numpy as np
 from fastapi import HTTPException
@@ -38,21 +38,30 @@ async def status(conn, storage, capture):
         source_thumb_url=next(urls), source_width=r["source_width"], source_height=r["source_height"],
         details=AnimalDetails(**decoded(r["details"]))) for r in rows]
     groups = decoded(capture["review_groups"])
-    if not groups:
+    excluded = []
+    if groups:
+        # A saved review covers every box; the ones it leaves out were excluded.
+        grouped = {UUID(str(i)) for g in groups for i in g["instance_ids"]}
+        excluded = [r["id"] for r in rows if r["id"] not in grouped]
+    elif capture["processing_state"] == "no_animal":
+        # Discarded in review (publish_groups); a worker no_animal has no boxes.
+        excluded = [r["id"] for r in rows]
+    else:
         tracks = {}
         for r in rows:
             tracks.setdefault(r["track_id"], []).append(r["id"])
         groups = [AnimalGroup(instance_ids=ids) for ids in tracks.values()]
     return CaptureStatus(**await receipt(conn, capture), revision=capture["revision"],
         captured_at=capture["captured_at"], note=decoded(capture["attrs"]).get("note"),
-        instances=instances, groups=groups, suggestions=await open_for_capture(conn, capture["id"]))
+        instances=instances, groups=groups, excluded_instance_ids=excluded,
+        suggestions=await open_for_capture(conn, capture["id"]))
 
 
-def validate_groups(rows, groups):
+def validate_groups(rows, groups, excluded=()):
     by_id = {r["id"]: r for r in rows}
-    ids = [i for g in groups for i in g.instance_ids]
+    ids = [i for g in groups for i in g.instance_ids] + list(excluded)
     if set(ids) != set(by_id) or len(ids) != len(set(ids)):
-        raise HTTPException(422, "groups must include every instance exactly once")
+        raise HTTPException(422, "every instance must be in exactly one group or excluded")
     for group in groups:
         evidence = [by_id[i] for i in group.instance_ids]
         if len({r["species"] for r in evidence}) != 1:
@@ -61,14 +70,17 @@ def validate_groups(rows, groups):
             raise HTTPException(422, "co-visible animals cannot be grouped together")
 
 
-async def publish_groups(conn, capture, groups):
-    """Caller holds matching and capture locks. Crop photo IDs never change."""
+async def publish_groups(conn, capture, groups, excluded=()):
+    """Caller holds matching and capture locks. Crop photo IDs never change.
+
+    Excluded boxes get no sighting. Excluding every box discards the upload:
+    it ends as no_animal, the state the worker gives one with nothing in it."""
     from app.matching import resolve_sighting
     rows = await conn.fetch("""SELECT a.*,p.phash,e.vec_miew::text AS vec
         FROM animal_instances a JOIN photos p ON p.id=a.evidence_photo_id
         LEFT JOIN embeddings e ON e.instance_id=a.id AND e.model=$2
         WHERE a.capture_id=$1 ORDER BY a.id""", capture["id"], MODEL_NAME)
-    validate_groups(rows, groups)
+    validate_groups(rows, groups, excluded)
     by_id = {r["id"]: r for r in rows}
     existing = {}
     for r in rows:
@@ -77,6 +89,10 @@ async def publish_groups(conn, capture, groups):
     if capture["published_at"] and {frozenset(v) for v in existing.values()} != {
             frozenset(g.instance_ids) for g in groups}:
         raise HTTPException(409, "published associations cannot be regrouped")
+    if not groups:
+        await conn.execute("""UPDATE captures SET processing_state='no_animal',review_groups='[]'::jsonb,
+            updated_at=now() WHERE id=$1""", capture["id"])
+        return []
     sids = []
     for group in groups:
         members = [by_id[i] for i in sorted(group.instance_ids, key=str)]
