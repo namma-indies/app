@@ -30,13 +30,16 @@ class LocalModelError(RuntimeError):
 
 class LocalModel:
     def __init__(self, binary, model, mmproj, *, pass_fds: tuple[int, ...] = (), port: int = 8091,
-                 context: int = 8192, startup_timeout: float = 300, request_timeout: float = 180):
+                 context: int = 131072, startup_timeout: float = 300, request_timeout: float = 180):
         self.command = [
             str(binary), "-m", str(model), "--mmproj", str(mmproj),
             "--host", "127.0.0.1", "--port", str(port),
             # All layers on the GPU slice; one request at a time, like the
-            # rest of this worker.
+            # rest of this worker. A 128k context fits the slice beside
+            # whisper and the ONNX models because the KV cache is 8-bit
+            # (which on llama.cpp needs flash attention for V).
             "-ngl", "999", "-c", str(context), "-np", "1",
+            "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0",
             "--jinja", "--no-webui",
         ]
         self.pass_fds = pass_fds

@@ -173,3 +173,9 @@ def test_local_model_listens_on_loopback_only(tmp_path):
     model = LocalModel("llama-server", "m", "p")
     host = model.command[model.command.index("--host") + 1]
     assert host == "127.0.0.1" and model.url.startswith("http://127.0.0.1:")
+
+
+def test_local_model_runs_one_slot_with_a_long_8bit_context():
+    command = LocalModel("llama-server", "m", "p").command
+    flag = lambda name: command[command.index(name) + 1]
+    assert (flag("-c"), flag("-np"), flag("-fa"), flag("-ctk"), flag("-ctv")) == ("131072", "1", "on", "q8_0", "q8_0")
