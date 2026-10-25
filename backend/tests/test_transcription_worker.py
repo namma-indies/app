@@ -3,6 +3,8 @@ from dataclasses import replace
 import json
 from pathlib import Path
 import stat
+import sys
+import textwrap
 from uuid import uuid4
 
 import httpx
@@ -14,9 +16,10 @@ from gpu_worker.client import (Config, ProtocolError, TRANSCRIBE_PIPELINE_VERSIO
 from tests.test_gpu_client import LEASE, SIGNED, TOKEN, FakeAdapter, expiry
 
 
-def whisper_json(segments, language="kn"):
-    return json.dumps({"result": {"language": language}, "transcription": [
-        {"offsets": {"from": a, "to": b}, "text": t} for a, b, t in segments]}).encode()
+def whisper_json(segments, language="kannada"):
+    """A whisper-server ``verbose_json`` reply; times in seconds, as it sends them."""
+    return json.dumps({"language": language, "text": "", "segments": [
+        {"start": a / 1000, "end": b / 1000, "text": t} for a, b, t in segments]}).encode()
 
 
 # ---------------------------------------------------------------------------
@@ -36,14 +39,19 @@ def test_parse_keeps_speech_and_drops_sound_descriptions():
     ]
 
 
+@pytest.mark.parametrize("name,code", [("english", "en"), ("hindi", "hi"), ("tamil", "ta"), ("hawaiian", "haw")])
+def test_parse_stores_the_language_code(name, code):
+    assert transcribe.parse(whisper_json([(0, 900, " ok")], language=name)).language == code
+
+
 def test_parse_reports_silence_without_a_language():
-    heard = transcribe.parse(whisper_json([(0, 30000, " [BLANK_AUDIO]")], language="en"))
+    heard = transcribe.parse(whisper_json([(0, 30000, " [BLANK_AUDIO]")], language="english"))
     assert (heard.outcome, heard.language, heard.text) == ("no_speech", None, "")
 
 
 @pytest.mark.parametrize("raw", [
     whisper_json([(5, 1, "backwards")]),
-    whisper_json([(0, 1, "hi")], language="English"),
+    whisper_json([(0, 1, "hi")], language="klingon"),
     b"{}",
 ])
 def test_parse_rejects_unexpected_output(raw):
@@ -52,7 +60,7 @@ def test_parse_rejects_unexpected_output(raw):
 
 
 # ---------------------------------------------------------------------------
-# Transcriber, with stand-ins for ffmpeg and whisper-cli
+# Transcriber, with stand-ins for ffmpeg and whisper-server
 # ---------------------------------------------------------------------------
 
 def script(path: Path, body: str) -> Path:
@@ -61,50 +69,111 @@ def script(path: Path, body: str) -> Path:
     return path
 
 
+FAKE_SERVER = textwrap.dedent('''\
+    #!{python}
+    import json, os, sys, time
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    args = sys.argv
+    port = int(args[args.index("--port") + 1])
+    with open({env!r}, "w") as f:
+        f.write("\\n".join(f"{{k}}={{v}}" for k, v in os.environ.items()))
+    with open({starts!r}, "a") as f:
+        f.write("start\\n")
+    REPLY = {reply!r}
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a): pass
+        def do_GET(self):
+            self.send_response(200 if self.path == "/health" else 404); self.end_headers()
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            if {hang}:
+                time.sleep(30)
+            data = REPLY.encode()
+            self.send_response(200); self.send_header("Content-Length", str(len(data))); self.end_headers()
+            self.wfile.write(data)
+    HTTPServer(("127.0.0.1", port), H).serve_forever()
+''')
+
+
 @pytest.fixture
 def tools(tmp_path):
     # Writes its last argument (the output WAV): a header plus some samples.
     ffmpeg = script(tmp_path / "ffmpeg", 'for a; do out="$a"; done; head -c 4044 /dev/zero > "$out"\n')
-    output = whisper_json([(0, 900, " Friendly, wags his tail.")], language="en").decode()
-    # Writes <-of value>.json, and records its environment.
-    whisper = script(tmp_path / "whisper", f"""
-while [ $# -gt 0 ]; do [ "$1" = "-of" ] && out="$2"; shift; done
-env > "{tmp_path}/whisper.env"
-cat > "$out.json" <<'JSON'
-{output}
-JSON
-""")
-    return tmp_path, ffmpeg, whisper
+
+    def server(name="whisper-server", hang=False):
+        path = tmp_path / name
+        path.write_text(FAKE_SERVER.format(
+            python=sys.executable, env=str(tmp_path / "whisper.env"), starts=str(tmp_path / "starts"),
+            reply=whisper_json([(0, 900, " Friendly, wags his tail.")], language="english").decode(),
+            hang=hang))
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        return path
+    return tmp_path, ffmpeg, server
 
 
-def test_transcriber_decodes_then_transcribes_without_the_worker_token(tools, monkeypatch):
-    root, ffmpeg, whisper = tools
+def started(root):
+    return (root / "starts").read_text().count("start")
+
+
+def test_whisper_stays_loaded_across_notes_and_never_sees_the_worker_token(tools, monkeypatch):
+    root, ffmpeg, server = tools
     monkeypatch.setenv("MEDIA_GPU_TOKEN", "never-in-a-child")
-    heard = transcribe.Transcriber(whisper, root / "m", root / "v", ffmpeg=str(ffmpeg)).transcribe(b"note")
-    assert (heard.outcome, heard.language, heard.text) == ("transcribed", "en", "Friendly, wags his tail.")
+    t = transcribe.Transcriber(server(), root / "m", root / "v", ffmpeg=str(ffmpeg), port=18941)
+    t.start()
+    try:
+        for _ in range(3):
+            heard = t.transcribe(b"note")
+            assert (heard.outcome, heard.language, heard.text) == ("transcribed", "en", "Friendly, wags his tail.")
+        assert started(root) == 1  # one load, three notes
+    finally:
+        t.stop()
     assert "never-in-a-child" not in (root / "whisper.env").read_text()
 
 
+def test_whisper_server_listens_on_loopback_only(tools):
+    root, ffmpeg, server = tools
+    command = transcribe.Transcriber(server(), root / "m", root / "v").command
+    assert command[command.index("--host") + 1] == "127.0.0.1"
+    for flag in ("--vad", "-sns"):
+        assert flag in command
+    assert command[command.index("-mc") + 1] == "0" and command[command.index("-l") + 1] == "auto"
+
+
 def test_a_clip_without_a_sound_track_is_no_audio(tools):
-    root, _, whisper = tools
+    root, _, server = tools
     ffmpeg = script(root / "ffmpeg-mute", "echo \"Stream map '0:a:0' matches no streams.\" >&2; exit 1\n")
-    heard = transcribe.Transcriber(whisper, root / "m", root / "v", ffmpeg=str(ffmpeg)).transcribe(b"clip")
+    heard = transcribe.Transcriber(server(), root / "m", root / "v", ffmpeg=str(ffmpeg)).transcribe(b"clip")
     assert heard.outcome == "no_audio"
 
 
 def test_undecodable_audio_is_a_permanent_failure(tools):
-    root, _, whisper = tools
+    root, _, server = tools
     ffmpeg = script(root / "ffmpeg-bad", "echo 'Invalid data found' >&2; exit 1\n")
     with pytest.raises(ValueError):
-        transcribe.Transcriber(whisper, root / "m", root / "v", ffmpeg=str(ffmpeg)).transcribe(b"junk")
+        transcribe.Transcriber(server(), root / "m", root / "v", ffmpeg=str(ffmpeg)).transcribe(b"junk")
 
 
-def test_a_hung_whisper_is_killed(tools):
-    root, ffmpeg, _ = tools
-    hung = script(root / "whisper-hung", "sleep 30\n")
-    t = transcribe.Transcriber(hung, root / "m", root / "v", ffmpeg=str(ffmpeg), whisper_timeout=.3)
+def test_a_hung_server_is_killed_and_replaced_on_the_next_note(tools):
+    root, ffmpeg, server = tools
+    t = transcribe.Transcriber(server("whisper-hung", hang=True), root / "m", root / "v",
+                               ffmpeg=str(ffmpeg), request_timeout=.5, port=18942)
+    t.start()
     with pytest.raises(TimeoutError):
         t.transcribe(b"note")
+    assert not t.alive()
+    t.command[0] = str(server())  # a healthy build for the next attempt
+    try:
+        assert t.transcribe(b"note").outcome == "transcribed"
+        assert started(root) == 2
+    finally:
+        t.stop()
+
+
+def test_a_server_that_dies_on_startup_is_reported(tools):
+    root, ffmpeg, _ = tools
+    dead = script(root / "whisper-dead", "exit 3\n")
+    with pytest.raises(transcribe.TranscriberError):
+        transcribe.Transcriber(dead, root / "m", root / "v", port=18943, startup_timeout=10).start()
 
 
 # ---------------------------------------------------------------------------

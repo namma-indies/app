@@ -3,8 +3,9 @@
 Required: MEDIA_GPU_{DETECTOR,EMBEDDER}_{PATH,SHA256}, MEDIA_GPU_API_URL,
 MEDIA_GPU_STORAGE_ORIGINS, and exactly one of MEDIA_GPU_TOKEN / TOKEN_FILE.
 With MEDIA_GPU_TRANSCRIBE=1, also MEDIA_GPU_WHISPER_{BIN,MODEL,VAD}_{PATH,SHA256}:
-a statically linked whisper-cli, ggml-large-v3 and a silero VAD model. The
-binary is pinned and snapshotted exactly like a model, then run from the copy.
+a statically linked whisper-server, ggml-large-v3 and a silero VAD model. The
+binary and VAD are snapshotted like the ONNX models; large-v3 is verified in
+place, like the Qwen weights below, and kept resident in whisper-server.
 With MEDIA_GPU_SUGGEST=1, also MEDIA_GPU_LLAMA_{BIN,MODEL,MMPROJ}_{PATH,SHA256}:
 llama-server and a Qwen3.8 GGUF with its vision projector. At ~18 GB those two
 are verified in place instead of copied: hashed through a descriptor opened
@@ -137,16 +138,19 @@ async def run() -> None:
                 adapter = GpuInference.from_paths(detector, embedder)
             transcriber = None
             if whisper_specs is not None:
-                # Unlike the ONNX copies, these outlive startup: whisper-cli is
-                # a fresh process per job and reads the verified copies each time.
+                # Kept resident like the local Qwen: whisper-server loads
+                # large-v3 onto the slice once, here, from the descriptor that
+                # was hashed, so no job ever waits on a model load.
                 from gpu_worker.transcribe import Transcriber
 
                 root = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="gpu-whisper-")))
-                binary, model, vad = root / "whisper-cli", root / "whisper.bin", root / "vad.bin"
+                binary, vad = root / "whisper-server", root / "vad.bin"
                 _snapshot(whisper_specs["BIN"], binary, executable=True)
-                _snapshot(whisper_specs["MODEL"], model)
                 _snapshot(whisper_specs["VAD"], vad)
-                transcriber = Transcriber(binary, model, vad)
+                weights = _verified_descriptor(whisper_specs["MODEL"], stack)
+                transcriber = Transcriber(binary, f"/proc/self/fd/{weights}", vad, pass_fds=(weights,))
+                transcriber.start()
+                stack.callback(transcriber.stop)
             local_model = None
             if llama_specs is not None:
                 from gpu_worker.llm import LocalModel
