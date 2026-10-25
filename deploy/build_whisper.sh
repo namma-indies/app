@@ -1,5 +1,6 @@
 #!/bin/sh
-# Build the whisper-cli the GPU worker transcribes with, and print its pins.
+# Build the whisper-server the GPU worker transcribes with, and print its pins.
+# It runs for the worker's lifetime with large-v3 resident on the slice.
 #
 #   deploy/build_whisper.sh OUTPUT_DIR [CUDA_ARCH]          # anywhere with docker
 #   deploy/build_whisper.sh --here OUTPUT_DIR [CUDA_ARCH]   # inside a pod/container
@@ -48,11 +49,11 @@ BUILD="
   git -C /tmp/whisper-src checkout -q $WHISPER_REV
   cmake -S /tmp/whisper-src -B /tmp/whisper-build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
     -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=$ARCH -DGGML_NATIVE=OFF \
-    -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF
-  cmake --build /tmp/whisper-build -j \$(nproc) --target whisper-cli
-  install -m 0555 /tmp/whisper-build/bin/whisper-cli $DEST/whisper-cli
+    -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=ON
+  cmake --build /tmp/whisper-build -j \$(nproc) --target whisper-server
+  install -m 0555 /tmp/whisper-build/bin/whisper-server $DEST/whisper-server
   # Anything left dynamically linked must come from the runtime image.
-  ldd $DEST/whisper-cli
+  ldd $DEST/whisper-server
 "
 if [ "$HERE" = 1 ]; then
   bash -euc "$BUILD"
@@ -67,6 +68,6 @@ if command -v sha256sum >/dev/null; then SHA="sha256sum"; else SHA="shasum -a 25
 cd "$OUT"
 echo
 echo "whisper.cpp $WHISPER_REV, sm_$ARCH. Pins for render_gpu_worker.py:"
-for f in whisper-cli ggml-large-v3.bin ggml-silero-v6.2.0.bin; do
+for f in whisper-server ggml-large-v3.bin ggml-silero-v6.2.0.bin; do
   echo "  $f  $($SHA "$f" | cut -d' ' -f1)"
 done

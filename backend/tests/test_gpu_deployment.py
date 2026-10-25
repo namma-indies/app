@@ -75,9 +75,8 @@ def test_transcription_is_off_unless_whisper_is_pinned(config):
     assert data["MEDIA_GPU_WHISPER_BIN_SHA256"] == "e" * 64
     pod = on["items"][1]["spec"]["template"]["spec"]
     scratch = next(v for v in pod["volumes"] if v["name"] == "scratch")
-    # Room for the resident ~3 GiB model copy.
-    assert scratch["emptyDir"]["sizeLimit"] == "8Gi"
-    assert pod["containers"][0]["resources"]["limits"]["ephemeral-storage"] == "9Gi"
+    # large-v3 is verified in place and kept resident, not copied to scratch.
+    assert scratch["emptyDir"]["sizeLimit"] == "4Gi"
 
 
 LLAMA = dict(llama_bin_file="llama/llama-server", llama_model_file="llama/Qwen3.8-27B-UD-Q4_K_XL.gguf",

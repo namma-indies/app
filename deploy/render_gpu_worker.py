@@ -15,9 +15,9 @@ image is the backward-compatible default), selector_labels (nonempty label map).
 Optional, all six or none: whisper_bin_file, whisper_model_file, whisper_vad_file
 (relative paths within model PVC) and their *_sha256. Present, they switch on
 voice-note/clip transcription (MEDIA_GPU_TRANSCRIBE=1): a statically linked
-CUDA whisper-cli built for this GPU, ggml-large-v3 and a silero VAD model, each
-pinned and snapshotted to scratch like the ONNX models. Scratch grows to fit the
-~3 GiB model copy that stays resident for the worker's lifetime.
+CUDA whisper-server built for this GPU, ggml-large-v3 and a silero VAD model, each
+pinned. The server and VAD are snapshotted like the ONNX models; large-v3 is
+verified in place and stays resident on the slice for the worker's lifetime.
 Optional, all six or none: llama_bin_file, llama_model_file, llama_mmproj_file
 and their *_sha256. Present, they switch on suggested animal details
 (MEDIA_GPU_SUGGEST=1): a statically linked CUDA llama-server, a Qwen3.8-27B
@@ -260,9 +260,6 @@ def render(config):
             data[f"MEDIA_GPU_LLAMA_{name.upper()}_PATH"] = pinned_file(c[f"llama_{name}_file"])
             data[f"MEDIA_GPU_LLAMA_{name.upper()}_SHA256"] = c[f"llama_{name}_sha256"]
         data["MEDIA_GPU_SUGGEST"] = "1"
-    # The ggml-large-v3 copy (~3 GiB) is held on scratch beside clips and the
-    # transient ONNX copies.
-    scratch_gi = 8 if transcribe else 4
     if "multi_animal" in c:
         if type(c["multi_animal"]) is not bool:
             raise ValueError("multi_animal must be a boolean")
@@ -285,9 +282,9 @@ def render(config):
                                 "readOnlyRootFilesystem": True,
                                 "capabilities": {"drop": ["ALL"]}},
             "resources": {"requests": {"cpu": "8", "memory": "24Gi", c["gpu_resource"]: 1,
-                                       "ephemeral-storage": f"{scratch_gi}Gi"},
+                                       "ephemeral-storage": "4Gi"},
                           "limits": {"cpu": "16", "memory": "50Gi", c["gpu_resource"]: 1,
-                                     "ephemeral-storage": f"{scratch_gi + 1}Gi"}},
+                                     "ephemeral-storage": "5Gi"}},
             "volumeMounts": [{"name": "models", "mountPath": "/models", "readOnly": True},
                              {"name": "token", "mountPath": "/run/worker-token", "readOnly": True},
                              {"name": "scratch", "mountPath": "/scratch"},
@@ -297,7 +294,7 @@ def render(config):
             {"name": "models", "persistentVolumeClaim": {"claimName": c["model_pvc"], "readOnly": True}},
             {"name": "token", "secret": {"secretName": c["token_secret"], "defaultMode": 288,
                                            "items": [{"key": c["token_key"], "path": "token"}]}},
-            {"name": "scratch", "emptyDir": {"sizeLimit": f"{scratch_gi}Gi"}},
+            {"name": "scratch", "emptyDir": {"sizeLimit": "4Gi"}},
             {"name": "shm", "emptyDir": {"medium": "Memory", "sizeLimit": "2Gi"}},
         ],
     }

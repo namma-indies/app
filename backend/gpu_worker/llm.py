@@ -3,9 +3,9 @@
 ``LocalModel(binary, model, mmproj).start()`` launches llama-server bound to
 127.0.0.1 in its own process group and waits until it answers /health;
 ``complete(body)`` sends one OpenAI-style chat request and returns the
-assistant's message content. Unlike whisper-cli, which is a fresh process per
-job, this one stays up: loading ~18 GB of weights takes far longer than any
-one answer.
+assistant's message content. It stays up for the worker's lifetime, as
+whisper-server does: loading ~18 GB of weights takes far longer than any one
+answer, so no request should ever wait on it.
 
 The worker remains outbound-only. The server listens on loopback inside the
 pod, takes no API key because nothing outside the pod can reach it, and never
