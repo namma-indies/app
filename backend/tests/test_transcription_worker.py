@@ -137,6 +137,8 @@ def test_whisper_server_listens_on_loopback_only(tools):
     for flag in ("--vad", "-sns"):
         assert flag in command
     assert command[command.index("-mc") + 1] == "0" and command[command.index("-l") + 1] == "auto"
+    # Without the pad, VAD clipped "She" off "She is asleep" on the real model.
+    assert command[command.index("-vp") + 1] == "200"
 
 
 def test_a_clip_without_a_sound_track_is_no_audio(tools):
