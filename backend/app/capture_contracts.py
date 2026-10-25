@@ -83,12 +83,23 @@ class InstanceEvidence(WireModel):
     details: AnimalDetails
 
 
+class DetailSuggestion(WireModel):
+    """A detail a model read from the voice note, about the animal in one box.
+    Shown in the review sheet; saving the sheet is the observer's decision."""
+    id: UUID
+    instance_id: UUID
+    field: Literal["sex", "ear_notch", "condition", "known_name"]
+    value: str
+    quote: str
+
+
 class CaptureStatus(CaptureReceipt):
     revision: int
     captured_at: datetime
     note: str | None
     instances: list[InstanceEvidence]
     groups: list[AnimalGroup]
+    suggestions: list[DetailSuggestion] = Field(default_factory=list)
 
 
 class MultiUpload(WireModel):

@@ -196,7 +196,7 @@ async def test_a_capture_clip_upload_records_the_clip_hash(migrated_db, monkeypa
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=FakePool(conn))))
     raw = b"clip bytes"
     received = await create_capture(
-        request=request, photos=None, video=UploadFile(io.BytesIO(raw)), lat=None, lng=None,
+        request=request, photos=None, video=UploadFile(io.BytesIO(raw)), audio=None, lat=None, lng=None,
         geo_accuracy_m=None, client_token="t", geo_source="none",
         captured_at=datetime.now(timezone.utc), reported_at=None, note=None,
         observer_id=oid, storage=SimpleNamespace(put=AsyncMock()))

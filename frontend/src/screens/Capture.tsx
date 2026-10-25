@@ -26,27 +26,11 @@ import {
 } from "../capture/importOrigin";
 import { howToEnableCameraLocation, locate } from "../capture/geolocate";
 import LocationPicker, { type PickedPlace } from "../components/LocationPicker";
+import VoiceNote, { voiceNotesEnabled } from "../components/VoiceNote";
+import { CONDITION_OPTIONS, EAR_NOTCH_OPTIONS, SEX_OPTIONS } from "../detailOptions";
 
 const MAX_PHOTOS = 5;
 
-const SEX_OPTIONS: { value: Sex; label: string }[] = [
-  { value: "male", label: "♂ male" },
-  { value: "female", label: "♀ female" },
-  { value: "unsure", label: "unsure" },
-];
-
-const EAR_NOTCH_OPTIONS: { value: EarNotch; label: string }[] = [
-  { value: "none", label: "none" },
-  { value: "left", label: "left" },
-  { value: "right", label: "right" },
-  { value: "unsure", label: "unsure" },
-];
-
-const CONDITION_OPTIONS: { value: Condition; label: string }[] = [
-  { value: "healthy", label: "healthy" },
-  { value: "injured", label: "injured" },
-  { value: "unsure", label: "unsure" },
-];
 
 function Chips<T extends string>({
   options,
@@ -114,6 +98,7 @@ export default function Capture() {
   const [video, setVideo] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [note, setNote] = useState("");
+  const [voiceNote, setVoiceNote] = useState<Blob | null>(null);
   const [sex, setSex] = useState<Sex | null>(null);
   const [earNotch, setEarNotch] = useState<EarNotch | null>(null);
   const [condition, setCondition] = useState<Condition | null>(null);
@@ -438,6 +423,7 @@ export default function Capture() {
     setGeoFailed(false);
     setPicking(false);
     setNote("");
+    setVoiceNote(null);
     setShareWithTeam(false);
     setSex(null);
     setEarNotch(null);
@@ -501,6 +487,8 @@ export default function Capture() {
     const input = {
       photos: video ? undefined : photos,
       video: video ?? undefined,
+      // A clip's own sound is its note; the recorder is hidden while one is staged.
+      audio: video ? undefined : voiceNote ?? undefined,
       lat,
       lng,
       geo_accuracy_m: accuracy,
@@ -730,6 +718,9 @@ export default function Capture() {
               value={note}
               onChange={(e) => setNote(e.target.value)}
             />
+            {/* Not for a clip: the clip records sound already, and that is
+                its note (#96). */}
+            {!video && voiceNotesEnabled() && <VoiceNote value={voiceNote} onChange={setVoiceNote} />}
           </div>
 
           {canShare && (

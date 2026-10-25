@@ -12,6 +12,18 @@ Required JSON keys (unknown keys, including token values, are rejected):
   detector_sha256, embedder_sha256, gpu_resource (nvidia.com/gpu or MIG key).
 Optional: uid, gid (positive integers, default 10001), runtime_mode (image or pvc;
 image is the backward-compatible default), selector_labels (nonempty label map).
+Optional, all six or none: whisper_bin_file, whisper_model_file, whisper_vad_file
+(relative paths within model PVC) and their *_sha256. Present, they switch on
+voice-note/clip transcription (MEDIA_GPU_TRANSCRIBE=1): a statically linked
+CUDA whisper-cli built for this GPU, ggml-large-v3 and a silero VAD model, each
+pinned and snapshotted to scratch like the ONNX models. Scratch grows to fit the
+~3 GiB model copy that stays resident for the worker's lifetime.
+Optional, all six or none: llama_bin_file, llama_model_file, llama_mmproj_file
+and their *_sha256. Present, they switch on suggested animal details
+(MEDIA_GPU_SUGGEST=1): a statically linked CUDA llama-server, a Qwen3.8-27B
+GGUF (Unsloth Dynamic UD-Q4_K_XL) and its vision projector. The ~18 GB model
+and projector are verified in place, not copied, so scratch does not grow for
+them; ~21 GB of the slice's memory goes to them while the worker runs.
 For an in-place Recreate rollout, keep the existing namespace/name and supply
 EXACTLY its current spec.selector.matchLabels as selector_labels. Selectors are
 immutable: do not add the renderer's own label to a legacy selector. Pod labels
@@ -94,6 +106,10 @@ REQUIRED = {
 }
 
 
+WHISPER = {"whisper_bin_file", "whisper_model_file", "whisper_vad_file",
+           "whisper_bin_sha256", "whisper_model_sha256", "whisper_vad_sha256"}
+LLAMA = {"llama_bin_file", "llama_model_file", "llama_mmproj_file",
+         "llama_bin_sha256", "llama_model_sha256", "llama_mmproj_sha256"}
 PVC_REQUIRED = {"runtime_pvc", "release_dir", "venv_dir", "source_manifest_sha256", "venv_freeze_sha256"}
 PVC_IMAGE = "nvcr.io/nvidia/pytorch@sha256:d1eac6220dd98ef5870b1a76673cfb6f84451135a6d8a174cb92258a6bf4576d"
 
@@ -175,6 +191,16 @@ def model_file(value):
     return "/models/" + value
 
 
+def pinned_file(value):
+    """A non-ONNX file on the model PVC: the whisper binary or a ggml model."""
+    value = text(value)
+    path = PurePosixPath(value)
+    if (path.is_absolute() or ".." in path.parts or str(path) != value
+            or not re.fullmatch(r"[A-Za-z0-9_./-]+", value)):
+        raise ValueError("expected relative model path")
+    return "/models/" + value
+
+
 def render(config):
     if not isinstance(config, dict):
         raise ValueError("invalid configuration")
@@ -182,7 +208,7 @@ def render(config):
     if mode not in ("image", "pvc"):
         raise ValueError("unsupported runtime mode")
     required = REQUIRED | (PVC_REQUIRED if mode == "pvc" else set())
-    if not required <= config.keys() or config.keys() - required - {"uid", "gid", "runtime_mode", "selector_labels", "multi_animal"}:
+    if not required <= config.keys() or config.keys() - required - WHISPER - LLAMA - {"uid", "gid", "runtime_mode", "selector_labels", "multi_animal"}:
         raise ValueError("missing or unknown configuration keys")
     c = dict(config)
     if mode == "pvc":
@@ -217,6 +243,26 @@ def render(config):
         "MEDIA_GPU_DETECTOR_SHA256": c["detector_sha256"],
         "MEDIA_GPU_EMBEDDER_SHA256": c["embedder_sha256"],
     }
+    transcribe = bool(WHISPER & config.keys())
+    if transcribe:
+        if not WHISPER <= config.keys():
+            raise ValueError("whisper settings must be given together")
+        for name in ("bin", "model", "vad"):
+            match(c[f"whisper_{name}_sha256"], r"[0-9a-f]{64}")
+            data[f"MEDIA_GPU_WHISPER_{name.upper()}_PATH"] = pinned_file(c[f"whisper_{name}_file"])
+            data[f"MEDIA_GPU_WHISPER_{name.upper()}_SHA256"] = c[f"whisper_{name}_sha256"]
+        data["MEDIA_GPU_TRANSCRIBE"] = "1"
+    if LLAMA & config.keys():
+        if not LLAMA <= config.keys():
+            raise ValueError("llama settings must be given together")
+        for name in ("bin", "model", "mmproj"):
+            match(c[f"llama_{name}_sha256"], r"[0-9a-f]{64}")
+            data[f"MEDIA_GPU_LLAMA_{name.upper()}_PATH"] = pinned_file(c[f"llama_{name}_file"])
+            data[f"MEDIA_GPU_LLAMA_{name.upper()}_SHA256"] = c[f"llama_{name}_sha256"]
+        data["MEDIA_GPU_SUGGEST"] = "1"
+    # The ggml-large-v3 copy (~3 GiB) is held on scratch beside clips and the
+    # transient ONNX copies.
+    scratch_gi = 8 if transcribe else 4
     if "multi_animal" in c:
         if type(c["multi_animal"]) is not bool:
             raise ValueError("multi_animal must be a boolean")
@@ -239,9 +285,9 @@ def render(config):
                                 "readOnlyRootFilesystem": True,
                                 "capabilities": {"drop": ["ALL"]}},
             "resources": {"requests": {"cpu": "8", "memory": "24Gi", c["gpu_resource"]: 1,
-                                       "ephemeral-storage": "4Gi"},
+                                       "ephemeral-storage": f"{scratch_gi}Gi"},
                           "limits": {"cpu": "16", "memory": "50Gi", c["gpu_resource"]: 1,
-                                     "ephemeral-storage": "5Gi"}},
+                                     "ephemeral-storage": f"{scratch_gi + 1}Gi"}},
             "volumeMounts": [{"name": "models", "mountPath": "/models", "readOnly": True},
                              {"name": "token", "mountPath": "/run/worker-token", "readOnly": True},
                              {"name": "scratch", "mountPath": "/scratch"},
@@ -251,7 +297,7 @@ def render(config):
             {"name": "models", "persistentVolumeClaim": {"claimName": c["model_pvc"], "readOnly": True}},
             {"name": "token", "secret": {"secretName": c["token_secret"], "defaultMode": 288,
                                            "items": [{"key": c["token_key"], "path": "token"}]}},
-            {"name": "scratch", "emptyDir": {"sizeLimit": "4Gi"}},
+            {"name": "scratch", "emptyDir": {"sizeLimit": f"{scratch_gi}Gi"}},
             {"name": "shm", "emptyDir": {"medium": "Memory", "sizeLimit": "2Gi"}},
         ],
     }

@@ -106,12 +106,16 @@ export async function chooseFromGalleryIfNative(): Promise<File | null> {
  * left clicking a hidden file input, which inside a WebView depends on
  * platform file-provider behaviour rather than on anything we control.
  *
- * `saveToGallery` is false, unlike `takePhotoIfNative`. A clip is evidence the
- * server mines for frames and then discards -- `routes/sighting.py` never
- * persists the video itself -- so leaving a copy in the user's camera roll
- * would be the only lasting artefact of a thing the app deliberately throws
- * away. `isPersistent` is false for the same reason: the URI is read once,
- * immediately, and never across launches.
+ * `saveToGallery` is false, unlike `takePhotoIfNative`. The server keeps the
+ * clip itself (`sightings.clip_s3_key`, since migration 0008), so a second
+ * copy in the user's camera roll would add nothing the sighting doesn't hold.
+ * `isPersistent` is false because the URI is read once, immediately, and
+ * never across launches.
+ *
+ * The clip's sound is kept and is its voice note (#96). On Android the system
+ * camera app records it under its own microphone permission; on iOS the
+ * picker records it in-process, which is what NSMicrophoneUsageDescription in
+ * Info.plist is for.
  */
 export async function recordVideoIfNative(): Promise<File | null> {
   if (!Capacitor.isNativePlatform()) return null;

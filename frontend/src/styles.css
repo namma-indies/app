@@ -300,6 +300,19 @@ button { font-family: inherit; }
   background: var(--panel); padding: 0.6rem 0.8rem;
   font-family: inherit; font-size: 0.95rem; resize: none; color: var(--ink);
 }
+.voice-note {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+  gap: 0.5rem; margin-top: 0.4rem;
+}
+.voice-note audio { width: 100%; max-width: 100%; }
+.voice-btn {
+  border-radius: 4px; border: 3px solid var(--line); background: var(--panel);
+  color: var(--ink); font-family: inherit; font-size: 0.9rem;
+  padding: 0.4rem 0.8rem; cursor: pointer;
+}
+.voice-note-recording .voice-btn { border-color: var(--accent); color: var(--accent); }
+.voice-time { color: var(--muted); font-size: 0.88rem; font-variant-numeric: tabular-nums; }
+.viewer-audio { display: block; width: 100%; margin: 0.4rem 0 0; }
 
 .social-card { display: flex; flex-direction: column; gap: 0.6rem; }
 .social-photo { width: 100%; height: auto; border: 3px solid var(--line); border-radius: 4px; }
@@ -344,6 +357,15 @@ button { font-family: inherit; }
   border-radius: 3px; padding: 0.35rem 0.7rem; font-size: 0.82rem; cursor: pointer;
 }
 .chip.active { background: var(--accent); border-color: var(--line); color: #fff; font-weight: 600; }
+/* Proposed, not chosen: outlined in the accent so it reads as a hint until tapped. */
+.chip.suggested { border-color: var(--accent); border-style: dashed; color: var(--accent); font-weight: 600; }
+
+.suggested-details {
+  display: flex; flex-direction: column; gap: 0.5rem; width: 100%;
+  margin-top: 0.6rem; text-align: left;
+}
+.suggested-field { background: var(--panel); border: 3px solid var(--line); border-radius: 4px; padding: 0.6rem 0.7rem; }
+.suggestion-quote { text-align: left; font-style: italic; margin: 0.4rem 0 0; font-size: 0.8rem; }
 
 .actions-row { display: flex; gap: 0.6rem; width: 100%; }
 
@@ -1245,3 +1267,8 @@ button { font-family: inherit; }
 .spec.needs-review .no { background: var(--accent); }
 .spec.needs-review .name { color: var(--accent); }
 .spec.upload-entry:not(.needs-review) { cursor: default; }
+
+/* Voice-note suggestions inside the capture review sheet. */
+.voice-suggestions { margin: 0.2rem 0 0.6rem; display: flex; flex-direction: column; gap: 0.3rem; }
+.voice-suggestion { margin: 0; font-size: 0.85rem; }
+.voice-suggestion .suggestion-quote { font-style: italic; color: var(--muted); }

@@ -20,7 +20,7 @@ type StoredPhoto = { bytes: ArrayBuffer; type: string };
 
 /** The on-disk record. `photo_data` is the current shape; `photos` is the
  * legacy one, kept readable so captures queued by an older build still sync. */
-type StoredItem = Omit<QueueInput, "photos" | "video"> & {
+type StoredItem = Omit<QueueInput, "photos" | "video" | "audio"> & {
   id: number;
   status?: QueueStatus;
   photo_data?: StoredPhoto[];
@@ -29,6 +29,9 @@ type StoredItem = Omit<QueueInput, "photos" | "video"> & {
   // same purgeable camera File handle, only larger.
   video_data?: StoredPhoto;
   video?: Blob;
+  // A voice note is a MediaRecorder Blob rather than a camera file, but it is
+  // stored as bytes all the same: one shape for every piece of media.
+  audio_data?: StoredPhoto;
 };
 
 /** Rebuild the in-memory item a caller expects from whichever shape is on disk.
@@ -42,7 +45,7 @@ type StoredItem = Omit<QueueInput, "photos" | "video"> & {
  * Owning the bytes at capture time is what makes the queue durable.
  */
 function toItem(stored: StoredItem): QueuedItem {
-  const { photo_data, photos, video_data, video, ...rest } = stored;
+  const { photo_data, photos, video_data, video, audio_data, ...rest } = stored;
   const rebuilt = photo_data
     ? photo_data.map((p) => new Blob([p.bytes], { type: p.type }))
     : (photos ?? []);
@@ -53,6 +56,7 @@ function toItem(stored: StoredItem): QueuedItem {
     ...rest,
     photos: rebuilt,
     video: rebuiltVideo,
+    audio: audio_data ? new Blob([audio_data.bytes], { type: audio_data.type }) : undefined,
     status: stored.status ?? "pending",
   } as QueuedItem;
 }
@@ -97,7 +101,7 @@ function newClientToken(): string {
 
 export async function enqueue(input: QueueInput): Promise<void> {
   const db = await getDb();
-  const { photos, video, ...rest } = input;
+  const { photos, video, audio, ...rest } = input;
   // Read the bytes now, while the camera's file is still alive. Deferring this
   // to send time is what stranded every capture on iOS.
   const photo_data: StoredPhoto[] = await Promise.all(
@@ -109,6 +113,9 @@ export async function enqueue(input: QueueInput): Promise<void> {
   const video_data: StoredPhoto | undefined = video
     ? { bytes: await video.arrayBuffer(), type: video.type || "video/mp4" }
     : undefined;
+  const audio_data: StoredPhoto | undefined = audio
+    ? { bytes: await audio.arrayBuffer(), type: audio.type || "audio/mp4" }
+    : undefined;
   await db.add(STORE, {
     ...rest,
     // Only if the caller did not supply one, so a retry of an item that already
@@ -117,6 +124,7 @@ export async function enqueue(input: QueueInput): Promise<void> {
     upload_endpoint: rest.upload_endpoint ?? "sighting",
     photo_data,
     video_data,
+    audio_data,
     status: "pending" as QueueStatus,
   });
 }

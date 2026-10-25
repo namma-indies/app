@@ -19,6 +19,7 @@ from app.photos import process_photo, ProcessedPhoto, thumb_key
 from app.scoring import recompute_animal_confidence
 from app.social import mark_shared
 from app.storage.s3 import S3Storage
+from app.transcription_jobs import enqueue_transcription
 from app.video import extract_diverse_frames
 
 logger = logging.getLogger(__name__)
@@ -241,12 +242,43 @@ async def _read_bounded(upload: UploadFile, maximum: int) -> bytes:
     return bytes(data)
 
 
+# What a phone's MediaRecorder produces: AAC in MP4 on iOS, Opus in WebM on
+# Android. The rest are accepted so a note recorded some other way still keeps.
+_AUDIO_EXT = {
+    "audio/mp4": "m4a",
+    "audio/x-m4a": "m4a",
+    "audio/aac": "aac",
+    "audio/webm": "webm",
+    "audio/ogg": "ogg",
+    "audio/mpeg": "mp3",
+    "audio/wav": "wav",
+    "audio/x-wav": "wav",
+}
+
+
+async def read_voice_note(upload: UploadFile) -> tuple[bytes, str, str]:
+    """The note's bytes, file extension and MIME type, or a 422/413.
+
+    The type comes from the part's own header with codec parameters dropped
+    (`audio/webm;codecs=opus` is `audio/webm`). It is stored as given, never
+    decoded or transcoded here: nothing reads the audio yet (#96).
+    """
+    content_type = (upload.content_type or "").split(";", 1)[0].strip().lower()
+    ext = _AUDIO_EXT.get(content_type)
+    if ext is None:
+        raise HTTPException(422, "unsupported voice note format")
+    return await _read_bounded(upload, settings.media_max_audio_bytes), ext, content_type
+
+
 @router.post("/sighting")
 async def create_sighting(
     background_tasks: BackgroundTasks,
     request: Request,
     photos: list[UploadFile] | None = File(None),
     video: UploadFile | None = File(None),
+    # A spoken note to go with photos. A clip's own sound is its note, so the
+    # two are never sent together.
+    audio: UploadFile | None = File(None),
     lat: float | None = Form(None),
     lng: float | None = Form(None),
     geo_accuracy_m: float | None = Form(None),
@@ -353,6 +385,12 @@ async def create_sighting(
         raise HTTPException(
             status_code=422, detail="provide either photos or a video, not both"
         )
+    if audio is not None and video is not None:
+        raise HTTPException(
+            status_code=422, detail="a clip's own sound is its note; send no separate voice note"
+        )
+    # Read before any media is stored, so a bad note is refused up front.
+    voice_note = await read_voice_note(audio) if audio is not None else None
 
     sighting_id = uuid7()
 
@@ -467,6 +505,18 @@ async def create_sighting(
             )
             clip_key = None
 
+    audio_key: str | None = None
+    if voice_note is not None:
+        raw_audio, audio_ext, audio_type = voice_note
+        audio_key = f"sightings/{sighting_id}/audio.{audio_ext}"
+        try:
+            await storage.put(audio_key, raw_audio, audio_type)
+        except Exception:
+            # Unlike a clip, a note has no other copy: the frames carry a clip's
+            # evidence, nothing carries what someone said. Fail the upload so the
+            # queue retries it whole rather than save the sighting without it.
+            raise HTTPException(503, "voice note storage unavailable; retry upload")
+
     geog_present = geo_source != "none" and lat is not None and lng is not None
     attrs = {
         k: v
@@ -533,6 +583,13 @@ async def create_sighting(
                 if share_with_team:
                     await mark_shared(conn, sighting_id, observer_id)
 
+                if audio_key is not None:
+                    capture_id = await conn.fetchval(
+                        "UPDATE sightings SET audio_s3_key = $1 WHERE id = $2 RETURNING capture_id",
+                        audio_key, sighting_id,
+                    )
+                    await enqueue_transcription(conn, capture_id, "note", audio_key)
+
                 for row in photo_rows:
                     await conn.execute(
                         """
@@ -561,7 +618,11 @@ async def create_sighting(
 
                 if settings.media_jobs_enabled:
                     if clip_key is not None:
-                        await conn.execute("UPDATE sightings SET clip_s3_key=$1 WHERE id=$2", clip_key, sighting_id)
+                        capture_id = await conn.fetchval(
+                            "UPDATE sightings SET clip_s3_key=$1 WHERE id=$2 RETURNING capture_id",
+                            clip_key, sighting_id)
+                        # The clip's sound is its note (#96).
+                        await enqueue_transcription(conn, capture_id, "clip", clip_key)
                     await enqueue(conn, sighting_id, "video" if video is not None else "photo")
 
             if clip_key is not None and not settings.media_jobs_enabled:

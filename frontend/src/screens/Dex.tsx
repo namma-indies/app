@@ -7,6 +7,7 @@ import {
   UnauthorizedError,
   type Sighting,
 } from "../api";
+import SuggestedDetails from "../components/SuggestedDetails";
 import DogMap from "../components/DogMap";
 import CaptureReview from "../components/CaptureReview";
 import { getCaptures, type CaptureSummary } from "../captureApi";
@@ -316,6 +317,15 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
               {when(selected.captured_at)}
             </p>
             {selected.attrs?.note && <p className="viewer-note">{selected.attrs.note}</p>}
+            {selected.audio_url && <audio className="viewer-audio" src={selected.audio_url} controls preload="none" aria-label="voice note" />}
+            {selected.suggestions && selected.suggestions.length > 0 && (
+              <SuggestedDetails
+                key={selected.id}
+                suggestions={selected.suggestions}
+                onDecided={ownFeed.refresh}
+                onUnauthorized={onUnauthorized}
+              />
+            )}
             {attrTags(selected).length > 0 && (
               <div className="viewer-tags">
                 {attrTags(selected).map((t) => (

@@ -34,6 +34,16 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <!--
+      Voice notes (#96) are recorded in the WebView with getUserMedia. Capacitor's
+      BridgeWebChromeClient asks for both of these at runtime, only when someone
+      taps record, and denies the WebView's request if either is undeclared.
+      Clips need neither: they are recorded by the system camera app, which
+      holds its own microphone permission.
+    -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <!--
       Camera-roll import needs no permission on Android 10+ (API 29): Capacitor
       Camera 8's chooseFromGallery goes through the system Photo Picker
       (ActivityResultContracts.PickVisualMedia), which hands back a single URI

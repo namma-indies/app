@@ -37,7 +37,17 @@ export interface CaptureGroup {
   ear_notch?: SightingAttrs["ear_notch"] | null;
   condition?: SightingAttrs["condition"] | null;
 }
+/** A detail a model read from the voice note about the animal in one box.
+ * Offered in the review sheet; saving the sheet is the decision. */
+export interface CaptureSuggestion {
+  id: string;
+  instance_id: string;
+  field: "sex" | "ear_notch" | "condition" | "known_name";
+  value: string;
+  quote: string;
+}
 export interface CaptureDetail extends CaptureSummary {
+  suggestions?: CaptureSuggestion[];
   revision: number;
   instances: CaptureInstance[];
   groups: CaptureGroup[];
@@ -66,6 +76,7 @@ interface WireInstance {
   source_height?: number;
 }
 interface WireCapture extends CaptureSummary {
+  suggestions?: CaptureSuggestion[];
   revision: number;
   instances: WireInstance[];
   groups: CaptureGroup[];

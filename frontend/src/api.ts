@@ -34,6 +34,16 @@ export interface SightingAttrs {
 export type ReviewStatus = "valid" | "pending" | "rejected";
 export type ProcessingState = "legacy" | "queued" | "processing" | "ready" | "no_animal" | "failed";
 
+export type SuggestedField = "sex" | "ear_notch" | "condition" | "known_name";
+
+export interface Suggestion {
+  id: string;
+  field: SuggestedField;
+  value: string;
+  /** The words in the note that prompted it, in the note's own language. */
+  quote: string;
+}
+
 export interface Sighting {
   id: string;
   capture_id?: string | null;
@@ -51,6 +61,15 @@ export interface Sighting {
   geo_accuracy_m: number | null;
   attrs: SightingAttrs;
   photos: Photo[];
+  /** Present on /dex only. The voice note recorded with it, to play back. */
+  audio_url?: string | null;
+  /** Present on /dex only. What the GPU worker heard in the voice note or the
+   * clip's sound. Not shown yet: the input to suggested details the observer
+   * confirms. */
+  voice_transcripts?: { source: "note" | "clip"; language: string; text: string }[];
+  /** Present on /dex only. Details a model read from the voice note, for
+   * blank details only. Nothing is saved until the observer picks an option. */
+  suggestions?: Suggestion[];
   /** Present on /dex only. Offered to the team for the daily X post. */
   shared_with_team?: boolean;
   /** Present on /dex only. Whether this appears on the shared map at all. */
@@ -179,6 +198,9 @@ export interface PostSightingInput {
   client_token?: string;
   photos?: Blob[];
   video?: Blob;
+  /** A spoken note recorded with photos. Never sent with a clip, whose own
+   * sound is its note. */
+  audio?: Blob;
   lat?: number;
   lng?: number;
   geo_accuracy_m?: number;
@@ -229,12 +251,34 @@ export async function getDex(signal?: AbortSignal): Promise<DexResponse> {
   return handle<DexResponse>(res);
 }
 
+function audioExtension(type: string): string {
+  const base = type.split(";")[0];
+  if (base === "audio/webm") return "webm";
+  if (base === "audio/ogg") return "ogg";
+  return "m4a";
+}
+
+/** The observer's answer to a suggestion: the option they tapped, or no. */
+export async function decideSuggestion(
+  id: string,
+  decision: { verdict: "choose"; value: string } | { verdict: "dismiss" },
+): Promise<{ status: "accepted" | "corrected" | "dismissed" }> {
+  const res = await fetch(`${API_BASE}/suggestion/${encodeURIComponent(id)}`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(decision),
+  });
+  return handle(res);
+}
+
 export function buildSightingForm(input: PostSightingInput): FormData {
   const form = new FormData();
   if (input.video) {
     form.append("video", input.video, "clip.mp4");
   } else {
     (input.photos ?? []).forEach((p, i) => form.append("photos", p, `photo-${i}.jpg`));
+    if (input.audio) form.append("audio", input.audio, `note.${audioExtension(input.audio.type)}`);
   }
   if (input.lat !== undefined) form.append("lat", String(input.lat));
   if (input.lng !== undefined) form.append("lng", String(input.lng));

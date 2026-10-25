@@ -199,7 +199,7 @@ async def test_video_ingestion_never_decodes_and_enqueue_is_atomic(monkeypatch):
     tasks = BackgroundTasks()
     result = await sighting.create_sighting(
         background_tasks=tasks, request=request, photos=None,
-        video=UploadFile(io.BytesIO(b"opaque video bytes")),
+        video=UploadFile(io.BytesIO(b"opaque video bytes")), audio=None,
         lat=12.9, lng=77.5, geo_accuracy_m=None, client_token=None,
         geo_source="device_gps", captured_at=datetime.now(timezone.utc),
         reported_at=None, note=None, sex=None, ear_notch=None, condition=None,
@@ -226,7 +226,7 @@ async def test_video_storage_failure_does_not_acknowledge_or_enqueue(monkeypatch
     with pytest.raises(HTTPException) as exc:
         await sighting.create_sighting(
             background_tasks=BackgroundTasks(), request=request, photos=None,
-            video=UploadFile(io.BytesIO(b"video")), lat=None, lng=None,
+            video=UploadFile(io.BytesIO(b"video")), audio=None, lat=None, lng=None,
             geo_accuracy_m=None, client_token=None, geo_source="none",
             captured_at=datetime.now(timezone.utc), reported_at=None, note=None,
             sex=None, ear_notch=None, condition=None, override_no_dog=False,

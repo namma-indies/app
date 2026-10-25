@@ -60,6 +60,57 @@ def test_multi_animal_worker_requires_explicit_opt_in(config):
             recipe.render(dict(config, multi_animal=invalid))
 
 
+WHISPER = dict(whisper_bin_file="whisper/whisper-cli", whisper_model_file="whisper/ggml-large-v3.bin",
+               whisper_vad_file="whisper/ggml-silero-v6.2.0.bin", whisper_bin_sha256="e" * 64,
+               whisper_model_sha256="f" * 64, whisper_vad_sha256="1" * 64)
+
+
+def test_transcription_is_off_unless_whisper_is_pinned(config):
+    off = recipe.render(config)
+    assert "MEDIA_GPU_TRANSCRIBE" not in off["items"][0]["data"]
+    on = recipe.render(dict(config, **WHISPER))
+    data = on["items"][0]["data"]
+    assert data["MEDIA_GPU_TRANSCRIBE"] == "1"
+    assert data["MEDIA_GPU_WHISPER_MODEL_PATH"] == "/models/whisper/ggml-large-v3.bin"
+    assert data["MEDIA_GPU_WHISPER_BIN_SHA256"] == "e" * 64
+    pod = on["items"][1]["spec"]["template"]["spec"]
+    scratch = next(v for v in pod["volumes"] if v["name"] == "scratch")
+    # Room for the resident ~3 GiB model copy.
+    assert scratch["emptyDir"]["sizeLimit"] == "8Gi"
+    assert pod["containers"][0]["resources"]["limits"]["ephemeral-storage"] == "9Gi"
+
+
+LLAMA = dict(llama_bin_file="llama/llama-server", llama_model_file="llama/Qwen3.8-27B-UD-Q4_K_XL.gguf",
+             llama_mmproj_file="llama/mmproj-F16.gguf", llama_bin_sha256="2" * 64,
+             llama_model_sha256="3" * 64, llama_mmproj_sha256="4" * 64)
+
+
+def test_local_model_is_off_unless_pinned_and_needs_no_extra_scratch(config):
+    assert "MEDIA_GPU_SUGGEST" not in recipe.render(config)["items"][0]["data"]
+    on = recipe.render(dict(config, **LLAMA))
+    data = on["items"][0]["data"]
+    assert data["MEDIA_GPU_SUGGEST"] == "1"
+    assert data["MEDIA_GPU_LLAMA_MODEL_PATH"] == "/models/llama/Qwen3.8-27B-UD-Q4_K_XL.gguf"
+    assert data["MEDIA_GPU_LLAMA_MMPROJ_SHA256"] == "4" * 64
+    scratch = next(v for v in on["items"][1]["spec"]["template"]["spec"]["volumes"] if v["name"] == "scratch")
+    assert scratch["emptyDir"]["sizeLimit"] == "4Gi"
+    with pytest.raises(ValueError):
+        recipe.render(dict(config, **{k: v for k, v in LLAMA.items() if k != "llama_mmproj_file"}))
+
+
+@pytest.mark.parametrize("change", [
+    {"whisper_vad_file": None},
+    {"whisper_model_sha256": "not-a-hash"},
+    {"whisper_bin_file": "/abs/whisper-cli"},
+    {"whisper_model_file": "../escape.bin"},
+])
+def test_whisper_settings_are_all_or_nothing_and_validated(config, change):
+    settings = dict(WHISPER, **change)
+    settings = {k: v for k, v in settings.items() if v is not None}
+    with pytest.raises(ValueError):
+        recipe.render(dict(config, **settings))
+
+
 def test_default_selector_unchanged(config):
     spec = recipe.render(config)["items"][1]["spec"]
     assert spec["selector"] == {"matchLabels": {"app.kubernetes.io/name": config["name"]}}

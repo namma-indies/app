@@ -46,7 +46,7 @@ def runtime(monkeypatch):
             calls["bytes"] = (detector.read_bytes(), embedder.read_bytes())
             return adapter
 
-    async def serve(received, config=None):
+    async def serve(received, config=None, transcriber=None, model=None):
         assert received is adapter
         assert config.token == "synthetic-secret"
         calls["serve"].append(received)
