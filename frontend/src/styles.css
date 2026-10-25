@@ -962,6 +962,20 @@ button { font-family: inherit; }
   flex-direction: column;
   gap: 10px;
 }
+/* Place search above the pick map (#80). */
+.place-search { display: flex; gap: 8px; }
+.place-search input {
+  flex: 1; min-width: 0; padding: 10px 12px; font: inherit;
+  border: 1px solid var(--line, #d8c4a6); border-radius: 10px; background: #fff;
+}
+.place-search .btn { flex: none; width: auto; padding-inline: 14px; }
+.place-results { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.place-results button {
+  width: 100%; text-align: left; display: flex; flex-direction: column; gap: 2px;
+  padding: 8px 12px; font: inherit; cursor: pointer;
+  border: 1px solid var(--line, #d8c4a6); border-radius: 10px; background: #fff;
+}
+.place-results span { font-size: 0.8rem; color: var(--muted, #7a6a58); }
 .pick-map-wrap { position: relative; height: min(46dvh, 340px); }
 .pick-map { position: absolute; inset: 0; border-radius: 12px; overflow: hidden; }
 /* Fixed over a moving map. A draggable marker sits under the thumb dragging it. */
@@ -1187,6 +1201,65 @@ button { font-family: inherit; }
   .celebration-badge { animation: none; }
   .confetti-piece,
   .celebration-runner { animation: none; display: none; }
+}
+
+/* --- streak card (#81) ----------------------------------------------------
+   Made to be screenshotted: one portrait screen, nothing below the fold, the
+   name and date inside the picture. Unlike the celebration it takes taps, so
+   it can be dismissed, and it sits above the confetti. */
+.streak-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(30, 22, 16, 0.55);
+}
+.streak-card {
+  width: min(340px, 100%);
+  max-height: calc(100dvh - 32px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 2.2rem 1.4rem 1.2rem;
+  background: var(--panel);
+  border: 3px solid var(--line);
+  border-radius: 4px;
+  box-shadow: 6px 6px 0 var(--shadow);
+  text-align: center;
+  animation: pop-in 0.25s ease;
+}
+.streak-card p { margin: 0; }
+.streak-brand {
+  font-family: "Silkscreen", monospace;
+  font-size: 0.8rem;
+  letter-spacing: 0.12em;
+  color: var(--ink);
+}
+.streak-count {
+  font-family: "Silkscreen", monospace;
+  font-size: 6.5rem;
+  line-height: 1;
+  color: var(--accent);
+}
+.streak-what { font-size: 1rem; color: var(--ink); }
+.streak-pack {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+  padding: 0.4rem 0;
+  image-rendering: pixelated;
+}
+.streak-when { font-size: 0.85rem; color: var(--muted); }
+.streak-invite { font-size: 0.72rem; color: var(--muted); }
+.streak-close { margin-top: 0.4rem; width: 100%; }
+
+@media (prefers-reduced-motion: reduce) {
+  .streak-card { animation: none; }
 }
 
 /* An upload waiting on its contributor: the one Journal entry with a job to do. */

@@ -3,6 +3,7 @@ import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { basemapStyle } from "./DogMap";
 import { howToReEnable, locate, permissionState } from "../capture/geolocate";
+import { HttpError, searchPlaces, type FoundPlace } from "../api";
 
 /**
  * Saying where a sighting happened, when the phone cannot say it for you.
@@ -25,7 +26,10 @@ import { howToReEnable, locate, permissionState } from "../capture/geolocate";
  *   recent cached fix and falls back to a coarse one instead of giving up.
  * - A pin on a map, for "I know where I am, the phone doesn't". Pan-under-a-
  *   fixed-crosshair rather than a draggable marker: on a phone your thumb
- *   covers a marker you are dragging, and the crosshair stays visible.
+ *   covers a marker you are dragging, and the crosshair stays visible. A
+ *   place search sits above it (#80): typing "Domlur 5th cross" lands on the
+ *   street instead of pinching down to it from a whole city, which on a phone
+ *   is where pins went wrong.
  * - Typed coordinates, because the person who asked for this had them.
  *
  * PERMISSION IS A ONE-WAY DOOR IN A BROWSER
@@ -47,6 +51,46 @@ export interface PickedPlace {
 
 const BANGALORE: [number, number] = [77.5946, 12.9716];
 
+/** Below this, a pin is cheap to drop and easy to be kilometres off. A tap at
+ *  zoom 11 can cover an entire town; the candidate search the server runs on
+ *  `geog` wants street-level precision, not "somewhere near here". */
+const MIN_PICK_ZOOM = 14;
+
+const LAST_PLACE_KEY = "indiedex:lastPinnedPlace";
+
+/** Where a chosen search result lands: street level, past MIN_PICK_ZOOM, so
+ *  the person only has to nudge the cross onto the exact spot. */
+const FOUND_PLACE_ZOOM = 17;
+
+/** Where the map centres when nobody has picked anything for THIS sighting
+ *  yet. Falling back to a hardcoded Bangalore pin was fine in the office; a
+ *  tester opening the map cold out in Kodaikanal had to pan across a few
+ *  hundred kilometres before reaching their own street. */
+function readLastPinnedPlace(): { lat: number; lng: number } | null {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    const raw = localStorage.getItem(LAST_PLACE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.lat === "number" && typeof parsed?.lng === "number") {
+      return { lat: parsed.lat, lng: parsed.lng };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLastPinnedPlace(p: { lat: number; lng: number }): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(LAST_PLACE_KEY, JSON.stringify(p));
+  } catch {
+    // Private browsing / full quota: losing this is a convenience lost, not
+    // a correctness problem, so there's nothing to surface to the person.
+  }
+}
+
 type Mode = "choose" | "map" | "coords";
 
 export default function LocationPicker({
@@ -64,12 +108,16 @@ export default function LocationPicker({
   const [denied, setDenied] = useState(false);
   const [lat, setLat] = useState(initial ? String(initial.lat) : "");
   const [lng, setLng] = useState(initial ? String(initial.lng) : "");
+  const [query, setQuery] = useState("");
+  const [found, setFound] = useState<FoundPlace[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searchNote, setSearchNote] = useState<string | null>(null);
 
   const active = useRef(true);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const centreRef = useRef<{ lat: number; lng: number }>(
-    initial ?? { lat: BANGALORE[1], lng: BANGALORE[0] },
+    initial ?? readLastPinnedPlace() ?? { lat: BANGALORE[1], lng: BANGALORE[0] },
   );
 
   useEffect(() => {
@@ -80,16 +128,28 @@ export default function LocationPicker({
 
   useEffect(() => {
     if (mode !== "map" || !containerRef.current || mapRef.current) return;
+    const knownPlace = initial ?? readLastPinnedPlace();
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: basemapStyle(),
       center: [centreRef.current.lng, centreRef.current.lat],
-      zoom: initial ? 16 : 11,
+      zoom: knownPlace ? 16 : 11,
       attributionControl: { compact: true },
     });
     mapRef.current = map;
+    // Lets a person centre the map on themselves instead of hand-panning to
+    // it -- the same fix as "USE MY LOCATION" above, but available once
+    // they're already in map mode rather than only from the choose screen.
+    map.addControl(
+      new maplibregl.GeolocateControl({
+        positionOptions: { enableHighAccuracy: true },
+        trackUserLocation: false,
+      }),
+      "top-right",
+    );
     // The centre IS the pin, so it has to be read on every move rather than
-    // from a marker object that does not exist.
+    // from a marker object that does not exist. Covers GeolocateControl's own
+    // pan too, since that fires "move" like any other.
     map.on("move", () => {
       const c = map.getCenter();
       centreRef.current = { lat: c.lat, lng: c.lng };
@@ -144,7 +204,54 @@ export default function LocationPicker({
       setError("Longitude must be between -180 and 180.");
       return;
     }
+    writeLastPinnedPlace({ lat: la, lng: ln });
     onPick({ lat: la, lng: ln, source: "pin" });
+  }
+
+  async function findPlace(e: React.FormEvent) {
+    e.preventDefault();
+    const q = query.trim();
+    if (q.length < 2) return;
+    setSearching(true);
+    setSearchNote(null);
+    setFound(null);
+    try {
+      const places = await searchPlaces(q, centreRef.current);
+      if (!active.current) return;
+      setFound(places);
+      if (places.length === 0) {
+        setSearchNote(`Nothing found for "${q}". Try a nearby landmark, area or road name.`);
+      }
+    } catch (err) {
+      if (!active.current) return;
+      // Either way the map still works; say so rather than leave them stuck.
+      setSearchNote(
+        err instanceof HttpError && err.status === 503
+          ? "Search isn't working right now. You can still move the map by hand."
+          : "Search needs a connection. You can still move the map by hand.",
+      );
+    } finally {
+      if (active.current) setSearching(false);
+    }
+  }
+
+  function goToPlace(place: FoundPlace) {
+    centreRef.current = { lat: place.lat, lng: place.lng };
+    mapRef.current?.jumpTo({ center: [place.lng, place.lat], zoom: FOUND_PLACE_ZOOM });
+    setFound(null);
+    setSearchNote(null);
+    setError(null);
+  }
+
+  function useMapPick() {
+    const zoom = mapRef.current?.getZoom() ?? 0;
+    if (zoom < MIN_PICK_ZOOM) {
+      setError("Zoom in closer first — a pin dropped this far out could be off by kilometres.");
+      return;
+    }
+    const picked = { lat: centreRef.current.lat, lng: centreRef.current.lng };
+    writeLastPinnedPlace(picked);
+    onPick({ ...picked, source: "pin" });
   }
 
   return (
@@ -193,7 +300,38 @@ export default function LocationPicker({
 
         {mode === "map" && (
           <>
-            <p className="hint">Move the map so the cross is on the spot.</p>
+            <form className="place-search" role="search" onSubmit={findPlace}>
+              <input
+                type="search"
+                aria-label="Search for a place"
+                placeholder="Search a place, e.g. Domlur 5th cross"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                enterKeyHint="search"
+              />
+              <button className="btn btn-secondary" type="submit" disabled={searching || query.trim().length < 2}>
+                {searching ? "…" : "SEARCH"}
+              </button>
+            </form>
+            {found && found.length > 0 && (
+              <ul className="place-results" aria-label="Places found">
+                {found.map((place) => (
+                  <li key={`${place.lat},${place.lng},${place.name}`}>
+                    <button type="button" onClick={() => goToPlace(place)}>
+                      <strong>{place.name}</strong>
+                      {place.detail && <span>{place.detail}</span>}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {searchNote && <p className="hint">{searchNote}</p>}
+            <p className="hint">Search for the place, then move the map so the cross is on the exact spot.</p>
+            {error && (
+              <p className="hint import-error" role="alert">
+                {error}
+              </p>
+            )}
             <div className="pick-map-wrap">
               <div ref={containerRef} className="pick-map" />
               {/* Fixed crosshair over a moving map. A draggable marker would sit
@@ -201,19 +339,13 @@ export default function LocationPicker({
               <div className="pick-crosshair" aria-hidden="true">✛</div>
             </div>
             <div className="actions-row">
-              <button className="btn btn-secondary" onClick={() => setMode("choose")}>
+              <button
+                className="btn btn-secondary"
+                onClick={() => { setMode("choose"); setError(null); }}
+              >
                 BACK
               </button>
-              <button
-                className="btn btn-primary"
-                onClick={() =>
-                  onPick({
-                    lat: centreRef.current.lat,
-                    lng: centreRef.current.lng,
-                    source: "pin",
-                  })
-                }
-              >
+              <button className="btn btn-primary" onClick={useMapPick}>
                 USE THIS SPOT
               </button>
             </div>

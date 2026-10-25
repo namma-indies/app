@@ -231,7 +231,11 @@ export async function flush(): Promise<void> {
             : await postSighting(item);
           await db.delete(STORE, record.id);
           if (typeof window !== "undefined") {
-            window.dispatchEvent(new CustomEvent(UPLOAD_COMPLETE_EVENT, { detail: uploaded }));
+            // With the capture time, so a streak can be counted over the walk
+            // itself rather than over when signal came back (#81).
+            window.dispatchEvent(new CustomEvent(UPLOAD_COMPLETE_EVENT, {
+              detail: { ...uploaded, captured_at: item.captured_at },
+            }));
           }
         } catch (err) {
           if (isPermanentFailure(err)) {
