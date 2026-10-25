@@ -15,6 +15,10 @@ Flags, each for a measured reason on real field recordings:
 - ``-l auto``: observers speak Kannada, Hindi and Tamil as well as English.
   Forcing English garbles those; the detected language is returned instead.
 - ``--vad``: without it large-v3 invents repeated lines over silent windows.
+- ``-vp 200``: pad each detected speech span by 200 ms. whisper-server's
+  default pad clipped the first word whenever speech began at the very start
+  of a recording ("She is asleep" came back as "is asleep" on the H200), and
+  that first word is often the pronoun a sex suggestion rests on.
 - ``-mc 0``: even with VAD, carried-over context produced repetition loops;
   dropping it removed them and cost nothing in coverage.
 - ``-sns``: suppress non-speech tokens ("(music)", "[BLANK_AUDIO]").
@@ -90,7 +94,7 @@ class Transcriber:
                  pass_fds: tuple[int, ...] = ()):
         self.command = [
             str(binary), "-m", str(model), "-l", "auto",
-            "--vad", "-vm", str(vad_model), "-mc", "0", "-sns",
+            "--vad", "-vm", str(vad_model), "-vp", "200", "-mc", "0", "-sns",
             "-t", str(threads), "--host", "127.0.0.1", "--port", str(port),
         ]
         self.url = f"http://127.0.0.1:{port}"
