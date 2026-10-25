@@ -1,8 +1,15 @@
 name: Deploy
 
-# Ships every merge to main to the production box (app.nammaindies.org).
-# Runs the exact same remote steps as a manual `./deploy/deploy.sh` --
-# see deploy/remote.sh, the single source of truth for both paths.
+# Ships every merge to main to the production box (app.nammaindies.org),
+# through staging first: the `staging` job deploys main there and must answer
+# before argos is touched, so a migration that won't apply stops on staging.
+# The prod step runs the exact same remote steps as a manual
+# `./deploy/deploy.sh` -- see deploy/remote.sh, the single source of truth
+# for both paths.
+#
+# Staging is shared with feature-branch testing, so a merge replaces whatever
+# branch was on it (rolling back that branch's migrations; see
+# deploy/remote-staging.sh). Redeploy the branch afterwards to keep testing it.
 #
 # Requires two repo secrets (Settings > Secrets and variables > Actions):
 #   DEPLOY_SSH_KEY    - private half of a CI-only keypair (see docs/OPERATIONS.md)
@@ -38,7 +45,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  staging:
+    uses: ./.github/workflows/deploy-staging.yml
+    with:
+      branch: main
+    secrets: inherit
+
   deploy:
+    needs: staging
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -1,30 +1,48 @@
 name: Deploy Staging
 
-# Manual only, and dispatched against whatever branch you pick in the
-# Actions UI (GITHUB_REF_NAME below is that branch) -- unlike deploy.yml,
-# staging isn't tied to `main`, it's for testing work before it merges.
+# Two ways in:
+#   - dispatched by hand against whatever branch you pick in the Actions UI
+#     (GITHUB_REF_NAME below is that branch), to try work before it merges;
+#   - called by deploy.yml with `branch: main` on every merge, so main lands
+#     here and has to answer before it goes on to argos. Before that, nothing
+#     moved staging but a dispatch, and main could run three weeks ahead of it.
 # Requires two repo secrets distinct from the prod ones:
 #   STAGING_SSH_KEY    - private half of a CI-only keypair for the staging box
 #   STAGING_SSH_TARGET - e.g. "ubuntu@<staging-box-ip>"
 
 on:
   workflow_dispatch: {}
-
-concurrency:
-  group: staging-deploy
-  cancel-in-progress: true
+  workflow_call:
+    inputs:
+      branch:
+        type: string
+        required: true
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Queue rather than cancel: a deploy can now be partway through rolling the
+    # database back, and cancelling a main deploy here would also skip prod.
+    # Job-level because a called workflow's own top-level concurrency is not
+    # reliably honoured.
+    concurrency:
+      group: staging-deploy
+      cancel-in-progress: false
     steps:
+      # main's copy of the deploy script, whichever branch is being deployed,
+      # so the database rollback in it doesn't depend on the branch being
+      # rebased. (A dispatch runs the workflow file from the chosen branch, so
+      # this only holds for branches that already have this line. Deploys of
+      # main -- the move that matters -- always do.)
       - uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Deploy to staging
         env:
           DEPLOY_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
           DEPLOY_SSH_TARGET: ${{ secrets.STAGING_SSH_TARGET }}
-          BRANCH: ${{ github.ref_name }}
+          BRANCH: ${{ inputs.branch || github.ref_name }}
         run: |
           set -euo pipefail
           key_file="$(mktemp)"
