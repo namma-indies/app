@@ -1,6 +1,7 @@
 """Suggestions on the DGX worker: the API builds the request, the worker runs it
 locally with images inlined, and the API checks the raw answer."""
 from dataclasses import replace
+import io
 import json
 import stat
 import sys
@@ -13,7 +14,14 @@ from gpu_worker.client import Config, MediaLimit, SUGGEST_ROUTE, Worker
 from gpu_worker.llm import LocalModel, LocalModelError
 from tests.test_gpu_client import LEASE, TOKEN, FakeAdapter, expiry
 
-WEBP = b"RIFF\x10\x00\x00\x00WEBPVP8 thumbnail"
+def _webp():
+    from PIL import Image
+    out = io.BytesIO()
+    Image.new("RGB", (32, 24), (200, 120, 40)).save(out, "WEBP")
+    return out.getvalue()
+
+
+WEBP = _webp()
 IMAGE_URL = "https://objects.example/thumb.webp?signature=storage-secret"
 
 
@@ -84,7 +92,8 @@ async def test_runs_the_apis_request_locally_with_images_inlined():
     body = model.bodies[0]
     images = [p["image_url"]["url"] for m in body["messages"] if isinstance(m["content"], list)
               for p in m["content"] if p["type"] == "image_url"]
-    assert len(images) == 2 and all(u.startswith("data:image/webp;base64,") for u in images)
+    # Stored photos are WebP, which llama.cpp cannot load: the model gets JPEG.
+    assert len(images) == 2 and all(u.startswith("data:image/jpeg;base64,") for u in images)
     assert "storage-secret" not in json.dumps(body)  # the model never sees a fetchable URL
     assert body["chat_template_kwargs"] == {"enable_thinking": False}
     assert body["response_format"]["json_schema"]["strict"] is True
@@ -111,6 +120,14 @@ async def test_refuses_an_image_that_is_not_one():
     async with server.worker(model) as worker:
         assert await worker.run_once()
     assert not model.bodies and server.failures
+
+
+async def test_refuses_a_webp_that_does_not_decode():
+    server, model = Server(request_with(["A"]), image=b"RIFF\x10\x00\x00\x00WEBPVP8 truncated"), FakeModel()
+    async with server.worker(model) as worker:
+        assert await worker.run_once()
+    assert not model.bodies
+    assert server.failures[0]["error"] == MediaLimit.code
 
 
 def test_config_and_model_must_agree():

@@ -10,6 +10,7 @@ import asyncio
 import base64
 from contextlib import suppress
 import copy
+import io
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
@@ -432,6 +433,24 @@ class Worker:
             return "image/png"
         raise MediaLimit()
 
+    @classmethod
+    def _for_model(cls, raw: bytes) -> tuple[str, bytes]:
+        """The image as the local model can read it. Stored photos are WebP,
+        which llama.cpp's image loader rejects ("Failed to load image"), so
+        those are re-encoded as JPEG; JPEG and PNG pass through."""
+        kind = cls._image_type(raw)
+        if kind != "image/webp":
+            return kind, raw
+        from PIL import Image
+        try:
+            with Image.open(io.BytesIO(raw)) as image:
+                image.load()
+                out = io.BytesIO()
+                image.convert("RGB").save(out, "JPEG", quality=90)
+        except Exception:
+            raise MediaLimit() from None
+        return "image/jpeg", out.getvalue()
+
     async def _process_suggestion(self, lease):
         """Run the API's ready-made request on the local model, images inlined.
 
@@ -451,7 +470,8 @@ class Worker:
             raise MediaLimit()
         for part in parts:
             raw = await self._download({"url": part["image_url"]["url"]}, self.config.max_image_bytes, lease)
-            part["image_url"] = {"url": f"data:{self._image_type(raw)};base64," + base64.b64encode(raw).decode()}
+            kind, data = await self._thread(self._for_model, raw, lease)
+            part["image_url"] = {"url": f"data:{kind};base64," + base64.b64encode(data).decode()}
         body = {"model": "local", "messages": messages, "response_format": request["response_format"],
                 "temperature": 0, "max_tokens": 1024,
                 # Qwen3.8 reasons before answering unless told not to, and on
