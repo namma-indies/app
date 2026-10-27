@@ -50,12 +50,24 @@ function native(): boolean {
   }
 }
 
+/** A web vibrate call replaces whatever is still buzzing, so patterns are played one after another. */
+let webBusyUntil = 0;
+/** A moment that would have to wait longer than this is dropped: a late tap means nothing. */
+const MAX_WEB_WAIT_MS = 700;
+const WEB_GAP_MS = 60;
+
 /** Chrome only lets a page vibrate once the person has touched it, and logs a warning if not. */
 function webVibrate(pattern: number[]) {
   try {
     if (typeof navigator === "undefined" || typeof navigator.vibrate !== "function") return;
     if (navigator.userActivation && !navigator.userActivation.hasBeenActive) return;
-    navigator.vibrate(pattern);
+    const now = Date.now();
+    const wait = Math.max(0, webBusyUntil - now);
+    if (wait > MAX_WEB_WAIT_MS) return;
+    webBusyUntil = now + wait + pattern.reduce((sum, ms) => sum + ms, 0) + WEB_GAP_MS;
+    const buzz = () => { try { navigator.vibrate(pattern); } catch { /* quiet */ } };
+    if (wait === 0) buzz();
+    else setTimeout(buzz, wait);
   } catch {
     // Quiet by design.
   }

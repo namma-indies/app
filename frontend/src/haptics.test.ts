@@ -13,8 +13,10 @@ vi.mock("@capacitor/core", () => ({
 
 import { haptic } from "./haptics";
 
+let epoch = 0;
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.setSystemTime(Date.now() + (epoch += 1_000_000)); // past any buzz an earlier test left running
   platform.native = true;
   platform.available = true;
   plugin.impact.mockResolvedValue(undefined);
@@ -71,9 +73,32 @@ describe("haptics on the web", () => {
     const vibrate = vi.fn();
     vi.stubGlobal("navigator", { vibrate });
     haptic("tick");
+    vi.advanceTimersByTime(500);
     haptic("logged");
     expect(vibrate.mock.calls).toEqual([[[8]], [[30, 130, 14, 106, 14]]]);
     expect(plugin.impact).not.toHaveBeenCalled();
+  });
+
+  it("plays moments one after another, because a new vibrate call would cut the running one short", () => {
+    const calls: { at: number; pattern: number[] }[] = [];
+    vi.stubGlobal("navigator", { vibrate: (pattern: number[]) => calls.push({ at: Date.now(), pattern }) });
+    haptic("logged");   // 294 ms
+    haptic("tick");
+    haptic("tick");
+    expect(calls).toHaveLength(1);
+    vi.advanceTimersByTime(2000);
+    expect(calls.map((c) => c.pattern)).toEqual([[30, 130, 14, 106, 14], [8], [8]]);
+    // Each starts only after the one before has finished.
+    expect(calls[1].at - calls[0].at).toBeGreaterThanOrEqual(294);
+    expect(calls[2].at - calls[1].at).toBeGreaterThanOrEqual(8);
+  });
+
+  it("drops a tap that would have to wait too long to mean anything", () => {
+    const vibrate = vi.fn();
+    vi.stubGlobal("navigator", { vibrate });
+    for (let i = 0; i < 6; i++) haptic("logged");
+    vi.advanceTimersByTime(10000);
+    expect(vibrate.mock.calls.length).toBeLessThan(6);
   });
 
   it("does nothing where there is no vibrate (iOS Safari, desktop)", () => {
