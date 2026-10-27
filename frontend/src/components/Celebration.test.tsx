@@ -5,6 +5,9 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 
 import { UPLOAD_COMPLETE_EVENT } from "../processing";
 import Celebration, { CELEBRATION_MS } from "./Celebration";
+import { haptic } from "../haptics";
+
+vi.mock("../haptics", () => ({ haptic: vi.fn() }));
 
 /**
  * The celebration marks one thing and one thing only: the server said the
@@ -43,6 +46,7 @@ function uploadAcknowledged(detail: unknown = { processing_state: "queued" }) {
 }
 
 beforeEach(() => {
+  vi.mocked(haptic).mockClear();
   setReducedMotion(false);
   vi.useFakeTimers();
 });
@@ -237,5 +241,28 @@ describe("a burst and a streak (#81)", () => {
     for (const m of [12, 9, 6, 3, 0]) uploadAcknowledged(capturedMinutesAgo(m));
     expect(screen.getByRole("dialog", { name: "Hot streak" })).toBeInTheDocument();
     expect(document.querySelector(".celebration-scene")).toBeNull();
+  });
+});
+
+describe("how it feels (#122)", () => {
+  it("buzzes once when the upload is acknowledged, not before and not on mount", () => {
+    render(<Celebration />);
+    expect(haptic).not.toHaveBeenCalled();
+    uploadAcknowledged();
+    expect(haptic).toHaveBeenCalledTimes(1);
+    expect(haptic).toHaveBeenCalledWith("logged");
+  });
+
+  it("still buzzes under reduced motion: it marks the event, not the animation", () => {
+    setReducedMotion(true);
+    render(<Celebration />);
+    uploadAcknowledged();
+    expect(haptic).toHaveBeenCalledWith("logged");
+  });
+
+  it("adds a tap per extra sighting in a burst, a few at most", () => {
+    render(<Celebration />);
+    for (let i = 0; i < 8; i++) uploadAcknowledged();
+    expect(vi.mocked(haptic).mock.calls.map(([moment]) => moment)).toEqual(["logged", "tick", "tick", "tick"]);
   });
 });
