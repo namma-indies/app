@@ -238,6 +238,23 @@ async def test_a_failing_model_backs_off_then_gives_up(authed_client, configured
     assert row["suggest_status"] == "failed" and row["suggest_error"] == "HTTPStatusError"
 
 
+def test_a_retryable_failure_outlasts_a_working_day_outage():
+    # Waits before attempts 2..MAX: the job keeps trying for hours, never minutes.
+    waits = [min(suggestions.MAX_RETRY_DELAY_S, 30 * 2 ** n) for n in range(1, suggestions.MAX_ATTEMPTS)]
+    assert sum(waits) > 8 * 3600 and max(waits) <= 6 * 3600
+
+
+@pytest.mark.asyncio
+async def test_a_failure_marked_not_retryable_still_ends_at_once(authed_client, configured):
+    client, _ = authed_client
+    sid, pool = await _sighting_with_transcript(client)
+    async with pool.acquire() as c:
+        tid = await c.fetchval("SELECT id FROM voice_transcripts")
+    await suggestions._failed(pool, tid, 1, "media_limit", retryable=False)
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT suggest_status FROM voice_transcripts") == "failed"
+
+
 def test_with_several_animals_each_suggestion_must_name_one():
     heard = "The brown one is Kaalu. The black one is limping. She is friendly."
     kept = suggestions.validate([
