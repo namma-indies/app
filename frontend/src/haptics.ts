@@ -24,22 +24,26 @@ import { Haptics, ImpactStyle, NotificationType } from "@capacitor/haptics";
  */
 export type Moment = "tick" | "filled" | "logged" | "recordStart" | "recordStop";
 
-type Step = { at: number; native: () => Promise<void>; ms: number };
+/** `ms`: buzz length on the web. `nativeMs`: roughly how long the native effect lasts (Android's, the longer). */
+type Step = { at: number; native: () => Promise<void>; ms: number; nativeMs: number };
 
 const impact = (style: ImpactStyle) => () => Haptics.impact({ style });
 const notify = (type: NotificationType) => () => Haptics.notification({ type });
+const LIGHT = { native: impact(ImpactStyle.Light), nativeMs: 50 };
+const MEDIUM = { native: impact(ImpactStyle.Medium), nativeMs: 70 };
+const SUCCESS = { native: notify(NotificationType.Success), nativeMs: 130 };
 
-/** Each moment as steps in time (ms from now). `ms` is the buzz length on the web. */
+/** Each moment as steps in time (ms from its start). */
 const MOMENTS: Record<Moment, Step[]> = {
-  tick: [{ at: 0, native: impact(ImpactStyle.Light), ms: 8 }],
-  filled: [{ at: 0, native: notify(NotificationType.Success), ms: 24 }],
+  tick: [{ at: 0, ms: 8, ...LIGHT }],
+  filled: [{ at: 0, ms: 24, ...SUCCESS }],
   logged: [
-    { at: 0, native: notify(NotificationType.Success), ms: 30 },
-    { at: 160, native: impact(ImpactStyle.Light), ms: 14 },
-    { at: 280, native: impact(ImpactStyle.Light), ms: 14 },
+    { at: 0, ms: 30, ...SUCCESS },
+    { at: 160, ms: 14, ...LIGHT },
+    { at: 280, ms: 14, ...LIGHT },
   ],
-  recordStart: [{ at: 0, native: impact(ImpactStyle.Medium), ms: 16 }],
-  recordStop: [{ at: 0, native: impact(ImpactStyle.Light), ms: 10 }],
+  recordStart: [{ at: 0, ms: 16, ...MEDIUM }],
+  recordStop: [{ at: 0, ms: 10, ...LIGHT }],
 };
 
 function native(): boolean {
@@ -50,28 +54,15 @@ function native(): boolean {
   }
 }
 
-/** A web vibrate call replaces whatever is still buzzing, so patterns are played one after another. */
-let webBusyUntil = 0;
+/**
+ * Moments play one after another. Both a web vibrate call and Android's vibrator
+ * replace whatever is still buzzing, so a second moment starting mid-way would
+ * cut the first short (a burst of taps would clip the success).
+ */
+let busyUntil = 0;
 /** A moment that would have to wait longer than this is dropped: a late tap means nothing. */
-const MAX_WEB_WAIT_MS = 700;
-const WEB_GAP_MS = 60;
-
-/** Chrome only lets a page vibrate once the person has touched it, and logs a warning if not. */
-function webVibrate(pattern: number[]) {
-  try {
-    if (typeof navigator === "undefined" || typeof navigator.vibrate !== "function") return;
-    if (navigator.userActivation && !navigator.userActivation.hasBeenActive) return;
-    const now = Date.now();
-    const wait = Math.max(0, webBusyUntil - now);
-    if (wait > MAX_WEB_WAIT_MS) return;
-    webBusyUntil = now + wait + pattern.reduce((sum, ms) => sum + ms, 0) + WEB_GAP_MS;
-    const buzz = () => { try { navigator.vibrate(pattern); } catch { /* quiet */ } };
-    if (wait === 0) buzz();
-    else setTimeout(buzz, wait);
-  } catch {
-    // Quiet by design.
-  }
-}
+const MAX_WAIT_MS = 700;
+const GAP_MS = 60;
 
 /** Alternating buzz / gap lengths, as navigator.vibrate wants them. */
 function webPattern(steps: Step[]): number[] {
@@ -87,15 +78,38 @@ function webPattern(steps: Step[]): number[] {
   return pattern;
 }
 
+/** Chrome only lets a page vibrate once the person has touched it, and logs a warning if not. */
+function webAllowed(): boolean {
+  return typeof navigator !== "undefined" && typeof navigator.vibrate === "function"
+    && !(navigator.userActivation && !navigator.userActivation.hasBeenActive);
+}
+
+function quietly(run: () => unknown) {
+  try { void Promise.resolve(run()).catch(() => {}); } catch { /* quiet by design */ }
+}
+
 export function haptic(moment: Moment): void {
   try {
     const steps = MOMENTS[moment];
-    if (!native()) return webVibrate(webPattern(steps));
-    for (const step of steps) {
-      const fire = () => { try { void step.native().catch(() => {}); } catch { /* quiet */ } };
-      if (step.at === 0) fire();
-      else setTimeout(fire, step.at);
-    }
+    const onNative = native();
+    if (!onNative && !webAllowed()) return;
+    const now = Date.now();
+    const wait = Math.max(0, busyUntil - now);
+    if (wait > MAX_WAIT_MS) return;
+    const span = Math.max(...steps.map((step) => step.at + (onNative ? step.nativeMs : step.ms)));
+    busyUntil = now + wait + span + GAP_MS;
+    const start = () => {
+      if (onNative) {
+        for (const step of steps) {
+          if (step.at === 0) quietly(step.native);
+          else setTimeout(() => quietly(step.native), step.at);
+        }
+      } else {
+        quietly(() => navigator.vibrate(webPattern(steps)));
+      }
+    };
+    if (wait === 0) start();
+    else setTimeout(start, wait);
   } catch {
     // Never let a buzz break the thing it was decorating.
   }

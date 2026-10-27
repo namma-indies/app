@@ -49,8 +49,20 @@ describe("haptics on the native app", () => {
 
   it("marks the microphone going live and the note being captured differently", () => {
     haptic("recordStart");
+    vi.advanceTimersByTime(5000); // a note takes longer than that
     haptic("recordStop");
     expect(plugin.impact.mock.calls).toEqual([[{ style: "MEDIUM" }], [{ style: "LIGHT" }]]);
+  });
+
+  it("lets a moment finish before the next starts, because Android's vibrator would replace it", () => {
+    haptic("logged"); // success (about 130 ms), then taps at 160 and 280 ms
+    haptic("tick");
+    expect(plugin.notification).toHaveBeenCalledTimes(1);
+    expect(plugin.impact).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(279);
+    expect(plugin.impact).toHaveBeenCalledTimes(1); // only logged's first tap, at 160
+    vi.advanceTimersByTime(1000);
+    expect(plugin.impact).toHaveBeenCalledTimes(3); // logged's second tap, then the queued tick
   });
 
   it("stays silent when the plugin rejects, throws, or is missing from an old build", async () => {
