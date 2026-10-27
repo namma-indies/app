@@ -109,5 +109,9 @@ async def test_rejects_empty_or_huge_queries(authed_client, geocoder):
 async def test_one_person_cannot_drain_the_shared_budget(authed_client, geocoder, monkeypatch):
     client, _ = authed_client
     monkeypatch.setattr(settings, "rl_places_times", 2)
+    # The limiter counts per fixed clock window, and these three calls take
+    # ~2 s (one geocoder call a second): a 60 s window could roll over between
+    # them. One this long never does.
+    monkeypatch.setattr(settings, "rl_places_window_s", 10**9)
     codes = [(await client.get("/places", params={"q": f"place {i}"})).status_code for i in range(3)]
     assert codes == [200, 200, 429]
