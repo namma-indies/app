@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { decideSuggestion, UnauthorizedError } from "../api";
+import Transcript from "./Transcript";
 import { getCapture, reviewCapture, type CaptureDetail, type CaptureGroup, type CaptureInstance, type CaptureSuggestion } from "../captureApi";
 
 /** The choice for a box that shows no animal: a doubled box, or a detector
@@ -138,6 +139,8 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
       {detail && <>
         <p className="hint">Taken {new Date(detail.captured_at).toLocaleString()}. Every animal from this upload shares this time and place.</p>
         {detail.note && <p>Your note: {detail.note}</p>}
+        <Transcript transcripts={detail.voice_transcripts ?? []} highlights={(detail.suggestions ?? []).filter((suggestion) => !answers[suggestion.id])
+          .map((suggestion) => ({ quote: suggestion.quote, label: `${SUGGESTION_LABELS[suggestion.field]}: ${suggestion.value}` }))} />
         {detail.instances.length > 0 && <p className="hint">Tap a box to see where it is in the photo. The numbers only tell the boxes apart; they aren’t a count of animals.</p>}
         {[...sources].map(([photoId, items], sourceIndex) => {
           const source = items.find(({ instance }) => instance.source_thumb_url && instance.source_bbox)?.instance;

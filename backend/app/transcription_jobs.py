@@ -63,6 +63,15 @@ class TranscriptCompletion(Lease):
         return self
 
 
+async def transcripts_for(conn, capture_id: UUID) -> list[dict]:
+    """What was heard on one capture, the note before the clip."""
+    rows = await conn.fetch(
+        "SELECT source, language, text FROM voice_transcripts WHERE capture_id=$1 "
+        "AND pipeline_version=$2 AND outcome='transcribed' ORDER BY source DESC",
+        capture_id, PIPELINE_VERSION)
+    return [dict(r) for r in rows]
+
+
 async def enqueue_transcription(conn, capture_id: UUID, source: str, s3_key: str) -> None:
     """Queue one sound to transcribe, inside the upload's own transaction.
 

@@ -42,6 +42,19 @@ describe("uploads in the Journal", () => {
     expect(screen.getByText("review sheet for held")).toBeInTheDocument();
   });
 
+  it("shows what was heard and sends a published animal's suggestions to its sheet", async () => {
+    load([sighting("a", {
+      capture_id: "c", processing_state: "ready", details_editable: true,
+      voice_transcripts: [{ source: "note", language: "en", text: "She is a white cat. People call her Billi." }],
+      review_suggestions: [{ id: "n", field: "known_name", value: "Billi", quote: "People call her Billi" }],
+    })], [upload("c", "ready", { sighting_ids: ["a"] })]);
+    await journal();
+    await userEvent.click(screen.getByAltText("dog sighting"));
+    expect(screen.getByText("People call her Billi").tagName).toBe("MARK");
+    await userEvent.click(screen.getByRole("button", { name: "Review 1 suggestion from your note" }));
+    expect(screen.getByText("review sheet for c")).toBeInTheDocument();
+  });
+
   it("adds no entry of its own for an upload that finished", async () => {
     load([sighting("a")], [upload("done", "ready", { sighting_ids: ["a"] }), upload("empty", "no_animal")]);
     await journal();

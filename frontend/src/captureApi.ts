@@ -1,4 +1,5 @@
 import { API_BASE } from "./apiBase";
+import type { HeardText } from "./components/Transcript";
 import { buildSightingForm, HttpError, UnauthorizedError, type PostSightingInput, type SightingAttrs } from "./api";
 
 export type CaptureState = "queued" | "processing" | "needs_review" | "ready" | "no_animal" | "failed" | "legacy";
@@ -53,6 +54,7 @@ export interface CaptureDetail extends CaptureSummary {
   groups: CaptureGroup[];
   /** Boxes the observer marked as not an animal (#105). */
   excluded_instance_ids?: string[];
+  voice_transcripts?: HeardText[];
 }
 export interface PostCaptureResponse {
   capture_id: string;
@@ -83,6 +85,7 @@ interface WireCapture extends CaptureSummary {
   instances: WireInstance[];
   groups: CaptureGroup[];
   excluded_instance_ids?: string[];
+  voice_transcripts?: HeardText[];
 }
 export function adaptCapture(wire: WireCapture): CaptureDetail {
   return { ...wire, instances: wire.instances.map((instance) => {

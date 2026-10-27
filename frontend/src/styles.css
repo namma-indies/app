@@ -313,6 +313,10 @@ button { font-family: inherit; }
 .voice-note-recording .voice-btn { border-color: var(--accent); color: var(--accent); }
 .voice-time { color: var(--muted); font-size: 0.88rem; font-variant-numeric: tabular-nums; }
 .viewer-audio { display: block; width: 100%; margin: 0.4rem 0 0; }
+.transcript { text-align: left; margin: 0.6rem 0; }
+.transcript figure { margin: 0 0 0.5rem; }
+.transcript blockquote { margin: 0.25rem 0 0; padding: 0.4rem 0.6rem; border-left: 3px solid var(--line); background: var(--panel); }
+.transcript-hit { background: var(--dust); color: var(--ink); border-bottom: 2px solid var(--accent); padding: 0 1px; }
 
 .social-card { display: flex; flex-direction: column; gap: 0.6rem; }
 .social-photo { width: 100%; height: auto; border: 3px solid var(--line); border-radius: 4px; }

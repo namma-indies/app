@@ -64,12 +64,15 @@ export interface Sighting {
   /** Present on /dex only. The voice note recorded with it, to play back. */
   audio_url?: string | null;
   /** Present on /dex only. What the GPU worker heard in the voice note or the
-   * clip's sound. Not shown yet: the input to suggested details the observer
-   * confirms. */
+   * clip's sound, shown with the words behind each suggestion marked (#112). */
   voice_transcripts?: { source: "note" | "clip"; language: string; text: string }[];
   /** Present on /dex only. Details a model read from the voice note, for
    * blank details only. Nothing is saved until the observer picks an option. */
   suggestions?: Suggestion[];
+  /** Present on /dex only. A multi-animal capture's open suggestions for this
+   * animal: answered in its details sheet, listed here to highlight and to
+   * point there. */
+  review_suggestions?: Suggestion[];
   /** Present on /dex only. Offered to the team for the daily X post. */
   shared_with_team?: boolean;
   /** Present on /dex only. Whether this appears on the shared map at all. */
