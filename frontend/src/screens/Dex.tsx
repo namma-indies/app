@@ -8,6 +8,7 @@ import {
   type Sighting,
 } from "../api";
 import SuggestedDetails from "../components/SuggestedDetails";
+import Transcript from "../components/Transcript";
 import DogMap from "../components/DogMap";
 import CaptureReview from "../components/CaptureReview";
 import { getCaptures, type CaptureSummary } from "../captureApi";
@@ -44,6 +45,8 @@ function where(s: Sighting): string {
   if (s.lat != null && s.lng != null) return `${s.lat.toFixed(3)}, ${s.lng.toFixed(3)}`;
   return "no GPS";
 }
+
+const SUGGESTION_NAMES = { sex: "Sex", ear_notch: "Ear notch", condition: "Condition", known_name: "Name" } as const;
 
 const UNFINISHED = new Set<CaptureSummary["processing_state"]>(["queued", "processing", "failed", "needs_review"]);
 
@@ -318,6 +321,13 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
             </p>
             {selected.attrs?.note && <p className="viewer-note">{selected.attrs.note}</p>}
             {selected.audio_url && <audio className="viewer-audio" src={selected.audio_url} controls preload="none" aria-label="voice note" />}
+            <Transcript transcripts={selected.voice_transcripts ?? []} highlights={[...(selected.suggestions ?? []), ...(selected.review_suggestions ?? [])]
+              .map((s) => ({ quote: s.quote, label: `${SUGGESTION_NAMES[s.field]}: ${s.value}` }))} />
+            {!!selected.review_suggestions?.length && selected.capture_id && (
+              <button className="btn" onClick={() => { const id = selected.capture_id!; setSelected(null); setReviewCaptureId(id); }}>
+                Review {selected.review_suggestions.length} {selected.review_suggestions.length === 1 ? "suggestion" : "suggestions"} from your note
+              </button>
+            )}
             {selected.suggestions && selected.suggestions.length > 0 && (
               <SuggestedDetails
                 key={selected.id}

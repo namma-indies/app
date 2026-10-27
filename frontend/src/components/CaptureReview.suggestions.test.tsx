@@ -21,6 +21,7 @@ const detail: CaptureDetail = {
     { id: "name", instance_id: "c", field: "known_name", value: "Kaalu", quote: "The brown one is Kaalu" },
     { id: "hurt", instance_id: "b", field: "condition", value: "injured", quote: "The black one is limping" },
   ],
+  voice_transcripts: [{ source: "note", language: "en", text: "The brown one is Kaalu. The black one is limping." }],
 };
 
 function open() {
@@ -33,6 +34,15 @@ function open() {
 }
 
 describe("voice-note suggestions in the review sheet", () => {
+  it("previews the note with the words behind each open suggestion marked", async () => {
+    open();
+    const mark = await screen.findByTitle("Name: Kaalu");
+    expect(mark.tagName).toBe("MARK");
+    expect(mark).toHaveTextContent("The brown one is Kaalu");
+    await userEvent.click(within(screen.getByRole("group", { name: "Dog 2" })).getByRole("button", { name: "not this" }));
+    expect(screen.queryByTitle("Condition: injured")).not.toBeInTheDocument();
+  });
+
   it("offers each suggestion under the animal whose box it was about", async () => {
     open();
     const first = await screen.findByRole("group", { name: "Dog 1" });

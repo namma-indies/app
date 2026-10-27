@@ -1,0 +1,45 @@
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it } from "vitest";
+import "@testing-library/jest-dom/vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import Transcript, { highlightSpans } from "./Transcript";
+
+afterEach(cleanup);
+
+// whisper-server breaks its text into lines mid-sentence.
+const heard = " She is a white female with a cut left ear. People call her\n Kalu.\n She looks healthy.\n";
+
+describe("highlighting the words a suggestion came from", () => {
+  it("finds a quote ignoring case and however the whitespace was broken", () => {
+    const [span] = highlightSpans(heard, [{ quote: "people call her kalu", label: "Name: Kalu" }]);
+    expect(heard.slice(span.start, span.end)).toBe("People call her\n Kalu");
+  });
+
+  it("marks nothing for a quote that is not there, and never matches it as a pattern", () => {
+    expect(highlightSpans(heard, [{ quote: "limping", label: "Condition: injured" }])).toEqual([]);
+    expect(highlightSpans("a (b) c", [{ quote: "(b)", label: "x" }])).toEqual([{ start: 2, end: 5, label: "x" }]);
+  });
+
+  it("keeps one mark for overlapping quotes and names both", () => {
+    const spans = highlightSpans(heard, [
+      { quote: "She is a white female with a cut left ear", label: "Ear notch: left" },
+      { quote: "She is a white female", label: "Sex: female" },
+    ]);
+    expect(spans).toHaveLength(1);
+    expect(spans[0].label).toBe("Ear notch: left · Sex: female");
+  });
+
+  it("shows what was heard with each suggestion's words marked", () => {
+    render(<Transcript transcripts={[{ source: "note", language: "en", text: heard }]}
+      highlights={[{ quote: "She looks healthy", label: "Condition: healthy" }]} />);
+    expect(screen.getByText(/WHAT YOU SAID · EN/)).toBeInTheDocument();
+    const mark = screen.getByText("She looks healthy");
+    expect(mark.tagName).toBe("MARK");
+    expect(mark).toHaveAttribute("title", "Condition: healthy");
+  });
+
+  it("renders nothing when nothing was heard", () => {
+    const { container } = render(<Transcript transcripts={[]} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+});

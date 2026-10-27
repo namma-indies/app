@@ -98,6 +98,13 @@ class DetailSuggestion(WireModel):
     quote: str
 
 
+class Transcript(WireModel):
+    """What was heard in the voice note or the clip's sound."""
+    source: Literal["note", "clip"]
+    language: str
+    text: str
+
+
 class CaptureStatus(CaptureReceipt):
     revision: int
     captured_at: datetime
@@ -106,6 +113,7 @@ class CaptureStatus(CaptureReceipt):
     groups: list[AnimalGroup]
     excluded_instance_ids: list[UUID] = Field(default_factory=list)
     suggestions: list[DetailSuggestion] = Field(default_factory=list)
+    voice_transcripts: list[Transcript] = Field(default_factory=list)
 
 
 class MultiUpload(WireModel):

@@ -127,8 +127,8 @@ async def get_dex(
         del sighting["_audio_key"]
         sighting["audio_url"] = audio_urls.get(id(sighting))
 
-    # What the GPU worker heard in the note or the clip. Returned, not yet
-    # shown: it is the input to suggested field values the observer confirms.
+    # What the GPU worker heard in the note or the clip, shown in the viewer
+    # with the words each open suggestion came from highlighted (#112).
     capture_ids = {s["capture_id"] for s in sightings.values() if s["capture_id"]}
     heard: dict[str, list[dict]] = {}
     if capture_ids:
@@ -146,21 +146,35 @@ async def get_dex(
     # Details a model read from that transcript, for the observer to confirm
     # or correct (app/suggestions.py). Only for a detail still left blank: a
     # value the observer chose themselves is never second-guessed.
+    #
+    # A /sighting upload's are answered right here ("suggestions"). A
+    # multi-animal capture's belong to one animal and are saved with the rest
+    # of its details in the review sheet, so here they are only listed
+    # ("review_suggestions"), to highlight and to point at that sheet.
     offered: dict[str, list[dict]] = {}
+    for_animal: dict[str, list[dict]] = {}
     if capture_ids:
         for row in await conn.fetch(
-            "SELECT id, capture_id, field, value, quote FROM detail_suggestions "
-            "WHERE capture_id = ANY($1::uuid[]) AND status = 'open' AND instance_id IS NULL "
-            "ORDER BY field",
+            "SELECT d.id, d.capture_id, d.instance_id, d.field, d.value, d.quote, a.sighting_id "
+            "FROM detail_suggestions d LEFT JOIN animal_instances a ON a.id = d.instance_id "
+            "WHERE d.capture_id = ANY($1::uuid[]) AND d.status = 'open' "
+            "ORDER BY d.field, d.id",
             list(capture_ids),
         ):
-            offered.setdefault(str(row["capture_id"]), []).append(
-                {"id": str(row["id"]), "field": row["field"], "value": row["value"],
-                 "quote": row["quote"]})
+            item = {"id": str(row["id"]), "field": row["field"], "value": row["value"],
+                    "quote": row["quote"]}
+            if row["instance_id"] is None:
+                offered.setdefault(str(row["capture_id"]), []).append(item)
+            elif row["sighting_id"] is not None:
+                for_animal.setdefault(str(row["sighting_id"]), []).append(item)
     for sighting in sightings.values():
         sighting["suggestions"] = [
             o for o in offered.get(sighting["capture_id"], [])
             if sighting["capture_id"] == sighting["id"] and not sighting["attrs"].get(o["field"])
+        ]
+        sighting["review_suggestions"] = [
+            o for o in for_animal.get(sighting["id"], [])
+            if sighting["details_editable"] and not sighting["attrs"].get(o["field"])
         ]
 
     return {"sightings": [sightings[sid] for sid in order]}

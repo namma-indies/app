@@ -11,6 +11,7 @@ from app.ids import uuid7
 from app.media_jobs import MODEL_NAME, vector_text
 from app.photos import thumb_key
 from app.suggestions import open_for_capture
+from app.transcription_jobs import transcripts_for
 
 
 def decoded(value):
@@ -54,7 +55,8 @@ async def status(conn, storage, capture):
     return CaptureStatus(**await receipt(conn, capture), revision=capture["revision"],
         captured_at=capture["captured_at"], note=decoded(capture["attrs"]).get("note"),
         instances=instances, groups=groups, excluded_instance_ids=excluded,
-        suggestions=await open_for_capture(conn, capture["id"]))
+        suggestions=await open_for_capture(conn, capture["id"]),
+        voice_transcripts=await transcripts_for(conn, capture["id"]))
 
 
 def validate_groups(rows, groups, excluded=()):

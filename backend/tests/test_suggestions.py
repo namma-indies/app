@@ -328,6 +328,24 @@ async def test_a_multi_animal_capture_gets_suggestions_per_animal(authed_client,
     # Not on the Journal's /sighting surface: the review sheet is where these are answered.
     assert all(not s["suggestions"] for s in (await client.get("/dex")).json()["sightings"])
 
+    # The sheet previews what was heard, to highlight the words behind each (#112).
+    assert detail["voice_transcripts"] == [
+        {"source": "note", "language": "en", "text": "The brown one is Kaalu. The black one is limping."}]
+
+    # Once published, the Journal lists each animal's own open suggestions,
+    # to highlight and to point at the sheet, never to answer there.
+    r = await client.post(f"/capture/{cid}/review", json={"revision": detail["revision"], "groups": [
+        {"instance_ids": [str(brown)]}, {"instance_ids": [str(black)]}]})
+    assert r.status_code == 200, r.text
+    published = {str(i["instance_id"]): i["sighting_id"] for i in r.json()["instances"]}
+    journal = {s["id"]: s for s in (await client.get("/dex")).json()["sightings"]}
+    assert [(o["field"], o["quote"]) for o in journal[published[str(brown)]]["review_suggestions"]] == [
+        ("known_name", "The brown one is Kaalu")]
+    assert [o["field"] for o in journal[published[str(black)]]["review_suggestions"]] == ["condition"]
+    assert all(not s["suggestions"] for s in journal.values())
+    assert journal[published[str(brown)]]["voice_transcripts"][0]["text"].startswith("The brown one")
+    detail = (await client.get(f"/capture/{cid}")).json()
+
     # Answering only records it; the review save is what wrote the value.
     sug = next(s for s in detail["suggestions"] if s["field"] == "condition")
     r = await client.post(f"/suggestion/{sug['id']}", json={"verdict": "choose", "value": "injured"})
