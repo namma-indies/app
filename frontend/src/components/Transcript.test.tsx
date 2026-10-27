@@ -32,6 +32,17 @@ describe("highlighting the words a suggestion came from", () => {
     expect(highlightSpans("a (b) c", [{ quote: "(b)", label: "x" }])).toEqual([{ start: 2, end: 5, label: "x", ids: [] }]);
   });
 
+  it("keeps every suggestion's id on a shared mark, even when their labels read the same", () => {
+    const text = "The brown one and the black one are both female.";
+    const spans = highlightSpans(text, [
+      { id: "a", quote: "The brown one and the black one are both female", label: "Sex: female" },
+      { id: "b", quote: "the black one are both female", label: "Sex: female" },
+    ]);
+    expect(spans).toHaveLength(1);
+    expect(spans[0].ids).toEqual(["a", "b"]);
+    expect(spans[0].label).toBe("Sex: female");
+  });
+
   it("keeps one mark for overlapping quotes and names both", () => {
     const spans = highlightSpans(heard, [
       { quote: "She is a white female with a cut left ear", label: "Ear notch: left" },

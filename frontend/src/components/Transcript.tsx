@@ -31,9 +31,10 @@ export function highlightSpans(text: string, highlights: Highlight[]): { start: 
   for (const span of found) {
     const last = kept[kept.length - 1];
     if (last && span.start < last.end) {
-      // Two suggestions read from overlapping words: one mark, both labels.
-      if (span.end <= last.end && !last.label.includes(span.label)) {
-        last.label += ` · ${span.label}`;
+      // Two suggestions read from overlapping words: one mark, both labels and
+      // both ids (the same label can belong to two different suggestions).
+      if (span.end <= last.end) {
+        if (!last.label.includes(span.label)) last.label += ` · ${span.label}`;
         last.ids.push(...span.ids);
       }
       continue;

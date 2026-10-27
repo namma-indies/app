@@ -80,13 +80,24 @@ describe("the glow and flow around suggestions", () => {
     expect(container.querySelectorAll("mark")).toHaveLength(2);
   });
 
-  it("flies a used suggestion into its field and lights the field", () => {
+  it("flies a used suggestion to where its field is after the layout has moved, and lights it", () => {
+    // Answering a suggestion removes its row, so the field below moves up.
+    const frames: (() => void)[] = [];
+    vi.stubGlobal("requestAnimationFrame", (cb: () => void) => frames.push(cb));
     const chip = document.createElement("strong");
     chip.textContent = "female";
     const field = document.createElement("select");
     document.body.append(chip, field);
+    let moved = false;
+    field.getBoundingClientRect = () => ({ ...rect, left: 100, top: moved ? 100 : 500, width: 40, height: 20 }) as DOMRect;
     playFill(chip, field);
+    moved = true;
+    expect(animate).not.toHaveBeenCalled();
+    frames.forEach((frame) => frame());
     expect(field).toHaveAttribute("data-fx-fill");
     expect(animate).toHaveBeenCalledTimes(1);
+    // The last keyframe lands on the field's new centre (120, 110), not the old one (120, 510: 490px down).
+    const keyframes = animate.mock.calls[0][0] as { transform: string }[];
+    expect(keyframes[keyframes.length - 1].transform).toContain("translate(85px,90px)");
   });
 });

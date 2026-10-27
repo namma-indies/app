@@ -51,25 +51,30 @@ function wordRects(el: Element): { text: string; rect: DOMRect }[] {
 
 const inView = (r: DOMRect) => r.bottom > 0 && r.top < window.innerHeight && r.right > 0 && r.left < window.innerWidth;
 
+interface Words { items: { text: string; rect: DOMRect }[]; font: string }
+
+/** Where a source's words are right now, so they can be flown after the layout has moved on. */
+function snapshot(from: Element): Words {
+  return { items: wordRects(from).slice(0, MAX_WORDS), font: getComputedStyle(from).font };
+}
+
 /**
- * Carry the words of `from` to the centre of `to`: each word is a throwaway
- * copy placed over the original (FLIP: first rect measured now, last rect is
- * where it lands) and animated with transform + opacity only. Skipped when
- * either end is off screen: a flight to nowhere is just noise.
+ * Carry the words of a source to the centre of `to`: each word is a throwaway
+ * copy placed over the original (FLIP: first rect measured earlier, last rect
+ * is measured here, where it lands) and animated with transform + opacity
+ * only. Skipped when either end is off screen: a flight to nowhere is just noise.
  */
-function flowWords(from: Element, to: Element, delayMs: number, layer: HTMLElement): Promise<unknown>[] {
+function flowWords({ items, font }: Words, to: Element, delayMs: number, layer: HTMLElement): Promise<unknown>[] {
   const target = to.getBoundingClientRect();
-  const words = wordRects(from).slice(0, MAX_WORDS);
-  if (!words.length || !inView(target) || !words.some((w) => inView(w.rect))) return [];
-  const style = getComputedStyle(from);
+  if (!items.length || !inView(target) || !items.some((w) => inView(w.rect))) return [];
   const cx = target.left + target.width / 2;
   const cy = target.top + target.height / 2;
-  return words.map(({ text, rect }, i) => {
+  return items.map(({ text, rect }, i) => {
     const ghost = document.createElement("span");
     ghost.className = "fx-word";
     ghost.textContent = text;
     ghost.style.cssText = `left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;height:${rect.height}px;` +
-      `font:${style.font};line-height:${rect.height}px`;
+      `font:${font};line-height:${rect.height}px`;
     layer.appendChild(ghost);
     const dx = cx - (rect.left + rect.width / 2);
     const dy = cy - (rect.top + rect.height / 2);
@@ -129,16 +134,24 @@ export function playSuggestionFlow(root: HTMLElement, ids: string[]): () => void
   });
   const aloft = flights.filter((f) => f.mark);
   const stopFlight = aloft.length
-    ? withLayer((layer) => aloft.flatMap(({ mark, chip, delay }) => flowWords(mark!, chip, delay + LIFT_AT_MS, layer)))
+    ? withLayer((layer) => aloft.flatMap(({ mark, chip, delay }) => flowWords(snapshot(mark!), chip, delay + LIFT_AT_MS, layer)))
     : () => {};
   return () => { stopFlight(); watching.forEach((watcher) => watcher.disconnect()); };
 }
 
-/** Using a suggestion: its words flow from the chip into the field, which glows. */
+/**
+ * Using a suggestion: its words flow from the chip into the field, which glows.
+ * The chip is measured now, but the field only after the caller's state update
+ * has committed: answering the suggestion removes its row, and the fields
+ * below it move up, so a destination measured earlier would be the old place.
+ */
 export function playFill(chip: Element | null, field: HTMLElement | null): void {
   if (!field || !canAnimate()) return;
-  arm(field, "data-fx-fill", LIFT_AT_MS + FLIGHT_MS - 250);
-  if (chip) withLayer((layer) => flowWords(chip, field, 0, layer));
+  const from = chip ? snapshot(chip) : null;
+  requestAnimationFrame(() => {
+    arm(field, "data-fx-fill", LIFT_AT_MS + FLIGHT_MS - 250);
+    if (from) withLayer((layer) => flowWords(from, field, 0, layer));
+  });
 }
 
 /**
