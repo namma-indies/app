@@ -635,3 +635,16 @@ async def test_several_dogs_are_still_asked_which_is_which(authed_client, on_wor
     request = (await _claim(client))["request"]
     assert [p["type"] for p in request["messages"][1]["content"]].count("image_url") == 2
     assert "animal" in request["response_format"]["json_schema"]["schema"]["properties"]["suggestions"]["items"]["properties"]
+
+
+def test_the_count_line_reaches_the_log_under_the_deployed_logging_setup():
+    # A fresh interpreter has uvicorn's setup, which leaves `app.*` at the root's WARNING level
+    # unless the app opens its own logger (app.main.configure_logging).
+    import os, subprocess, sys
+    from pathlib import Path
+    backend = str(Path(__file__).resolve().parent.parent)
+    code = ("import logging; import app.main; "
+            "logging.getLogger('app.suggestions').info('suggestions for transcript=T: model gave 2, kept 1')")
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=backend,
+                          env={**os.environ, "PYTHONPATH": backend}, timeout=60)
+    assert "model gave 2, kept 1" in done.stderr, done.stderr[-500:]
