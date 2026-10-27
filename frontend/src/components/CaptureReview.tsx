@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { decideSuggestion, UnauthorizedError } from "../api";
 import Transcript from "./Transcript";
+import { playFill, useSuggestionFlow } from "../suggestionFlow";
 import { getCapture, reviewCapture, type CaptureDetail, type CaptureGroup, type CaptureInstance, type CaptureSuggestion } from "../captureApi";
 import { formatWhen } from "../formatWhen";
 
@@ -52,6 +53,11 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
   // Voice-note suggestions the observer has answered in this sheet. Nothing is
   // decided until the sheet saves: "used" only fills the field in.
   const [answers, setAnswers] = useState<Record<string, "used" | "dismissed">>({});
+  // Said aloud by a screen reader when a suggestion fills a field; the glow that
+  // goes with it is decoration.
+  const [announcement, setAnnouncement] = useState("");
+  const sheetRef = useRef<HTMLElement>(null);
+  useSuggestionFlow(sheetRef, (detail?.suggestions ?? []).map((suggestion) => suggestion.id));
   const unauthorizedRef = useRef(onUnauthorized);
   unauthorizedRef.current = onUnauthorized;
   useEffect(() => {
@@ -129,19 +135,20 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
     } finally { setSaving(false); }
   }
   return <div className="capture-review-overlay" role="dialog" aria-modal="true" aria-label={detail?.processing_state === "ready" ? "Animal details" : "Separate the animals"}>
-    <section className="capture-review">
+    <section className="capture-review" ref={sheetRef}>
       <button className="link-btn" onClick={onClose} disabled={saving}>Close</button>
       <h2>{detail?.processing_state === "ready" ? "Animal details" : "Separate the animals"}</h2>
       {detail?.processing_state === "ready"
         ? <p>Add what you know about each animal in this upload. You can change it any time.</p>
         : <p>More than one animal shows up at the same moment in this upload, so we can’t tell on our own which photos show which. Each box below is one animal we found. Put every box of the same animal in the same group, then publish. Only you can see this upload until you do.</p>}
+      <p className="sr-only" role="status">{announcement}</p>
       {error && <p role="alert">{error} <button disabled={saving} onClick={() => setRevision((n) => n + 1)}>Reload</button></p>}
       {!detail && !error && <p>Loading your photos…</p>}
       {detail && <>
         <p className="hint">Taken {formatWhen(detail.captured_at)}. Every animal from this upload shares this time and place.</p>
         {detail.note && <p>Your note: {detail.note}</p>}
         <Transcript transcripts={detail.voice_transcripts ?? []} highlights={(detail.suggestions ?? []).filter((suggestion) => !answers[suggestion.id])
-          .map((suggestion) => ({ quote: suggestion.quote, label: `${SUGGESTION_LABELS[suggestion.field]}: ${suggestion.value}` }))} />
+          .map((suggestion) => ({ id: suggestion.id, quote: suggestion.quote, label: `${SUGGESTION_LABELS[suggestion.field]}: ${suggestion.value}` }))} />
         {detail.instances.length > 0 && <p className="hint">Tap a box to see where it is in the photo. The numbers only tell the boxes apart; they aren’t a count of animals.</p>}
         {[...sources].map(([photoId, items], sourceIndex) => {
           const source = items.find(({ instance }) => instance.source_thumb_url && instance.source_bbox)?.instance;
@@ -190,9 +197,12 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
           {suggestionsFor(group).length > 0 && <div className="voice-suggestions">
             <p className="spot-label">FROM YOUR VOICE NOTE</p>
             {suggestionsFor(group).map((suggestion) => <p className="voice-suggestion" key={suggestion.id}>
-              {SUGGESTION_LABELS[suggestion.field]}: <strong>{suggestion.value}</strong>{" "}
+              {SUGGESTION_LABELS[suggestion.field]}: <strong className="chip suggested suggested-chip" data-fx-chip={suggestion.id}>{suggestion.value}</strong>{" "}
               <span className="suggestion-quote">“{suggestion.quote}”</span>{" "}
-              <button type="button" className="link-btn" aria-label={`Use ${suggestion.value} for ${SUGGESTION_LABELS[suggestion.field].toLowerCase()}`} onClick={() => {
+              <button type="button" className="link-btn" aria-label={`Use ${suggestion.value} for ${SUGGESTION_LABELS[suggestion.field].toLowerCase()}`} onClick={(event) => {
+                const row = event.currentTarget.closest(".voice-suggestion");
+                playFill(row?.querySelector("[data-fx-chip]") ?? null, row?.closest("fieldset")?.querySelector<HTMLElement>(`[data-field="${suggestion.field}"]`) ?? null);
+                setAnnouncement(`Filled ${SUGGESTION_LABELS[suggestion.field].toLowerCase()} with ${suggestion.value}.`);
                 setAttrs((current) => ({ ...current, [group]: { ...current[group], [suggestion.field]: suggestion.value } }));
                 setAnswers((current) => ({ ...current, [suggestion.id]: "used" }));
               }}>use</button>{" "}
@@ -200,13 +210,13 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
             </p>)}
           </div>}
           <label>Known name (optional)
-            <input type="text" maxLength={80} value={attrs[group]?.known_name ?? ""} aria-describedby="known-name-hint"
+            <input type="text" data-field="known_name" maxLength={80} value={attrs[group]?.known_name ?? ""} aria-describedby="known-name-hint"
               onChange={(e) => setAttrs((current) => ({ ...current, [group]: { ...current[group], known_name: e.target.value } }))}
               onBlur={(e) => setAttrs((current) => ({ ...current, [group]: { ...current[group], known_name: e.target.value.trim() || null } }))} />
           </label>
           <p className="hint">Box {detail.instances.flatMap((instance, index) => assignments[instance.id] === group ? [index + 1] : []).join(", ")}</p>
           {([ ["sex", ["male", "female", "unsure"]], ["ear_notch", ["none", "left", "right", "unsure"]], ["condition", ["healthy", "injured", "unsure"]] ] as const).map(([field, options]) => <label key={field}>{FIELD_LABELS[field]}
-            <select value={attrs[group]?.[field] ?? ""} onChange={(e) => setAttrs((current) => ({ ...current, [group]: { ...current[group], [field]: e.target.value || undefined } }))}>
+            <select data-field={field} value={attrs[group]?.[field] ?? ""} onChange={(e) => setAttrs((current) => ({ ...current, [group]: { ...current[group], [field]: e.target.value || undefined } }))}>
               <option value="">Not recorded</option>{options.map((value) => <option key={value} value={value}>{value}</option>)}
             </select>
           </label>)}

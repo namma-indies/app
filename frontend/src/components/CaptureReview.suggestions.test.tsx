@@ -43,6 +43,14 @@ describe("voice-note suggestions in the review sheet", () => {
     expect(screen.queryByTitle("Condition: injured")).not.toBeInTheDocument();
   });
 
+  it("says aloud what a used suggestion filled, so the glow is never the only sign", async () => {
+    open();
+    const first = await screen.findByRole("group", { name: "Dog 1" });
+    await userEvent.click(within(first).getByRole("button", { name: "Use Kaalu for name" }));
+    expect(screen.getByRole("status")).toHaveTextContent("Filled name with Kaalu.");
+    expect(within(first).getByLabelText("Known name (optional)")).toHaveValue("Kaalu");
+  });
+
   it("offers each suggestion under the animal whose box it was about", async () => {
     open();
     const first = await screen.findByRole("group", { name: "Dog 1" });

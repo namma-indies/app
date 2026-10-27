@@ -69,6 +69,7 @@ export default function SuggestedDetails({
                 className={"chip" + (o.value === s.value ? " suggested" : "")}
                 disabled={busy === s.id}
                 aria-label={o.value === s.value ? `${o.label} (suggested)` : o.label}
+                data-fx-chip={o.value === s.value ? s.id : undefined}
                 onClick={() => decide(s, o.value)}
               >
                 {o.label}

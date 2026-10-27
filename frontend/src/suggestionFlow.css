@@ -1,0 +1,67 @@
+/* The glow around voice-note suggestions (#118; see suggestionFlow.ts).
+   Every colour comes from the variables below, so a different look is a
+   different set of values: try :root[data-glow="spectrum"] for the multicolour
+   one. Nothing animates unless suggestionFlow.ts arms it (data-fx-play /
+   data-fx-fill), and nothing animates under prefers-reduced-motion. */
+:root {
+  --glow-a: #e3a13a;     /* amber: the near halo */
+  --glow-b: #c65d3b;     /* terracotta: the far halo */
+  --glow-c: #f0b27a;     /* warm peach: the glow on the letters */
+  --glow-hot: #f2e6d3;   /* cream: the bright core of a ring */
+  --glow-word: var(--accent); /* the words in flight */
+}
+/* Apple-Intelligence / Gemini-style, for comparison. */
+:root[data-glow="spectrum"] {
+  --glow-a: #4f8cff;
+  --glow-b: #b062ff;
+  --glow-c: #ff6b9d;
+  --glow-hot: #ffd66b;
+  --glow-word: #b062ff;
+}
+
+.fx-scope { display: contents; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* The chip a suggestion produced, as shown beside a transcript (not a button). */
+.suggested-chip { display: inline-block; padding: 0.1rem 0.5rem; font-size: 0.8rem; cursor: default; }
+
+/* Words in the transcript: a halo and a soft glow on the letters themselves. Drawn on
+   the mark (not a pseudo-element) so a quote that wraps onto a second line glows per line. */
+.transcript-hit { -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+
+/* The chip: a ring and halo (the text is never covered), and a little pop as the words land. */
+[data-fx-chip] { position: relative; }
+[data-fx-chip]::after {
+  content: ""; position: absolute; inset: -3px; border-radius: 6px; border: 2px solid var(--glow-hot);
+  box-shadow: 0 0 12px 3px var(--glow-a), inset 0 0 8px var(--glow-b);
+  opacity: 0; pointer-events: none;
+}
+
+/* The words in flight: throwaway copies on a layer that never takes a tap. */
+.fx-layer { position: fixed; inset: 0; z-index: 2147483000; pointer-events: none; overflow: hidden; }
+.fx-word {
+  position: fixed; margin: 0; white-space: nowrap; text-align: center; opacity: 0;
+  color: var(--glow-word); text-shadow: 0 0 8px var(--glow-a), 0 0 16px var(--glow-b);
+  will-change: transform, opacity;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .transcript-hit[data-fx-play] { animation: fx-wash 1700ms ease-in-out var(--fx-delay, 0ms) 1 backwards; }
+  [data-fx-chip][data-fx-play]::after { animation: fx-ring 1500ms ease-out var(--fx-delay, 0ms) 1 backwards; }
+  [data-fx-chip][data-fx-play] { animation: fx-pop 500ms ease-out var(--fx-delay, 0ms) 1 backwards; }
+  [data-fx-fill] { animation: fx-fill 1500ms ease-out var(--fx-delay, 0ms) 1 backwards; }
+}
+@keyframes fx-wash {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; text-shadow: 0 0 0 transparent; }
+  30% { box-shadow: 0 0 10px 2px var(--glow-a), 0 0 22px 4px var(--glow-b); text-shadow: 0 0 8px var(--glow-c); }
+}
+@keyframes fx-ring { 0% { opacity: 0; transform: scale(0.9); } 25% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(1.04); } }
+@keyframes fx-pop { 0%, 100% { transform: scale(1); } 40% { transform: scale(1.07); } }
+@keyframes fx-fill {
+  0% { box-shadow: 0 0 0 0 transparent; }
+  25% { box-shadow: 0 0 0 3px var(--glow-a), 0 0 16px 4px var(--glow-b); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}

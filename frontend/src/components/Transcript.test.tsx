@@ -29,7 +29,7 @@ describe("highlighting the words a suggestion came from", () => {
 
   it("marks nothing for a quote that is not there, and never matches it as a pattern", () => {
     expect(highlightSpans(heard, [{ quote: "limping", label: "Condition: injured" }])).toEqual([]);
-    expect(highlightSpans("a (b) c", [{ quote: "(b)", label: "x" }])).toEqual([{ start: 2, end: 5, label: "x" }]);
+    expect(highlightSpans("a (b) c", [{ quote: "(b)", label: "x" }])).toEqual([{ start: 2, end: 5, label: "x", ids: [] }]);
   });
 
   it("keeps one mark for overlapping quotes and names both", () => {
