@@ -33,9 +33,9 @@ def test_keeps_supported_suggestions():
     ], HEARD)
     assert kept == [
         {"field": "sex", "value": "female", "quote": "She is asleep", "animal": None},
-        {"field": "known_name", "value": "Kaalu", "quote": "Her name is Kaalu.", "animal": None},
-        {"field": "ear_notch", "value": "left", "quote": "her LEFT ear  has a notch", "animal": None},
-    ]
+        {"field": "known_name", "value": "Kaalu", "quote": "Her name is Kaalu", "animal": None},
+        {"field": "ear_notch", "value": "left", "quote": "Her left ear has a notch", "animal": None},
+    ]  # the quote stored is the note's own words (#115): the Journal highlights it literally
 
 
 @pytest.mark.parametrize("item", [
@@ -77,6 +77,26 @@ HEARD_PUNCTUATED = "She is a female. Her name is Kaalu, her left ear is notched.
 def test_punctuation_is_not_part_of_what_was_said(field, value, quote):
     assert [s["field"] for s in suggestions.validate(
         [{"field": field, "value": value, "quote": quote}], HEARD_PUNCTUATED)] == [field]
+
+
+@pytest.mark.parametrize("quote,stored", [
+    ("Her name is Kaalu her left ear is notched", "Her name is Kaalu, her left ear is notched"),
+    ("she is a female her name", "She is a female. Her name"),
+    ("HE\u2019S CALM", "He\u2019s calm"),
+    ("He's calm", "He\u2019s calm"),
+])
+def test_what_is_stored_is_the_notes_own_words_so_the_journal_can_highlight_it(quote, stored):
+    (kept,) = suggestions.validate([{"field": "sex", "value": "female", "quote": quote}], HEARD_PUNCTUATED)
+    assert kept["quote"] == stored
+    # Transcript.tsx finds a quote by case-insensitive match with whitespace runs equal;
+    # a literal substring of the transcript always satisfies that.
+    assert stored.casefold() in HEARD_PUNCTUATED.casefold()
+
+
+def test_a_quote_marks_the_note_not_what_follows_it():
+    # Trailing punctuation the model added is not part of the span, and zero-width joiners it added vanish.
+    (kept,) = suggestions.validate([{"field": "sex", "value": "female", "quote": "She is a female!!!\u200d"}], HEARD_PUNCTUATED)
+    assert kept["quote"] == "She is a female"
 
 
 @pytest.mark.parametrize("quote", ["...", "  ,  ", "\u200d", "She is a male", "female she is"])

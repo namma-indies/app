@@ -118,19 +118,49 @@ def response_schema(labels: list[str] | None) -> dict:
     }
 
 
-def _normal(text: str) -> str:
-    """Words only: case, spacing, punctuation and zero-width joiners do not
-    count. Whisper punctuates and a model copying it often does not (a comma
-    skipped, a curly apostrophe made straight); the words are the evidence.
-    Letters, digits and combining marks stay, so Indic scripts keep their
-    vowel signs."""
-    kept = []
-    for char in unicodedata.normalize("NFC", text):
+def _fold(text: str) -> tuple[str, list[int]]:
+    """Words only, and where each kept character came from in `text`.
+
+    Case, spacing, punctuation and zero-width joiners do not count: whisper
+    punctuates and a model copying it often does not (a comma skipped, a curly
+    apostrophe made straight); the words are the evidence. Letters, digits and
+    combining marks stay, so Indic scripts keep their vowel signs. Characters
+    are folded one by one so every kept character has an offset in the
+    original, which `validate` uses to quote the note itself.
+    """
+    chars: list[str] = []
+    origin: list[int] = []
+    for at, char in enumerate(text):
         kind = unicodedata.category(char)
         if kind == "Cf":
             continue
-        kept.append(char if kind[0] in "LNM" else " ")
-    return re.sub(r"\s+", " ", "".join(kept)).strip().casefold()
+        for folded in (char.casefold() if kind[0] in "LNM" else " "):
+            if folded == " " and (not chars or chars[-1] == " "):
+                continue
+            chars.append(folded)
+            origin.append(at)
+    while chars and chars[-1] == " ":
+        chars.pop()
+        origin.pop()
+    return "".join(chars), origin
+
+
+def _normal(text: str) -> str:
+    return _fold(unicodedata.normalize("NFC", text))[0]
+
+
+def _spoken(transcript: str, quote: str) -> str | None:
+    """The transcript's own words for `quote`, or None if it was not said.
+
+    Quoted from the transcript, not the model, so the Journal can find and
+    highlight them literally however the model punctuated its copy.
+    """
+    folded, origin = _fold(transcript)
+    said = _normal(quote)
+    at = folded.find(said) if said else -1
+    if at < 0:
+        return None
+    return transcript[origin[at]:origin[at + len(said) - 1] + 1]
 
 
 def clean_value(field: str, value) -> str | None:
@@ -150,7 +180,9 @@ def validate(raw: list, transcript: str, labels: list[str] | None = None) -> lis
     """The model's suggestions that can be shown: at most one per field (and,
     with several animals, per animal), each quoting the note and, if there are
     labels, naming one animal."""
-    heard = _normal(transcript)
+    # Offsets are into the transcript as stored; one that is not in NFC (whisper
+    # emits NFC) falls back to the model's own copy of the words.
+    composed = unicodedata.normalize("NFC", transcript)
     kept: dict[tuple, dict] = {}
     for item in raw if isinstance(raw, list) else []:
         if not isinstance(item, dict):
@@ -159,9 +191,13 @@ def validate(raw: list, transcript: str, labels: list[str] | None = None) -> lis
         if field not in FIELDS or not isinstance(quote, str):
             continue
         quote = quote.strip()
-        said = _normal(quote) if quote and len(quote) <= 500 else ""
-        if not said or said not in heard:
+        if not quote or len(quote) > 500:
             continue
+        spoken = _spoken(composed, quote)
+        if spoken is None:
+            continue
+        if composed == transcript:
+            quote = spoken
         animal = None
         if labels:
             animal = item.get("animal")

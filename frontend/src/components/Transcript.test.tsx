@@ -15,6 +15,18 @@ describe("highlighting the words a suggestion came from", () => {
     expect(heard.slice(span.start, span.end)).toBe("People call her\n Kalu");
   });
 
+  it("finds the note's own words with their punctuation, as the API stores them (#115)", () => {
+    // The API keeps the transcript's words for a suggestion's quote even when the model left a comma out
+    // or straightened an apostrophe, so a literal copy is all this has to find.
+    const text = "She is a female. Her name is Kaalu, her left ear is notched. He\u2019s calm.";
+    const spans = highlightSpans(text, [
+      { quote: "Her name is Kaalu, her left ear is notched", label: "Name: Kaalu" },
+      { quote: "He\u2019s calm", label: "Sex: male" },
+    ]);
+    expect(spans.map((span) => text.slice(span.start, span.end))).toEqual([
+      "Her name is Kaalu, her left ear is notched", "He\u2019s calm"]);
+  });
+
   it("marks nothing for a quote that is not there, and never matches it as a pattern", () => {
     expect(highlightSpans(heard, [{ quote: "limping", label: "Condition: injured" }])).toEqual([]);
     expect(highlightSpans("a (b) c", [{ quote: "(b)", label: "x" }])).toEqual([{ start: 2, end: 5, label: "x" }]);
