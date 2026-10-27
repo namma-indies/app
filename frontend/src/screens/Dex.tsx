@@ -16,6 +16,7 @@ import ReportSheet from "../components/ReportSheet";
 import Dogs from "./Dogs";
 import { useProcessingFeed } from "../useProcessingFeed";
 import { processingLabel } from "../processing";
+import { formatWhen } from "../formatWhen";
 
 const TAG_LABELS: Record<string, string> = {
   male: "♂ MALE",
@@ -32,13 +33,6 @@ function attrTags(s: Sighting): string[] {
   return raw
     .filter((v): v is string => !!v && v !== "unsure" && v !== "none")
     .map((v) => TAG_LABELS[v] ?? v);
-}
-
-function when(iso: string): string {
-  const d = new Date(iso);
-  const day = d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
-  const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-  return `${day} · ${time}`;
 }
 
 function where(s: Sighting): string {
@@ -69,7 +63,7 @@ function UploadEntry({ capture, onReview }: { capture: CaptureSummary; onReview:
           <div className="line">We need you to say which photos show which animal before this goes on the map.</div>
           <button className="link-btn" onClick={(event) => { event.stopPropagation(); onReview(); }}>Separate the animals</button>
         </> : <div className="processing-status">{processingLabel(capture.processing_state)}</div>}
-        <div className="line">taken {when(capture.captured_at)}</div>
+        <div className="line">taken {formatWhen(capture.captured_at)}</div>
       </div>
     </article>
   );
@@ -276,7 +270,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
                   </div>
                 )}
                 <div className="line">
-                  spotted {when(s.captured_at)}
+                  spotted {formatWhen(s.captured_at)}
                   <br />
                   {where(s)}
                 </div>
@@ -317,7 +311,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
             {selected.photos.length > 0 && processingLabel(selected.processing_state) && <p className="viewer-caption">{processingLabel(selected.processing_state)}</p>}
             <p className="viewer-caption">
               No. {String(numberOf.get(selected.id) ?? 0).padStart(3, "0")} ·{" "}
-              {when(selected.captured_at)}
+              {formatWhen(selected.captured_at)}
             </p>
             {selected.attrs?.note && <p className="viewer-note">{selected.attrs.note}</p>}
             {selected.audio_url && <audio className="viewer-audio" src={selected.audio_url} controls preload="none" aria-label="voice note" />}

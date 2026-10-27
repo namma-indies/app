@@ -28,6 +28,7 @@ import { howToEnableCameraLocation, locate } from "../capture/geolocate";
 import LocationPicker, { type PickedPlace } from "../components/LocationPicker";
 import VoiceNote, { voiceNotesEnabled } from "../components/VoiceNote";
 import { CONDITION_OPTIONS, EAR_NOTCH_OPTIONS, SEX_OPTIONS } from "../detailOptions";
+import { formatWhen } from "../formatWhen";
 
 const MAX_PHOTOS = 5;
 
@@ -657,7 +658,7 @@ export default function Capture() {
           {origin && (
             <p className="hint import-badge">
               from your photos ·{" "}
-              {new Date(origin.captured_at).toLocaleString()}
+              {formatWhen(origin.captured_at)}
               {origin.geo_source === "none" ? " · no place" : ""}
             </p>
           )}

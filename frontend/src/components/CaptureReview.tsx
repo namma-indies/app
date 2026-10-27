@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { decideSuggestion, UnauthorizedError } from "../api";
 import Transcript from "./Transcript";
 import { getCapture, reviewCapture, type CaptureDetail, type CaptureGroup, type CaptureInstance, type CaptureSuggestion } from "../captureApi";
+import { formatWhen } from "../formatWhen";
 
 /** The choice for a box that shows no animal: a doubled box, or a detector
  * mistake. It is left out of every group and publishes nothing (#105). */
@@ -137,7 +138,7 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
       {error && <p role="alert">{error} <button disabled={saving} onClick={() => setRevision((n) => n + 1)}>Reload</button></p>}
       {!detail && !error && <p>Loading your photos…</p>}
       {detail && <>
-        <p className="hint">Taken {new Date(detail.captured_at).toLocaleString()}. Every animal from this upload shares this time and place.</p>
+        <p className="hint">Taken {formatWhen(detail.captured_at)}. Every animal from this upload shares this time and place.</p>
         {detail.note && <p>Your note: {detail.note}</p>}
         <Transcript transcripts={detail.voice_transcripts ?? []} highlights={(detail.suggestions ?? []).filter((suggestion) => !answers[suggestion.id])
           .map((suggestion) => ({ quote: suggestion.quote, label: `${SUGGESTION_LABELS[suggestion.field]}: ${suggestion.value}` }))} />
