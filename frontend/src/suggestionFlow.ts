@@ -1,4 +1,5 @@
 import "./suggestionFlow.css";
+import { haptic } from "./haptics";
 import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 
 /**
@@ -133,10 +134,16 @@ export function playSuggestionFlow(root: HTMLElement, ids: string[]): () => void
     }
   });
   const aloft = flights.filter((f) => f.mark);
+  const ticks: ReturnType<typeof setTimeout>[] = [];
   const stopFlight = aloft.length
-    ? withLayer((layer) => aloft.flatMap(({ mark, chip, delay }) => flowWords(snapshot(mark!), chip, delay + LIFT_AT_MS, layer)))
+    ? withLayer((layer) => aloft.flatMap(({ mark, chip, delay }) => {
+      const flying = flowWords(snapshot(mark!), chip, delay + LIFT_AT_MS, layer);
+      // A tap as the words land in the chip, with the chip's ring; only for a flight that really happens.
+      if (flying.length) ticks.push(setTimeout(() => haptic("tick"), delay + ARRIVE_MS));
+      return flying;
+    }))
     : () => {};
-  return () => { stopFlight(); watching.forEach((watcher) => watcher.disconnect()); };
+  return () => { stopFlight(); ticks.forEach(clearTimeout); watching.forEach((watcher) => watcher.disconnect()); };
 }
 
 /**

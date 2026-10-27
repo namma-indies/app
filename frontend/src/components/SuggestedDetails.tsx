@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { decideSuggestion, UnauthorizedError, type Suggestion, type SuggestedField } from "../api";
+import { haptic } from "../haptics";
 import { CONDITION_OPTIONS, EAR_NOTCH_OPTIONS, SEX_OPTIONS } from "../detailOptions";
 
 const LABELS: Record<SuggestedField, string> = {
@@ -46,6 +47,7 @@ export default function SuggestedDetails({
     try {
       await decideSuggestion(s.id, value === null ? { verdict: "dismiss" } : { verdict: "choose", value });
       setAnswered((cur) => new Set(cur).add(s.id));
+      if (value !== null) haptic("filled");
       onDecided();
     } catch (err) {
       if (err instanceof UnauthorizedError) onUnauthorized();

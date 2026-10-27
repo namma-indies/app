@@ -5,6 +5,9 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import SuggestionFlow from "./components/SuggestionFlow";
 import Transcript from "./components/Transcript";
 import { ARRIVE_MS, playFill } from "./suggestionFlow";
+import { haptic } from "./haptics";
+
+vi.mock("./haptics", () => ({ haptic: vi.fn() }));
 
 const text = "She is a female. Her name is Kaalu.";
 const highlights = [
@@ -28,7 +31,7 @@ beforeEach(() => {
   Range.prototype.getBoundingClientRect = () => rect;
   Element.prototype.getBoundingClientRect = () => rect;
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); delete (Element.prototype as { animate?: unknown }).animate; });
+afterEach(() => { cleanup(); vi.mocked(haptic).mockClear(); vi.unstubAllGlobals(); delete (Element.prototype as { animate?: unknown }).animate; });
 
 describe("the glow and flow around suggestions", () => {
   it("glows the words, flies them to their chip, then lights the chip, in order", async () => {
@@ -45,6 +48,20 @@ describe("the glow and flow around suggestions", () => {
     expect(layer).toHaveAttribute("aria-hidden", "true");
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
     expect(document.querySelector(".fx-layer")).toBeNull();
+  });
+
+  it("taps as each chip is reached, in step with its ring, and only when words really fly", () => {
+    vi.useFakeTimers();
+    try {
+      render(scene(["sex", "name"]));
+      vi.advanceTimersByTime(ARRIVE_MS - 1);
+      expect(haptic).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(haptic).toHaveBeenCalledTimes(1);
+      expect(haptic).toHaveBeenCalledWith("tick");
+      vi.advanceTimersByTime(160);
+      expect(haptic).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
   });
 
   it("plays once: answering one suggestion does not replay the rest, a new one plays alone", () => {
@@ -76,6 +93,7 @@ describe("the glow and flow around suggestions", () => {
     vi.stubGlobal("matchMedia", (query: string) => ({ matches: query.includes("reduce"), media: query }));
     const { container } = render(scene(["sex", "name"]));
     expect(animate).not.toHaveBeenCalled();
+    expect(haptic).not.toHaveBeenCalled(); // the tap only accompanies the flight, which is skipped
     expect(container.querySelector("[data-fx-play]")).toBeNull();
     expect(container.querySelectorAll("mark")).toHaveLength(2);
   });

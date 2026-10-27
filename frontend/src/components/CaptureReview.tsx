@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { decideSuggestion, UnauthorizedError } from "../api";
 import Transcript from "./Transcript";
+import { haptic } from "../haptics";
 import { playFill, useSuggestionFlow } from "../suggestionFlow";
 import { getCapture, reviewCapture, type CaptureDetail, type CaptureGroup, type CaptureInstance, type CaptureSuggestion } from "../captureApi";
 import { formatWhen } from "../formatWhen";
@@ -202,6 +203,7 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
               <button type="button" className="link-btn" aria-label={`Use ${suggestion.value} for ${SUGGESTION_LABELS[suggestion.field].toLowerCase()}`} onClick={(event) => {
                 const row = event.currentTarget.closest(".voice-suggestion");
                 playFill(row?.querySelector("[data-fx-chip]") ?? null, row?.closest("fieldset")?.querySelector<HTMLElement>(`[data-field="${suggestion.field}"]`) ?? null);
+                haptic("filled");
                 setAnnouncement(`Filled ${SUGGESTION_LABELS[suggestion.field].toLowerCase()} with ${suggestion.value}.`);
                 setAttrs((current) => ({ ...current, [group]: { ...current[group], [suggestion.field]: suggestion.value } }));
                 setAnswers((current) => ({ ...current, [suggestion.id]: "used" }));
