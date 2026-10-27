@@ -119,7 +119,18 @@ def response_schema(labels: list[str] | None) -> dict:
 
 
 def _normal(text: str) -> str:
-    return re.sub(r"\s+", " ", unicodedata.normalize("NFC", text)).strip().casefold()
+    """Words only: case, spacing, punctuation and zero-width joiners do not
+    count. Whisper punctuates and a model copying it often does not (a comma
+    skipped, a curly apostrophe made straight); the words are the evidence.
+    Letters, digits and combining marks stay, so Indic scripts keep their
+    vowel signs."""
+    kept = []
+    for char in unicodedata.normalize("NFC", text):
+        kind = unicodedata.category(char)
+        if kind == "Cf":
+            continue
+        kept.append(char if kind[0] in "LNM" else " ")
+    return re.sub(r"\s+", " ", "".join(kept)).strip().casefold()
 
 
 def clean_value(field: str, value) -> str | None:
@@ -148,7 +159,8 @@ def validate(raw: list, transcript: str, labels: list[str] | None = None) -> lis
         if field not in FIELDS or not isinstance(quote, str):
             continue
         quote = quote.strip()
-        if not quote or len(quote) > 500 or _normal(quote) not in heard:
+        said = _normal(quote) if quote and len(quote) <= 500 else ""
+        if not said or said not in heard:
             continue
         animal = None
         if labels:
@@ -265,6 +277,17 @@ async def plan(conn, capture_id: UUID):
     return "animals", [(ascii_uppercase[i], r["id"], thumb_key(r["s3_key"])) for i, r in enumerate(rows)]
 
 
+def solo(animals) -> UUID | None:
+    """The one animal's instance id when an upload has exactly one, else None.
+
+    Nothing needs telling apart then, so the model reads the note alone, as for
+    a /sighting: no photo to fetch (and none of the image path's ways to fail),
+    no letter to pick and no "unclear" to answer. What survives belongs to that
+    animal.
+    """
+    return animals[0][1] if animals and len(animals) == 1 else None
+
+
 async def _finish(pool, transcript_id, status, *, error=None, delay_s=0, refund=False):
     async with pool.acquire() as conn:
         await conn.execute(
@@ -283,9 +306,13 @@ async def _failed(pool, transcript_id, attempts, error: str, *, retryable=True):
 
 async def _store(pool, row, raw, animals, model: str):
     """Check the model's answer against the note and keep what survives."""
-    labels = [label for label, _, _ in animals] if animals else None
+    # With one animal the model was never asked to pick one (see `solo`).
+    only = solo(animals)
+    labels = [label for label, _, _ in animals] if animals and not only else None
     suggestions = validate(raw, row["text"], labels)
-    instance_of = {label: instance for label, instance, _ in animals or []}
+    instance_of = {None: only} if only else {label: instance for label, instance, _ in animals or []}
+    logger.info("suggestions for transcript=%s: model gave %d, kept %d", row["id"],
+                len(raw) if isinstance(raw, list) else 0, len(suggestions))
     async with pool.acquire() as conn, conn.transaction():
         for s in suggestions:
             await conn.execute(
@@ -314,7 +341,7 @@ async def run_once(pool, storage, client: httpx.AsyncClient) -> bool:
         await _finish(pool, row["id"], "pending", delay_s=NOT_READY_DELAY_S, refund=True)
         return True
     try:
-        images = [(label, await storage.get(key)) for label, _, key in animals] if animals else None
+        images = [(label, await storage.get(key)) for label, _, key in animals] if animals and not solo(animals) else None
         raw = await ask_model(client, row["text"], row["language"], images)
     except Exception as error:
         # Logged by type only: a response body could echo the transcript.
@@ -386,7 +413,8 @@ async def worker_claim(body: Claim, request: Request, storage=Depends(get_storag
         if kind == "wait":
             await _finish(pool, row["id"], "pending", delay_s=NOT_READY_DELAY_S, refund=True)
             continue
-        urls = await storage.urls([key for _, _, key in animals], expires_s=settings.media_url_s) if animals else []
+        urls = (await storage.urls([key for _, _, key in animals], expires_s=settings.media_url_s)
+                if animals and not solo(animals) else [])
         labelled = [(label, url) for (label, _, _), url in zip(animals or [], urls)] or None
         return {"job": {"id": str(row["id"]), "kind": "suggest", "lease_token": token,
                         "lease_expires_at": expires,

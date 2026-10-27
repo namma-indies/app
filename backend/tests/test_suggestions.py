@@ -65,6 +65,36 @@ def test_quotes_match_in_any_script():
     assert kept[0]["value"] == "ಕಾಳು"
 
 
+HEARD_PUNCTUATED = "She is a female. Her name is Kaalu, her left ear is notched. He\u2019s calm."
+
+
+@pytest.mark.parametrize("field,value,quote", [
+    ("known_name", "Kaalu", "Her name is Kaalu her left ear is notched"),  # a comma skipped
+    ("sex", "female", "she is a female her name"),                           # a full stop skipped
+    ("sex", "male", "He's calm"),                                            # straight for curly
+    ("sex", "female", "SHE IS A FEMALE"),
+])
+def test_punctuation_is_not_part_of_what_was_said(field, value, quote):
+    assert [s["field"] for s in suggestions.validate(
+        [{"field": field, "value": value, "quote": quote}], HEARD_PUNCTUATED)] == [field]
+
+
+@pytest.mark.parametrize("quote", ["...", "  ,  ", "\u200d", "She is a male", "female she is"])
+def test_a_quote_still_has_to_be_words_that_were_said_in_that_order(quote):
+    assert suggestions.validate([{"field": "sex", "value": "female", "quote": quote}], HEARD_PUNCTUATED) == []
+
+
+def test_indic_vowel_signs_and_joiners_survive_the_comparison():
+    heard = "ಇವಳ ಹೆಸರು ಕಾಳು, ಅವಳು ಮಲಗಿದ್ದಾಳೆ।"
+    # Dropping the comma and the danda still matches; a zero-width joiner the model adds is ignored.
+    kept = suggestions.validate([
+        {"field": "known_name", "value": "ಕಾಳು", "quote": "ಹೆಸರು ಕಾಳು ಅವಳು"},
+        {"field": "sex", "value": "female", "quote": "ಅವಳು ಮ\u200dಲಗಿದ್ದಾಳೆ"}], heard)
+    assert [k["field"] for k in kept] == ["known_name", "sex"]
+    # A different vowel sign is a different word.
+    assert suggestions.validate([{"field": "known_name", "value": "ಕಾಳು", "quote": "ಕಾಳ"}], "ಕಾಳು") == []
+
+
 # ---------------------------------------------------------------------------
 # The model call
 # ---------------------------------------------------------------------------
@@ -269,8 +299,9 @@ async def test_shows_the_model_one_photo_per_animal(configured):
     assert "which animal" in body["messages"][0]["content"]
 
 
-async def _two_dog_capture(pool, observer_id, state="ready"):
-    """A capture with two tracked dogs, their evidence thumbnails in storage."""
+async def _two_dog_capture(pool, observer_id, state="ready", dogs=2,
+                           text="The brown one is Kaalu. The black one is limping."):
+    """A capture with tracked dogs (two unless `dogs`), their evidence thumbnails in storage."""
     from app.deps import get_storage
     from app.photos import thumb_key
     storage = get_storage()
@@ -283,7 +314,7 @@ async def _two_dog_capture(pool, observer_id, state="ready"):
         source = uuid7()
         await c.execute("INSERT INTO photos (id, capture_id, s3_key, width, height) VALUES ($1,$2,$3,400,300)",
                         source, cid, f"captures/{cid}/source.webp")
-        for track, colour in (("t0", b"brown"), ("t1", b"black")):
+        for track, colour in (("t0", b"brown"), ("t1", b"black"))[:dogs]:
             evidence, instance = uuid7(), uuid7()
             key = f"captures/{cid}/evidence-{track}.webp"
             await storage.put(thumb_key(key), b"thumb-of-" + colour, "image/webp")
@@ -299,8 +330,7 @@ async def _two_dog_capture(pool, observer_id, state="ready"):
             """INSERT INTO voice_transcripts (id, capture_id, source, pipeline_version, model,
                    outcome, language, text, segments)
                VALUES ($1,$2,'note',$3,$4,'transcribed','en',$5,'[]')""",
-            uuid7(), cid, PIPELINE_VERSION, MODEL_NAME,
-            "The brown one is Kaalu. The black one is limping.")
+            uuid7(), cid, PIPELINE_VERSION, MODEL_NAME, text)
     return cid, instances, storage
 
 
@@ -481,3 +511,107 @@ def test_a_name_must_appear_in_its_own_quote():
     """Seen on a real Qwen3.8 run: "Kaaluu" from "Her name is Kaalu"."""
     assert suggestions.validate(
         [{"field": "known_name", "value": "Kaaluu", "quote": "Her name is Kaalu"}], HEARD) == []
+
+
+# ---------------------------------------------------------------------------
+# One dog: the model is not asked "which animal?" (#114)
+# ---------------------------------------------------------------------------
+
+ONE_DOG_NOTE = "She is a female, her name is Kaalu, her left ear is notched."
+# What a model says about a note when nothing tells it which animal: no "animal" key at all.
+ONE_DOG_ANSWER = [
+    {"field": "sex", "value": "female", "quote": "She is a female"},
+    {"field": "known_name", "value": "Kaalu", "quote": "her name is Kaalu"},
+    {"field": "ear_notch", "value": "left", "quote": "her left ear is notched"},
+]
+
+
+async def _published_one_dog(client, oid):
+    pool = client._transport.app.state.pool
+    cid, (dog,), storage = await _two_dog_capture(pool, oid, dogs=1, text=ONE_DOG_NOTE)
+    detail = (await client.get(f"/capture/{cid}")).json()
+    r = await client.post(f"/capture/{cid}/review", json={
+        "revision": detail["revision"], "groups": [{"instance_ids": [str(dog)]}]})
+    assert r.status_code == 200, r.text
+    return cid, dog, pool, storage
+
+
+def _journal_entry(journal):
+    (entry,) = journal["sightings"]
+    return entry
+
+
+@pytest.mark.asyncio
+async def test_one_dog_on_the_worker_path_gets_a_note_only_request_and_a_review_button(authed_client, on_worker):
+    client, oid = authed_client
+    cid, dog, pool, _ = await _published_one_dog(client, oid)
+    job = await _claim(client)
+    request = job["request"]
+    assert [p["type"] for p in request["messages"][1]["content"]] == ["text"]  # no photo to fetch
+    assert "several animals" not in request["messages"][0]["content"]
+    properties = request["response_format"]["json_schema"]["schema"]["properties"]["suggestions"]["items"]
+    assert "animal" not in properties["properties"]
+
+    r = await client.post(f"/internal/suggestion-jobs/{job['id']}/complete", headers=GPU, json={
+        "lease_token": job["lease_token"], "content": json.dumps({"suggestions": ONE_DOG_ANSWER})})
+    assert r.json() == {"status": "done"}
+
+    entry = _journal_entry((await client.get("/dex")).json())
+    # What the Journal needs for "Review 3 suggestions from your note".
+    assert entry["capture_id"] == str(cid)
+    assert sorted((o["field"], o["value"]) for o in entry["review_suggestions"]) == [
+        ("ear_notch", "left"), ("known_name", "Kaalu"), ("sex", "female")]
+    assert entry["voice_transcripts"][0]["text"] == ONE_DOG_NOTE
+    # ... and the sheet it opens lists them under that dog.
+    sheet = (await client.get(f"/capture/{cid}")).json()
+    assert {s["instance_id"] for s in sheet["suggestions"]} == {str(dog)}
+
+
+@pytest.mark.asyncio
+async def test_one_dog_on_the_openai_path_sends_no_photo_either(authed_client, configured):
+    client, oid = authed_client
+    cid, dog, pool, storage = await _published_one_dog(client, oid)
+    sent = []
+
+    async def handler(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json=model_reply(ONE_DOG_ANSWER))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as llm:
+        assert await suggestions.run_once(pool, storage, llm)
+    assert [p["type"] for p in sent[0]["messages"][1]["content"]] == ["text"]
+    assert len(_journal_entry((await client.get("/dex")).json())["review_suggestions"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_one_dog_keeps_a_suggestion_the_model_attributes_to_nobody_in_particular(authed_client, on_worker):
+    # A model that still answers with an animal key (an older prompt, a chatty reply) changes nothing:
+    # with one animal it can only be that one.
+    client, oid = authed_client
+    cid, dog, pool, _ = await _published_one_dog(client, oid)
+    job = await _claim(client)
+    answer = [{**item, "animal": "unclear"} for item in ONE_DOG_ANSWER[:1]]
+    r = await client.post(f"/internal/suggestion-jobs/{job['id']}/complete", headers=GPU, json={
+        "lease_token": job["lease_token"], "content": json.dumps({"suggestions": answer})})
+    assert r.json() == {"status": "done"}
+    assert [o["field"] for o in _journal_entry((await client.get("/dex")).json())["review_suggestions"]] == ["sex"]
+
+
+@pytest.mark.asyncio
+async def test_a_quote_with_the_commas_left_out_still_gives_a_suggestion(authed_client, on_worker):
+    client, oid = authed_client
+    _, _, pool, _ = await _published_one_dog(client, oid)
+    job = await _claim(client)
+    answer = [{"field": "known_name", "value": "Kaalu", "quote": "her name is Kaalu her left ear is notched"}]
+    await client.post(f"/internal/suggestion-jobs/{job['id']}/complete", headers=GPU, json={
+        "lease_token": job["lease_token"], "content": json.dumps({"suggestions": answer})})
+    assert [o["field"] for o in _journal_entry((await client.get("/dex")).json())["review_suggestions"]] == ["known_name"]
+
+
+@pytest.mark.asyncio
+async def test_several_dogs_are_still_asked_which_is_which(authed_client, on_worker):
+    client, oid = authed_client
+    pool = client._transport.app.state.pool
+    await _two_dog_capture(pool, oid)
+    request = (await _claim(client))["request"]
+    assert [p["type"] for p in request["messages"][1]["content"]].count("image_url") == 2
+    assert "animal" in request["response_format"]["json_schema"]["schema"]["properties"]["suggestions"]["items"]["properties"]
