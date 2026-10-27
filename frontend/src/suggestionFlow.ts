@@ -138,8 +138,9 @@ export function playSuggestionFlow(root: HTMLElement, ids: string[]): () => void
   const stopFlight = aloft.length
     ? withLayer((layer) => aloft.flatMap(({ mark, chip, delay }) => {
       const flying = flowWords(snapshot(mark!), chip, delay + LIFT_AT_MS, layer);
-      // A tap as the words land in the chip, with the chip's ring; only for a flight that really happens.
-      if (flying.length) ticks.push(setTimeout(() => haptic("tick"), delay + ARRIVE_MS));
+      // A tap as the words land in the chip, with the chip's ring; only for a flight that really
+      // happens, and not if the chip was answered and removed on the way.
+      if (flying.length) ticks.push(setTimeout(() => { if (chip.isConnected) haptic("tick"); }, delay + ARRIVE_MS));
       return flying;
     }))
     : () => {};

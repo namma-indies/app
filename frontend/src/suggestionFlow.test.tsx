@@ -64,6 +64,17 @@ describe("the glow and flow around suggestions", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it("does not tap for a chip that was answered and removed before the words arrived", () => {
+    vi.useFakeTimers();
+    try {
+      render(scene(["sex", "name"]));
+      vi.advanceTimersByTime(ARRIVE_MS - 200);
+      screen.getByRole("button", { name: "female" }).remove(); // answered; the scope stays mounted
+      vi.advanceTimersByTime(1000);
+      expect(haptic).toHaveBeenCalledTimes(1); // only the other chip's landing
+    } finally { vi.useRealTimers(); }
+  });
+
   it("plays once: answering one suggestion does not replay the rest, a new one plays alone", () => {
     const { rerender } = render(scene(["sex", "name"]));
     animate.mockClear();
