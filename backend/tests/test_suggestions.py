@@ -643,7 +643,9 @@ def test_the_count_line_reaches_the_log_under_the_deployed_logging_setup():
     import os, subprocess, sys
     from pathlib import Path
     backend = str(Path(__file__).resolve().parent.parent)
-    code = ("import logging; import app.main; "
+    # uvicorn.Config applies uvicorn's default logging dictConfig and imports the app, as
+    # `uvicorn app.main:app` (deploy/entrypoint.sh) does.
+    code = ("import logging; from uvicorn import Config; Config('app.main:app').load(); "
             "logging.getLogger('app.suggestions').info('suggestions for transcript=T: model gave 2, kept 1')")
     done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=backend,
                           env={**os.environ, "PYTHONPATH": backend}, timeout=60)
