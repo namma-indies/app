@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { haptic } from "../haptics";
 import { UPLOAD_COMPLETE_EVENT } from "../processing";
 import { recordAcknowledged, type Streak } from "../streak";
 import CatSprite, { type CatCoat } from "./CatSprite";
@@ -28,6 +29,8 @@ export const CELEBRATION_MS = 2400;
 const PIECES = 16;
 /** Confetti grows with the count, up to here. */
 const MAX_PIECES = 48;
+/** Extra taps for a queue catching up, so a burst is felt but stays brief. */
+const MAX_EXTRA_TAPS = 3;
 const DOG_COATS: Coat[] = ["tan", "black", "piebald", "brindle", "ghost"];
 const CAT_COATS: CatCoat[] = ["ginger", "sooty", "tabby", "calico", "smoke"];
 const CONFETTI = ["var(--accent)", "var(--accent-2)", "var(--leaf)", "var(--indigo)", "var(--frame)"];
@@ -78,6 +81,7 @@ export default function Celebration() {
   const [streak, setStreak] = useState<Streak | null>(null);
   const [quiet, setQuiet] = useState(false);
   const running = useRef(false);
+  const taps = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
@@ -91,9 +95,14 @@ export default function Celebration() {
       // full-screen layers -- but it now says how many.
       if (running.current) {
         setCount((n) => n + 1);
+        // The party grows with the count: one more tap each, a few at most.
+        if (++taps.current <= MAX_EXTRA_TAPS) haptic("tick");
         return;
       }
       running.current = true;
+      taps.current = 0;
+      // Felt even when reduced motion skips the confetti: it is the event, not the animation.
+      haptic("logged");
       setQuiet(prefersReducedMotion());
       setCount(1);
       setRun((n) => n + 1);

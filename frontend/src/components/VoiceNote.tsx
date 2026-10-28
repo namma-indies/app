@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { haptic } from "../haptics";
 
 /** Longest note we keep. Recording stops itself here (#96). */
 export const MAX_NOTE_SECONDS = 60;
@@ -98,11 +99,13 @@ export default function VoiceNote({
     rec.onstop = () => {
       release();
       setRecording(false);
+      haptic("recordStop");
       const note = new Blob(chunks, { type: (rec.mimeType || type || "audio/mp4").split(";")[0] });
       onChange(note.size > 0 ? note : null);
     };
     recorder.current = rec;
     rec.start();
+    haptic("recordStart");
     setSeconds(0);
     setRecording(true);
     const began = Date.now();
