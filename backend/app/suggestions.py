@@ -61,7 +61,11 @@ CHOICES = {
     "condition": ("healthy", "injured"),
 }
 FIELDS = (*CHOICES, "known_name")
-MAX_ATTEMPTS = 5
+# Ten attempts, waits doubling from a minute and capped at six hours (about
+# eight and a half hours in all): a worker outage should heal by itself once
+# the worker is back, not strand every note uploaded while it was down (#116).
+MAX_ATTEMPTS = 10
+MAX_RETRY_DELAY_S = 6 * 3600
 # More animals than this in one upload and a note is unlikely to tell them
 # apart; the photos would also dominate the request's cost.
 MAX_ANIMALS = 8
@@ -337,7 +341,7 @@ async def _finish(pool, transcript_id, status, *, error=None, delay_s=0, refund=
 async def _failed(pool, transcript_id, attempts, error: str, *, retryable=True):
     give_up = not retryable or attempts >= MAX_ATTEMPTS
     await _finish(pool, transcript_id, "failed" if give_up else "pending", error=error,
-                  delay_s=min(3600, 30 * 2 ** attempts))
+                  delay_s=min(MAX_RETRY_DELAY_S, 30 * 2 ** attempts))
 
 
 async def _store(pool, row, raw, animals, model: str):
