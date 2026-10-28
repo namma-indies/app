@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { colocatedGroups, esc, overlapPopupHtml, popupHtml } from "./DogMap";
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { colocatedGroups, esc, overlapPopupHtml, fitOnOpenAndGrowth, popupHtml, popupShift } from "./DogMap";
 import type { MappableSighting } from "../api";
 
 describe("co-located observations", () => {
@@ -198,5 +199,72 @@ describe("report button", () => {
     const html = popupHtml({ ...base, observer: "Priya", id: '" onclick="alert(1)' });
     expect(html).not.toContain('onclick="alert(1)"');
     expect(html).toContain("&quot; onclick=&quot;alert(1)");
+  });
+});
+
+describe("keeping an opened popup inside the map frame", () => {
+  const frame = { left: 0, top: 0, right: 400, bottom: 400 };
+  const m = { top: 8, right: 8, bottom: 36, left: 8 };
+  const box = (left: number, top: number, w: number, h: number) => ({ left, top, right: left + w, bottom: top + h });
+
+  it("leaves a popup that already fits alone", () => {
+    expect(popupShift(box(100, 100, 200, 200), frame, m)).toEqual([0, 0]);
+  });
+
+  it("moves a popup cut off at the bottom up by the overflow, clearing the attribution", () => {
+    // bottom at 450 vs an allowed 364 -> 86 up
+    expect(popupShift(box(100, 250, 200, 200), frame, m)).toEqual([0, -86]);
+  });
+
+  it("moves a popup cut off at the top down", () => {
+    expect(popupShift(box(100, -30, 200, 200), frame, m)).toEqual([0, 38]);
+  });
+
+  it("handles the left and right edges", () => {
+    expect(popupShift(box(-20, 100, 200, 100), frame, m)).toEqual([28, 0]);
+    expect(popupShift(box(300, 100, 200, 100), frame, m)).toEqual([-108, 0]);
+  });
+
+  it("shifts both axes at a corner", () => {
+    expect(popupShift(box(320, 300, 150, 150), frame, m)).toEqual([-78, -86]);
+  });
+
+  it("aligns a popup taller than the frame to its top so the start stays visible", () => {
+    expect(popupShift(box(100, 120, 200, 500), frame, m)).toEqual([0, -112]);
+  });
+});
+
+describe("re-fitting a popup when it grows", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function setup() {
+    const el = document.createElement("div");
+    el.innerHTML = '<details><summary>Sighting 1</summary><p>more</p></details>';
+    let opened: () => void = () => {};
+    const popup = { on: (_e: "open", cb: () => void) => { opened = cb; }, getElement: () => el };
+    const fit = vi.fn();
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => { cb(0); return 0; });
+    fitOnOpenAndGrowth(popup, fit);
+    return { el, fit, open: () => opened() };
+  }
+
+  it("fits when it opens", () => {
+    const { fit, open } = setup();
+    open();
+    expect(fit).toHaveBeenCalledTimes(1);
+  });
+
+  it("fits again when a sighting is expanded after it opened", () => {
+    const { el, fit, open } = setup();
+    open();
+    // `toggle` does not bubble: dispatch it on the <details>, as the browser does.
+    el.querySelector("details")!.dispatchEvent(new Event("toggle"));
+    expect(fit).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not fit on a toggle before it has opened", () => {
+    const { el, fit } = setup();
+    el.querySelector("details")!.dispatchEvent(new Event("toggle"));
+    expect(fit).not.toHaveBeenCalled();
   });
 });
