@@ -115,6 +115,56 @@ export function popupHtml(p: Record<string, string>): string {
     </div>`;
 }
 
+export interface Box { left: number; top: number; right: number; bottom: number }
+
+/** Room to leave between an open popup and the frame's edge. The bottom is
+ * larger because the attribution pill sits on it and would otherwise cover the
+ * popup's last row. */
+const FIT_MARGIN = { top: 8, right: 8, bottom: 36, left: 8 };
+
+/** How far the popup has to move, on screen, to lie inside the frame.
+ *
+ * MapLibre picks which side of the pin a popup opens on, but never moves the
+ * map, so a pin near an edge opened a popup that the frame (`overflow: hidden`)
+ * then cut off. A popup that is larger than the frame on an axis cannot fit; it
+ * is aligned to the top/left so its start is what stays visible (its content is
+ * capped and scrolls, see `fitPopup`). Pure, so it can be tested without a map.
+ */
+export function popupShift(popup: Box, frame: Box, m = FIT_MARGIN): [number, number] {
+  const axis = (lo: number, hi: number, frameLo: number, frameHi: number, mLo: number, mHi: number) => {
+    const minLo = frameLo + mLo;
+    const maxHi = frameHi - mHi;
+    if (hi - lo > maxHi - minLo) return minLo - lo;
+    if (lo < minLo) return minLo - lo;
+    if (hi > maxHi) return maxHi - hi;
+    return 0;
+  };
+  return [
+    axis(popup.left, popup.right, frame.left, frame.right, m.left, m.right),
+    axis(popup.top, popup.bottom, frame.top, frame.bottom, m.top, m.bottom),
+  ];
+}
+
+/** Bring a just-opened popup fully into view: cap its height to the frame (so a
+ * tall one scrolls instead of being cut), then pan the map by whatever is left
+ * over. The popup is anchored to its pin, so it travels with the pan. */
+function fitPopup(map: maplibregl.Map, popup: maplibregl.Popup): void {
+  const el = popup.getElement();
+  if (!el) return;
+  const frame = map.getContainer().getBoundingClientRect();
+  const content = el.querySelector<HTMLElement>(".maplibregl-popup-content");
+  if (content) {
+    // The tip (about 10px) and the margins are not part of the content box.
+    const room = frame.height - FIT_MARGIN.top - FIT_MARGIN.bottom - 10;
+    content.style.maxHeight = `${Math.max(room, 120)}px`;
+    content.style.overflowY = "auto";
+  }
+  const r = el.getBoundingClientRect();
+  const [dx, dy] = popupShift(r, frame);
+  // panBy moves the camera, so the content (and the popup) go the other way.
+  if (dx || dy) map.panBy([-dx, -dy], { duration: 250 });
+}
+
 export function colocatedGroups(sightings: MappableSighting[]): Map<string, MappableSighting[]> {
   const groups = new Map<string, MappableSighting[]>();
   for (const sighting of sightings) {
@@ -290,6 +340,9 @@ export default function DogMap({
               el.setAttribute("role", "button");
               el.setAttribute("aria-label", colocated.length > 1 ? `Choose from ${colocated.length} sightings at this location` : "Open sighting");
               const popup = new maplibregl.Popup({ offset: 18, maxWidth: "340px" }).setHTML(colocated.length > 1 ? overlapPopupHtml(colocated) : popupHtml(props));
+              // Not at `open` itself: MapLibre places the popup on the next render, so
+              // measuring now would measure it somewhere it is not going to be.
+              popup.on("open", () => requestAnimationFrame(() => requestAnimationFrame(() => fitPopup(map, popup))));
               marker = new maplibregl.Marker({ element: el })
                 .setLngLat(coords)
                 .setPopup(popup);
