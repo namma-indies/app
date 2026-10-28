@@ -1327,13 +1327,23 @@ button { font-family: inherit; }
 .maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: var(--line); }
 
 /* 44x44 so a thumb can hit it; the glyph stays small. Pinned to the corner,
-   it is centred in the band reserved above by the content's top padding. */
+   it sits in the middle of the 34px band reserved above by the content's top
+   padding.
+
+   The glyph's position is set outright (flex, content at the top, a fixed top
+   padding) rather than left to the browser to centre inside the button. Relying
+   on that put the glyph at the bottom of the button's content box in some
+   browsers with the real Silkscreen webfont -- ~33px down, on the photo frame's
+   corner -- while it looked centred where it was tried. */
 .maplibregl-popup-close-button {
   top: 0;
   right: 0;
   width: 44px;
   height: 44px;
-  padding: 0 0 8px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 5px 0 0;
   border-radius: 3px;
   font-family: "Silkscreen", "Courier New", monospace;
   font-size: 1.1rem;
