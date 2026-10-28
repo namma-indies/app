@@ -10,7 +10,7 @@ from app.config import settings
 from app.ids import uuid7
 from app.media_jobs import MODEL_NAME, vector_text
 from app.photos import thumb_key
-from app.suggestions import open_for_capture
+from app.suggestions import for_capture
 from app.transcription_jobs import transcripts_for
 
 
@@ -52,10 +52,12 @@ async def status(conn, storage, capture):
         for r in rows:
             tracks.setdefault(r["track_id"], []).append(r["id"])
         groups = [AnimalGroup(instance_ids=ids) for ids in tracks.values()]
+    open_suggestions, answered_suggestions = await for_capture(
+        conn, capture["id"], {i.instance_id: i.details.model_dump() for i in instances})
     return CaptureStatus(**await receipt(conn, capture), revision=capture["revision"],
         captured_at=capture["captured_at"], note=decoded(capture["attrs"]).get("note"),
         instances=instances, groups=groups, excluded_instance_ids=excluded,
-        suggestions=await open_for_capture(conn, capture["id"]),
+        suggestions=open_suggestions, answered_suggestions=answered_suggestions,
         voice_transcripts=await transcripts_for(conn, capture["id"]))
 
 

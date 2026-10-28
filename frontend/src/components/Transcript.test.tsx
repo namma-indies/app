@@ -29,7 +29,7 @@ describe("highlighting the words a suggestion came from", () => {
 
   it("marks nothing for a quote that is not there, and never matches it as a pattern", () => {
     expect(highlightSpans(heard, [{ quote: "limping", label: "Condition: injured" }])).toEqual([]);
-    expect(highlightSpans("a (b) c", [{ quote: "(b)", label: "x" }])).toEqual([{ start: 2, end: 5, label: "x", ids: [] }]);
+    expect(highlightSpans("a (b) c", [{ quote: "(b)", label: "x" }])).toEqual([{ start: 2, end: 5, label: "x", ids: [], used: false }]);
   });
 
   it("keeps every suggestion's id on a shared mark, even when their labels read the same", () => {
@@ -59,6 +59,35 @@ describe("highlighting the words a suggestion came from", () => {
     const mark = screen.getByText("She looks healthy");
     expect(mark.tagName).toBe("MARK");
     expect(mark).toHaveAttribute("title", "Condition: healthy");
+  });
+
+  it("marks a used suggestion's words too, quieter, and says what the dotted ones mean", () => {
+    render(<Transcript transcripts={[{ source: "note", language: "en", text: heard }]} highlights={[
+      { id: "a", quote: "She looks healthy", label: "Condition: healthy", used: true },
+      { id: "b", quote: "People call her", label: "Name: Kalu" },
+    ]} />);
+    const used = screen.getByText("She looks healthy");
+    expect(used).toHaveClass("is-used");
+    expect(used).toHaveAttribute("title", "Condition: healthy (filled in)");
+    expect(used).toHaveAttribute("data-fx", "a");
+    expect(screen.getByText(/People call her/)).not.toHaveClass("is-used");
+    expect(screen.getByText(/Dotted ones are already filled in/)).toBeInTheDocument();
+  });
+
+  it("says nothing about dotted marks when none is used", () => {
+    render(<Transcript transcripts={[{ source: "note", language: "en", text: heard }]}
+      highlights={[{ quote: "She looks healthy", label: "Condition: healthy" }]} />);
+    expect(screen.queryByText(/Dotted/)).not.toBeInTheDocument();
+  });
+
+  it("keeps a mark shared by an open and a used suggestion at full strength", () => {
+    const text = "She is a female.";
+    const [span] = highlightSpans(text, [
+      { id: "u", quote: "She is a female", label: "Sex: female", used: true },
+      { id: "o", quote: "She is a", label: "Ear notch: left" },
+    ]);
+    expect(span.used).toBe(false);
+    expect(span.ids).toEqual(["u", "o"]);
   });
 
   it("renders nothing when nothing was heard", () => {

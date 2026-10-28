@@ -16,11 +16,12 @@ const highlights = [
 ];
 const rect = { left: 10, top: 10, right: 60, bottom: 30, width: 50, height: 20, x: 10, y: 10, toJSON() {} } as DOMRect;
 
-function scene(ids: string[]) {
-  return <SuggestionFlow ids={ids}>
+function scene(ids: string[], usedIds: string[] = []) {
+  return <SuggestionFlow ids={ids} usedIds={usedIds}>
     <Transcript transcripts={[{ source: "note", language: "en", text }]} highlights={highlights} />
     <button className="chip suggested" data-fx-chip="sex">female</button>
     <button className="chip suggested" data-fx-chip="name">Kaalu</button>
+    <span data-testid="filled-name" data-fx-into="name">Kaalu</span>
   </SuggestionFlow>;
 }
 
@@ -72,6 +73,39 @@ describe("the glow and flow around suggestions", () => {
       screen.getByRole("button", { name: "female" }).remove(); // answered; the scope stays mounted
       vi.advanceTimersByTime(1000);
       expect(haptic).toHaveBeenCalledTimes(1); // only the other chip's landing
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("replays for a used suggestion too: softer, into the field it filled, and silent", () => {
+    vi.useFakeTimers();
+    try {
+      const { container } = render(scene([], ["name"]));
+      const mark = [...container.querySelectorAll("mark")].find((m) => m.getAttribute("data-fx") === "name")!;
+      expect(mark).toHaveAttribute("data-fx-play", "soft");
+      const field = screen.getByTestId("filled-name");
+      expect(field).toHaveAttribute("data-fx-fill", "soft");
+      expect(field.style.getPropertyValue("--fx-delay")).toBe(`${ARRIVE_MS}ms`);
+      expect(animate).toHaveBeenCalledTimes(4); // "Her name is Kaalu" flies into the field
+      vi.advanceTimersByTime(ARRIVE_MS + 2000);
+      expect(haptic).not.toHaveBeenCalled(); // reopening a sighting must not buzz every time
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("plays again every time it is shown, not just the first", () => {
+    const first = render(scene(["sex"], ["name"]));
+    expect(animate).toHaveBeenCalled();
+    first.unmount();
+    animate.mockClear();
+    render(scene(["sex"], ["name"]));
+    expect(animate).toHaveBeenCalled();
+  });
+
+  it("buzzes only for the open suggestion when both are shown", () => {
+    vi.useFakeTimers();
+    try {
+      render(scene(["sex"], ["name"]));
+      vi.advanceTimersByTime(ARRIVE_MS + 2000);
+      expect(haptic).toHaveBeenCalledTimes(1);
     } finally { vi.useRealTimers(); }
   });
 

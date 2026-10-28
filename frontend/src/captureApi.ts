@@ -47,8 +47,14 @@ export interface CaptureSuggestion {
   value: string;
   quote: string;
 }
+/** A suggestion no longer open: see AnsweredSuggestion in api.ts. */
+export interface AnsweredCaptureSuggestion extends CaptureSuggestion {
+  status: "accepted" | "corrected" | "dismissed" | "filled";
+  chosen: string | null;
+}
 export interface CaptureDetail extends CaptureSummary {
   suggestions?: CaptureSuggestion[];
+  answered_suggestions?: AnsweredCaptureSuggestion[];
   revision: number;
   instances: CaptureInstance[];
   groups: CaptureGroup[];
@@ -81,6 +87,7 @@ interface WireInstance {
 }
 interface WireCapture extends CaptureSummary {
   suggestions?: CaptureSuggestion[];
+  answered_suggestions?: AnsweredCaptureSuggestion[];
   revision: number;
   instances: WireInstance[];
   groups: CaptureGroup[];

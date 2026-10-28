@@ -506,13 +506,40 @@ def suggestions_running() -> bool:
     return settings.suggestions_enabled and settings.suggest_via == "api" and bool(settings.suggest_api_key)
 
 
-async def open_for_capture(conn, capture_id: UUID) -> list[dict]:
-    """A multi-animal capture's open suggestions, for its review sheet."""
+def answered(rows, held) -> list[dict]:
+    """The suggestions in `rows` that are no longer open, as the transcript should show them.
+
+    An answered one is reported with its recorded status and chosen value. One
+    never answered but whose field the observer filled in by hand with the same
+    value is "filled": the words still led to what is saved. An open one whose
+    field holds something else (or nothing) is not here, it is still open or
+    was overridden. `held(row)` is what that animal's field holds now.
+    """
+    out = []
+    for row in rows:
+        status = row["status"]
+        if status == "open":
+            current = held(row)
+            if not current or _normal(str(current)) != _normal(row["value"]):
+                continue
+            status, chosen = "filled", current
+        else:
+            chosen = row["decided_value"]
+        out.append({"id": row["id"], "instance_id": row["instance_id"], "field": row["field"],
+                    "value": row["value"], "quote": row["quote"], "status": status, "chosen": chosen})
+    return out
+
+
+async def for_capture(conn, capture_id: UUID, details: dict) -> tuple[list[dict], list[dict]]:
+    """A multi-animal capture's suggestions for its review sheet: (open, answered).
+
+    One query for both. `details` maps instance id to what that animal holds now.
+    """
     rows = await conn.fetch(
-        "SELECT id, instance_id, field, value, quote FROM detail_suggestions "
-        "WHERE capture_id=$1 AND status='open' AND instance_id IS NOT NULL ORDER BY field, id",
-        capture_id)
-    return [dict(r) for r in rows]
+        "SELECT id, instance_id, field, value, quote, status, decided_value FROM detail_suggestions "
+        "WHERE capture_id=$1 AND instance_id IS NOT NULL ORDER BY field, id", capture_id)
+    opened = [{k: r[k] for k in ("id", "instance_id", "field", "value", "quote")} for r in rows if r["status"] == "open"]
+    return opened, answered(rows, lambda r: details.get(r["instance_id"], {}).get(r["field"]))
 
 
 class Decision(BaseModel):

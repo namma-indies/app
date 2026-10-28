@@ -55,6 +55,28 @@ describe("uploads in the Journal", () => {
     expect(screen.getByText("review sheet for c")).toBeInTheDocument();
   });
 
+  it("keeps marking the words behind a saved detail, quieter, and not the ones that were turned down (#127)", async () => {
+    load([sighting("a", {
+      attrs: { sex: "male", condition: "healthy" },
+      voice_transcripts: [{ source: "note", language: "en", text: "So he was healthy back then. He is also vaccinated. He is a house cat." }],
+      answered_suggestions: [
+        { id: "u", field: "sex", value: "male", quote: "He is a house cat", status: "accepted", chosen: "male" },
+        { id: "f", field: "condition", value: "healthy", quote: "he was healthy back then", status: "filled", chosen: "healthy" },
+        { id: "d", field: "known_name", value: "Tom", quote: "He is also vaccinated", status: "dismissed", chosen: null },
+        { id: "c", field: "ear_notch", value: "left", quote: "So", status: "corrected", chosen: "right" },
+      ],
+    })], []);
+    await journal();
+    await userEvent.click(screen.getByAltText("dog sighting"));
+    const marks = [...document.querySelectorAll("mark.transcript-hit")];
+    expect(marks.map((m) => m.textContent)).toEqual(["he was healthy back then", "He is a house cat"]);
+    expect(marks.every((m) => m.classList.contains("is-used"))).toBe(true);
+    // Their words have somewhere to flow: the tag for the detail each filled.
+    const tags = within(document.querySelector(".viewer-tags") as HTMLElement);
+    expect(tags.getByText("♂ MALE")).toHaveAttribute("data-fx-into", "u");
+    expect(tags.getByText("HEALTHY")).toHaveAttribute("data-fx-into", "f");
+  });
+
   it("adds no entry of its own for an upload that finished", async () => {
     load([sighting("a")], [upload("done", "ready", { sighting_ids: ["a"] }), upload("empty", "no_animal")]);
     await journal();
