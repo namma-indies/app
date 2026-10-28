@@ -36,6 +36,24 @@ from app.suggestions import (consumer as suggestion_consumer, router as suggesti
 logger = logging.getLogger(__name__)
 
 
+def configure_logging() -> None:
+    """Let the app's own INFO lines out under plain `uvicorn app.main:app`.
+
+    uvicorn configures only its own loggers, so everything under `app.` would
+    otherwise inherit the root's WARNING level and drop its INFO lines (the
+    per-transcript suggestion counts among them). Idempotent.
+    """
+    app_logger = logging.getLogger("app")
+    if not app_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s:     %(name)s: %(message)s"))
+        app_logger.addHandler(handler)
+    app_logger.setLevel(logging.INFO)
+
+
+configure_logging()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # asyncpg defaults to max_size=10, and this pool is shared by two very

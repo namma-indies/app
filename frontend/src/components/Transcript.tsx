@@ -13,9 +13,10 @@ export interface Highlight {
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
- * Where each quote sits in the text, first match, overlaps dropped. Matched as
- * the API checks a quote (app/suggestions.validate): ignoring case, with any
- * run of whitespace equal to any other, so every suggestion shown has a span.
+ * Where each quote sits in the text, first match, overlaps dropped. The API
+ * checks a quote by its words alone and stores the transcript's own words
+ * (app/suggestions.validate), so a quote is a literal piece of the text here:
+ * matched ignoring case, with any run of whitespace equal to any other.
  */
 export function highlightSpans(text: string, highlights: Highlight[]): { start: number; end: number; label: string }[] {
   const found = highlights.flatMap(({ quote, label }) => {
