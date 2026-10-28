@@ -9,6 +9,7 @@ import {
   type ModerationItem,
   type ReportReason,
 } from "../api";
+import { formatWhen } from "../formatWhen";
 
 /** The queue of reported sightings, for whoever holds `trust_tier='moderator'`.
  *
@@ -176,7 +177,7 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
                 )}
                 <div className="mod-meta">
                   <div className="line">
-                    {new Date(item.captured_at).toLocaleString()}
+                    {formatWhen(item.captured_at)}
                     <br />
                     {item.observer ? `logged by ${item.observer}` : "observer unknown"}
                     <br />
@@ -256,7 +257,7 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
               )}
               <div className="mod-meta">
                 <div className="line">
-                  {new Date(item.captured_at).toLocaleString()}
+                  {formatWhen(item.captured_at)}
                   <br />
                   {item.observer ? `logged by ${item.observer}` : "observer unknown"}
                   <br />

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { discardFailed, flush, listFailed, retryFailed, type QueuedItem } from "../offline/queue";
+import { formatWhen } from "../formatWhen";
 
 export default function FailedSightings({ onClose }: { onClose: () => void }) {
   const [items, setItems] = useState<QueuedItem[]>([]);
@@ -64,7 +65,7 @@ export default function FailedSightings({ onClose }: { onClose: () => void }) {
                     <img className="failed-thumb" src={thumbUrls[item.id]} alt="" />
                   )}
                   <span className="failed-when">
-                    {new Date(item.captured_at).toLocaleString()}
+                    {formatWhen(item.captured_at)}
                   </span>
                 </div>
                 <div className="failed-actions">

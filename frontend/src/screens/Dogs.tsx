@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { getDogs, getProposals, UnauthorizedError, type Dog, type DogsResponse } from "../api";
 import Review from "./Review";
+import { formatDayRange } from "../formatWhen";
 
 /** The catalogue of identified individuals, and the matches that feed it.
  *
@@ -23,14 +24,6 @@ const TAG_LABELS: Record<string, string> = {
   healthy: "HEALTHY",
   injured: "INJURED",
 };
-
-function day(iso: string): string {
-  return new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
-}
 
 function seenLine(d: Dog): string {
   return `${d.sighting_count} SIGHTING${d.sighting_count === 1 ? "" : "S"}`;
@@ -163,7 +156,7 @@ export default function Dogs({ onUnauthorized }: { onUnauthorized: () => void })
             <div className="line">
               {seenLine(d)}
               <br />
-              {day(d.first_seen)} → {day(d.last_seen)}
+              {formatDayRange(d.first_seen, d.last_seen)}
               <br />
               {whereLine(d)}
             </div>

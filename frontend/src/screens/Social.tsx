@@ -10,6 +10,7 @@ import {
   type SocialQueue,
   type SocialShared,
 } from "../api";
+import { formatDay, formatWhen } from "../formatWhen";
 
 /** The moderators' POSTS screen: what people have shared, what goes out next
  * on @nammaindies, and what has gone out.
@@ -71,7 +72,7 @@ function SharedCard({ item, onDone, onUnauthorized }: {
         </div>
       )}
       <div className="line">
-        {item.species === "cat" ? "cat" : "dog"} · {new Date(item.captured_at).toLocaleString()} · @{item.handle}
+        {item.species === "cat" ? "cat" : "dog"} · {formatWhen(item.captured_at)} · @{item.handle}
       </div>
       <label className="social-caption">
         Caption
@@ -191,7 +192,7 @@ export default function Social({ onUnauthorized }: { onUnauthorized: () => void 
               {p.flagged && <p className="under-review">{TAKEN_DOWN}</p>}
               {p.x_post_id && (
                 <a className="link-btn" href={postUrl(p.x_post_id)} target="_blank" rel="noreferrer">
-                  View on X{p.posted_at ? ` · ${new Date(p.posted_at).toLocaleDateString()}` : ""}
+                  View on X{p.posted_at ? ` · ${formatDay(p.posted_at)}` : ""}
                 </a>
               )}
             </PickRow>

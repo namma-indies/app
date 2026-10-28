@@ -8,6 +8,7 @@ import {
   type StatsAreas,
   type StatsObserver,
 } from "../api";
+import { formatDay } from "../formatWhen";
 
 /** The operator's view of the corpus: how many people have seen how many dogs.
  *
@@ -25,11 +26,7 @@ import {
 
 function short(when: string | null): string {
   if (!when) return "—";
-  return new Date(when).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
+  return formatDay(when);
 }
 
 export default function Stats({ onUnauthorized }: { onUnauthorized: () => void }) {

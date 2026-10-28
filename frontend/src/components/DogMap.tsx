@@ -3,6 +3,7 @@ import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { MappableSighting } from "../api";
 import { processingLabel } from "../processing";
+import { formatWhen } from "../formatWhen";
 
 const BANGALORE: [number, number] = [77.59, 12.97];
 const SOURCE_ID = "sightings";
@@ -60,7 +61,7 @@ function toFeature(s: MappableSighting): GeoJSON.Feature<GeoJSON.Point> {
       id: s.id,
       processing_state: s.processing_state ?? "legacy",
       thumb: s.photos[0]?.thumb_url ?? "",
-      time: new Date(s.captured_at).toLocaleString(),
+      time: formatWhen(s.captured_at),
       note: attrs.note ?? "",
       tags: tags.join("|"),
       // Who logged it, shown on tapping a sighting and never on the pin

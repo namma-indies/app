@@ -17,6 +17,17 @@
   --danger: #b3432b;
   --leaf: #7e8b4e;
   --shadow: rgba(51, 36, 27, 0.28);
+  /* Names the sheets and pickers were written against (with hard-coded
+     fallbacks) but that were never defined, so the light-only fallbacks always
+     won -- cream cards stayed cream in dark mode. Defined here, once, as
+     aliases of the real palette so they follow the theme. */
+  --card: var(--panel);
+  --paper: var(--dust);
+  --terra: var(--accent);
+  --terra-dark: #a44a2b;
+  /* Tells the browser which scheme native controls (date pickers, selects,
+     scrollbars, <audio>) should draw in. */
+  color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -33,6 +44,8 @@
     --dust: #3a2c20;
     --danger: #d9634a;
     --shadow: rgba(0, 0, 0, 0.5);
+    --terra-dark: var(--accent);
+    color-scheme: dark;
   }
 }
 
@@ -859,7 +872,8 @@ button { font-family: inherit; }
 
 .report-sheet {
   width: min(420px, 92vw);
-  background: var(--card, #fffdf8);
+  background: var(--card);
+  color: var(--ink);
   border: 1px solid var(--line, #d8c4a6);
   border-radius: 16px;
   padding: 20px;
@@ -875,6 +889,8 @@ button { font-family: inherit; }
   padding: 10px;
   font: inherit;
   resize: vertical;
+  background: var(--bg);
+  color: var(--ink);
 }
 
 /* One of your own, taken off the shared map. You keep seeing it; you are also
@@ -923,7 +939,7 @@ button { font-family: inherit; }
   padding: 10px 12px;
   border: 1px solid var(--line, #d8c4a6);
   border-radius: 12px;
-  background: #fffdf8;
+  background: var(--panel);
   font: inherit;
   font-size: 0.85rem;
   color: var(--ink, #2e2016);
@@ -949,7 +965,7 @@ button { font-family: inherit; }
   padding: 10px 12px;
   border: 1px dashed var(--terra-dark, #a44a2b);
   border-radius: 12px;
-  background: #fffdf8;
+  background: var(--panel);
 }
 .placeless-confirm .hint { margin: 0 0 6px; }
 .placeless-confirm .hint:last-child { margin-bottom: 0; }
@@ -958,7 +974,8 @@ button { font-family: inherit; }
   width: min(460px, 94vw);
   max-height: 90dvh;
   overflow-y: auto;
-  background: #fffdf8;
+  background: var(--panel);
+  color: var(--ink);
   border: 1px solid var(--line, #d8c4a6);
   border-radius: 16px;
   padding: 20px;
@@ -970,14 +987,14 @@ button { font-family: inherit; }
 .place-search { display: flex; gap: 8px; }
 .place-search input {
   flex: 1; min-width: 0; padding: 10px 12px; font: inherit;
-  border: 1px solid var(--line, #d8c4a6); border-radius: 10px; background: #fff;
+  border: 1px solid var(--line, #d8c4a6); border-radius: 10px; background: var(--bg); color: var(--ink);
 }
 .place-search .btn { flex: none; width: auto; padding-inline: 14px; }
 .place-results { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .place-results button {
   width: 100%; text-align: left; display: flex; flex-direction: column; gap: 2px;
   padding: 8px 12px; font: inherit; cursor: pointer;
-  border: 1px solid var(--line, #d8c4a6); border-radius: 10px; background: #fff;
+  border: 1px solid var(--line, #d8c4a6); border-radius: 10px; background: var(--bg); color: var(--ink);
 }
 .place-results span { font-size: 0.8rem; color: var(--muted, #7a6a58); }
 .pick-map-wrap { position: relative; height: min(46dvh, 340px); }
@@ -991,7 +1008,7 @@ button { font-family: inherit; }
   font-size: 2rem;
   line-height: 1;
   color: var(--terra-dark, #a44a2b);
-  text-shadow: 0 0 4px #fff, 0 0 10px #fff;
+  text-shadow: 0 0 4px var(--bg), 0 0 10px var(--bg);
   pointer-events: none;
 }
 .media-placeholder {
@@ -1010,8 +1027,8 @@ button { font-family: inherit; }
 .permission-help {
   padding: 10px 12px;
   border-radius: 10px;
-  background: #f4ead9;
-  color: var(--ink, #2e2016);
+  background: var(--paper);
+  color: var(--ink);
 }
 
 /* --- stats (moderator dashboard) ----------------------------------------- */
@@ -1277,3 +1294,126 @@ button { font-family: inherit; }
 .voice-suggestions { margin: 0.2rem 0 0.6rem; display: flex; flex-direction: column; gap: 0.3rem; }
 .voice-suggestion { margin: 0; font-size: 0.85rem; }
 .voice-suggestion .suggestion-quote { font-style: italic; color: var(--muted); }
+
+/* --- MapLibre, in the app's own clothes ------------------------------------
+   maplibre-gl.css ships a white popup, white zoom buttons and a white
+   attribution pill. The pins and the popup *body* were themed; the chrome
+   around them was not, so in dark mode a cream-on-white note was unreadable.
+   Everything here reads the palette variables, so light and dark both follow.
+   The attribution stays on screen (the basemap licences require it); it is
+   restyled, never hidden. */
+
+/* Popup: the card, its tip, and the close button. */
+.maplibregl-popup-content {
+  background: var(--panel);
+  color: var(--ink);
+  border: 3px solid var(--line);
+  border-radius: 4px;
+  box-shadow: 3px 3px 0 var(--shadow);
+  padding: 14px 16px 12px;
+  font-family: "Quicksand", system-ui, sans-serif;
+}
+/* The tip is a CSS triangle: its colour is the border facing the card. */
+.maplibregl-popup-anchor-top .maplibregl-popup-tip,
+.maplibregl-popup-anchor-top-left .maplibregl-popup-tip,
+.maplibregl-popup-anchor-top-right .maplibregl-popup-tip { border-bottom-color: var(--line); }
+.maplibregl-popup-anchor-bottom .maplibregl-popup-tip,
+.maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip,
+.maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip { border-top-color: var(--line); }
+.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: var(--line); }
+.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: var(--line); }
+
+.maplibregl-popup-close-button {
+  top: 2px;
+  right: 2px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 3px;
+  font-family: "Silkscreen", "Courier New", monospace;
+  font-size: 1.1rem;
+  line-height: 1;
+  color: var(--ink);
+}
+.maplibregl-popup-close-button:hover { background: var(--dust); }
+.maplibregl-popup-close-button:active { background: var(--frame); }
+
+/* Controls (zoom, locate): a stamped panel like the other chrome. */
+.maplibregl-ctrl-group {
+  background: var(--panel);
+  border: 3px solid var(--line);
+  border-radius: 4px;
+  box-shadow: 2px 2px 0 var(--shadow);
+}
+.maplibregl-ctrl-group:not(:empty) { box-shadow: 2px 2px 0 var(--shadow); }
+.maplibregl-ctrl-group button + button { border-top: 2px solid var(--line); }
+.maplibregl-ctrl-group button:not(:disabled):hover { background-color: var(--dust); }
+.maplibregl-ctrl-group button:not(:disabled):active { background-color: var(--frame); }
+/* The glyphs are dark SVG background images; in dark mode flip them to cream. */
+@media (prefers-color-scheme: dark) {
+  .maplibregl-ctrl-icon,
+  .maplibregl-ctrl-attrib-button { filter: invert(0.92) sepia(0.25); }
+}
+
+/* Attribution: small, but ink on panel so it stays readable on any tile. */
+.maplibregl-ctrl-attrib.maplibregl-compact,
+.maplibregl-ctrl.maplibregl-ctrl-attrib {
+  background: var(--panel);
+  color: var(--ink);
+  border: 2px solid var(--line);
+  border-radius: 3px;
+  font-family: "Quicksand", system-ui, sans-serif;
+  font-size: 0.7rem;
+  margin: 0 6px 6px 0;
+}
+.maplibregl-ctrl-attrib a { color: var(--ink); text-decoration: underline; }
+.maplibregl-ctrl-attrib.maplibregl-compact-show { border-radius: 14px; }
+.maplibregl-ctrl-attrib-button:focus-visible,
+.maplibregl-ctrl-group button:focus-visible,
+.maplibregl-popup-close-button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* --- Native controls: one look, not the browser's -------------------------
+   `color-scheme` (set on :root) already makes date pickers, scrollbars and
+   <audio> draw dark in dark mode. These give the controls that had no class at
+   all -- so they rendered as raw browser buttons -- the app's face. Low
+   specificity on purpose (`:where`): anything with a class of its own wins. */
+:where(button:not([class])) {
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink);
+  background: var(--panel);
+  border: 2px solid var(--line);
+  border-radius: 3px;
+  padding: 0.3rem 0.7rem;
+  cursor: pointer;
+}
+:where(button:not([class])):active { background: var(--dust); }
+
+:where(input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select, textarea) {
+  font-family: inherit;
+  color: var(--ink);
+  accent-color: var(--accent);
+}
+:where(select) { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+:where(input[type="file"]) { font-family: inherit; color: var(--ink); }
+input[type="file"]::file-selector-button {
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink);
+  background: var(--panel);
+  border: 2px solid var(--line);
+  border-radius: 3px;
+  padding: 0.3rem 0.7rem;
+  margin-right: 0.6rem;
+  cursor: pointer;
+}
+input[type="datetime-local"]::-webkit-calendar-picker-indicator { cursor: pointer; }
+audio { accent-color: var(--accent); }
+
+/* One focus ring, on the accent, for everything a keyboard can land on.
+   Components that set their own ring (sign-in fields, evidence cards) keep it:
+   they are more specific. */
+:where(button, a, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
