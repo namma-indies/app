@@ -238,6 +238,74 @@ async def test_an_invalid_choice_is_refused(authed_client, configured):
     assert r.status_code == 422
 
 
+def test_answered_reports_what_was_decided_and_what_was_filled_in_by_hand():
+    rows = [
+        {"id": 1, "instance_id": None, "field": "sex", "value": "female", "quote": "q", "status": "accepted", "decided_value": "female"},
+        {"id": 2, "instance_id": None, "field": "condition", "value": "healthy", "quote": "q", "status": "corrected", "decided_value": "injured"},
+        {"id": 3, "instance_id": None, "field": "known_name", "value": "Kaalu", "quote": "q", "status": "dismissed", "decided_value": None},
+        {"id": 4, "instance_id": None, "field": "ear_notch", "value": "left", "quote": "q", "status": "open", "decided_value": None},
+        {"id": 5, "instance_id": None, "field": "sex", "value": "Male", "quote": "q", "status": "open", "decided_value": None},
+    ]
+    held = {"ear_notch": "right", "sex": "male"}  # the ear notch holds something else; the sex matches ignoring case
+    out = suggestions.answered(rows, lambda r: held.get(r["field"]))
+    assert [(o["id"], o["status"], o["chosen"]) for o in out] == [
+        (1, "accepted", "female"), (2, "corrected", "injured"), (3, "dismissed", None), (5, "filled", "male")]
+
+
+@pytest.mark.asyncio
+async def test_answered_suggestions_stay_listed_but_never_among_the_open_ones(authed_client, configured):
+    client, _ = authed_client
+    sid, pool = await _sighting_with_transcript(client)
+    async with answering(MODEL_SAYS) as llm:
+        await suggestions.run_once(pool, None, llm)
+    item = (await client.get("/dex")).json()["sightings"][0]
+    offered = {s["field"]: s for s in item["suggestions"]}
+    assert item["answered_suggestions"] == []
+    await client.post(f"/suggestion/{offered['sex']['id']}", json={"verdict": "choose", "value": "female"})
+    await client.post(f"/suggestion/{offered['known_name']['id']}", json={"verdict": "dismiss"})
+
+    item = (await client.get("/dex")).json()["sightings"][0]
+    assert item["suggestions"] == []  # what "open" means did not change
+    answered = {a["field"]: a for a in item["answered_suggestions"]}
+    assert (answered["sex"]["status"], answered["sex"]["chosen"], answered["sex"]["quote"]) == ("accepted", "female", "She is asleep")
+    assert (answered["known_name"]["status"], answered["known_name"]["chosen"]) == ("dismissed", None)
+    assert answered["sex"]["id"] == offered["sex"]["id"]
+
+
+@pytest.mark.asyncio
+async def test_a_correction_is_listed_as_answered_with_the_value_chosen(authed_client, configured):
+    client, _ = authed_client
+    sid, pool = await _sighting_with_transcript(client)
+    async with answering(MODEL_SAYS[:1]) as llm:
+        await suggestions.run_once(pool, None, llm)
+    sug = (await client.get("/dex")).json()["sightings"][0]["suggestions"][0]
+    await client.post(f"/suggestion/{sug['id']}", json={"verdict": "choose", "value": "male"})
+    (a,) = (await client.get("/dex")).json()["sightings"][0]["answered_suggestions"]
+    assert (a["status"], a["value"], a["chosen"]) == ("corrected", "female", "male")
+
+
+@pytest.mark.asyncio
+async def test_a_value_typed_in_by_hand_that_matches_a_suggestion_still_counts_as_where_it_came_from(authed_client, configured):
+    client, _ = authed_client
+    r = await client.post("/sighting", files={"photos": ("d.jpg", _jpeg(), "image/jpeg")},
+                          data={"geo_source": "none", "captured_at": "2026-10-24T10:00:00Z", "sex": "female"})
+    sid = r.json()["sighting_id"]
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as c:
+        await c.execute(
+            """INSERT INTO voice_transcripts (id, capture_id, source, pipeline_version, model,
+                   outcome, language, text, segments)
+               VALUES ($1,$2,'note',$3,$4,'transcribed','en',$5,'[]')""",
+            uuid7(), sid, PIPELINE_VERSION, MODEL_NAME, HEARD)
+    async with answering([MODEL_SAYS[0], {"field": "known_name", "value": "Kaalu", "quote": "Her name is Kaalu"}]) as llm:
+        await suggestions.run_once(pool, None, llm)
+    item = (await client.get("/dex")).json()["sightings"][0]
+    assert [s["field"] for s in item["suggestions"]] == ["known_name"]
+    # The sex was filled in with the very value suggested, never answered: the words still led to it.
+    # The name is still open and blank, so it is not here.
+    assert [(a["field"], a["status"], a["chosen"]) for a in item["answered_suggestions"]] == [("sex", "filled", "female")]
+
+
 @pytest.mark.asyncio
 async def test_a_detail_the_observer_already_chose_is_not_second_guessed(authed_client, configured):
     client, _ = authed_client
@@ -418,6 +486,18 @@ async def test_a_multi_animal_capture_gets_suggestions_per_animal(authed_client,
     r = await client.post(f"/suggestion/{sug['id']}", json={"verdict": "choose", "value": "injured"})
     assert r.json()["status"] == "accepted"
     assert len((await client.get(f"/capture/{cid}")).json()["suggestions"]) == 1
+    # The answered one stays listed beside the open ones, so the transcript can keep marking it. The open
+    # lists (older builds read them, and the "Review N" count) still hold only what is open.
+    sheet = (await client.get(f"/capture/{cid}")).json()
+    assert [(a["field"], a["status"], a["chosen"]) for a in sheet["answered_suggestions"]] == [
+        ("condition", "accepted", "injured")]
+    assert sheet["answered_suggestions"][0]["instance_id"] == str(black)
+    assert [s["field"] for s in sheet["suggestions"]] == ["known_name"]
+    journal = {s["id"]: s for s in (await client.get("/dex")).json()["sightings"]}
+    assert [(a["field"], a["status"]) for a in journal[published[str(black)]]["answered_suggestions"]] == [
+        ("condition", "accepted")]
+    assert journal[published[str(black)]]["review_suggestions"] == []
+    assert journal[published[str(brown)]]["answered_suggestions"] == []
 
 
 @pytest.mark.asyncio

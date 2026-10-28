@@ -98,6 +98,17 @@ class DetailSuggestion(WireModel):
     quote: str
 
 
+class AnsweredSuggestion(DetailSuggestion):
+    """A suggestion that is no longer open, so the transcript can still mark where it came from.
+
+    `status` is the recorded answer (accepted / corrected / dismissed), or
+    "filled" for one never answered whose field now holds the suggested value.
+    `chosen` is what the field was set to, if anything.
+    """
+    status: Literal["accepted", "corrected", "dismissed", "filled"]
+    chosen: str | None = None
+
+
 class Transcript(WireModel):
     """What was heard in the voice note or the clip's sound."""
     source: Literal["note", "clip"]
@@ -113,6 +124,8 @@ class CaptureStatus(CaptureReceipt):
     groups: list[AnimalGroup]
     excluded_instance_ids: list[UUID] = Field(default_factory=list)
     suggestions: list[DetailSuggestion] = Field(default_factory=list)
+    # Added beside `suggestions` (open only), never in place of it: older builds read that.
+    answered_suggestions: list[AnsweredSuggestion] = Field(default_factory=list)
     voice_transcripts: list[Transcript] = Field(default_factory=list)
 
 

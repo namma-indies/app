@@ -31,6 +31,9 @@
 /* Words in the transcript: a halo and a soft glow on the letters themselves. Drawn on
    the mark (not a pseudo-element) so a quote that wraps onto a second line glows per line. */
 .transcript-hit { -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+/* Already filled in: the same words, quieter at rest (a dotted underline instead of a solid one),
+   so what still needs the observer stays distinguishable without colour or motion. */
+.transcript-hit.is-used { border-bottom-style: dotted; background: transparent; }
 
 /* The chip: a ring and halo (the text is never covered), and a little pop as the words land. */
 [data-fx-chip] { position: relative; }
@@ -53,15 +56,27 @@
   [data-fx-chip][data-fx-play]::after { animation: fx-ring 1500ms ease-out var(--fx-delay, 0ms) 1 backwards; }
   [data-fx-chip][data-fx-play] { animation: fx-pop 500ms ease-out var(--fx-delay, 0ms) 1 backwards; }
   [data-fx-fill] { animation: fx-fill 1500ms ease-out var(--fx-delay, 0ms) 1 backwards; }
+  /* Used suggestions replay quieter than open ones. */
+  .transcript-hit[data-fx-play="soft"] { animation-name: fx-wash-soft; }
+  [data-fx-fill="soft"] { animation-name: fx-fill-soft; }
 }
 @keyframes fx-wash {
   0%, 100% { box-shadow: 0 0 0 0 transparent; text-shadow: 0 0 0 transparent; }
   30% { box-shadow: 0 0 10px 2px var(--glow-a), 0 0 22px 4px var(--glow-b); text-shadow: 0 0 8px var(--glow-c); }
+}
+@keyframes fx-wash-soft {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; text-shadow: 0 0 0 transparent; }
+  30% { box-shadow: 0 0 6px 1px var(--glow-a); text-shadow: 0 0 5px var(--glow-c); }
 }
 @keyframes fx-ring { 0% { opacity: 0; transform: scale(0.9); } 25% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(1.04); } }
 @keyframes fx-pop { 0%, 100% { transform: scale(1); } 40% { transform: scale(1.07); } }
 @keyframes fx-fill {
   0% { box-shadow: 0 0 0 0 transparent; }
   25% { box-shadow: 0 0 0 3px var(--glow-a), 0 0 16px 4px var(--glow-b); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@keyframes fx-fill-soft {
+  0% { box-shadow: 0 0 0 0 transparent; }
+  25% { box-shadow: 0 0 0 2px var(--glow-a), 0 0 8px 2px var(--glow-b); }
   100% { box-shadow: 0 0 0 0 transparent; }
 }

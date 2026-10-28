@@ -8,6 +8,7 @@ from app.auth.deps import require_observer
 from app.deps import get_conn, get_storage
 from app.photos import thumb_key
 from app.storage.s3 import S3Storage
+from app.suggestions import answered
 from app.transcription_jobs import PIPELINE_VERSION as TRANSCRIBE_PIPELINE
 
 router = APIRouter()
@@ -153,14 +154,24 @@ async def get_dex(
     # ("review_suggestions"), to highlight and to point at that sheet.
     offered: dict[str, list[dict]] = {}
     for_animal: dict[str, list[dict]] = {}
+    # Every row, answered or not: the answered ones are reported in
+    # `answered_suggestions` so the transcript can keep marking where a saved
+    # detail came from. `suggestions` and `review_suggestions` stay open-only.
+    closed: dict[str, list] = {}
     if capture_ids:
         for row in await conn.fetch(
-            "SELECT d.id, d.capture_id, d.instance_id, d.field, d.value, d.quote, a.sighting_id "
+            "SELECT d.id, d.capture_id, d.instance_id, d.field, d.value, d.quote, d.status, "
+            "d.decided_value, a.sighting_id "
             "FROM detail_suggestions d LEFT JOIN animal_instances a ON a.id = d.instance_id "
-            "WHERE d.capture_id = ANY($1::uuid[]) AND d.status = 'open' "
-            "ORDER BY d.field, d.id",
+            "WHERE d.capture_id = ANY($1::uuid[]) ORDER BY d.field, d.id",
             list(capture_ids),
         ):
+            own = str(row["capture_id"]) if row["instance_id"] is None else (
+                str(row["sighting_id"]) if row["sighting_id"] is not None else None)
+            if own is not None:
+                closed.setdefault(own, []).append(row)
+            if row["status"] != "open":
+                continue
             item = {"id": str(row["id"]), "field": row["field"], "value": row["value"],
                     "quote": row["quote"]}
             if row["instance_id"] is None:
@@ -175,6 +186,12 @@ async def get_dex(
         sighting["review_suggestions"] = [
             o for o in for_animal.get(sighting["id"], [])
             if sighting["details_editable"] and not sighting["attrs"].get(o["field"])
+        ]
+        # A /sighting upload's suggestions are keyed by its capture; an animal's by itself.
+        own = sighting["capture_id"] if sighting["capture_id"] == sighting["id"] else sighting["id"]
+        sighting["answered_suggestions"] = [
+            {**o, "id": str(o["id"]), "instance_id": None if o["instance_id"] is None else str(o["instance_id"])}
+            for o in answered(closed.get(own, []), lambda r, s=sighting: s["attrs"].get(r["field"]))
         ]
 
     return {"sightings": [sightings[sid] for sid in order]}

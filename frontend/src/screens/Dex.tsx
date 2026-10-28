@@ -5,6 +5,7 @@ import {
   getMe,
   setSightingShared,
   UnauthorizedError,
+  isUsed,
   type Sighting,
 } from "../api";
 import SuggestedDetails from "../components/SuggestedDetails";
@@ -28,12 +29,17 @@ const TAG_LABELS: Record<string, string> = {
   injured: "INJURED",
 };
 
-function attrTags(s: Sighting): string[] {
+/** The details shown as tags, with the field each one is, so a used suggestion can flow into its own. */
+function attrTagFields(s: Sighting): { field: "sex" | "ear_notch" | "condition"; label: string }[] {
   const attrs = s.attrs || {};
-  const raw = [attrs.sex, attrs.ear_notch, attrs.condition] as (string | undefined)[];
-  return raw
-    .filter((v): v is string => !!v && v !== "unsure" && v !== "none")
-    .map((v) => TAG_LABELS[v] ?? v);
+  return (["sex", "ear_notch", "condition"] as const)
+    .map((field) => ({ field, value: attrs[field] as string | undefined }))
+    .filter(({ value }) => !!value && value !== "unsure" && value !== "none")
+    .map(({ field, value }) => ({ field, label: TAG_LABELS[value!] ?? value! }));
+}
+
+function attrTags(s: Sighting): string[] {
+  return attrTagFields(s).map((t) => t.label);
 }
 
 function where(s: Sighting): string {
@@ -316,9 +322,15 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
             </p>
             {selected.attrs?.note && <p className="viewer-note">{selected.attrs.note}</p>}
             {selected.audio_url && <audio className="viewer-audio" src={selected.audio_url} controls preload="none" aria-label="voice note" />}
-            <SuggestionFlow key={selected.id} ids={[...(selected.suggestions ?? []), ...(selected.review_suggestions ?? [])].map((s) => s.id)}>
-              <Transcript transcripts={selected.voice_transcripts ?? []} highlights={[...(selected.suggestions ?? []), ...(selected.review_suggestions ?? [])]
-                .map((s) => ({ id: s.id, quote: s.quote, label: `${SUGGESTION_NAMES[s.field]}: ${s.value}` }))} />
+            <SuggestionFlow key={selected.id} ids={[...(selected.suggestions ?? []), ...(selected.review_suggestions ?? [])].map((s) => s.id)}
+              usedIds={(selected.answered_suggestions ?? []).filter(isUsed).map((s) => s.id)}>
+              <Transcript transcripts={selected.voice_transcripts ?? []} highlights={[
+                ...[...(selected.suggestions ?? []), ...(selected.review_suggestions ?? [])]
+                  .map((s) => ({ id: s.id, quote: s.quote, label: `${SUGGESTION_NAMES[s.field]}: ${s.value}` })),
+                // Answered and saved: still marked, quieter. A rejected or corrected one was wrong, so it isn't.
+                ...(selected.answered_suggestions ?? []).filter(isUsed)
+                  .map((s) => ({ id: s.id, quote: s.quote, label: `${SUGGESTION_NAMES[s.field]}: ${s.value}`, used: true })),
+              ]} />
               {!!selected.review_suggestions?.length && selected.capture_id && (
                 <button className="btn" data-fx-chip={selected.review_suggestions.map((s) => s.id).join(" ")} onClick={() => { const id = selected.capture_id!; setSelected(null); setReviewCaptureId(id); }}>
                   Review {selected.review_suggestions.length} {selected.review_suggestions.length === 1 ? "suggestion" : "suggestions"} from your note
@@ -332,16 +344,17 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
                   onUnauthorized={onUnauthorized}
                 />
               )}
+              {attrTags(selected).length > 0 && (
+                <div className="viewer-tags">
+                  {attrTagFields(selected).map(({ field, label }) => (
+                    <span key={field} className="tag"
+                      data-fx-into={(selected.answered_suggestions ?? []).filter((a) => isUsed(a) && a.field === field).map((a) => a.id).join(" ") || undefined}>
+                      {label}
+                    </span>
+                  ))}
+                </div>
+              )}
             </SuggestionFlow>
-            {attrTags(selected).length > 0 && (
-              <div className="viewer-tags">
-                {attrTags(selected).map((t) => (
-                  <span key={t} className="tag">
-                    {t}
-                  </span>
-                ))}
-              </div>
-            )}
           </div>
         </div>
       )}

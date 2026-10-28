@@ -10,7 +10,7 @@ import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
  * Done with CSS keyframes (the glows, in styles.css, keyed off data-fx-play /
  * data-fx-fill) and the Web Animations API (the flight, which needs measured
  * positions). Only transform and opacity are animated for the flight, so it
- * stays on the compositor. Everything plays once and ends in the normal
+ * stays on the compositor. Each showing plays once and ends in the normal
  * resting state; nothing here changes layout, takes focus or catches a tap.
  * Decoration only: the marks, chips and field values carry the meaning.
  */
@@ -27,12 +27,12 @@ export const reducedMotion = () =>
 
 const canAnimate = () => !reducedMotion() && typeof Element !== "undefined" && typeof Element.prototype.animate === "function";
 
-/** Re-arm a CSS animation that is keyed off a data attribute, with a delay. */
-function arm(el: HTMLElement, attr: string, delayMs: number) {
+/** Re-arm a CSS animation that is keyed off a data attribute, with a delay. `soft` is the quieter variant. */
+function arm(el: HTMLElement, attr: string, delayMs: number, value = "") {
   el.style.setProperty("--fx-delay", `${delayMs}ms`);
   el.removeAttribute(attr);
   void el.offsetWidth; // restart if it was already playing
-  el.setAttribute(attr, "");
+  el.setAttribute(attr, value);
 }
 
 function wordRects(el: Element): { text: string; rect: DOMRect }[] {
@@ -105,42 +105,56 @@ function withLayer(run: (layer: HTMLElement) => Promise<unknown>[]): () => void 
 /** The selector-safe form of a suggestion id. */
 const esc = (id: string) => (typeof CSS !== "undefined" && CSS.escape ? CSS.escape(id) : id.replace(/["\\]/g, "\\$&"));
 
+/** A suggestion to play: still open (flows to its chip) or used (flows into the field it filled, quieter). */
+export interface FlowItem { id: string; used?: boolean }
+
 /**
- * Play the whole sequence for these suggestions: marked words glow, fly to the
- * chip marked data-fx-chip="<id>", and the chip glows on arrival.
+ * Play the whole sequence for these suggestions. An open one: its marked words
+ * glow, fly to the chip marked data-fx-chip="<id>", the chip glows on arrival
+ * and a tap is felt. A used one (the suggestion was accepted, so what it
+ * suggested is already saved): the same, softer, into the element marked
+ * data-fx-into="<id>" (the field it filled), and silent, so reopening a
+ * sighting doesn't buzz every time.
  */
-export function playSuggestionFlow(root: HTMLElement, ids: string[]): () => void {
+export function playSuggestionFlow(root: HTMLElement, items: FlowItem[]): () => void {
   if (!canAnimate()) return () => {};
-  const flights: { mark: Element | null; chip: HTMLElement; delay: number }[] = [];
+  const flights: { mark: Element | null; target: HTMLElement; delay: number; used: boolean }[] = [];
   const watching: IntersectionObserver[] = [];
-  ids.forEach((id, i) => {
+  const armed = new Set<Element>();
+  // Open ones first, so a mark shared with a used one glows at full strength.
+  const ordered = [...items.filter((item) => !item.used), ...items.filter((item) => item.used)];
+  ordered.forEach(({ id, used = false }, i) => {
     const delay = i * STAGGER_MS;
     const mark = root.querySelector<HTMLElement>(`[data-fx~="${esc(id)}"]`);
-    const chip = root.querySelector<HTMLElement>(`[data-fx-chip~="${esc(id)}"]`);
-    if (mark) arm(mark, "data-fx-play", delay);
-    if (!chip) return;
-    if (inView(chip.getBoundingClientRect()) || typeof IntersectionObserver === "undefined") {
-      arm(chip, "data-fx-play", delay + ARRIVE_MS);
-      flights.push({ mark, chip, delay });
+    const target = root.querySelector<HTMLElement>(used ? `[data-fx-into~="${esc(id)}"]` : `[data-fx-chip~="${esc(id)}"]`);
+    if (mark && !armed.has(mark)) {
+      armed.add(mark);
+      arm(mark, "data-fx-play", delay, used ? "soft" : "");
+    }
+    if (!target) return;
+    const [attr, value] = used ? ["data-fx-fill", "soft"] : ["data-fx-play", ""];
+    if (inView(target.getBoundingClientRect()) || typeof IntersectionObserver === "undefined") {
+      arm(target, attr, delay + ARRIVE_MS, value);
+      flights.push({ mark, target, delay, used });
     } else {
       // Below the fold (the details sheet): light it, once, when it is first seen.
       const watcher = new IntersectionObserver((entries) => {
         if (!entries.some((entry) => entry.isIntersecting)) return;
         watcher.disconnect();
-        arm(chip, "data-fx-play", 0);
+        arm(target, attr, 0, value);
       });
-      watcher.observe(chip);
+      watcher.observe(target);
       watching.push(watcher);
     }
   });
   const aloft = flights.filter((f) => f.mark);
   const ticks: ReturnType<typeof setTimeout>[] = [];
   const stopFlight = aloft.length
-    ? withLayer((layer) => aloft.flatMap(({ mark, chip, delay }) => {
-      const flying = flowWords(snapshot(mark!), chip, delay + LIFT_AT_MS, layer);
-      // A tap as the words land in the chip, with the chip's ring; only for a flight that really
-      // happens, and not if the chip was answered and removed on the way.
-      if (flying.length) ticks.push(setTimeout(() => { if (chip.isConnected) haptic("tick"); }, delay + ARRIVE_MS));
+    ? withLayer((layer) => aloft.flatMap(({ mark, target, delay, used }) => {
+      const flying = flowWords(snapshot(mark!), target, delay + LIFT_AT_MS, layer);
+      // A tap as the words land in a chip, with its ring: only for a suggestion still open, only for a
+      // flight that really happens, and not if the chip was answered and removed on the way.
+      if (!used && flying.length) ticks.push(setTimeout(() => { if (target.isConnected) haptic("tick"); }, delay + ARRIVE_MS));
       return flying;
     }))
     : () => {};
@@ -163,17 +177,20 @@ export function playFill(chip: Element | null, field: HTMLElement | null): void 
 }
 
 /**
- * Play the sequence inside `ref` when suggestions appear: once for each id the
- * first time it is seen, never again (answering one doesn't replay the rest).
- * With reduced motion it does nothing, and the resting state shows through.
+ * Play the sequence inside `ref` every time it is shown: the scope is mounted
+ * per entry, so each opening plays again. Within one showing an id plays once
+ * (answering a suggestion doesn't replay the rest). `ids` are the open
+ * suggestions, `usedIds` the used ones. With reduced motion it does nothing,
+ * and the resting state shows through.
  */
-export function useSuggestionFlow(ref: RefObject<HTMLElement>, ids: string[]) {
+export function useSuggestionFlow(ref: RefObject<HTMLElement>, ids: string[], usedIds: string[] = []) {
   const seen = useRef(new Set<string>());
   const cancel = useRef<() => void>(() => {});
-  const fresh = ids.filter((id) => !seen.current.has(id));
+  const fresh: FlowItem[] = [...ids.map((id) => ({ id })), ...usedIds.map((id) => ({ id, used: true }))]
+    .filter(({ id }) => !seen.current.has(id));
   useLayoutEffect(() => {
     if (!fresh.length || !ref.current) return;
-    fresh.forEach((id) => seen.current.add(id));
+    fresh.forEach(({ id }) => seen.current.add(id));
     cancel.current();
     cancel.current = playSuggestionFlow(ref.current, fresh);
   });

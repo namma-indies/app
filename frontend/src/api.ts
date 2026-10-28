@@ -44,6 +44,16 @@ export interface Suggestion {
   quote: string;
 }
 
+/** A suggestion that is no longer open. `accepted` and `filled` (never answered, but the field
+ * holds the suggested value) are "used": what it suggested is saved. `corrected` and `dismissed`
+ * were wrong, so nothing marks them. `chosen` is what the field was set to. */
+export interface AnsweredSuggestion extends Suggestion {
+  status: "accepted" | "corrected" | "dismissed" | "filled";
+  chosen: string | null;
+}
+
+export const isUsed = (a: AnsweredSuggestion) => a.status === "accepted" || a.status === "filled";
+
 export interface Sighting {
   id: string;
   capture_id?: string | null;
@@ -73,6 +83,9 @@ export interface Sighting {
    * animal: answered in its details sheet, listed here to highlight and to
    * point there. */
   review_suggestions?: Suggestion[];
+  /** Present on /dex only, beside the open lists above (which stay open-only): the ones already
+   * answered, so the transcript can keep marking where a saved detail came from. */
+  answered_suggestions?: AnsweredSuggestion[];
   /** Present on /dex only. Offered to the team for the daily X post. */
   shared_with_team?: boolean;
   /** Present on /dex only. Whether this appears on the shared map at all. */

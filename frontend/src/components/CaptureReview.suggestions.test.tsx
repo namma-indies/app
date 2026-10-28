@@ -54,6 +54,24 @@ describe("voice-note suggestions in the review sheet", () => {
     expect(within(first).getByLabelText("Known name (optional)")).toHaveValue("Kaalu");
   });
 
+  it("keeps marking words behind a detail already saved, and not the ones turned down (#127)", async () => {
+    vi.mocked(getCapture).mockResolvedValue({ ...detail, suggestions: [detail.suggestions![1]], groups: [{ instance_ids: ["a", "c"], known_name: "Kaalu" }, { instance_ids: ["b"] }],
+      answered_suggestions: [
+        { ...detail.suggestions![0], status: "accepted", chosen: "Kaalu" },
+        { id: "no", instance_id: "b", field: "sex", value: "male", quote: "limping", status: "dismissed", chosen: null },
+      ] });
+    render(<CaptureReview captureId="c" onClose={() => {}} onSaved={() => {}} onUnauthorized={() => {}} />);
+    const used = await screen.findByTitle("Name: Kaalu (filled in)");
+    expect(used).toHaveClass("is-used");
+    // The open one is still full strength; the dismissed one is not marked at all.
+    expect(screen.getByTitle("Condition: injured")).not.toHaveClass("is-used");
+    expect(screen.queryByTitle(/Sex: male/)).not.toBeInTheDocument();
+    // Where the used one's words flow: the field it filled, under the animal it was about.
+    const first = screen.getByRole("group", { name: "Dog 1" });
+    expect(within(first).getByLabelText("Known name (optional)")).toHaveAttribute("data-fx-into", "name");
+    expect(within(screen.getByRole("group", { name: "Dog 2" })).getByLabelText("Known name (optional)")).not.toHaveAttribute("data-fx-into");
+  });
+
   it("offers each suggestion under the animal whose box it was about", async () => {
     open();
     const first = await screen.findByRole("group", { name: "Dog 1" });

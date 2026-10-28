@@ -58,7 +58,8 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
   // goes with it is decoration.
   const [announcement, setAnnouncement] = useState("");
   const sheetRef = useRef<HTMLElement>(null);
-  useSuggestionFlow(sheetRef, (detail?.suggestions ?? []).map((suggestion) => suggestion.id));
+  const alreadyUsed = (detail?.answered_suggestions ?? []).filter((suggestion) => suggestion.status === "accepted" || suggestion.status === "filled");
+  useSuggestionFlow(sheetRef, (detail?.suggestions ?? []).map((suggestion) => suggestion.id), alreadyUsed.map((suggestion) => suggestion.id));
   const unauthorizedRef = useRef(onUnauthorized);
   unauthorizedRef.current = onUnauthorized;
   useEffect(() => {
@@ -113,6 +114,9 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
   // detail is still blank there and the observer hasn't answered it.
   const suggestionsFor = (group: string): CaptureSuggestion[] => (detail?.suggestions ?? []).filter((suggestion) =>
     assignments[suggestion.instance_id] === group && !answers[suggestion.id] && !attrs[group]?.[suggestion.field]);
+  // Where a used suggestion's words flow: the field it filled, under the animal its box is grouped into.
+  const usedInto = (group: string, field: string) => [...alreadyUsed, ...(detail?.suggestions ?? []).filter((suggestion) => answers[suggestion.id] === "used")]
+    .filter((suggestion) => suggestion.field === field && assignments[suggestion.instance_id] === group).map((suggestion) => suggestion.id).join(" ") || undefined;
   const canSave = !!detail && (detail.processing_state === "needs_review" || detail.processing_state === "ready") && !error && !invalid && !saving && detail.instances.length > 0;
   async function save() {
     if (!detail || !canSave) return;
@@ -148,8 +152,13 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
       {detail && <>
         <p className="hint">Taken {formatWhen(detail.captured_at)}. Every animal from this upload shares this time and place.</p>
         {detail.note && <p>Your note: {detail.note}</p>}
-        <Transcript transcripts={detail.voice_transcripts ?? []} highlights={(detail.suggestions ?? []).filter((suggestion) => !answers[suggestion.id])
-          .map((suggestion) => ({ id: suggestion.id, quote: suggestion.quote, label: `${SUGGESTION_LABELS[suggestion.field]}: ${suggestion.value}` }))} />
+        <Transcript transcripts={detail.voice_transcripts ?? []} highlights={[
+          ...(detail.suggestions ?? []).filter((suggestion) => !answers[suggestion.id])
+            .map((suggestion) => ({ id: suggestion.id, quote: suggestion.quote, label: `${SUGGESTION_LABELS[suggestion.field]}: ${suggestion.value}` })),
+          // Used, in an earlier visit or just now: still marked, quieter. Turned down ("not this") is wrong, so it isn't.
+          ...[...alreadyUsed, ...(detail.suggestions ?? []).filter((suggestion) => answers[suggestion.id] === "used")]
+            .map((suggestion) => ({ id: suggestion.id, quote: suggestion.quote, label: `${SUGGESTION_LABELS[suggestion.field]}: ${suggestion.value}`, used: true })),
+        ]} />
         {detail.instances.length > 0 && <p className="hint">Tap a box to see where it is in the photo. The numbers only tell the boxes apart; they aren’t a count of animals.</p>}
         {[...sources].map(([photoId, items], sourceIndex) => {
           const source = items.find(({ instance }) => instance.source_thumb_url && instance.source_bbox)?.instance;
@@ -212,13 +221,13 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
             </p>)}
           </div>}
           <label>Known name (optional)
-            <input type="text" data-field="known_name" maxLength={80} value={attrs[group]?.known_name ?? ""} aria-describedby="known-name-hint"
+            <input type="text" data-field="known_name" data-fx-into={usedInto(group, "known_name")} maxLength={80} value={attrs[group]?.known_name ?? ""} aria-describedby="known-name-hint"
               onChange={(e) => setAttrs((current) => ({ ...current, [group]: { ...current[group], known_name: e.target.value } }))}
               onBlur={(e) => setAttrs((current) => ({ ...current, [group]: { ...current[group], known_name: e.target.value.trim() || null } }))} />
           </label>
           <p className="hint">Box {detail.instances.flatMap((instance, index) => assignments[instance.id] === group ? [index + 1] : []).join(", ")}</p>
           {([ ["sex", ["male", "female", "unsure"]], ["ear_notch", ["none", "left", "right", "unsure"]], ["condition", ["healthy", "injured", "unsure"]] ] as const).map(([field, options]) => <label key={field}>{FIELD_LABELS[field]}
-            <select data-field={field} value={attrs[group]?.[field] ?? ""} onChange={(e) => setAttrs((current) => ({ ...current, [group]: { ...current[group], [field]: e.target.value || undefined } }))}>
+            <select data-field={field} data-fx-into={usedInto(group, field)} value={attrs[group]?.[field] ?? ""} onChange={(e) => setAttrs((current) => ({ ...current, [group]: { ...current[group], [field]: e.target.value || undefined } }))}>
               <option value="">Not recorded</option>{options.map((value) => <option key={value} value={value}>{value}</option>)}
             </select>
           </label>)}
