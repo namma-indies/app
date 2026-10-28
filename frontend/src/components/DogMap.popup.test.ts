@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { colocatedGroups, esc, overlapPopupHtml, popupHtml, popupShift } from "./DogMap";
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { colocatedGroups, esc, overlapPopupHtml, fitOnOpenAndGrowth, popupHtml, popupShift } from "./DogMap";
 import type { MappableSighting } from "../api";
 
 describe("co-located observations", () => {
@@ -230,5 +231,40 @@ describe("keeping an opened popup inside the map frame", () => {
 
   it("aligns a popup taller than the frame to its top so the start stays visible", () => {
     expect(popupShift(box(100, 120, 200, 500), frame, m)).toEqual([0, -112]);
+  });
+});
+
+describe("re-fitting a popup when it grows", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function setup() {
+    const el = document.createElement("div");
+    el.innerHTML = '<details><summary>Sighting 1</summary><p>more</p></details>';
+    let opened: () => void = () => {};
+    const popup = { on: (_e: "open", cb: () => void) => { opened = cb; }, getElement: () => el };
+    const fit = vi.fn();
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => { cb(0); return 0; });
+    fitOnOpenAndGrowth(popup, fit);
+    return { el, fit, open: () => opened() };
+  }
+
+  it("fits when it opens", () => {
+    const { fit, open } = setup();
+    open();
+    expect(fit).toHaveBeenCalledTimes(1);
+  });
+
+  it("fits again when a sighting is expanded after it opened", () => {
+    const { el, fit, open } = setup();
+    open();
+    // `toggle` does not bubble: dispatch it on the <details>, as the browser does.
+    el.querySelector("details")!.dispatchEvent(new Event("toggle"));
+    expect(fit).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not fit on a toggle before it has opened", () => {
+    const { el, fit } = setup();
+    el.querySelector("details")!.dispatchEvent(new Event("toggle"));
+    expect(fit).not.toHaveBeenCalled();
   });
 });

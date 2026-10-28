@@ -165,6 +165,30 @@ function fitPopup(map: maplibregl.Map, popup: maplibregl.Popup): void {
   if (dx || dy) map.panBy([-dx, -dy], { duration: 250 });
 }
 
+/** The slice of a MapLibre popup that `fitOnOpenAndGrowth` needs. */
+export interface PopupLike {
+  on(event: "open", cb: () => void): unknown;
+  getElement(): HTMLElement | undefined;
+}
+
+/** Run `fit` once the popup has been laid out after opening, and again whenever
+ * it grows. The overlap chooser opens with every sighting collapsed in a
+ * `<details>`; expanding one makes the popup taller, which can push its bottom
+ * (and the report button) back outside the frame. `toggle` does not bubble, so
+ * it is caught in the capture phase. The listener lives on the popup's element,
+ * which MapLibre discards on close and rebuilds on the next open, so there is
+ * nothing to clean up.
+ *
+ * It waits two animation frames, not `open` itself: MapLibre only positions the
+ * popup on its next render, so measuring at `open` measures the wrong place. */
+export function fitOnOpenAndGrowth(popup: PopupLike, fit: () => void): void {
+  const schedule = () => requestAnimationFrame(() => requestAnimationFrame(fit));
+  popup.on("open", () => {
+    schedule();
+    popup.getElement()?.addEventListener("toggle", schedule, true);
+  });
+}
+
 export function colocatedGroups(sightings: MappableSighting[]): Map<string, MappableSighting[]> {
   const groups = new Map<string, MappableSighting[]>();
   for (const sighting of sightings) {
@@ -340,9 +364,7 @@ export default function DogMap({
               el.setAttribute("role", "button");
               el.setAttribute("aria-label", colocated.length > 1 ? `Choose from ${colocated.length} sightings at this location` : "Open sighting");
               const popup = new maplibregl.Popup({ offset: 18, maxWidth: "340px" }).setHTML(colocated.length > 1 ? overlapPopupHtml(colocated) : popupHtml(props));
-              // Not at `open` itself: MapLibre places the popup on the next render, so
-              // measuring now would measure it somewhere it is not going to be.
-              popup.on("open", () => requestAnimationFrame(() => requestAnimationFrame(() => fitPopup(map, popup))));
+              fitOnOpenAndGrowth(popup, () => fitPopup(map, popup));
               marker = new maplibregl.Marker({ element: el })
                 .setLngLat(coords)
                 .setPopup(popup);
