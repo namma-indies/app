@@ -253,6 +253,24 @@ def test_answered_reports_what_was_decided_and_what_was_filled_in_by_hand():
 
 
 @pytest.mark.asyncio
+async def test_a_sheet_suggestion_filled_in_by_hand_is_listed_open_for_older_builds_and_filled_for_new_ones():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    dog, other = uuid7(), uuid7()
+    rows = [
+        {"id": uuid7(), "instance_id": dog, "field": "condition", "value": "healthy", "quote": "q", "status": "open", "decided_value": None},
+        {"id": uuid7(), "instance_id": other, "field": "condition", "value": "injured", "quote": "q", "status": "open", "decided_value": None},
+    ]
+    conn = SimpleNamespace(fetch=AsyncMock(return_value=rows))
+    opened, answered = await suggestions.for_capture(
+        conn, uuid7(), {dog: {"condition": "healthy"}, other: {"condition": None}})
+    # The raw open list is what older builds read, so it keeps both ...
+    assert [o["id"] for o in opened] == [r["id"] for r in rows]
+    # ... and the new field says which of them is really used already: the one whose animal holds the value.
+    assert [(a["id"], a["status"], a["chosen"]) for a in answered] == [(rows[0]["id"], "filled", "healthy")]
+
+
+@pytest.mark.asyncio
 async def test_answered_suggestions_stay_listed_but_never_among_the_open_ones(authed_client, configured):
     client, _ = authed_client
     sid, pool = await _sighting_with_transcript(client)

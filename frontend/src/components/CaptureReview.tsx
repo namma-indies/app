@@ -59,7 +59,10 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
   const [announcement, setAnnouncement] = useState("");
   const sheetRef = useRef<HTMLElement>(null);
   const alreadyUsed = (detail?.answered_suggestions ?? []).filter((suggestion) => suggestion.status === "accepted" || suggestion.status === "filled");
-  useSuggestionFlow(sheetRef, (detail?.suggestions ?? []).map((suggestion) => suggestion.id), alreadyUsed.map((suggestion) => suggestion.id));
+  // The raw open list also holds one whose field was filled in by hand with its value (`filled`):
+  // that is used, not open, so it must not be treated as both.
+  const stillOpen = (detail?.suggestions ?? []).filter((suggestion) => !alreadyUsed.some((used) => used.id === suggestion.id));
+  useSuggestionFlow(sheetRef, stillOpen.map((suggestion) => suggestion.id), alreadyUsed.map((suggestion) => suggestion.id));
   const unauthorizedRef = useRef(onUnauthorized);
   unauthorizedRef.current = onUnauthorized;
   useEffect(() => {
@@ -153,7 +156,7 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
         <p className="hint">Taken {formatWhen(detail.captured_at)}. Every animal from this upload shares this time and place.</p>
         {detail.note && <p>Your note: {detail.note}</p>}
         <Transcript transcripts={detail.voice_transcripts ?? []} highlights={[
-          ...(detail.suggestions ?? []).filter((suggestion) => !answers[suggestion.id])
+          ...stillOpen.filter((suggestion) => !answers[suggestion.id])
             .map((suggestion) => ({ id: suggestion.id, quote: suggestion.quote, label: `${SUGGESTION_LABELS[suggestion.field]}: ${suggestion.value}` })),
           // Used, in an earlier visit or just now: still marked, quieter. Turned down ("not this") is wrong, so it isn't.
           ...[...alreadyUsed, ...(detail.suggestions ?? []).filter((suggestion) => answers[suggestion.id] === "used")]

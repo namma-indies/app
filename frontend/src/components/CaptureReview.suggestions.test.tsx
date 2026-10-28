@@ -72,6 +72,16 @@ describe("voice-note suggestions in the review sheet", () => {
     expect(within(screen.getByRole("group", { name: "Dog 2" })).getByLabelText("Known name (optional)")).not.toHaveAttribute("data-fx-into");
   });
 
+  it("treats a suggestion the observer already filled in by hand as used, not open", async () => {
+    // The raw open list still holds it (older builds read that), and the answered list says it is filled.
+    vi.mocked(getCapture).mockResolvedValue({ ...detail, groups: [{ instance_ids: ["a", "c"], known_name: "Kaalu" }, { instance_ids: ["b"] }],
+      answered_suggestions: [{ ...detail.suggestions![0], status: "filled", chosen: "Kaalu" }] });
+    render(<CaptureReview captureId="c" onClose={() => {}} onSaved={() => {}} onUnauthorized={() => {}} />);
+    expect(await screen.findByTitle("Name: Kaalu (filled in)")).toHaveClass("is-used");
+    expect(screen.getByTitle("Condition: injured")).not.toHaveClass("is-used");
+    expect(screen.getAllByTitle(/Name: Kaalu/)).toHaveLength(1);
+  });
+
   it("offers each suggestion under the animal whose box it was about", async () => {
     open();
     const first = await screen.findByRole("group", { name: "Dog 1" });
