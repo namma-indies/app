@@ -5,8 +5,10 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import type { Suggestion } from "../api";
 
 import { decideSuggestion as decide } from "../api";
+import { haptic } from "../haptics";
 import SuggestedDetails from "./SuggestedDetails";
 
+vi.mock("../haptics", () => ({ haptic: vi.fn() }));
 vi.mock("../api", async (original) => ({ ...await original<typeof import("../api")>(), decideSuggestion: vi.fn() }));
 const decideSuggestion = vi.mocked(decide);
 
@@ -15,6 +17,7 @@ const NAME: Suggestion = { id: "s2", field: "known_name", value: "Kaalu", quote:
 
 afterEach(cleanup);
 beforeEach(() => {
+  vi.mocked(haptic).mockClear();
   decideSuggestion.mockReset().mockResolvedValue({ status: "accepted" });
 });
 
@@ -43,6 +46,7 @@ describe("SuggestedDetails", () => {
     await act(async () => fireEvent.click(screen.getByLabelText("♀ female (suggested)")));
     expect(decideSuggestion).toHaveBeenCalledWith("s1", { verdict: "choose", value: "female" });
     expect(onDecided).toHaveBeenCalled();
+    expect(haptic).toHaveBeenCalledWith("filled");
     expect(screen.queryByLabelText("♀ female (suggested)")).not.toBeInTheDocument();
   });
 
@@ -56,6 +60,7 @@ describe("SuggestedDetails", () => {
     setup([NAME]);
     await act(async () => fireEvent.click(screen.getByText("not this")));
     expect(decideSuggestion).toHaveBeenCalledWith("s2", { verdict: "dismiss" });
+    expect(haptic).not.toHaveBeenCalled(); // saying no is not a success
     expect(screen.queryByText("FROM YOUR VOICE NOTE")).not.toBeInTheDocument();
   });
 

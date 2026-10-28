@@ -9,6 +9,7 @@ import {
 } from "../api";
 import SuggestedDetails from "../components/SuggestedDetails";
 import Transcript from "../components/Transcript";
+import SuggestionFlow from "../components/SuggestionFlow";
 import DogMap from "../components/DogMap";
 import CaptureReview from "../components/CaptureReview";
 import { getCaptures, type CaptureSummary } from "../captureApi";
@@ -315,21 +316,23 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
             </p>
             {selected.attrs?.note && <p className="viewer-note">{selected.attrs.note}</p>}
             {selected.audio_url && <audio className="viewer-audio" src={selected.audio_url} controls preload="none" aria-label="voice note" />}
-            <Transcript transcripts={selected.voice_transcripts ?? []} highlights={[...(selected.suggestions ?? []), ...(selected.review_suggestions ?? [])]
-              .map((s) => ({ quote: s.quote, label: `${SUGGESTION_NAMES[s.field]}: ${s.value}` }))} />
-            {!!selected.review_suggestions?.length && selected.capture_id && (
-              <button className="btn" onClick={() => { const id = selected.capture_id!; setSelected(null); setReviewCaptureId(id); }}>
-                Review {selected.review_suggestions.length} {selected.review_suggestions.length === 1 ? "suggestion" : "suggestions"} from your note
-              </button>
-            )}
-            {selected.suggestions && selected.suggestions.length > 0 && (
-              <SuggestedDetails
-                key={selected.id}
-                suggestions={selected.suggestions}
-                onDecided={ownFeed.refresh}
-                onUnauthorized={onUnauthorized}
-              />
-            )}
+            <SuggestionFlow key={selected.id} ids={[...(selected.suggestions ?? []), ...(selected.review_suggestions ?? [])].map((s) => s.id)}>
+              <Transcript transcripts={selected.voice_transcripts ?? []} highlights={[...(selected.suggestions ?? []), ...(selected.review_suggestions ?? [])]
+                .map((s) => ({ id: s.id, quote: s.quote, label: `${SUGGESTION_NAMES[s.field]}: ${s.value}` }))} />
+              {!!selected.review_suggestions?.length && selected.capture_id && (
+                <button className="btn" data-fx-chip={selected.review_suggestions.map((s) => s.id).join(" ")} onClick={() => { const id = selected.capture_id!; setSelected(null); setReviewCaptureId(id); }}>
+                  Review {selected.review_suggestions.length} {selected.review_suggestions.length === 1 ? "suggestion" : "suggestions"} from your note
+                </button>
+              )}
+              {selected.suggestions && selected.suggestions.length > 0 && (
+                <SuggestedDetails
+                  key={selected.id}
+                  suggestions={selected.suggestions}
+                  onDecided={ownFeed.refresh}
+                  onUnauthorized={onUnauthorized}
+                />
+              )}
+            </SuggestionFlow>
             {attrTags(selected).length > 0 && (
               <div className="viewer-tags">
                 {attrTags(selected).map((t) => (

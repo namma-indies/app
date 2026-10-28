@@ -4,9 +4,11 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import CaptureReview from "./CaptureReview";
+import { haptic } from "../haptics";
 import { decideSuggestion } from "../api";
 import { getCapture, reviewCapture, type CaptureDetail, type CaptureInstance } from "../captureApi";
 
+vi.mock("../haptics", () => ({ haptic: vi.fn() }));
 vi.mock("../captureApi", () => ({ getCapture: vi.fn(), reviewCapture: vi.fn() }));
 vi.mock("../api", async (original) => ({ ...await original<typeof import("../api")>(), decideSuggestion: vi.fn() }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
@@ -41,6 +43,15 @@ describe("voice-note suggestions in the review sheet", () => {
     expect(mark).toHaveTextContent("The brown one is Kaalu");
     await userEvent.click(within(screen.getByRole("group", { name: "Dog 2" })).getByRole("button", { name: "not this" }));
     expect(screen.queryByTitle("Condition: injured")).not.toBeInTheDocument();
+  });
+
+  it("says aloud what a used suggestion filled, so the glow is never the only sign", async () => {
+    open();
+    const first = await screen.findByRole("group", { name: "Dog 1" });
+    await userEvent.click(within(first).getByRole("button", { name: "Use Kaalu for name" }));
+    expect(screen.getByRole("status")).toHaveTextContent("Filled name with Kaalu.");
+    expect(haptic).toHaveBeenCalledWith("filled");
+    expect(within(first).getByLabelText("Known name (optional)")).toHaveValue("Kaalu");
   });
 
   it("offers each suggestion under the animal whose box it was about", async () => {
