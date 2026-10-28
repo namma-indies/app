@@ -1310,7 +1310,10 @@ button { font-family: inherit; }
   border: 3px solid var(--line);
   border-radius: 4px;
   box-shadow: 3px 3px 0 var(--shadow);
-  padding: 14px 16px 12px;
+  /* The top band belongs to the close button. Without it the button's box lands
+     on the first thing in the card -- the photo -- and on a narrow card (photo
+     and date only) the × sat on the photo frame's border. */
+  padding: 34px 16px 12px;
   font-family: "Quicksand", system-ui, sans-serif;
 }
 /* The tip is a CSS triangle: its colour is the border facing the card. */
@@ -1323,12 +1326,14 @@ button { font-family: inherit; }
 .maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: var(--line); }
 .maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: var(--line); }
 
+/* 44x44 so a thumb can hit it; the glyph stays small. Pinned to the corner,
+   it is centred in the band reserved above by the content's top padding. */
 .maplibregl-popup-close-button {
-  top: 2px;
-  right: 2px;
-  width: 26px;
-  height: 26px;
-  padding: 0;
+  top: 0;
+  right: 0;
+  width: 44px;
+  height: 44px;
+  padding: 0 0 8px;
   border-radius: 3px;
   font-family: "Silkscreen", "Courier New", monospace;
   font-size: 1.1rem;
