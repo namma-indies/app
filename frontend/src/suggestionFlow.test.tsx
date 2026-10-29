@@ -4,11 +4,25 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import SuggestionFlow from "./components/SuggestionFlow";
 import Transcript from "./components/Transcript";
-import { ARRIVE_MS, FIRST_AT_MS, playFill, STEP_MS, USED_STEP_MS } from "./suggestionFlow";
+import {
+  ARRIVE_MS, FIRST_AT_MS, MAX_PULSES, playFill, sampleSuggestionScore, SHIMMER_FROM, SHIMMER_MS, SHIMMER_TO, SHIMMER_WIDTH,
+  shimmerCrossing, STEP_MS, suggestionHaptics, USED_STEP_MS,
+} from "./suggestionFlow";
+import { readFileSync } from "node:fs";
 import { BONE, CAT_PAW, DOG_PAW, FISH, fxScope, pixelSvg, SPARKLE, TWINKLE } from "./fxSprites";
-import { haptic } from "./haptics";
+import type { Pulse } from "./haptics";
 
-vi.mock("./haptics", () => ({ haptic: vi.fn() }));
+// What would be felt: each pulse of a score as it plays (its level, and when), unless its last check says no.
+const felt = vi.hoisted(() => [] as { level: string; at: number }[]);
+vi.mock("./haptics", () => ({
+  playScore: (pulses: Pulse[]) => {
+    const timers = pulses.map((pulse) => setTimeout(() => {
+      if (!pulse.still || pulse.still()) felt.push({ level: pulse.level, at: Date.now() }); // the clock starts at 0 in each test
+    }, pulse.at));
+    return () => timers.forEach(clearTimeout);
+  },
+}));
+const levels = () => felt.map((pulse) => pulse.level);
 
 const text = "She is a female. Her name is Kaalu.";
 const highlights = [
@@ -31,16 +45,17 @@ const delayOf = (el: HTMLElement) => el.style.getPropertyValue("--fx-delay");
 
 let animate: ReturnType<typeof vi.fn>;
 beforeEach(() => {
-  vi.useFakeTimers();
+  vi.useFakeTimers({ now: 0 });
   animate = vi.fn(() => ({ finished: Promise.resolve(), cancel() {} }));
   Element.prototype.animate = animate as never;
   Range.prototype.getBoundingClientRect = () => rect;
   Element.prototype.getBoundingClientRect = () => rect;
+  Element.prototype.getClientRects = function () { return [this.getBoundingClientRect()] as never; }; // jsdom lays nothing out
 });
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
-  vi.mocked(haptic).mockClear();
+  felt.length = 0;
   vi.unstubAllGlobals();
   document.documentElement.style.removeProperty("--fx-pace");
   delete (Element.prototype as { animate?: unknown }).animate;
@@ -93,23 +108,57 @@ describe("the shimmer and comets around suggestions", () => {
     expect(layer()!.querySelector(".fx-bubble")).toBeNull();
   });
 
-  it("taps as each comet lands, in step with its ring", () => {
+  it("is felt building with the animation: the scan, each light-up, a flight getting firmer, a heavy landing, a success last", () => {
     render(scene(["sex", "name"]));
-    vi.advanceTimersByTime(FIRST_AT_MS + ARRIVE_MS - 1);
-    expect(haptic).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1);
-    expect(haptic).toHaveBeenCalledTimes(1);
-    expect(haptic).toHaveBeenCalledWith("tick");
-    vi.advanceTimersByTime(STEP_MS);
-    expect(haptic).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(10_000);
+    expect(levels()).toEqual([
+      "soft", // the shimmer crosses the phrases (both in one place here, so one tick)
+      "light", "light", "medium", "firm", "heavy",
+      "light", "light", "medium", "firm", "success",
+    ]);
+    const at = (i: number) => felt[i].at;
+    expect(at(0)).toBe(Math.floor(shimmerCrossing(0.5)));
+    expect(at(5)).toBe(FIRST_AT_MS + ARRIVE_MS); // in step with the first ring
+    expect(at(10)).toBe(FIRST_AT_MS + STEP_MS + ARRIVE_MS);
+    // The flight's ticks come closer and closer, up to the landing.
+    const gaps = [at(2) - at(1), at(3) - at(2), at(4) - at(3), at(5) - at(4)].slice(1);
+    expect(gaps[0]).toBeGreaterThan(gaps[1]);
+    expect(gaps[1]).toBeGreaterThan(gaps[2]);
   });
 
-  it("does not tap for a chip that was answered and removed before its comet arrived", () => {
+  it("ticks the scan once per open phrase, where the shimmer crosses it, and never for a used one", () => {
+    Element.prototype.getBoundingClientRect = function () {
+      if (this.tagName === "BLOCKQUOTE") return { ...rect, left: 0, right: 200, width: 200 } as DOMRect;
+      if (this.getAttribute("data-fx") === "sex") return { ...rect, left: 0, right: 40, width: 40 } as DOMRect; // a tenth of the way
+      if (this.getAttribute("data-fx") === "name") return { ...rect, left: 70, right: 130, width: 60 } as DOMRect; // halfway
+      return rect;
+    };
+    const scan = () => felt.filter((pulse) => pulse.level === "soft").map((pulse) => pulse.at);
+    render(scene(["sex", "name"]));
+    vi.advanceTimersByTime(SHIMMER_MS);
+    expect(scan()).toEqual([Math.floor(shimmerCrossing(0.1)), Math.floor(shimmerCrossing(0.5))]);
+    cleanup(); felt.length = 0;
+    vi.setSystemTime(0);
+    render(scene(["sex"], ["name"]));
+    vi.advanceTimersByTime(SHIMMER_MS);
+    expect(scan()).toEqual([Math.floor(shimmerCrossing(0.1))]);
+  });
+
+  it("stops feeling a flight whose chip was answered and removed on the way", () => {
     render(scene(["sex", "name"]));
     vi.advanceTimersByTime(FIRST_AT_MS + ARRIVE_MS - 200);
     screen.getByRole("button", { name: "female" }).remove(); // answered; the scope stays mounted
     vi.advanceTimersByTime(5000);
-    expect(haptic).toHaveBeenCalledTimes(1); // only the other chip's landing
+    expect(levels()).toEqual(["soft", "light", "light", "medium", /* removed: no more for it */ "light", "light", "medium", "firm", "success"]);
+  });
+
+  it("lights up, but feels no flight or landing, for a chip it cannot fly to", () => {
+    Element.prototype.getBoundingClientRect = function () {
+      return this.getAttribute("data-fx-chip") === "sex" ? { ...rect, top: 5000, bottom: 5020 } as DOMRect : rect;
+    };
+    render(scene(["sex"]));
+    vi.advanceTimersByTime(5000);
+    expect(levels()).toEqual(["soft", "light"]);
   });
 
   it("measures each beat when it starts, so a later comet goes where its chip is now", () => {
@@ -132,24 +181,24 @@ describe("the shimmer and comets around suggestions", () => {
     expect(layer()!.querySelectorAll(".fx-word.is-soft")).toHaveLength(4);
     expect(layer()!.querySelector(".fx-bubble")).toBeNull();
     vi.advanceTimersByTime(5000);
-    expect(haptic).not.toHaveBeenCalled(); // reopening a sighting must not buzz every time
+    expect(felt).toEqual([]); // reopening a sighting must not buzz every time
   });
 
   it("plays open suggestions first, then used ones on a shorter beat", () => {
     render(scene(["sex"], ["name"]));
     expect(delayOf(screen.getByTestId("filled-name"))).toBe(`${FIRST_AT_MS + STEP_MS + ARRIVE_MS}ms`);
     vi.advanceTimersByTime(FIRST_AT_MS + STEP_MS + USED_STEP_MS + 3000);
-    expect(haptic).toHaveBeenCalledTimes(1); // only for the open one
+    expect(levels()).toEqual(["soft", "light", "light", "medium", "firm", "success"]); // only the open one, and its landing is the last
   });
 
   it("takes all its timing from one speed setting, --fx-pace", () => {
     document.documentElement.style.setProperty("--fx-pace", "2");
     render(scene(["sex", "name"]));
     expect(delayOf(screen.getByRole("button", { name: "Kaalu" }))).toBe(`${2 * (FIRST_AT_MS + STEP_MS + ARRIVE_MS)}ms`);
-    vi.advanceTimersByTime(2 * (FIRST_AT_MS + ARRIVE_MS) - 1);
-    expect(haptic).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1);
-    expect(haptic).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(10_000);
+    expect(felt[0].at).toBe(Math.floor(2 * shimmerCrossing(0.5)));
+    expect(felt.find((pulse) => pulse.level === "heavy")!.at).toBe(2 * (FIRST_AT_MS + ARRIVE_MS));
+    expect(felt.find((pulse) => pulse.level === "success")!.at).toBe(2 * (FIRST_AT_MS + STEP_MS + ARRIVE_MS));
     const durations = animate.mock.calls.map((call) => (call[1] as { duration: number }).duration);
     expect(Math.min(...durations)).toBeGreaterThanOrEqual(2 * 700);
   });
@@ -195,12 +244,12 @@ describe("the shimmer and comets around suggestions", () => {
     expect(disconnect).toHaveBeenCalled();
   });
 
-  it("does nothing under reduced motion: the marks, chips and their paw stamps are simply there", () => {
+  it("moves nothing under reduced motion: the marks, chips and their paw stamps are simply there, with one light tap", () => {
     vi.stubGlobal("matchMedia", (query: string) => ({ matches: query.includes("reduce"), media: query }));
     const { container } = render(scene(["sex", "name"]));
     vi.runAllTimers();
     expect(animate).not.toHaveBeenCalled();
-    expect(haptic).not.toHaveBeenCalled(); // the tap only accompanies the flight, which is skipped
+    expect(felt).toEqual([{ level: "light", at: 0 }]); // no scan, flight or landing: one tap says they are there
     expect(container.querySelector("[data-fx-play], [data-fx-shimmer]")).toBeNull();
     expect(layer()).toBeNull();
     expect(container.querySelectorAll("mark")).toHaveLength(2);
@@ -231,6 +280,52 @@ describe("the shimmer and comets around suggestions", () => {
     expect(keyframes[keyframes.length - 1].transform).toContain("translate(85px,90px)");
     expect(document.querySelector(".fx-ring")).not.toBeNull();
     chip.remove(); field.remove(); document.querySelector(".fx-layer")?.remove();
+  });
+});
+
+describe("what is felt", () => {
+  it("follows the shimmer as the CSS draws it", () => {
+    const css = readFileSync(`${__dirname}/suggestionFlow.css`, "utf8");
+    expect(css).toContain(`animation: fx-shimmer calc(var(--fx-pace) * ${SHIMMER_MS}ms) ease-in-out`);
+    expect(css).toMatch(new RegExp(`\\[data-fx-shimmer\\]::after \\{[^}]*width: ${Math.round(SHIMMER_WIDTH * 100)}%`));
+    const shimmer = /@keyframes fx-shimmer \{([^@]*)\n\}/.exec(css)![1];
+    expect(shimmer).toContain(`0% { transform: translateX(${Math.round(SHIMMER_FROM * 100)}%)`);
+    expect(shimmer).toContain(`100% { transform: translateX(${Math.round(SHIMMER_TO * 100)}%)`);
+  });
+
+  it("crosses the transcript from left to right while the shimmer runs", () => {
+    const times = [0, 0.25, 0.5, 0.75, 1].map(shimmerCrossing);
+    expect(times).toEqual([...times].sort((a, b) => a - b));
+    expect(times[0]).toBeGreaterThan(0);
+    expect(times[4]).toBeLessThan(SHIMMER_MS);
+  });
+
+  it("never plays more than the cap: flights lose a tick, then the scan thins, but every light-up and landing stays", () => {
+    const count = (open: number, scan: number) => {
+      const plan = suggestionHaptics(Array.from({ length: scan }, (_, i) => 100 + i * 80), open);
+      const beats = Array.from({ length: open }, (_, i) => plan.beat(i));
+      return { scan: plan.scan.length, flight: beats[0].length - 2, total: plan.scan.length + beats.flat().length, beats };
+    };
+    expect(count(3, 6)).toMatchObject({ scan: 6, flight: 3, total: 21 });
+    expect(count(5, 6)).toMatchObject({ scan: 4, flight: 2, total: MAX_PULSES });
+    expect(count(5, 6).beats[0].map((pulse) => pulse.level)).toEqual(["light", "medium", "firm", "heavy"]); // the softest tick goes first
+    expect(count(6, 6)).toMatchObject({ scan: 0, flight: 2, total: MAX_PULSES });
+    expect(count(20, 6).total).toBeLessThanOrEqual(MAX_PULSES);
+    expect(count(20, 6).beats[19]).toEqual([]);
+  });
+
+  it("leaves out a scan tick that would blur into another or into a phrase lighting up", () => {
+    const firstLit = suggestionHaptics([], 1).beat(0)[0].at + FIRST_AT_MS;
+    expect(suggestionHaptics([400, 430, firstLit - 30, 600], 1).scan).toEqual([400, 600]);
+  });
+
+  it("offers the whole pattern to the Haptics check, at the current pace", () => {
+    const score = sampleSuggestionScore();
+    expect(score.filter((pulse) => pulse.level === "soft").length).toBeGreaterThan(0);
+    expect(score.filter((pulse) => pulse.level === "heavy")).toHaveLength(2);
+    expect(score[score.length - 1]).toEqual({ level: "success", at: FIRST_AT_MS + 2 * STEP_MS + ARRIVE_MS });
+    document.documentElement.style.setProperty("--fx-pace", "2");
+    expect(sampleSuggestionScore()[score.length - 1].at).toBe(2 * (FIRST_AT_MS + 2 * STEP_MS + ARRIVE_MS));
   });
 });
 

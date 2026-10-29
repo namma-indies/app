@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
-import { ALL_MOMENTS, haptic, hapticChannel, onHapticOutcome, switchSupported, type Moment } from "../haptics";
+import { ALL_MOMENTS, haptic, hapticChannel, onHapticOutcome, playScore, switchSupported, type Moment } from "../haptics";
+import { sampleSuggestionScore } from "../suggestionFlow";
 
 /** The check is shown on the web by `?haptics=check`, and in the apps by a long-press on the brand. */
 export const HAPTICS_CHECK_PARAM = "haptics";
@@ -51,21 +52,24 @@ export default function HapticsCheck({ onClose }: { onClose: () => void }) {
   const [build, setBuild] = useState("…");
   const [log, setLog] = useState<string[]>([]);
   const [, refresh] = useState(0);
+  const stopPattern = useRef<() => void>(() => {});
 
   useEffect(() => {
     let live = true;
     appBuild().then((value) => { if (live) setBuild(value); });
     const stop = onHapticOutcome((outcome) => {
-      setLog((lines) => [`${new Date().toLocaleTimeString()}  ${outcome}`, ...lines].slice(0, 12));
+      setLog((lines) => [`${new Date().toLocaleTimeString()}  ${outcome}`, ...lines].slice(0, 30));
       refresh((n) => n + 1);
     });
-    return () => { live = false; stop(); };
+    return () => { live = false; stop(); stopPattern.current(); };
   }, []);
 
   const play = (moment: Moment) => { haptic(moment); refresh((n) => n + 1); };
   // A buzz some time after the tap: shows whether this phone still counts the tap by then (it
   // decides if Save, which buzzes after the server answers, can tick in an iPhone browser).
   const playLater = (moment: Moment) => { window.setTimeout(() => play(moment), 1500); };
+  // What a voice note's suggestions feel like (#144): the same pulses the animation plays, without it.
+  const playPattern = () => { stopPattern.current(); stopPattern.current = playScore(sampleSuggestionScore(), "suggestion"); };
 
   return (
     <div className="haptics-check" role="dialog" aria-label="Haptics check">
@@ -87,6 +91,14 @@ export default function HapticsCheck({ onClose }: { onClose: () => void }) {
         {ALL_MOMENTS.map((moment) => (
           <button key={moment} type="button" onClick={() => playLater(moment)}>{moment} later</button>
         ))}
+      </div>
+      <h2>The suggestion pattern</h2>
+      <p className="hint">
+        What a voice note's suggestions feel like, about 4.5 s: soft ticks as the shimmer scans, a light tap as each of
+        three phrases lights up, ticks getting firmer and closer while its words fly, a heavy tap as each lands, a success last.
+      </p>
+      <div className="haptics-buttons">
+        <button type="button" onClick={playPattern}>Play the suggestion pattern</button>
       </div>
       <h2>What happened</h2>
       <pre className="haptics-log" aria-live="polite">{log.length ? log.join("\n") : "Nothing yet."}</pre>

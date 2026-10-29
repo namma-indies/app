@@ -31,6 +31,10 @@ import { Haptics, ImpactStyle, NotificationType } from "@capacitor/haptics";
  * or an answer to the person's own tap (logged, filled, record) always fires; a
  * moment that only accompanies an animation (tick) is the caller's to skip when
  * the animation is skipped.
+ *
+ * Besides the moments there is one timed shape that follows an animation: a score
+ * (playScore), pulses at levels from soft to success, used by the suggestion
+ * animation (#144) so the feel builds with what is on screen.
  */
 export type Moment = "tick" | "filled" | "logged" | "recordStart" | "recordStop";
 export const ALL_MOMENTS: Moment[] = ["tick", "filled", "logged", "recordStart", "recordStop"];
@@ -57,6 +61,25 @@ const MOMENTS: Record<Moment, Step[]> = {
   recordStop: [{ at: 0, ms: 10, ...LIGHT }],
 };
 
+/**
+ * How strong one pulse of a score is, softest first. Each has a native effect from the
+ * plugin's presets and, for Android browsers (which have no strength setting), a buzz
+ * whose length stands in for strength: a short one feels softer, a longer one stronger.
+ */
+export type Level = "soft" | "light" | "medium" | "firm" | "heavy" | "success";
+export const LEVELS: Level[] = ["soft", "light", "medium", "firm", "heavy", "success"];
+const selection = async () => { await Haptics.selectionStart(); await Haptics.selectionChanged(); await Haptics.selectionEnd(); };
+const LEVEL: Record<Level, { native: () => Promise<void>; nativeMs: number; web: number[] }> = {
+  soft: { native: selection, nativeMs: 30, web: [6] },
+  light: { native: impact(ImpactStyle.Light), nativeMs: 50, web: [10] },
+  medium: { native: impact(ImpactStyle.Medium), nativeMs: 70, web: [16] },
+  firm: { native: impact(ImpactStyle.Medium), nativeMs: 70, web: [22] },
+  heavy: { native: impact(ImpactStyle.Heavy), nativeMs: 80, web: [32] },
+  success: { native: notify(NotificationType.Success), nativeMs: 130, web: [28, 60, 40] },
+};
+/** The web vibrate pattern for one pulse at this level (for tests and the Haptics check). */
+export const webPulse = (level: Level) => [...LEVEL[level].web];
+
 function native(): boolean {
   try {
     return Capacitor.isNativePlatform() && Capacitor.isPluginAvailable("Haptics");
@@ -78,6 +101,8 @@ let busyUntil = 0;
 const MAX_WAIT_MS = 700;
 const DROPPABLE: Moment[] = ["tick"];
 const GAP_MS = 60;
+/** Until when a score's pulse is still buzzing: a moment waits for it, a score's own next pulse doesn't. */
+let scoreBusyUntil = 0;
 
 /** Alternating buzz / gap lengths, as navigator.vibrate wants them. */
 function webPattern(steps: Step[]): number[] {
@@ -183,7 +208,7 @@ export function haptic(moment: Moment): void {
       return;
     }
     const now = Date.now();
-    const wait = Math.max(0, busyUntil - now);
+    const wait = Math.max(0, busyUntil - now, scoreBusyUntil - now);
     if (wait > MAX_WAIT_MS && DROPPABLE.includes(moment)) {
       report(`${moment}: dropped (another buzz was still running)`);
       return;
@@ -210,4 +235,49 @@ export function haptic(moment: Moment): void {
     // Never let a buzz break the thing it was decorating.
     report(`${moment}: failed (${error instanceof Error ? error.message : String(error)})`);
   }
+}
+
+/** One pulse of a score: `at` ms from the start, and, optionally, a last check just before it plays. */
+export interface Pulse { at: number; level: Level; still?: () => boolean }
+
+/**
+ * Play a score: each pulse at its time, with timers, so nothing waits on it. Returns
+ * the way to stop the pulses that haven't played yet.
+ *
+ * A score is decoration: a pulse that would land while a moment is buzzing (a person's
+ * own Save, a filled field) is dropped rather than delayed, a pulse whose `still()` says
+ * no is skipped, and in iPhone browsers a pulse only ticks right after a tap (one flat
+ * tick whatever its level). Each pulse is played on its own, so on Android browsers a
+ * score never replaces a moment's longer pattern with one of its own.
+ */
+export function playScore(pulses: Pulse[], label = "score"): () => void {
+  const timers: ReturnType<typeof setTimeout>[] = [];
+  const pulse = ({ level, still }: Pulse) => {
+    const name = `${label} ${level}`;
+    try {
+      if (still && !still()) return;
+      const channel = hapticChannel();
+      if (!channel || (channel === "switch" && !tapActive())) {
+        report(`${name}: silent (${channel === "switch" ? "iPhone browsers only tick for a tap, and none just happened" : "no haptics channel here"})`);
+        return;
+      }
+      const now = Date.now();
+      if (busyUntil > now) {
+        report(`${name}: dropped (another buzz was still running)`);
+        return;
+      }
+      const { native: play, nativeMs, web } = LEVEL[level];
+      scoreBusyUntil = now + (channel === "vibrate" ? web.reduce((sum, ms) => sum + ms, 0) : nativeMs);
+      if (channel === "native") quietly(play, `${name} native`);
+      else if (channel === "switch") quietly(tickSwitch, `${name} ios-switch`);
+      else quietly(() => { if (!navigator.vibrate(web)) throw new Error("navigator.vibrate returned false"); }, `${name} vibrate`);
+    } catch (error) {
+      report(`${name}: failed (${error instanceof Error ? error.message : String(error)})`);
+    }
+  };
+  for (const each of pulses) {
+    if (each.at <= 0) pulse(each);
+    else timers.push(setTimeout(() => pulse(each), each.at));
+  }
+  return () => timers.forEach(clearTimeout);
 }

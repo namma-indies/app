@@ -1,5 +1,5 @@
 import "./suggestionFlow.css";
-import { haptic } from "./haptics";
+import { playScore, type Level, type Pulse } from "./haptics";
 import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 import { comet, pixelSvg, print, SOUNDS, type Species } from "./fxSprites";
 
@@ -22,6 +22,12 @@ import { comet, pixelSvg, print, SOUNDS, type Species } from "./fxSprites";
  *
  * The species comes from the nearest [data-fx-species] around the chip or
  * field the comet flies to. The pace is one CSS variable, --fx-pace.
+ *
+ * It is felt too, building with what is on screen (#144): a soft tick as the
+ * shimmer crosses each open phrase, a light tap as a phrase lights up, ticks
+ * that get firmer and closer together while its comet flies, and a heavy tap as
+ * it lands (a success for the last one). Every time comes from the timings
+ * below and the same pace.
  */
 
 // Base timings at --fx-pace: 1, in ms. One suggestion is a beat of STEP_MS, and
@@ -34,6 +40,27 @@ const LAUNCH_AT_MS = 600;
 const FLIGHT_MS = 700;
 export const ARRIVE_MS = LAUNCH_AT_MS + FLIGHT_MS; // the comet lands: a tap, the ring, the stamp
 const BLOOM_MS = 1000;
+const WORD_MS = GATHER_AT_MS + 300;  // a word's whole glow, from lighting up to gathered
+const WORD_PEAK = 0.25;              // where in it the glow is brightest
+const LIGHT_AT_MS = WORD_MS * WORD_PEAK; // the phrase is lit (its first word's peak)
+
+// The opening shimmer (fx-shimmer in suggestionFlow.css): a band SHIMMER_WIDTH of the
+// transcript wide slides from SHIMMER_FROM to SHIMMER_TO of its own width, ease-in-out,
+// brightest SHIMMER_GLOW of the way across. A test keeps these equal to the CSS.
+export const SHIMMER_MS = 1100;
+export const SHIMMER_WIDTH = 0.7;
+export const SHIMMER_FROM = -1.1;
+export const SHIMMER_TO = 1.6;
+const SHIMMER_GLOW = 0.49;
+
+// What is felt (#144), on the same clock.
+const FLIGHT_TICKS = [0.45, 0.7, 0.88];  // when, in the flight, a tick is felt: closer and closer up to the landing
+const FLIGHT_LEVELS: Level[] = ["light", "medium", "firm"];
+const MERGE_MS = 70;                     // pulses closer than this are felt as one, so only the stronger plays
+export const MAX_PULSES = 24;            // per showing, however many suggestions there are
+const MAX_SCAN_TICKS = 6;
+/** "each": a soft tick for every open phrase the shimmer crosses. "once": one soft tick for the whole scan. */
+const SCAN_TICKS = "each" as "each" | "once";
 const MAX_WORDS = 8;              // a long quote still lights up, but briefly
 const PRINTS = [0.22, 0.38, 0.54, 0.7, 0.86]; // where along the arc a print is left
 
@@ -124,10 +151,10 @@ function lightUp(run: Run, { items, font }: Words, to: Point | null, soft: boole
     const gather = to ? `translate(${to.x - (rect.left + rect.width / 2)}px,${to.y - (rect.top + rect.height / 2)}px) scale(0.3)` : "scale(1.04)";
     play(run, word, [
       { transform: "scale(0.94)", opacity: 0 },
-      { transform: "scale(1.06)", opacity: 1, offset: 0.25 },
+      { transform: "scale(1.06)", opacity: 1, offset: WORD_PEAK },
       { transform: "scale(1)", opacity: 1, offset: 0.6 },
       { transform: gather, opacity: 0 },
-    ], GATHER_AT_MS + 300, i * 40, "cubic-bezier(0.5, 0, 0.3, 1)");
+    ], WORD_MS, i * 40, "cubic-bezier(0.5, 0, 0.3, 1)");
   });
 }
 
@@ -218,6 +245,87 @@ function bloom(run: Run, target: Element, at: number, { soft = false, says = "" 
   ], BLOOM_MS + 200, at + 60);
 }
 
+/**
+ * When (ms, at pace 1) the shimmer's brightest colour passes a point `f` of the way
+ * across the transcript (0 its left edge, 1 its right). The band is upright, so every
+ * line is crossed at once.
+ */
+export function shimmerCrossing(f: number): number {
+  const p = (f - SHIMMER_GLOW * SHIMMER_WIDTH) / SHIMMER_WIDTH;
+  const q = Math.min(1, Math.max(0, (p - SHIMMER_FROM) / (SHIMMER_TO - SHIMMER_FROM)));
+  // CSS ease-in-out is cubic-bezier(0.42, 0, 0.58, 1): find the moment whose eased progress is q.
+  const bezier = (a: number, b: number, t: number) => 3 * (1 - t) ** 2 * t * a + 3 * (1 - t) * t * t * b + t ** 3;
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 30; i++) {
+    const mid = (lo + hi) / 2;
+    if (bezier(0, 1, mid) < q) lo = mid; else hi = mid;
+  }
+  return bezier(0.42, 0.58, lo) * SHIMMER_MS;
+}
+
+/** Where the shimmer crosses each phrase of an open suggestion that is on screen (ms, at pace 1). */
+function crossings(root: HTMLElement, open: Set<string>): number[] {
+  const out: number[] = [];
+  root.querySelectorAll<HTMLElement>(".transcript blockquote").forEach((quote) => {
+    const box = quote.getBoundingClientRect();
+    if (!box.width) return;
+    quote.querySelectorAll("[data-fx]").forEach((mark) => {
+      if (!(mark.getAttribute("data-fx") ?? "").split(" ").some((id) => open.has(id))) return;
+      const lines = [...mark.getClientRects()].filter((r) => r.width > 0 && inView(r));
+      if (lines.length) out.push(Math.min(...lines.map((r) => shimmerCrossing((r.left + r.width / 2 - box.left) / box.width))));
+    });
+  });
+  return out;
+}
+
+/**
+ * What is felt for a showing with `open` suggestions still open, the shimmer crossing
+ * their phrases at `crossed` (ms): the scan's soft ticks, and each open beat's pulses
+ * (ms from the beat's start, at pace 1).
+ *
+ * At most MAX_PULSES: every beat keeps its light-up and landing, a flight loses its
+ * first tick before the scan is trimmed. A scan tick next to another, or next to a
+ * phrase lighting up, is left out (the stronger is felt).
+ */
+export function suggestionHaptics(crossed: number[], open: number): { scan: number[]; beat: (i: number) => { at: number; level: Level }[] } {
+  const lightUps = Array.from({ length: open }, (_, i) => FIRST_AT_MS + i * STEP_MS + LIGHT_AT_MS);
+  let scan: number[] = [];
+  for (const at of [...crossed].sort((a, b) => a - b)) {
+    if (lightUps.some((lit) => Math.abs(lit - at) < MERGE_MS)) continue;
+    if (scan.length && at - scan[scan.length - 1] < MERGE_MS) continue;
+    scan.push(at);
+  }
+  scan = scan.slice(0, SCAN_TICKS === "once" ? 1 : MAX_SCAN_TICKS);
+  const beats = Math.min(open, Math.floor(MAX_PULSES / 2));
+  const room = MAX_PULSES - 2 * beats;
+  const flight = beats * FLIGHT_TICKS.length + scan.length <= room
+    ? FLIGHT_TICKS.length
+    : Math.min(FLIGHT_TICKS.length - 1, Math.floor(room / Math.max(1, beats)));
+  scan = scan.slice(0, Math.max(0, room - beats * flight));
+  const skip = FLIGHT_TICKS.length - flight;
+  return {
+    scan,
+    beat: (i) => i >= beats ? [] : [
+      { at: LIGHT_AT_MS, level: "light" },
+      ...FLIGHT_TICKS.slice(skip).map((u, n) => ({ at: LAUNCH_AT_MS + u * FLIGHT_MS, level: FLIGHT_LEVELS[skip + n] })),
+      { at: ARRIVE_MS, level: i === beats - 1 ? "success" : "heavy" },
+    ],
+  };
+}
+
+/**
+ * The whole pattern for a made-up showing (four phrases, three suggestions, every comet
+ * flying) at the current pace, as one score: for the Haptics check.
+ */
+export function sampleSuggestionScore(): Pulse[] {
+  const k = typeof document === "undefined" ? 1 : pace();
+  const plan = suggestionHaptics([0.15, 0.4, 0.62, 0.85].map(shimmerCrossing), 3);
+  return [
+    ...plan.scan.map((at) => ({ at, level: "soft" as Level })),
+    ...[0, 1, 2].flatMap((i) => plan.beat(i).map((pulse) => ({ ...pulse, at: FIRST_AT_MS + i * STEP_MS + pulse.at }))),
+  ].map((pulse) => ({ ...pulse, at: pulse.at * k }));
+}
+
 /** The selector-safe form of a suggestion id. */
 const esc = (id: string) => (typeof CSS !== "undefined" && CSS.escape ? CSS.escape(id) : id.replace(/["\\]/g, "\\$&"));
 
@@ -231,17 +339,23 @@ export interface FlowItem { id: string; used?: boolean }
  * something and keeps a paw stamp, and a tap is felt as it lands. A used one
  * (the suggestion was accepted, so what it suggested is already saved): the
  * same, softer and shorter, into the element marked data-fx-into="<id>" (the
- * field it filled), with no words and no tap, so reopening a sighting doesn't
- * buzz every time.
+ * field it filled), with no words and nothing felt, so reopening a sighting
+ * doesn't buzz every time.
+ *
+ * With reduced motion nothing moves; one light tap says open suggestions are there.
  *
  * Each beat measures where things are when it starts, so a scroll in the
  * meantime doesn't send a comet to an old place. A chip or field that is
  * below the fold gets its pop when it is first seen instead of a comet.
  */
 export function playSuggestionFlow(root: HTMLElement, items: FlowItem[]): () => void {
-  if (!canAnimate() || !items.length) return () => {};
+  if (!items.length) return () => {};
+  if (!canAnimate()) {
+    return reducedMotion() && items.some((item) => !item.used) ? playScore([{ at: 0, level: "light" }], "suggestions") : () => {};
+  }
   const k = pace();
   const timers: ReturnType<typeof setTimeout>[] = [];
+  const felt: (() => void)[] = [];
   const watching: IntersectionObserver[] = [];
   let run: Run | null = null;
   let pending = 0;
@@ -251,10 +365,15 @@ export function playSuggestionFlow(root: HTMLElement, items: FlowItem[]): () => 
   root.querySelectorAll<HTMLElement>(".transcript blockquote").forEach((quote) => arm(quote, "data-fx-shimmer", 0));
 
   const ordered = [...items.filter((item) => !item.used), ...items.filter((item) => item.used)];
+  const open = ordered.filter((item) => !item.used);
+  const plan = suggestionHaptics(crossings(root, new Set(open.map((item) => item.id))), open.length);
+  felt.push(playScore(plan.scan.map((at) => ({ at: at * k, level: "soft" })), "suggestions scan"));
+  let opened = 0;
   let start = FIRST_AT_MS;
   let said = 0;
   ordered.forEach(({ id, used = false }) => {
     const begin = start;
+    const nth = used ? -1 : opened++;
     start += used ? USED_STEP_MS : STEP_MS;
     const target = root.querySelector<HTMLElement>(used ? `[data-fx-into~="${esc(id)}"]` : `[data-fx-chip~="${esc(id)}"]`);
     const species = speciesOf(target);
@@ -288,9 +407,12 @@ export function playSuggestionFlow(root: HTMLElement, items: FlowItem[]): () => 
         if (flies) {
           fly(run, from, centre(to!), species, LAUNCH_AT_MS, used);
           bloom(run, target!, ARRIVE_MS, { soft: used, says: sound });
-          // A tap as the comet lands, with its ring: only for a suggestion still open, only for a
-          // flight that really happens, and not if the chip was answered and removed on the way.
-          if (!used) timers.push(setTimeout(() => { if (target!.isConnected) haptic("tick"); }, ARRIVE_MS * k));
+        }
+        // Felt only for a suggestion still open: its light-up, and the flight and landing
+        // only if the comet really flies. Nothing more once the chip has been answered and removed.
+        if (!used) {
+          const pulses = plan.beat(nth).filter((_, i) => flies || i === 0);
+          felt.push(playScore(pulses.map((pulse) => ({ ...pulse, at: pulse.at * k, still: () => !target || target.isConnected })), "suggestion"));
         }
       }
       finish(run.anims);
@@ -298,6 +420,7 @@ export function playSuggestionFlow(root: HTMLElement, items: FlowItem[]): () => 
   });
   return () => {
     timers.forEach(clearTimeout);
+    felt.forEach((stop) => stop());
     watching.forEach((watcher) => watcher.disconnect());
     run?.layer.getAnimations?.({ subtree: true }).forEach((anim) => anim.cancel());
     run?.layer.remove();

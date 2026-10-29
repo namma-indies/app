@@ -1,17 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const plugin = vi.hoisted(() => ({ impact: vi.fn(), notification: vi.fn() }));
+const plugin = vi.hoisted(() => ({ impact: vi.fn(), notification: vi.fn(), selectionStart: vi.fn(), selectionChanged: vi.fn(), selectionEnd: vi.fn() }));
 const platform = vi.hoisted(() => ({ native: true, available: true }));
 vi.mock("@capacitor/haptics", () => ({
   Haptics: plugin,
-  ImpactStyle: { Light: "LIGHT", Medium: "MEDIUM" },
+  ImpactStyle: { Light: "LIGHT", Medium: "MEDIUM", Heavy: "HEAVY" },
   NotificationType: { Success: "SUCCESS" },
 }));
 vi.mock("@capacitor/core", () => ({
   Capacitor: { isNativePlatform: () => platform.native, isPluginAvailable: () => platform.available },
 }));
 
-import { haptic, hapticChannel, onHapticOutcome } from "./haptics";
+import { haptic, hapticChannel, LEVELS, onHapticOutcome, playScore, webPulse } from "./haptics";
 
 let epoch = 0;
 beforeEach(() => {
@@ -21,6 +21,7 @@ beforeEach(() => {
   platform.available = true;
   plugin.impact.mockResolvedValue(undefined);
   plugin.notification.mockResolvedValue(undefined);
+  for (const fn of [plugin.selectionStart, plugin.selectionChanged, plugin.selectionEnd]) fn.mockResolvedValue(undefined);
 });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
 
@@ -168,5 +169,73 @@ describe("haptics on the web", () => {
   it("swallows a vibrate that throws", () => {
     vi.stubGlobal("navigator", { vibrate: () => { throw new Error("blocked"); } });
     expect(() => haptic("tick")).not.toThrow();
+  });
+});
+
+describe("a score (the suggestion animation's pulses, #144)", () => {
+  it("plays each level with the native preset that matches it, softest first, at its time", async () => {
+    playScore(LEVELS.map((level, i) => ({ at: i * 200, level })));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(plugin.selectionChanged).toHaveBeenCalledTimes(1); // soft: a selection tick, the gentlest there is
+    expect(plugin.selectionStart.mock.invocationCallOrder[0]).toBeLessThan(plugin.selectionChanged.mock.invocationCallOrder[0]);
+    expect(plugin.impact).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(plugin.impact.mock.calls).toEqual([[{ style: "LIGHT" }], [{ style: "MEDIUM" }], [{ style: "MEDIUM" }], [{ style: "HEAVY" }]]);
+    expect(plugin.notification).toHaveBeenCalledWith({ type: "SUCCESS" });
+  });
+
+  it("on Android browsers, stands in for strength with how long each buzz is", () => {
+    const vibrate = vi.fn((_pattern: number[]) => true);
+    vi.stubGlobal("navigator", { vibrate });
+    platform.native = false;
+    playScore(LEVELS.map((level, i) => ({ at: i * 200, level })));
+    vi.advanceTimersByTime(2000);
+    expect(vibrate.mock.calls.map(([pattern]) => pattern)).toEqual(LEVELS.map(webPulse));
+    const lengths = LEVELS.map((level) => webPulse(level).reduce((sum, ms) => sum + ms, 0));
+    expect(lengths).toEqual([...lengths].sort((a, b) => a - b)); // softer is shorter
+  });
+
+  it("does not hold its own pulses back, even when they come close together", () => {
+    playScore([{ at: 0, level: "heavy" }, { at: 20, level: "heavy" }]);
+    vi.advanceTimersByTime(100);
+    expect(plugin.impact).toHaveBeenCalledTimes(2);
+  });
+
+  it("gives way to a moment that is buzzing, and a moment waits for a pulse that is", () => {
+    const heard: string[] = [];
+    const stop = onHapticOutcome((outcome) => heard.push(outcome));
+    haptic("logged"); // the person's own Save
+    playScore([{ at: 50, level: "light" }]);
+    vi.advanceTimersByTime(60);
+    expect(heard).toContain("score light: dropped (another buzz was still running)");
+    vi.advanceTimersByTime(2000);
+    plugin.notification.mockClear();
+    playScore([{ at: 0, level: "heavy" }]);
+    haptic("filled");
+    expect(plugin.notification).not.toHaveBeenCalled(); // not on top of the heavy tap
+    vi.advanceTimersByTime(200);
+    expect(plugin.notification).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  it("skips a pulse whose last check says no, and stops the rest when told", () => {
+    let chip = true;
+    const cancel = playScore([{ at: 100, level: "light", still: () => chip }, { at: 200, level: "heavy" }, { at: 300, level: "success" }]);
+    chip = false;
+    vi.advanceTimersByTime(250);
+    expect(plugin.impact.mock.calls).toEqual([[{ style: "HEAVY" }]]);
+    cancel();
+    vi.advanceTimersByTime(1000);
+    expect(plugin.notification).not.toHaveBeenCalled();
+  });
+
+  it("stays quiet, and says so, where nothing can buzz", () => {
+    platform.native = false;
+    vi.stubGlobal("navigator", {});
+    const heard: string[] = [];
+    const stop = onHapticOutcome((outcome) => heard.push(outcome));
+    expect(() => playScore([{ at: 0, level: "heavy" }], "suggestion")).not.toThrow();
+    stop();
+    expect(heard).toEqual(["suggestion heavy: silent (no haptics channel here)"]);
   });
 });
