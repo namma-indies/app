@@ -303,6 +303,22 @@ describe("one-animal sheet", () => {
     expect(focus).toHaveBeenCalledWith({ preventScroll: true });
     focus.mockRestore();
   });
+  it("keeps keyboard focus inside the photo dialog and hands it back to the thumbnail on close", async () => {
+    const user = userEvent.setup();
+    renderOne();
+    const thumb = await screen.findByRole("button", { name: "Show the whole photo" });
+    thumb.focus();
+    await user.keyboard("{Enter}");
+    const close = screen.getByRole("button", { name: "Close photo" });
+    expect(close).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(close).toHaveFocus();
+    await user.tab();
+    expect(close).toHaveFocus();
+    expect(reviewCapture).not.toHaveBeenCalled();
+    await user.keyboard("{Escape}");
+    expect(thumb).toHaveFocus();
+  });
   it("sets a chip on tap, clears it when the chosen one is tapped again, and saves the result", async () => {
     const user = userEvent.setup();
     vi.mocked(reviewCapture).mockResolvedValue({ capture_id: "c", sighting_ids: [], processing_state: "ready" });

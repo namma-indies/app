@@ -47,13 +47,23 @@ function Evidence({ instance }: { instance: CaptureInstance }) {
 /** The whole photo(s) behind a one-animal sheet, each with the animal's box. Opened from the thumbnail. */
 function Lightbox({ photos, onClose }: { photos: { instance: CaptureInstance; index: number }[][]; onClose: () => void }) {
   const closeRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
     closeRef.current?.focus({ preventScroll: true });
-    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.stopPropagation(); onClose(); return; }
+      if (event.key !== "Tab") return;
+      // Keep Tab inside the photo: nothing behind it (Save included) can be reached while it is open.
+      const inside = [...dialogRef.current!.querySelectorAll<HTMLElement>("button, [href], input, select, [tabindex]:not([tabindex='-1'])")];
+      event.preventDefault();
+      const at = inside.indexOf(document.activeElement as HTMLElement);
+      inside[(at + (event.shiftKey ? -1 : 1) + inside.length) % inside.length]?.focus({ preventScroll: true });
+    };
     document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
+    return () => { document.removeEventListener("keydown", onKey, true); opener?.focus?.({ preventScroll: true }); };
   }, [onClose]);
-  return <div className="capture-lightbox" role="dialog" aria-modal="true" aria-label="Photo with the animal boxed" onClick={onClose}>
+  return <div className="capture-lightbox" ref={dialogRef} role="dialog" aria-modal="true" aria-label="Photo with the animal boxed" onClick={onClose}>
     <div className="capture-lightbox-frame" onClick={(event) => event.stopPropagation()}>
     <div className="capture-lightbox-body">
       {photos.map((items, i) => {
