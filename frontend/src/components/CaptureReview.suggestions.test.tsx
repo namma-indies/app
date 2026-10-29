@@ -41,7 +41,7 @@ describe("voice-note suggestions in the review sheet", () => {
     const mark = await screen.findByTitle("Name: Kaalu");
     expect(mark.tagName).toBe("MARK");
     expect(mark).toHaveTextContent("The brown one is Kaalu");
-    await userEvent.click(within(screen.getByRole("group", { name: "Dog 2" })).getByRole("button", { name: "not this" }));
+    await userEvent.click(within(screen.getByRole("group", { name: "Dog 2" })).getByRole("button", { name: "Not this suggestion for condition" }));
     expect(screen.queryByTitle("Condition: injured")).not.toBeInTheDocument();
   });
 
@@ -86,9 +86,10 @@ describe("voice-note suggestions in the review sheet", () => {
     open();
     const first = await screen.findByRole("group", { name: "Dog 1" });
     const second = screen.getByRole("group", { name: "Dog 2" });
-    expect(within(first).getByText("“The brown one is Kaalu”")).toBeInTheDocument();
-    expect(within(first).queryByText(/limping/)).not.toBeInTheDocument();
-    expect(within(second).getByText("“The black one is limping”")).toBeInTheDocument();
+    expect(within(first).getByRole("button", { name: "Use Kaalu for name" })).toBeInTheDocument();
+    expect(within(first).getByRole("radio", { name: "injured" })).not.toHaveAttribute("data-fx-chip");
+    expect(within(second).getByRole("radio", { name: /injured/ })).toHaveAttribute("data-fx-chip", "hurt");
+    expect(within(second).queryByRole("button", { name: "Use Kaalu for name" })).not.toBeInTheDocument();
   });
 
   it("fills the blank on use, and records answers only once the sheet is saved", async () => {
@@ -114,10 +115,38 @@ describe("voice-note suggestions in the review sheet", () => {
     const user = userEvent.setup();
     open();
     const second = await screen.findByRole("group", { name: "Dog 2" });
-    await user.click(within(second).getByRole("button", { name: "Use injured for condition" }));
-    await user.selectOptions(within(second).getByLabelText("Condition"), "unsure");
+    await user.click(within(second).getByRole("radio", { name: /injured/ }));
+    await user.click(within(within(second).getByRole("radiogroup", { name: "Condition" })).getByRole("radio", { name: "unsure" }));
     await user.click(screen.getByRole("button", { name: "Save animal details" }));
     expect(decideSuggestion).toHaveBeenCalledWith("hurt", { verdict: "choose", value: "unsure" });
     expect(decideSuggestion).toHaveBeenCalledTimes(1);
+  });
+
+  it("lands the words, and later the glow, on the exact chip a suggestion would fill", async () => {
+    const user = userEvent.setup();
+    open();
+    const second = await screen.findByRole("group", { name: "Dog 2" });
+    const chip = within(second).getByRole("radio", { name: /injured/ });
+    expect(chip).toHaveAttribute("data-fx-chip", "hurt");
+    expect(chip).toHaveClass("suggested");
+    expect(within(second).getByRole("radio", { name: "healthy" })).not.toHaveAttribute("data-fx-chip");
+    await user.click(chip);
+    expect(chip).toBeChecked();
+    expect(chip).not.toHaveAttribute("data-fx-chip");
+    expect(chip).toHaveAttribute("data-fx-into", "hurt");
+    expect(screen.getByRole("status")).toHaveTextContent("Filled condition with injured.");
+    expect(haptic).toHaveBeenCalledWith("filled");
+    // Moving to another chip takes the glow target with it: it is the chosen value that holds the filled-in mark.
+    await user.click(within(within(second).getByRole("radiogroup", { name: "Condition" })).getByRole("radio", { name: "unsure" }));
+    expect(chip).not.toHaveAttribute("data-fx-into");
+  });
+
+  it("points a saved suggestion's glow at the chip holding its value", async () => {
+    vi.mocked(getCapture).mockResolvedValue({ ...detail, suggestions: [detail.suggestions![0]], groups: [{ instance_ids: ["a", "c"] }, { instance_ids: ["b"], condition: "injured" }],
+      answered_suggestions: [{ ...detail.suggestions![1], status: "accepted", chosen: "injured" }] });
+    render(<CaptureReview captureId="c" onClose={() => {}} onSaved={() => {}} onUnauthorized={() => {}} />);
+    const second = await screen.findByRole("group", { name: "Dog 2" });
+    expect(within(second).getByRole("radio", { name: "injured" })).toHaveAttribute("data-fx-into", "hurt");
+    expect(within(second).getByRole("radio", { name: "healthy" })).not.toHaveAttribute("data-fx-into");
   });
 });

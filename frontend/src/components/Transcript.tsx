@@ -1,3 +1,5 @@
+import { useLayoutEffect, useRef, useState } from "react";
+
 export interface HeardText {
   source: "note" | "clip";
   language: string;
@@ -47,31 +49,47 @@ export function highlightSpans(text: string, highlights: Highlight[]): { start: 
   return kept;
 }
 
+/** One heard text. Compact: clamped to about three lines with "more", opened up
+ * from the start when a highlighted word would otherwise be cut off. */
+function Heard({ t, highlights, compact }: { t: HeardText; highlights: Highlight[]; compact: boolean }) {
+  const text = useRef<HTMLQuoteElement>(null);
+  const [open, setOpen] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  useLayoutEffect(() => {
+    const el = text.current;
+    if (!compact || !el) return;
+    setOverflows(el.scrollHeight > el.clientHeight + 1);
+    const clipped = [...el.querySelectorAll<HTMLElement>("mark")].some((mark) => mark.offsetTop + mark.offsetHeight > el.clientHeight + 1);
+    if (clipped) setOpen(true);
+  }, [compact, t.text]);
+  const spans = highlightSpans(t.text, highlights);
+  const parts: (string | JSX.Element)[] = [];
+  let at = 0;
+  spans.forEach((span, i) => {
+    if (span.start > at) parts.push(t.text.slice(at, span.start));
+    parts.push(<mark key={i} className={span.used ? "transcript-hit is-used" : "transcript-hit"}
+      title={span.used ? `${span.label} (filled in)` : span.label} data-fx={span.ids.join(" ") || undefined}>{t.text.slice(span.start, span.end)}</mark>);
+    at = span.end;
+  });
+  parts.push(t.text.slice(at));
+  const clamped = compact && !open;
+  return <figure>
+    <figcaption className="spot-label">{t.source === "note" ? "WHAT YOU SAID" : "HEARD IN YOUR VIDEO"} · {t.language.toUpperCase()}</figcaption>
+    <blockquote ref={text} className={clamped ? "is-clamped" : undefined}>{parts}</blockquote>
+    {compact && (overflows || open) && <button type="button" className="link-btn transcript-more" aria-expanded={open} onClick={() => setOpen((v) => !v)}>{open ? "less" : "more"}</button>}
+  </figure>;
+}
+
 /**
  * What was heard in a voice note or a clip's sound, with the words each open
  * suggestion came from marked (#112). It shows the observer what the model
  * worked from, so a wrong suggestion can be traced to a misheard word.
  */
-export default function Transcript({ transcripts, highlights = [] }: { transcripts: HeardText[]; highlights?: Highlight[] }) {
+export default function Transcript({ transcripts, highlights = [], compact = false }: { transcripts: HeardText[]; highlights?: Highlight[]; compact?: boolean }) {
   if (!transcripts.length) return null;
   return <div className="transcript">
-    {transcripts.map((t) => {
-      const spans = highlightSpans(t.text, highlights);
-      const parts: (string | JSX.Element)[] = [];
-      let at = 0;
-      spans.forEach((span, i) => {
-        if (span.start > at) parts.push(t.text.slice(at, span.start));
-        parts.push(<mark key={i} className={span.used ? "transcript-hit is-used" : "transcript-hit"}
-          title={span.used ? `${span.label} (filled in)` : span.label} data-fx={span.ids.join(" ") || undefined}>{t.text.slice(span.start, span.end)}</mark>);
-        at = span.end;
-      });
-      parts.push(t.text.slice(at));
-      return <figure key={t.source}>
-        <figcaption className="spot-label">{t.source === "note" ? "WHAT YOU SAID" : "HEARD IN YOUR VIDEO"} · {t.language.toUpperCase()}</figcaption>
-        <blockquote>{parts}</blockquote>
-      </figure>;
-    })}
-    {highlights.length > 0 && <p className="hint">
+    {transcripts.map((t) => <Heard key={t.source} t={t} highlights={highlights} compact={compact} />)}
+    {!compact && highlights.length > 0 && <p className="hint">
       Highlighted words are where the suggestions came from.{highlights.some((h) => h.used) && " Dotted ones are already filled in."}
     </p>}
   </div>;
