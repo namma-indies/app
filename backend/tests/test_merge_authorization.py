@@ -216,7 +216,7 @@ async def test_the_queue_says_nothing_about_where(authed_client):
 
     p = (await client.get("/proposals")).json()["proposals"][0]
     for side in (p["a"], p["b"]):
-        assert set(side) == {"sighting_id", "date", "thumb_url", "mine"}
+        assert set(side) == {"sighting_id", "species", "date", "thumb_url", "mine"}
     assert set(p) == {"id", "score", "a", "b"}
 
 
