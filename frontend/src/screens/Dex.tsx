@@ -322,7 +322,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
             </p>
             {selected.attrs?.note && <p className="viewer-note">{selected.attrs.note}</p>}
             {selected.audio_url && <audio className="viewer-audio" src={selected.audio_url} controls preload="none" aria-label="voice note" />}
-            <SuggestionFlow key={selected.id} ids={[...(selected.suggestions ?? []), ...(selected.review_suggestions ?? [])].map((s) => s.id)}
+            <SuggestionFlow key={selected.id} species={selected.species} ids={[...(selected.suggestions ?? []), ...(selected.review_suggestions ?? [])].map((s) => s.id)}
               usedIds={(selected.answered_suggestions ?? []).filter(isUsed).map((s) => s.id)}>
               <Transcript transcripts={selected.voice_transcripts ?? []} highlights={[
                 ...[...(selected.suggestions ?? []), ...(selected.review_suggestions ?? [])]

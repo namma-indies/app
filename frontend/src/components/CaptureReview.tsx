@@ -3,6 +3,7 @@ import { decideSuggestion, UnauthorizedError } from "../api";
 import Transcript from "./Transcript";
 import { haptic } from "../haptics";
 import { playFill, useSuggestionFlow } from "../suggestionFlow";
+import { fxScope } from "../fxSprites";
 import { getCapture, reviewCapture, type CaptureDetail, type CaptureGroup, type CaptureInstance, type CaptureSuggestion } from "../captureApi";
 import { formatWhen } from "../formatWhen";
 import ChipGroup from "./ChipGroup";
@@ -308,7 +309,7 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
           })}
           {!compact && <h3>Details for each animal</h3>}
           {!compact && <p className="hint" id="known-name-hint">{nameHint}</p>}
-          {groups.map((group) => <fieldset key={group} disabled={saving} className={compact ? "capture-entry-compact" : selectedId && assignments[selectedId] === group ? "capture-entry-selected" : undefined}>
+          {groups.map((group) => <fieldset key={group} disabled={saving} {...fxScope(groupSpecies.get(group)?.size === 1 ? [...groupSpecies.get(group)!][0] : null)} className={compact ? "capture-entry-compact" : selectedId && assignments[selectedId] === group ? "capture-entry-selected" : undefined}>
             <legend className={compact ? "sr-only" : undefined}>{groupLabels.get(group)}</legend>
             {details(group, compact ? compactPhotos[0]?.[0]?.instance : undefined)}
           </fieldset>)}
