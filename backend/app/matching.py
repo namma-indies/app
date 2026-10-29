@@ -34,7 +34,8 @@ from uuid import UUID
 import asyncpg
 import numpy as np
 
-from app.aggregates import animal_present
+from app.aggregates import animal_present, coarse_geog
+from app.config import settings
 from app.embed import EMBED_DIM, MODEL_NAME
 
 # How many neighbours the ANN stage pulls before exact re-ranking. Larger costs
@@ -107,16 +108,29 @@ async def find_candidates(
     params: list = [qs, MODEL_NAME, exclude_sighting_id]
     p_vecs, p_model, p_excl = "$1", "$2", "$3"
     if has_geo:
-        params += [lng, lat, radius_m]
+        # THE VICINITY IS MEASURED TO THE CANDIDATE'S CELL, NOT ITS POINT
+        # ----------------------------------------------------------------
+        # The query point is whatever the uploader sent, and whether a
+        # candidate -- and so a proposal -- exists is visible to them. Measured
+        # to the candidate's exact point, each upload would answer "is that
+        # sighting within this distance of here", which the grid cell
+        # (app/precision.py) exists to withhold. Measured to its cell centre,
+        # the answer depends on the cell alone.
+        #
+        # reid_cell_slack_m widens the radius by the most a point can sit from
+        # its cell centre, so nothing the exact radius admitted is lost: the
+        # candidate set can only grow. The plain ST_DWithin on s.geog is a
+        # looser bound the spatial index can serve; the cell test decides.
+        reach = radius_m + settings.reid_cell_slack_m
+        params += [lng, lat, reach]
         p_lng, p_lat, p_radius = "$4", "$5", "$6"
+        here = f"ST_SetSRID(ST_MakePoint({p_lng}, {p_lat}), 4326)::geography"
         geo_filter = (
-            f"AND s.geog IS NOT NULL AND ST_DWithin(s.geog, "
-            f"ST_SetSRID(ST_MakePoint({p_lng}, {p_lat}), 4326)::geography, {p_radius})"
+            f"AND s.geog IS NOT NULL"
+            f" AND ST_DWithin(s.geog, {here}, {p_radius}::float8 + {settings.reid_cell_slack_m!r})"
+            f" AND ST_DWithin({coarse_geog()}, {here}, {p_radius}::float8)"
         )
-        distance = (
-            f"ST_Distance(s.geog, ST_SetSRID("
-            f"ST_MakePoint({p_lng}, {p_lat}), 4326)::geography)"
-        )
+        distance = f"ST_Distance({coarse_geog()}, {here})"
     else:
         geo_filter = ""
         distance = "NULL::double precision"

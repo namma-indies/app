@@ -19,8 +19,8 @@ Two things this deliberately does not do:
 
 LOCATION
 --------
-Full precision for animals this viewer has photographed; a grid cell for
-everyone else's. `app/precision.py` holds the rule and the reasoning, including
+Full precision for a sighting this viewer logged; a grid cell for everyone
+else's. `app/precision.py` holds the rule and the reasoning, including
 why a fixed cell rather than a jittered point.
 
 A dog card is the artefact this matters most for. `/map` shows scattered
@@ -30,9 +30,11 @@ So this endpoint and `/map` coarsen on the same rule at the same time -- a
 precise card beside a coarse map protects nothing, and it was previously the
 looser of the two.
 
-The standing test is `seen_by_me`: contribution, not a role. The thing that
-makes full precision safe is that the viewer was already standing next to the
-animal, which no permission granted by a form can reproduce.
+The standing test is contribution, not a role, and it is per sighting: the
+card's last known place is exact only if the viewer logged that sighting. The
+thing that makes full precision safe is that the viewer was standing there,
+which no permission granted by a form can reproduce -- and having photographed
+the dog once, somewhere else, is not that (`seen_by_me` is still reported).
 
 Still to come from issue #5: resolving to a named `area` polygon rather than a
 cell centre, which needs area data that does not exist yet, plus the other two
@@ -272,15 +274,19 @@ async def get_dogs(
     out = []
     for d in dogs:
         loc = locations.get(d["id"])
-        # Coarsened unless this viewer has photographed this animal. Standing
-        # by contribution, the same rule `/map` and `POST /proposal/{id}` use.
-        # These two endpoints must coarsen together: a dog card is exactly the
-        # artefact -- one animal, its last known place -- that issue #5 exists
-        # to protect, so a precise card beside a coarse map protects nothing.
+        # Exact only when the sighting shown is the viewer's own -- the rule
+        # `/map` applies per sighting. These two endpoints must coarsen
+        # together: a dog card is exactly the artefact -- one animal, its last
+        # known place -- that issue #5 exists to protect, so a precise card
+        # beside a coarse map protects nothing.
+        #
+        # Not `seen_by_me`. Having photographed a dog once is not standing to
+        # see where someone else saw it last; and since anyone may confirm a
+        # proposed match, a look-alike photo and one tap would earn it.
         where = (
             resolve_precision(
                 loc["lat"], loc["lng"],
-                viewer_contributed=bool(d["seen_by_me"]),
+                viewer_contributed=loc["observer_id"] == observer_id,
                 cell_m=settings.map_coarsen_cell_m,
             )
             if loc is not None

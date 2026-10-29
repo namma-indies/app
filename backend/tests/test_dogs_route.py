@@ -357,20 +357,43 @@ async def test_a_dog_only_others_have_seen_is_coarsened(authed_client):
 
 
 @pytest.mark.asyncio
-async def test_contributing_one_sighting_is_enough_to_earn_precision(authed_client):
-    """Standing is by contribution, and a shared dog is the case it exists for:
-    you were beside this animal, so you already know where it lives."""
+async def test_photographing_a_dog_once_does_not_reveal_where_others_saw_it(authed_client):
+    """Exact only when the sighting shown is the viewer's own -- the rule `/map`
+    applies. Having photographed the dog once is not standing to see exactly
+    where someone else saw it since: a look-alike photo plus one tap on a
+    proposal that anyone may confirm would earn it."""
     client, oid_a = authed_client
     mine = await _post(client, lat=12.9716, lng=77.5946)
     oid_b = await _second_observer(client)
     client.cookies.set("session", issue_session(oid_b))
-    theirs = await _post(client, lat=12.9716, lng=77.5946, when="2026-07-20T09:00:00Z")
+    theirs = await _post(client, lat=12.9802, lng=77.6011, when="2026-07-20T09:00:00Z")
     await _make_individual(client, [mine, theirs])
 
     client.cookies.set("session", issue_session(oid_a))
     d = (await client.get("/dogs")).json()["dogs"][0]
+    pin = next(x for x in (await client.get("/map")).json()["sightings"] if x["id"] == theirs)
+
+    assert d["seen_by_me"] is True
+    assert d["precision"] == "area"
+    assert d["cell_m"] == 1000.0
+    assert (d["lat"], d["lng"]) != (12.9802, 77.6011)
+    assert (d["lat"], d["lng"]) == (pin["lat"], pin["lng"])
+
+
+@pytest.mark.asyncio
+async def test_a_shared_dog_last_seen_by_you_is_exact(authed_client):
+    client, oid_a = authed_client
+    oid_b = await _second_observer(client)
+    client.cookies.set("session", issue_session(oid_b))
+    theirs = await _post(client, lat=12.9802, lng=77.6011)
+    client.cookies.set("session", issue_session(oid_a))
+    mine = await _post(client, lat=12.9716, lng=77.5946, when="2026-07-20T09:00:00Z")
+    await _make_individual(client, [mine, theirs])
+
+    d = (await client.get("/dogs")).json()["dogs"][0]
 
     assert d["precision"] == "exact"
+    assert (d["lat"], d["lng"]) == (12.9716, 77.5946)
 
 
 @pytest.mark.asyncio

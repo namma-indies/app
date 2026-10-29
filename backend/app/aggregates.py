@@ -15,6 +15,19 @@ from uuid import UUID
 from app.config import settings
 
 
+def coarse_geog(column: str = "s.geog") -> str:
+    """SQL for the grid-cell centre a sighting is shown at to anyone who did not
+    log it (`app.precision`; the SQL side is migration 0022).
+
+    Anything a query decides about someone else's sighting -- which area it is
+    counted in, whether it is near enough to be a match candidate -- is decided
+    on this rather than on the exact point, so the answer depends on the cell
+    alone. Decided on the exact point, the same answer near an edge says which
+    side of it the sighting is, which the cell does not.
+    """
+    return f"coarse_point({column}, {float(settings.map_coarsen_cell_m)!r}::float8)"
+
+
 def animal_present() -> str:
     """Is there an animal in this sighting, as far as anyone can tell?
 
@@ -69,11 +82,17 @@ _MONTH = "date_trunc('month', s.captured_at AT TIME ZONE 'Asia/Kolkata')"
 #
 # A sighting with a NULL geog produces no rows here (ST_Covers against NULL is
 # NULL), so it falls out as unattributed without a special case.
-_AREA_LATERAL = """
+#
+# Attributed by the sighting's grid cell centre, not its exact point. On the
+# exact point, a boundary through a cell would split it, and which side a
+# sighting was counted on would place it more finely than the cell it is shown
+# as. `app.social.area_name` uses the same rule for the same reason.
+def _area_lateral() -> str:
+    return f"""
     LEFT JOIN LATERAL (
         SELECT a.id, a.name, a.ext_code
         FROM areas a
-        WHERE a.kind = $1 AND ST_Covers(a.geog, s.geog)
+        WHERE a.kind = $1 AND ST_Covers(a.geog, {coarse_geog()})
         ORDER BY a.id
         LIMIT 1
     ) a ON TRUE
@@ -150,7 +169,7 @@ async def area_rows(conn, kind: str) -> list[dict]:
             COUNT(DISTINCT s.observer_id) AS observers,
             to_char(MAX({_MONTH}), 'YYYY-MM') AS last_active_month
         FROM sightings s
-        {_AREA_LATERAL}
+        {_area_lateral()}
         WHERE {countable_sighting()} AND a.id IS NOT NULL
         GROUP BY a.id, a.name, a.ext_code
         ORDER BY a.name
@@ -171,7 +190,7 @@ async def unattributed_sightings(conn, kind: str) -> int:
         f"""
         SELECT COUNT(*)
         FROM sightings s
-        {_AREA_LATERAL}
+        {_area_lateral()}
         WHERE {countable_sighting()} AND a.id IS NULL
         """,
         kind,
@@ -193,7 +212,7 @@ async def area_months(conn, area_id: UUID, kind: str) -> list[dict]:
             COUNT(DISTINCT s.individual_id) AS confirmed_individuals,
             COUNT(DISTINCT s.observer_id) AS observers
         FROM sightings s
-        {_AREA_LATERAL}
+        {_area_lateral()}
         WHERE {countable_sighting()} AND a.id = $2
         GROUP BY 1
         ORDER BY 1

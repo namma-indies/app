@@ -40,8 +40,16 @@ async def get_match(
     window is also the opening for asking the contributor for more evidence
     while they are still standing next to the animal.
     """
+    # Yours only, and someone else's is the same 404 as one that does not
+    # exist. This answers questions about the sightings near the one asked
+    # about, and that is the contributor's business while they are still
+    # standing there -- not a way for anyone else to learn about a sighting
+    # they did not log.
     row = await conn.fetchrow(
-        "SELECT match_status, individual_id, processing_state FROM sightings WHERE id=$1", sighting_id
+        "SELECT match_status, individual_id, processing_state FROM sightings "
+        "WHERE id=$1 AND observer_id=$2",
+        sighting_id,
+        observer_id,
     )
     if row is None:
         raise HTTPException(status_code=404, detail="no such sighting")
@@ -124,7 +132,9 @@ async def get_match(
                 "photo_id": str(c.photo_id),
                 "individual_id": str(c.individual_id) if c.individual_id else None,
                 "similarity": round(c.similarity, 4),
-                "distance_m": round(c.distance_m) if c.distance_m is not None else None,
+                # No distance. The query point is the uploader's to choose, so a
+                # distance to someone else's sighting is a measurement of where
+                # that sighting is; nothing in the app shows it anyway.
             }
             for c in candidates
         ],
