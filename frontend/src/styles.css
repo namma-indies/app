@@ -328,7 +328,9 @@ button { font-family: inherit; }
 .viewer-audio { display: block; width: 100%; margin: 0.4rem 0 0; }
 .transcript { text-align: left; margin: 0.6rem 0; }
 .transcript figure { margin: 0 0 0.5rem; }
-.transcript blockquote { margin: 0.25rem 0 0; padding: 0.4rem 0.6rem; border-left: 3px solid var(--line); background: var(--panel); }
+/* Room for a highlight's 2px underline: at line-height normal (20px for 16px Quicksand) a
+   highlight is 22px tall, so the next line's highlight painted over its underline (#139). */
+.transcript blockquote { margin: 0.25rem 0 0; padding: 0.4rem 0.6rem; border-left: 3px solid var(--line); background: var(--panel); line-height: 1.6; }
 .transcript-hit { background: var(--dust); color: var(--ink); border-bottom: 2px solid var(--accent); padding: 0 1px; }
 
 .social-card { display: flex; flex-direction: column; gap: 0.6rem; }
