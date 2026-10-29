@@ -2,6 +2,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import Transcript, { highlightSpans } from "./Transcript";
 
 afterEach(cleanup);
@@ -93,5 +95,23 @@ describe("highlighting the words a suggestion came from", () => {
   it("renders nothing when nothing was heard", () => {
     const { container } = render(<Transcript transcripts={[]} />);
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe("the transcript's spacing", () => {
+  it("leaves room between lines for a highlight's underline, so the next line's highlight can't cover it (#139)", () => {
+    // The real stylesheet (vitest blanks CSS imports, so read the file).
+    const style = document.createElement("style");
+    style.textContent = readFileSync(join(__dirname, "../styles.css"), "utf8");
+    document.head.appendChild(style);
+    try {
+      const { container } = render(<Transcript transcripts={[{ source: "note", language: "en", text: "She is a female." }]}
+        highlights={[{ quote: "She is a female", label: "Sex: female" }]} />);
+      // A highlight is its text (about 1.25em tall in Quicksand) plus a 2px underline, 22px at 16px: the
+      // line has to be at least that tall. Unitless, so it scales with the text.
+      const lineHeight = getComputedStyle(container.querySelector("blockquote")!).lineHeight;
+      expect(lineHeight).toMatch(/^\d+(\.\d+)?$/);
+      expect(Number(lineHeight) * 16).toBeGreaterThanOrEqual(1.25 * 16 + 2);
+    } finally { style.remove(); }
   });
 });
