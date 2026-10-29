@@ -122,7 +122,7 @@ describe("private grouping review", () => {
     const catName = within(cat).getByLabelText("Known name (optional)");
     expect(dogName).toHaveAttribute("maxlength", "80");
     expect(dogName).toHaveValue("");
-    expect(screen.getByText(/A name doesn’t decide which dog this is/)).toBeInTheDocument();
+    expect(screen.getByText(/A name doesn’t decide which animal this is/)).toBeInTheDocument();
     await userEvent.type(dogName, "  Kaju  ");
     await userEvent.type(catName, "Kaju");
     await userEvent.click(screen.getByRole("button", { name: "Publish 2 animals" }));
@@ -363,5 +363,35 @@ describe("one-animal sheet", () => {
     expect(screen.getAllByRole("radiogroup", { name: "Sex" })).toHaveLength(2);
     expect(container.querySelector("fieldset select")).toBeNull();
     expect(screen.getByRole("button", { name: "Save animal details" }).closest(".capture-review-body")).toBeNull();
+  });
+});
+
+describe("loading and species wording", () => {
+  it("shows a neutral loading state, with no grouping intro, until the capture is known", async () => {
+    let resolve!: (value: CaptureDetail) => void;
+    vi.mocked(getCapture).mockReturnValue(new Promise((r) => { resolve = r; }));
+    render(<CaptureReview captureId="c" onClose={() => {}} onSaved={() => {}} onUnauthorized={() => {}} />);
+    expect(screen.getByText("Loading your photos…")).toBeInTheDocument();
+    expect(screen.queryByText(/More than one animal/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Only you can see this upload/)).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toHaveAccessibleName("Loading…");
+    resolve({ ...detail, processing_state: "ready", groups: [{ instance_ids: ["a"] }], instances: [detail.instances[0]] });
+    await screen.findByRole("button", { name: "Save animal details" });
+    expect(screen.queryByText(/More than one animal/)).not.toBeInTheDocument();
+  });
+  it("still explains grouping once a capture that needs it has loaded", async () => {
+    vi.mocked(getCapture).mockResolvedValue(detail);
+    render(<CaptureReview captureId="c" onClose={() => {}} onSaved={() => {}} onUnauthorized={() => {}} />);
+    expect(await screen.findByText(/More than one animal shows up/)).toBeInTheDocument();
+  });
+  it.each([["cat", "cat"], ["dog", "dog"]])("names the species in the name note: %s", async (species) => {
+    vi.mocked(getCapture).mockResolvedValue({ ...detail, processing_state: "ready", groups: [{ instance_ids: ["a"] }], instances: [{ ...detail.instances[0], species }] });
+    render(<CaptureReview captureId="c" onClose={() => {}} onSaved={() => {}} onUnauthorized={() => {}} />);
+    expect(await screen.findByText(`A name doesn’t decide which ${species} this is.`)).toBeInTheDocument();
+  });
+  it("says 'animal' when the upload mixes species", async () => {
+    vi.mocked(getCapture).mockResolvedValue({ ...detail, instances: [detail.instances[0], { ...detail.instances[1], species: "cat" }, detail.instances[2]] });
+    render(<CaptureReview captureId="c" onClose={() => {}} onSaved={() => {}} onUnauthorized={() => {}} />);
+    expect(await screen.findByText("A name doesn’t decide which animal this is.")).toBeInTheDocument();
   });
 });
