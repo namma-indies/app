@@ -15,6 +15,8 @@ vi.mock("@capacitor/core", () => ({
 
 import { haptic, hapticCurves, onHapticOutcome, playScore, type Pulse, type Ramp } from "./haptics";
 
+const RAMP_CHECK = 100; // how often a playing ramp asks again (haptics.ts)
+
 const flight: Ramp = { at: 600, duration: 700, from: "light", to: "heavy" };
 const beat: Pulse[] = [
   { at: 188, level: "light" },
@@ -37,17 +39,21 @@ beforeEach(async () => {
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
 
 describe("a score on a phone with curves", () => {
-  it("is one native curve: taps for the light-up and landing, a smooth build for the flight instead of its ticks", async () => {
+  it("is native curves: a tap for the light-up, then one smooth build for the flight, ending on the landing, instead of its ticks", async () => {
     playScore(beat, "suggestion", [flight]);
     await vi.advanceTimersByTimeAsync(187);
-    expect(curves.play).not.toHaveBeenCalled(); // Android replaces a running buzz: start at the first tap, not before
+    expect(curves.play).not.toHaveBeenCalled(); // Android replaces a running buzz: each piece starts at its own time, not before
     await vi.advanceTimersByTimeAsync(1);
     expect(curves.play).toHaveBeenCalledTimes(1);
-    const { taps, ramps } = curves.play.mock.calls[0][0];
-    expect(taps.map((tap: { at: number }) => tap.at)).toEqual([0, 1300 - 188, 1300 - 188 + 110]); // the success is a tap, then a stronger one
-    expect(taps[2].intensity).toBeGreaterThan(taps[1].intensity);
+    expect(curves.play.mock.calls[0][0].taps.map((tap: { at: number }) => tap.at)).toEqual([0]);
+    expect(curves.play.mock.calls[0][0].ramps).toEqual([]);
+    await vi.advanceTimersByTimeAsync(600 - 188);
+    expect(curves.play).toHaveBeenCalledTimes(2);
+    const { taps, ramps } = curves.play.mock.calls[1][0];
+    expect(taps.map((tap: { at: number }) => tap.at)).toEqual([700, 810]); // the landing's success: a tap, then a stronger one
+    expect(taps[1].intensity).toBeGreaterThan(taps[0].intensity);
     expect(ramps).toHaveLength(1);
-    expect(ramps[0].at).toBe(600 - 188);
+    expect(ramps[0].at).toBe(0);
     expect(ramps[0].duration).toBe(700);
     expect(ramps[0].to.intensity).toBeGreaterThan(ramps[0].from.intensity);
     expect(ramps[0].to.sharpness).toBeGreaterThan(ramps[0].from.sharpness);
@@ -55,13 +61,45 @@ describe("a score on a phone with curves", () => {
     expect(plugin.impact).not.toHaveBeenCalled(); // no ladder on top
   });
 
-  it("stops the rest when a pulse's last check says no (the chip was answered on the way)", async () => {
+  it("stops the flight when its suggestion is answered on the way", async () => {
     let chip = true;
-    playScore(beat.map((pulse) => ({ ...pulse, still: () => chip })), "suggestion", [flight]);
+    playScore(beat.map((pulse) => ({ ...pulse, still: () => chip })), "suggestion", [{ ...flight, still: () => chip }]);
     await vi.advanceTimersByTimeAsync(700);
     chip = false;
-    await vi.advanceTimersByTimeAsync(300);
+    await vi.advanceTimersByTimeAsync(100);
     expect(curves.stop).toHaveBeenCalledWith({ id: "p1" });
+  });
+
+  it("never starts the flight of a suggestion dismissed between its light-up and its launch", async () => {
+    let chip = true;
+    playScore(beat.map((pulse) => ({ ...pulse, still: () => chip })), "suggestion", [{ ...flight, still: () => chip }]);
+    await vi.advanceTimersByTimeAsync(250);
+    chip = false; // "not this"
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(curves.play).toHaveBeenCalledTimes(1); // the light-up only
+    expect(curves.play.mock.calls[0][0].ramps).toEqual([]); // the flight was never sent to the phone
+  });
+
+  it("keeps asking during a flight even when it has no ladder ticks to ask at", async () => {
+    let chip = true;
+    playScore([{ at: 0, level: "light" }], "suggestion", [{ at: 100, duration: 700, from: "light", to: "heavy", still: () => chip }]);
+    await vi.advanceTimersByTimeAsync(350);
+    chip = false;
+    await vi.advanceTimersByTimeAsync(RAMP_CHECK);
+    expect(curves.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops a playing curve before a person's moment, so the curve's later stop can't cut the moment", async () => {
+    let chip = true;
+    playScore(beat.map((pulse) => ({ ...pulse, still: () => chip })), "suggestion", [{ ...flight, still: () => chip }]);
+    await vi.advanceTimersByTimeAsync(1010);
+    chip = false;
+    haptic("filled"); // accepted mid-flight
+    await vi.advanceTimersByTimeAsync(0);
+    expect(curves.stop).toHaveBeenCalledTimes(1);
+    expect(curves.stop.mock.invocationCallOrder[0]).toBeLessThan(plugin.notification.mock.invocationCallOrder[0]);
+    await vi.advanceTimersByTimeAsync(1000); // the flight's own checks now say no
+    expect(curves.stop).toHaveBeenCalledTimes(1); // and never reach the phone again
   });
 
   it("stops when told", async () => {
@@ -72,12 +110,15 @@ describe("a score on a phone with curves", () => {
     expect(curves.stop).toHaveBeenCalledWith({ id: "p1" });
   });
 
-  it("gives way to a moment that is buzzing: the score is played as the ladder, pulse by pulse", async () => {
+  it("gives way to a moment that is buzzing: a piece that would start then is played as the ladder, pulse by pulse", async () => {
+    const heard: string[] = [];
+    const stop = onHapticOutcome((outcome) => heard.push(outcome));
     haptic("logged");
     playScore([{ at: 0, level: "heavy" }, { at: 900, level: "light" }], "suggestion");
     await vi.advanceTimersByTimeAsync(1000);
-    expect(curves.play).not.toHaveBeenCalled();
-    expect(plugin.impact).toHaveBeenCalledWith({ style: "LIGHT" }); // the later pulse, once the moment was done
+    stop();
+    expect(heard).toContain("suggestion heavy: dropped (another buzz was still running)");
+    expect(curves.play).toHaveBeenCalledTimes(1); // the later piece, once the moment was done
   });
 
   it("plays the ladder when asked to, to compare", async () => {

@@ -232,8 +232,10 @@ export function haptic(moment: Moment): void {
         quietly(() => { if (!navigator.vibrate(pattern)) throw new Error("navigator.vibrate returned false"); }, `${moment} vibrate`);
       }
     };
-    if (wait === 0) start();
-    else setTimeout(start, wait);
+    const begin = () => { if (wait === 0) start(); else setTimeout(start, wait); };
+    // A curve still playing is stopped first, so its later stop can't cut this moment (see releaseCurves).
+    if (channel === "native" && liveCurves.size) void releaseCurves().then(begin);
+    else begin();
   } catch (error) {
     // Never let a buzz break the thing it was decorating.
     report(`${moment}: failed (${error instanceof Error ? error.message : String(error)})`);
@@ -246,8 +248,8 @@ export function haptic(moment: Moment): void {
  * can't be (no curves on this phone).
  */
 export interface Pulse { at: number; level: Level; still?: () => boolean; ladderOnly?: boolean }
-/** Strength building from one level towards another over `duration` ms (a comet's flight). */
-export interface Ramp { at: number; duration: number; from: Level; to: Level }
+/** Strength building from one level towards another over `duration` ms (a comet's flight), with its own check, asked as it starts and while it plays. */
+export interface Ramp { at: number; duration: number; from: Level; to: Level; still?: () => boolean }
 
 // ---- curves (#145) -----------------------------------------------------------------
 
@@ -330,46 +332,95 @@ export function playScore(pulses: Pulse[], label = "score", ramps: Ramp[] = [], 
   return playLadder(pulses, label);
 }
 
+/** A curve playing (or about to), so a person's moment can stop it first. `dead`: stopped for a moment; never stop it again. */
+interface LiveCurve { id: Promise<string | null>; dead: boolean }
+const liveCurves = new Set<LiveCurve>();
+
 /**
- * A score as one native curve. It starts at its first tap (Android replaces whatever is
- * buzzing when a new effect starts, so an earlier start would cut the one before), a
- * pulse's `still()` is asked at its time and a no stops the rest, and if a moment is
- * buzzing when it would start it is played as the ladder instead, which gives way pulse
- * by pulse.
+ * Stop every curve that is playing, before a moment plays: on Android a stop is
+ * Vibrator.cancel(), which would also cut a moment that started after it. Each stopped
+ * curve is marked dead, so a later stop (its chip answered) never reaches the phone.
+ */
+function releaseCurves(): Promise<unknown> {
+  const stops = [...liveCurves].map((curve) => {
+    curve.dead = true;
+    return curve.id.then((id) => (id ? curvesBridge().stop({ id }) : undefined)).catch(() => {});
+  });
+  liveCurves.clear();
+  return Promise.all(stops);
+}
+
+/** How often a playing ramp asks whether it should go on. */
+const RAMP_CHECK_MS = 100;
+
+/**
+ * A score as native curves, in pieces: each ramp with the taps during and at the end of
+ * it (a flight and its landing), and each other tap on its own. A piece starts at its
+ * own time, only if every check in it still says yes (a suggestion dismissed before its
+ * comet launches never starts buzzing), and a ramp asks again every RAMP_CHECK_MS while
+ * it plays. Starting each piece at its first tap also keeps Android, which replaces
+ * whatever is buzzing when a new effect starts, from cutting the piece before. If a
+ * moment is buzzing when a piece would start, that piece is played as the ladder, which
+ * gives way pulse by pulse.
  */
 function playCurves(pulses: Pulse[], ramps: Ramp[], label: string, engine: string): () => void {
-  const taps = pulses.filter((p) => !p.ladderOnly).flatMap((p) => p.level === "success"
-    ? SUCCESS_TAPS.map((tap) => ({ ...tap, at: p.at + tap.at }))
-    : [{ at: p.at, ...FEEL[p.level] }]);
-  const curves = ramps.map((r) => ({ at: r.at, duration: r.duration, from: rampFeel(r.from), to: rampFeel(r.to) }));
-  const first = Math.max(0, Math.min(...taps.map((t) => t.at), ...curves.map((r) => r.at)));
-  if (!Number.isFinite(first)) return () => {};
+  type Piece = { at: number; end: number; pulses: Pulse[]; ramps: Ramp[] };
+  const pieces: Piece[] = ramps.map((ramp) => ({ at: ramp.at, end: ramp.at + ramp.duration, pulses: [], ramps: [ramp] }));
+  for (const pulse of pulses) {
+    const piece = pieces.find((p) => p.ramps.length && pulse.at >= p.at && pulse.at <= p.end);
+    if (piece) piece.pulses.push(pulse);
+    else if (!pulse.ladderOnly) pieces.push({ at: pulse.at, end: pulse.at, pulses: [pulse], ramps: [] });
+  }
   const timers: ReturnType<typeof setTimeout>[] = [];
-  let playing: Promise<string | null> | null = null;
-  let ladder = () => {};
+  const stops = new Set<() => void>();
   const name = `${label} curves (${engine})`;
-  const stop = () => {
-    timers.forEach(clearTimeout);
-    ladder();
-    void playing?.then((id) => { if (id) return curvesBridge().stop({ id }).catch(() => {}); });
-    playing = null;
-  };
-  const start = () => {
+
+  const play = (piece: Piece) => {
+    const checks = [...piece.pulses, ...piece.ramps].flatMap((item) => (item.still ? [item.still] : []));
+    if (checks.some((still) => !still())) return;
     if (busyUntil > Date.now()) {
-      ladder = playLadder(pulses.map((p) => ({ ...p, at: p.at - first })), label);
+      stops.add(playLadder(piece.pulses.map((p) => ({ ...p, at: p.at - piece.at })), label));
       return;
     }
-    const shift = <T extends { at: number }>(item: T) => ({ ...item, at: Math.max(0, item.at - first) });
-    playing = curvesBridge().play({ taps: taps.map(shift), ramps: curves.map(shift) }).then(
-      ({ id }) => { report(`${name}: ok`); return id; },
-      (error) => { report(`${name}: failed (${error instanceof Error ? error.message : String(error)})`); return null; },
-    );
+    const at = (t: number) => Math.max(0, t - piece.at);
+    const taps = piece.pulses.filter((p) => !p.ladderOnly).flatMap((p) => p.level === "success"
+      ? SUCCESS_TAPS.map((tap) => ({ ...tap, at: at(p.at) + tap.at }))
+      : [{ at: at(p.at), ...FEEL[p.level] }]);
+    const curve: LiveCurve = {
+      id: curvesBridge().play({
+        taps,
+        ramps: piece.ramps.map((r) => ({ at: at(r.at), duration: r.duration, from: rampFeel(r.from), to: rampFeel(r.to) })),
+      }).then(
+        ({ id }) => { report(`${name}: ok`); return id; },
+        (error) => { report(`${name}: failed (${error instanceof Error ? error.message : String(error)})`); return null; },
+      ),
+      dead: false,
+    };
+    liveCurves.add(curve);
+    const own: ReturnType<typeof setTimeout>[] = [];
+    const stop = () => {
+      own.forEach(clearTimeout);
+      stops.delete(stop);
+      if (!liveCurves.delete(curve) || curve.dead) return;
+      void curve.id.then((id) => (id ? curvesBridge().stop({ id }) : undefined)).catch(() => {});
+    };
+    stops.add(stop);
+    // Ask again while it plays: at each of its pulses, and every RAMP_CHECK_MS of a ramp.
+    const askAt = new Set(piece.pulses.filter((p) => p.still).map((p) => p.at - piece.at));
+    for (const r of piece.ramps) {
+      if (r.still) for (let t = RAMP_CHECK_MS; t < r.duration; t += RAMP_CHECK_MS) askAt.add(at(r.at) + t);
+    }
+    for (const t of askAt) if (t > 0) own.push(setTimeout(() => { if (checks.some((still) => !still())) stop(); }, t));
+    // Done: no longer something a moment needs to stop.
+    const last = Math.max(piece.end - piece.at, ...taps.map((tap) => tap.at)) + 50;
+    own.push(setTimeout(() => { own.forEach(clearTimeout); stops.delete(stop); liveCurves.delete(curve); }, last));
   };
-  timers.push(setTimeout(start, first));
-  for (const pulse of pulses) {
-    if (pulse.still) timers.push(setTimeout(() => { if (!pulse.still!()) stop(); }, Math.max(0, pulse.at)));
-  }
-  return stop;
+
+  for (const piece of pieces) timers.push(setTimeout(() => play(piece), Math.max(0, piece.at)));
+  return () => {
+    timers.forEach(clearTimeout);
+    [...stops].forEach((stop) => stop());
+  };
 }
 
 function playLadder(pulses: Pulse[], label: string): () => void {

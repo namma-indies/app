@@ -179,7 +179,7 @@ describe("the shimmer and comets around suggestions", () => {
   it("hands each flight over as one smooth build too, for phones that can play it instead of the ticks", () => {
     render(scene(["sex"]));
     vi.advanceTimersByTime(FIRST_AT_MS);
-    expect(flights[flights.length - 1]).toEqual([{ at: ARRIVE_MS - 700, duration: 700, from: "light", to: "heavy" }]);
+    expect(flights[flights.length - 1]).toEqual([{ at: ARRIVE_MS - 700, duration: 700, from: "light", to: "heavy", still: expect.any(Function) }]);
   });
 
   it("lights up, but feels no flight or landing, for a chip it cannot fly to", () => {

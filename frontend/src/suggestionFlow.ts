@@ -433,7 +433,7 @@ export function playSuggestionFlow(root: HTMLElement, items: FlowItem[]): () => 
         // only if the comet really flies. Nothing more once it has been answered.
         if (!used) {
           const pulses = plan.beat(nth).filter((_, i) => flies || i === 0);
-          const flight = flies && pulses.length ? [{ ...plan.flight, at: plan.flight.at * k, duration: plan.flight.duration * k }] : [];
+          const flight = flies && pulses.length ? [{ ...plan.flight, at: plan.flight.at * k, duration: plan.flight.duration * k, still: () => stillOpen(id) }] : [];
           felt.push(playScore(pulses.map((pulse) => ({ ...pulse, at: pulse.at * k, still: () => stillOpen(id) })), "suggestion", flight));
         }
       }
