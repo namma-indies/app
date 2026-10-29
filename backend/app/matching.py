@@ -119,19 +119,23 @@ async def find_candidates(
         # (app/precision.py) shown for them. Measured between cell centres,
         # the answer depends on the two cells alone.
         #
-        # reid_cell_slack_m widens the radius by the most the two centres can
-        # add -- half a cell diagonal at each end -- so nothing the exact
-        # radius admitted is lost: the candidate set can only grow. The plain
-        # ST_DWithin on s.geog is a looser bound the spatial index can serve;
-        # the cell test decides.
-        reach = radius_m + settings.reid_cell_slack_m
+        # The radius is widened by the most the two centres can add -- half a
+        # cell diagonal at each end, `settings.reid_slack_m()` -- so nothing the
+        # exact radius admitted is lost: the candidate set can only grow.
+        #
+        # No exact-point prefilter beside it, deliberately. One would be safe
+        # only while the slack outran every cell's diagonal, a relationship
+        # between two settings nothing here can see; if they drifted it would
+        # drop one sighting of a cell and keep another, and the leak would be
+        # back behind a predicate that looks right. The ANN walk post-filters
+        # on this anyway, so a spatial index had little to save.
+        reach = radius_m + settings.reid_slack_m()
         params += [lng, lat, reach]
         p_lng, p_lat, p_radius = "$4", "$5", "$6"
         here = f"ST_SetSRID(ST_MakePoint({p_lng}, {p_lat}), 4326)::geography"
         here_cell = coarse_geog(here)
         geo_filter = (
             f"AND s.geog IS NOT NULL"
-            f" AND ST_DWithin(s.geog, {here}, {p_radius}::float8 + {settings.reid_cell_slack_m!r})"
             f" AND ST_DWithin({coarse_geog()}, {here_cell}, {p_radius}::float8)"
         )
         distance = f"ST_Distance({coarse_geog()}, {here_cell})"

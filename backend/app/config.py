@@ -1,7 +1,9 @@
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.precision import pair_slack_m
 
 
 class Settings(BaseSettings):
@@ -109,10 +111,15 @@ class Settings(BaseSettings):
     reid_radius_m: float = 1000.0
     # Added to reid_radius_m because the vicinity is measured between the two
     # sightings' grid cell centres, never from an exact point (app/matching.py
-    # says why). Each point is at most half a cell diagonal from its centre --
-    # 707 m for a 1000 m cell -- so two of them, 1415 m, keeps every candidate
-    # the exact radius would have admitted. Move it with map_coarsen_cell_m.
-    reid_cell_slack_m: float = 1416.0
+    # says why). Each point is at most half a cell diagonal from its centre, so
+    # the two together can add a whole diagonal; widening by at least that
+    # keeps every candidate the exact radius would have admitted.
+    #
+    # Unset, it follows map_coarsen_cell_m (`precision.pair_slack_m`: ~1428 m
+    # for 1000 m cells), so the two cannot drift apart. Set, it may only be
+    # larger -- startup refuses a value too small for the cell. Read it through
+    # `reid_slack_m()`.
+    reid_cell_slack_m: float | None = None
     reid_recent_days: int = 365
 
     # Two-threshold merge rule, on cosine similarity of L2-normalised
@@ -374,6 +381,23 @@ class Settings(BaseSettings):
     s3_access_key: str = "minio"
     s3_secret_key: str = "minio123"
     s3_region: str = "ap-south-1"
+
+    def reid_slack_m(self) -> float:
+        """How far the re-ID radius is widened; see reid_cell_slack_m."""
+        if self.reid_cell_slack_m is None:
+            return pair_slack_m(self.map_coarsen_cell_m)
+        return self.reid_cell_slack_m
+
+    @model_validator(mode="after")
+    def _slack_covers_the_cell(self):
+        floor = pair_slack_m(self.map_coarsen_cell_m)
+        if self.reid_cell_slack_m is not None and self.reid_cell_slack_m < floor:
+            raise ValueError(
+                f"reid_cell_slack_m={self.reid_cell_slack_m} is too small for "
+                f"map_coarsen_cell_m={self.map_coarsen_cell_m}; it must be at least "
+                f"{floor:.0f} or unset"
+            )
+        return self
 
 
 settings = Settings()

@@ -21,6 +21,9 @@ from app.social import area_name
 from tests.test_matching import _observer, _sighting, _unit
 
 BLR = (12.9716, 77.5946)
+# The default cell, and a larger one: the re-ID slack has to follow the cell
+# size, and a fixed number would quietly stop covering a bigger cell.
+CELLS = [1000.0, 2000.0]
 
 
 def _cell(lat, lng):
@@ -55,10 +58,12 @@ async def test_sql_coarse_point_agrees_with_python_coarsen(migrated_db):
 # --- re-identification vicinity -----------------------------------------------
 
 
-async def test_candidacy_depends_on_the_candidates_cell_not_its_point(migrated_db):
+@pytest.mark.parametrize("cell_m", CELLS)
+async def test_candidacy_depends_on_the_candidates_cell_not_its_point(migrated_db, monkeypatch, cell_m):
     """Whether a sighting is offered as a candidate is visible to whoever
     uploaded the query, and they chose its location. So two candidates in one
     cell must be offered together or not at all, from wherever the query is."""
+    monkeypatch.setattr(settings, "map_coarsen_cell_m", cell_m)
     obs = await _observer(migrated_db)
     vec = _unit(146)
     (w, s), (dlng, dlat) = _cell(*BLR)
@@ -79,10 +84,12 @@ async def test_candidacy_depends_on_the_candidates_cell_not_its_point(migrated_d
     assert outcomes == {True, False}, "the sweep must exercise both answers"
 
 
-async def test_two_queries_in_one_cell_get_the_same_candidates(migrated_db):
+@pytest.mark.parametrize("cell_m", CELLS)
+async def test_two_queries_in_one_cell_get_the_same_candidates(migrated_db, monkeypatch, cell_m):
     """The query side too. Which pairs exist is published to every observer
     through `/proposals`, so where in its cell the query sighting was taken
     must not change which candidates it is paired with."""
+    monkeypatch.setattr(settings, "map_coarsen_cell_m", cell_m)
     obs = await _observer(migrated_db)
     vec = _unit(151)
     (w, s), (dlng, dlat) = _cell(*BLR)
@@ -101,9 +108,11 @@ async def test_two_queries_in_one_cell_get_the_same_candidates(migrated_db):
     assert sets[0], "the sample must put someone in reach"
 
 
-async def test_no_candidate_the_exact_radius_admitted_is_lost(migrated_db):
+@pytest.mark.parametrize("cell_m", CELLS)
+async def test_no_candidate_the_exact_radius_admitted_is_lost(migrated_db, monkeypatch, cell_m):
     """Measured between cell centres with a half-diagonal added for each end,
     the candidate set can only grow: recall cannot drop."""
+    monkeypatch.setattr(settings, "map_coarsen_cell_m", cell_m)
     obs = await _observer(migrated_db)
     vec = _unit(147)
     rng = random.Random(147)
@@ -137,6 +146,18 @@ async def test_candidate_distance_is_to_the_cell_not_the_point(migrated_db):
                                 radius_m=settings.reid_radius_m, limit=5)
 
     assert c.distance_m == pytest.approx(0.0, abs=0.5)
+
+
+def test_a_slack_too_small_for_the_cell_is_refused_at_startup():
+    from pydantic import ValidationError
+
+    from app.config import Settings
+    from app.precision import pair_slack_m
+
+    with pytest.raises(ValidationError):
+        Settings(map_coarsen_cell_m=2000.0, reid_cell_slack_m=1416.0)
+    assert Settings(map_coarsen_cell_m=2000.0).reid_slack_m() == pair_slack_m(2000.0)
+    assert Settings(map_coarsen_cell_m=2000.0, reid_cell_slack_m=4000.0).reid_slack_m() == 4000.0
 
 
 # --- GET /sighting/{id}/match --------------------------------------------------
