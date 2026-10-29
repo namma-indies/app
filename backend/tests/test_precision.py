@@ -18,7 +18,7 @@ import math
 
 import pytest
 
-from app.precision import coarsen, resolve_precision
+from app.precision import cell_cover, coarsen, resolve_precision
 
 BLR = (12.9716, 77.5946)
 CELL = 1000.0
@@ -138,3 +138,29 @@ def test_a_sighting_with_no_location_stays_without_one():
     one -- a dog placed at the centre of cell (0,0) is off the coast of Africa."""
     assert resolve_precision(None, None, viewer_contributed=False, cell_m=CELL) is None
     assert resolve_precision(12.9, None, viewer_contributed=True, cell_m=CELL) is None
+
+
+def test_cell_cover_holds_every_point_whose_cell_centre_is_in_the_box():
+    """An area filter prefilters on `cell_cover` and then tests the returned
+    cell centre. If the cover missed a point whose centre is inside the box,
+    that point's inclusion would hinge on its exact position again."""
+    import random
+
+    rng = random.Random(146)
+    for lat0 in (BLR[0], -33.9, 60.0, 84.0):
+        for _ in range(200):
+            size = 10 ** rng.uniform(-5, 0)
+            west, south = BLR[1] + rng.uniform(-0.05, 0.05), lat0 + rng.uniform(-0.05, 0.05)
+            box = (west, south, west + size, south + size)
+            cover = cell_cover(*box, CELL)
+            for _ in range(20):
+                # Points up to two cells outside the box on every side.
+                lat = rng.uniform(box[1] - 0.02, box[3] + 0.02)
+                lng = rng.uniform(box[0] - 0.1, box[2] + 0.1)
+                clat, clng = coarsen(lat, lng, CELL)
+                if box[0] <= clng <= box[2] and box[1] <= clat <= box[3]:
+                    assert cover[0] <= lng <= cover[2] and cover[1] <= lat <= cover[3]
+
+
+def test_cell_cover_stays_in_range():
+    assert cell_cover(-179.999, -89.999, 179.999, 89.999, CELL) == (-180.0, -90.0, 180.0, 90.0)

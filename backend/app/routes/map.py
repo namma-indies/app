@@ -36,7 +36,7 @@ from app.auth.deps import require_observer
 from app.config import settings
 from app.deps import get_conn, get_storage
 from app.photos import thumb_key
-from app.precision import resolve_precision
+from app.precision import Located, cell_cover, resolve_precision
 from app.storage.s3 import S3Storage
 
 router = APIRouter()
@@ -70,6 +70,16 @@ def _parse_bbox(bbox: str | None) -> tuple[float, float, float, float] | None:
     if not (-90 <= south <= 90 and -90 <= north <= 90):
         raise HTTPException(status_code=422, detail="bbox latitudes out of range")
     return west, south, east, north
+
+
+def _inside(where: Located | None, envelope: tuple[float, float, float, float]) -> bool:
+    """Whether the coordinate a row is returned at lies in the requested area.
+
+    Inclusive on every edge, as `ST_Intersects` was."""
+    if where is None:
+        return False
+    west, south, east, north = envelope
+    return west <= where.lng <= east and south <= where.lat <= north
 
 
 @router.get("/map")
@@ -112,12 +122,22 @@ async def get_map(
     """
     args: list = []
     if envelope is not None:
-        west, south, east, north = envelope
+        # A prefilter only, over a box one cell wider on every side. The real
+        # area test is on the coordinate each row is *returned* at, below: for
+        # someone else's sighting that is its cell centre, so whether it comes
+        # back for an area depends on its cell alone. Filtering here on the
+        # exact point, as this used to, let a small enough area locate a
+        # sighting far more finely than the cell it is shown as.
+        #
+        # Planar (`::geometry`), not geography. A geography envelope's edges are
+        # great circles that sag off the lines of latitude, so membership near
+        # an edge would hinge on the exact point again -- and a client viewport
+        # is a lat/lng rectangle anyway.
         sql += (
-            " AND ST_Intersects(s.geog,"
-            " ST_MakeEnvelope($1, $2, $3, $4, 4326)::geography)"
+            " AND ST_Intersects(s.geog::geometry,"
+            " ST_MakeEnvelope($1, $2, $3, $4, 4326))"
         )
-        args += [west, south, east, north]
+        args += list(cell_cover(*envelope, settings.map_coarsen_cell_m))
 
     # The DISTINCT ON key leads the sort, as Postgres requires; the ordering
     # that actually matters (newest first) is applied to the collapsed set
@@ -129,13 +149,35 @@ async def get_map(
     # multi-photo sightings. With created_at alone the winner is left to the
     # plan, so the pin for a video sighting can show a different frame on each
     # load. p.id is uuid7, so it tiebreaks by real insertion order.
-    sql += f"""
+    sql += """
         ORDER BY s.id, p.created_at ASC, p.id ASC
-        LIMIT ${len(args) + 1}
     """
-    args.append(limit)
+    # With an area, `limit` is applied after the area test, never in SQL: rows
+    # the wider prefilter admitted only because of where they sit inside a cell
+    # would otherwise take slots, and which rows survived the cut would depend
+    # on exact positions after all.
+    if envelope is None:
+        sql += f" LIMIT ${len(args) + 1}"
+        args.append(limit)
 
-    rows = await conn.fetch(sql, *args)
+    located = []
+    for row in await conn.fetch(sql, *args):
+        mine = row["observer_id"] == observer_id
+        # Full precision only for animals this viewer photographed. Everyone
+        # else's collapse to a grid cell -- see app/precision.py, and note that
+        # `/dogs` has to coarsen on the same rule at the same time, because a
+        # precise dog card beside a coarse map protects nothing.
+        where = resolve_precision(
+            row["lat"], row["lng"],
+            viewer_contributed=mine,
+            cell_m=settings.map_coarsen_cell_m,
+        )
+        if envelope is not None and not _inside(where, envelope):
+            continue
+        located.append((row, mine, where))
+        if len(located) == limit:
+            break
+    rows = [row for row, _, _ in located]
 
     # Presigned in one batch rather than per row. Signing is a local HMAC, but
     # opening an aioboto3 client per call is not: 2.86 ms each that way against
@@ -150,20 +192,10 @@ async def get_map(
     thumb_by_row = {i: url for (i, _), url in zip(keyed, thumb_urls)}
 
     sightings = []
-    for i, row in enumerate(rows):
+    for i, (row, mine, where) in enumerate(located):
         raw_attrs = row["attrs"]
         attrs = json.loads(raw_attrs) if isinstance(raw_attrs, str) else (raw_attrs or {})
         thumb_url = thumb_by_row.get(i)
-        mine = row["observer_id"] == observer_id
-        # Full precision only for animals this viewer photographed. Everyone
-        # else's collapse to a grid cell -- see app/precision.py, and note that
-        # `/dogs` has to coarsen on the same rule at the same time, because a
-        # precise dog card beside a coarse map protects nothing.
-        where = resolve_precision(
-            row["lat"], row["lng"],
-            viewer_contributed=mine,
-            cell_m=settings.map_coarsen_cell_m,
-        )
         sightings.append(
             {
                 "id": str(row["id"]),

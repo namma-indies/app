@@ -106,6 +106,36 @@ def coarsen(lat: float, lng: float, cell_m: float) -> tuple[float, float]:
     return round(lat_centre, 5), round(lng_centre, 5)
 
 
+def cell_cover(
+    west: float, south: float, east: float, north: float, cell_m: float
+) -> tuple[float, float, float, float]:
+    """A box that holds every point whose cell centre falls inside the given one.
+
+    For filtering by area without filtering on the exact point. A sighting shown
+    as its cell centre has to be selected by its cell centre too, or which
+    sightings come back for an area depends on where they sit inside their
+    cells, and a small enough area says more than the cell does. Callers prefilter
+    on this wider box, coarsen, and then keep a row only if the coordinate it
+    will return is inside the area asked for.
+
+    A point is at most half a cell from its centre on each axis, so one whole
+    cell of margin is more than enough. The longitude margin uses the cell width
+    at the most poleward latitude in reach, the widest it can be.
+    """
+    if cell_m <= 0:
+        return west, south, east, north
+    lat_step = cell_m / _M_PER_DEG_LAT
+    reach = min(90.0, max(abs(south), abs(north)) + lat_step)
+    cos_lat = max(math.cos(math.radians(reach)), _MIN_COS_LAT)
+    lng_step = cell_m / (_M_PER_DEG_LAT * cos_lat)
+    return (
+        max(-180.0, west - lng_step),
+        max(-90.0, south - lat_step),
+        min(180.0, east + lng_step),
+        min(90.0, north + lat_step),
+    )
+
+
 def resolve_precision(
     lat: float | None,
     lng: float | None,
