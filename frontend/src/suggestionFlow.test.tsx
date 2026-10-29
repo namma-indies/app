@@ -10,12 +10,14 @@ import {
 } from "./suggestionFlow";
 import { readFileSync } from "node:fs";
 import { BONE, CAT_PAW, DOG_PAW, FISH, fxScope, pixelSvg, SPARKLE, TWINKLE } from "./fxSprites";
-import type { Pulse } from "./haptics";
+import type { Pulse, Ramp } from "./haptics";
 
 // What would be felt: each pulse of a score as it plays (its level, and when), unless its last check says no.
 const felt = vi.hoisted(() => [] as { level: string; at: number }[]);
+const flights = vi.hoisted(() => [] as Ramp[][]);
 vi.mock("./haptics", () => ({
-  playScore: (pulses: Pulse[]) => {
+  playScore: (pulses: Pulse[], _label: string, ramps: Ramp[] = []) => {
+    flights.push(ramps);
     const timers = pulses.map((pulse) => setTimeout(() => {
       if (!pulse.still || pulse.still()) felt.push({ level: pulse.level, at: Date.now() }); // the clock starts at 0 in each test
     }, pulse.at));
@@ -56,6 +58,7 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   felt.length = 0;
+  flights.length = 0;
   vi.unstubAllGlobals();
   document.documentElement.style.removeProperty("--fx-pace");
   delete (Element.prototype as { animate?: unknown }).animate;
@@ -173,6 +176,12 @@ describe("the shimmer and comets around suggestions", () => {
     expect(felt.filter((pulse) => pulse.level === "soft").map((pulse) => pulse.at)).toEqual([Math.floor(shimmerCrossing(0.1))]);
   });
 
+  it("hands each flight over as one smooth build too, for phones that can play it instead of the ticks", () => {
+    render(scene(["sex"]));
+    vi.advanceTimersByTime(FIRST_AT_MS);
+    expect(flights[flights.length - 1]).toEqual([{ at: ARRIVE_MS - 700, duration: 700, from: "light", to: "heavy" }]);
+  });
+
   it("lights up, but feels no flight or landing, for a chip it cannot fly to", () => {
     Element.prototype.getBoundingClientRect = function () {
       return this.getAttribute("data-fx-chip") === "sex" ? { ...rect, top: 5000, bottom: 5020 } as DOMRect : rect;
@@ -180,6 +189,7 @@ describe("the shimmer and comets around suggestions", () => {
     render(scene(["sex"]));
     vi.advanceTimersByTime(5000);
     expect(levels()).toEqual(["soft", "light"]);
+    expect(flights.flat()).toEqual([]);
   });
 
   it("measures each beat when it starts, so a later comet goes where its chip is now", () => {
@@ -341,12 +351,15 @@ describe("what is felt", () => {
   });
 
   it("offers the whole pattern to the Haptics check, at the current pace", () => {
-    const score = sampleSuggestionScore();
-    expect(score.filter((pulse) => pulse.level === "soft").length).toBeGreaterThan(0);
-    expect(score.filter((pulse) => pulse.level === "heavy")).toHaveLength(2);
-    expect(score[score.length - 1]).toEqual({ level: "success", at: FIRST_AT_MS + 2 * STEP_MS + ARRIVE_MS });
+    const { pulses, ramps } = sampleSuggestionScore();
+    expect(pulses.filter((pulse) => pulse.level === "soft").length).toBeGreaterThan(0);
+    expect(pulses.filter((pulse) => pulse.level === "heavy")).toHaveLength(2);
+    expect(pulses[pulses.length - 1]).toEqual({ level: "success", at: FIRST_AT_MS + 2 * STEP_MS + ARRIVE_MS });
+    expect(ramps.map((ramp) => ramp.at + ramp.duration)).toEqual([0, 1, 2].map((i) => FIRST_AT_MS + i * STEP_MS + ARRIVE_MS)); // each build ends on its landing
     document.documentElement.style.setProperty("--fx-pace", "2");
-    expect(sampleSuggestionScore()[score.length - 1].at).toBe(2 * (FIRST_AT_MS + 2 * STEP_MS + ARRIVE_MS));
+    const slow = sampleSuggestionScore();
+    expect(slow.pulses[pulses.length - 1].at).toBe(2 * (FIRST_AT_MS + 2 * STEP_MS + ARRIVE_MS));
+    expect(slow.ramps[0].duration).toBe(2 * ramps[0].duration);
   });
 });
 

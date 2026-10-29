@@ -1,5 +1,5 @@
 import "./suggestionFlow.css";
-import { playScore, type Level, type Pulse } from "./haptics";
+import { playScore, type Level, type Pulse, type Ramp } from "./haptics";
 import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 import { comet, pixelSvg, print, SOUNDS, type Species } from "./fxSprites";
 
@@ -27,7 +27,8 @@ import { comet, pixelSvg, print, SOUNDS, type Species } from "./fxSprites";
  * shimmer crosses each open phrase, a light tap as a phrase lights up, ticks
  * that get firmer and closer together while its comet flies, and a heavy tap as
  * it lands (a success for the last one). Every time comes from the timings
- * below and the same pace.
+ * below and the same pace. Where the phone can (#145), the flight is one smooth
+ * build instead of separate ticks.
  */
 
 // Base timings at --fx-pace: 1, in ms. One suggestion is a beat of STEP_MS, and
@@ -56,6 +57,8 @@ const SHIMMER_GLOW = 0.49;
 // What is felt (#144), on the same clock.
 const FLIGHT_TICKS = [0.45, 0.7, 0.88];  // when, in the flight, a tick is felt: closer and closer up to the landing
 const FLIGHT_LEVELS: Level[] = ["light", "medium", "firm"];
+/** The same flight as one smooth build, where the phone can: from the phrase's light tap up to the landing. */
+const FLIGHT_RAMP: Ramp = { at: LAUNCH_AT_MS, duration: FLIGHT_MS, from: "light", to: "heavy" };
 const MERGE_MS = 70;                     // pulses closer than this are felt as one, so only the stronger plays
 export const MAX_PULSES = 24;            // per showing, however many suggestions there are
 const MAX_SCAN_TICKS = 6;
@@ -281,13 +284,14 @@ function crossings(root: HTMLElement, open: Set<string>): { at: number; ids: str
 /**
  * What is felt for a showing with `open` suggestions still open, the shimmer crossing
  * their phrases at `crossed` (ms): the scan's soft ticks, and each open beat's pulses
- * (ms from the beat's start, at pace 1).
+ * (ms from the beat's start, at pace 1). A beat's flight ticks are the ladder version of
+ * `flight`, the ramp that phones with curves play instead.
  *
  * At most MAX_PULSES: every beat keeps its light-up and landing, a flight loses its
  * first tick before the scan is trimmed. A scan tick next to another, or next to a
  * phrase lighting up, is left out (the stronger is felt).
  */
-export function suggestionHaptics(crossed: number[], open: number): { scan: number[]; beat: (i: number) => { at: number; level: Level }[] } {
+export function suggestionHaptics(crossed: number[], open: number): { scan: number[]; beat: (i: number) => Pulse[]; flight: Ramp } {
   const lightUps = Array.from({ length: open }, (_, i) => FIRST_AT_MS + i * STEP_MS + LIGHT_AT_MS);
   let scan: number[] = [];
   for (const at of [...crossed].sort((a, b) => a - b)) {
@@ -305,9 +309,10 @@ export function suggestionHaptics(crossed: number[], open: number): { scan: numb
   const skip = FLIGHT_TICKS.length - flight;
   return {
     scan,
+    flight: FLIGHT_RAMP,
     beat: (i) => i >= beats ? [] : [
       { at: LIGHT_AT_MS, level: "light" },
-      ...FLIGHT_TICKS.slice(skip).map((u, n) => ({ at: LAUNCH_AT_MS + u * FLIGHT_MS, level: FLIGHT_LEVELS[skip + n] })),
+      ...FLIGHT_TICKS.slice(skip).map((u, n) => ({ at: LAUNCH_AT_MS + u * FLIGHT_MS, level: FLIGHT_LEVELS[skip + n], ladderOnly: true })),
       { at: ARRIVE_MS, level: i === beats - 1 ? "success" : "heavy" },
     ],
   };
@@ -317,13 +322,17 @@ export function suggestionHaptics(crossed: number[], open: number): { scan: numb
  * The whole pattern for a made-up showing (four phrases, three suggestions, every comet
  * flying) at the current pace, as one score: for the Haptics check.
  */
-export function sampleSuggestionScore(): Pulse[] {
+export function sampleSuggestionScore(): { pulses: Pulse[]; ramps: Ramp[] } {
   const k = typeof document === "undefined" ? 1 : pace();
   const plan = suggestionHaptics([0.15, 0.4, 0.62, 0.85].map(shimmerCrossing), 3);
-  return [
-    ...plan.scan.map((at) => ({ at, level: "soft" as Level })),
-    ...[0, 1, 2].flatMap((i) => plan.beat(i).map((pulse) => ({ ...pulse, at: FIRST_AT_MS + i * STEP_MS + pulse.at }))),
-  ].map((pulse) => ({ ...pulse, at: pulse.at * k }));
+  const beats = [0, 1, 2].map((i) => FIRST_AT_MS + i * STEP_MS);
+  return {
+    pulses: [
+      ...plan.scan.map((at) => ({ at, level: "soft" as Level })),
+      ...beats.flatMap((begin, i) => plan.beat(i).map((pulse) => ({ ...pulse, at: begin + pulse.at }))),
+    ].map((pulse) => ({ ...pulse, at: pulse.at * k })),
+    ramps: beats.map((begin) => ({ ...plan.flight, at: (begin + plan.flight.at) * k, duration: plan.flight.duration * k })),
+  };
 }
 
 /** The selector-safe form of a suggestion id. */
@@ -424,7 +433,8 @@ export function playSuggestionFlow(root: HTMLElement, items: FlowItem[]): () => 
         // only if the comet really flies. Nothing more once it has been answered.
         if (!used) {
           const pulses = plan.beat(nth).filter((_, i) => flies || i === 0);
-          felt.push(playScore(pulses.map((pulse) => ({ ...pulse, at: pulse.at * k, still: () => stillOpen(id) })), "suggestion"));
+          const flight = flies && pulses.length ? [{ ...plan.flight, at: plan.flight.at * k, duration: plan.flight.duration * k }] : [];
+          felt.push(playScore(pulses.map((pulse) => ({ ...pulse, at: pulse.at * k, still: () => stillOpen(id) })), "suggestion", flight));
         }
       }
       finish(run.anims);

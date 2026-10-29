@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
-import { ALL_MOMENTS, haptic, hapticChannel, onHapticOutcome, playScore, switchSupported, type Moment } from "../haptics";
+import { ALL_MOMENTS, haptic, hapticChannel, hapticCurves, onHapticOutcome, playScore, switchSupported, type Moment } from "../haptics";
 import { sampleSuggestionScore } from "../suggestionFlow";
 
 /** The check is shown on the web by `?haptics=check`, and in the apps by a long-press on the brand. */
@@ -50,6 +50,7 @@ function readStatus() {
  */
 export default function HapticsCheck({ onClose }: { onClose: () => void }) {
   const [build, setBuild] = useState("…");
+  const [curves, setCurves] = useState("…");
   const [log, setLog] = useState<string[]>([]);
   const [, refresh] = useState(0);
   const stopPattern = useRef<() => void>(() => {});
@@ -57,6 +58,7 @@ export default function HapticsCheck({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     let live = true;
     appBuild().then((value) => { if (live) setBuild(value); });
+    hapticCurves().then((engine) => { if (live) setCurves(engine ?? "no (the step-by-step ladder is used)"); });
     const stop = onHapticOutcome((outcome) => {
       setLog((lines) => [`${new Date().toLocaleTimeString()}  ${outcome}`, ...lines].slice(0, 30));
       refresh((n) => n + 1);
@@ -69,14 +71,18 @@ export default function HapticsCheck({ onClose }: { onClose: () => void }) {
   // decides if Save, which buzzes after the server answers, can tick in an iPhone browser).
   const playLater = (moment: Moment) => { window.setTimeout(() => play(moment), 1500); };
   // What a voice note's suggestions feel like (#144): the same pulses the animation plays, without it.
-  const playPattern = () => { stopPattern.current(); stopPattern.current = playScore(sampleSuggestionScore(), "suggestion"); };
+  const playPattern = (ladder: boolean) => {
+    stopPattern.current();
+    const { pulses, ramps } = sampleSuggestionScore();
+    stopPattern.current = playScore(pulses, "suggestion", ramps, { ladder });
+  };
 
   return (
     <div className="haptics-check" role="dialog" aria-label="Haptics check">
       <h1>Haptics check</h1>
       <p className="hint">Changes no data. Turn the phone's ringer/vibration on and tap each moment.</p>
       <dl>
-        {[["App version", build], ...readStatus()].map(([name, value]) => (
+        {[["App version", build], ...readStatus(), ["Smooth curves (HapticCurves)", curves]].map(([name, value]) => (
           <div key={name}><dt>{name}</dt><dd>{value}</dd></div>
         ))}
       </dl>
@@ -95,10 +101,13 @@ export default function HapticsCheck({ onClose }: { onClose: () => void }) {
       <h2>The suggestion pattern</h2>
       <p className="hint">
         What a voice note's suggestions feel like, about 4.5 s: soft ticks as the shimmer scans, a light tap as each of
-        three phrases lights up, ticks getting firmer and closer while its words fly, a heavy tap as each lands, a success last.
+        three phrases lights up, a build-up while its words fly (one smooth rise where the phone has curves, otherwise
+        ticks getting firmer and closer), a heavy tap as each lands, a success last. The second button plays the
+        step-by-step ladder even where curves are available, to compare.
       </p>
       <div className="haptics-buttons">
-        <button type="button" onClick={playPattern}>Play the suggestion pattern</button>
+        <button type="button" onClick={() => playPattern(false)}>Play the suggestion pattern</button>
+        <button type="button" onClick={() => playPattern(true)}>Play it as the step-by-step ladder</button>
       </div>
       <h2>What happened</h2>
       <pre className="haptics-log" aria-live="polite">{log.length ? log.join("\n") : "Nothing yet."}</pre>

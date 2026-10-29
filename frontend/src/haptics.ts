@@ -1,4 +1,4 @@
-import { Capacitor } from "@capacitor/core";
+import { Capacitor, registerPlugin } from "@capacitor/core";
 import { Haptics, ImpactStyle, NotificationType } from "@capacitor/haptics";
 
 /**
@@ -34,7 +34,10 @@ import { Haptics, ImpactStyle, NotificationType } from "@capacitor/haptics";
  *
  * Besides the moments there is one timed shape that follows an animation: a score
  * (playScore), pulses at levels from soft to success, used by the suggestion
- * animation (#144) so the feel builds with what is on screen.
+ * animation (#144) so the feel builds with what is on screen. In the apps, where the
+ * phone can, a score is played as smooth curves by the app's own HapticCurves plugin
+ * (#145: Core Haptics on iOS, VibrationEffect on Android); everywhere else, and on
+ * an app build without it, as a ladder of separate pulses.
  */
 export type Moment = "tick" | "filled" | "logged" | "recordStart" | "recordStop";
 export const ALL_MOMENTS: Moment[] = ["tick", "filled", "logged", "recordStart", "recordStop"];
@@ -237,8 +240,67 @@ export function haptic(moment: Moment): void {
   }
 }
 
-/** One pulse of a score: `at` ms from the start, and, optionally, a last check just before it plays. */
-export interface Pulse { at: number; level: Level; still?: () => boolean }
+/**
+ * One pulse of a score: `at` ms from the start, and, optionally, a last check just before
+ * it plays. `ladderOnly`: it stands in for a ramp, so it is played only when the ramp
+ * can't be (no curves on this phone).
+ */
+export interface Pulse { at: number; level: Level; still?: () => boolean; ladderOnly?: boolean }
+/** Strength building from one level towards another over `duration` ms (a comet's flight). */
+export interface Ramp { at: number; duration: number; from: Level; to: Level }
+
+// ---- curves (#145) -----------------------------------------------------------------
+
+type Feel = { intensity: number; sharpness: number };
+interface HapticCurvesPlugin {
+  capabilities(): Promise<{ curves: boolean; engine: string }>;
+  play(score: { taps: (Feel & { at: number })[]; ramps: { at: number; duration: number; from: Feel; to: Feel }[] }): Promise<{ id: string }>;
+  stop(options: { id: string }): Promise<void>;
+}
+let curvesPlugin: HapticCurvesPlugin | null = null;
+const curvesBridge = () => (curvesPlugin ??= registerPlugin<HapticCurvesPlugin>("HapticCurves"));
+
+/** Each level as a Core Haptics-style tap (0..1). Android has no sharpness, and ignores it. */
+const FEEL: Record<Exclude<Level, "success">, Feel> = {
+  soft: { intensity: 0.35, sharpness: 0.9 },
+  light: { intensity: 0.5, sharpness: 0.5 },
+  medium: { intensity: 0.65, sharpness: 0.55 },
+  firm: { intensity: 0.8, sharpness: 0.6 },
+  heavy: { intensity: 1, sharpness: 0.8 },
+};
+/** A success: a tap, then a stronger one. */
+const SUCCESS_TAPS = [{ at: 0, intensity: 0.75, sharpness: 0.5 }, { at: 110, intensity: 1, sharpness: 0.7 }];
+/** A continuous buzz feels stronger than a tap at the same intensity, so a ramp runs below its levels. */
+const RAMP_STRENGTH = 0.7;
+const rampFeel = (level: Level): Feel => {
+  const { intensity, sharpness } = level === "success" ? FEEL.heavy : FEEL[level];
+  return { intensity: intensity * RAMP_STRENGTH, sharpness };
+};
+
+/** undefined: not asked yet. null: no curves here. Otherwise the engine ("corehaptics", "composition", "amplitude"). */
+let curvesEngine: string | null | undefined;
+let curvesAsked: Promise<string | null> | null = null;
+const curvesInstalled = () => {
+  try {
+    return native() && Capacitor.isPluginAvailable("HapticCurves");
+  } catch {
+    return false;
+  }
+};
+
+/** Whether this phone plays smooth curves, and with what: null when it doesn't (browsers, old app builds, plain vibrators). */
+export function hapticCurves(): Promise<string | null> {
+  curvesAsked ??= (async () => {
+    if (!curvesInstalled()) return null;
+    try {
+      const { curves, engine } = await curvesBridge().capabilities();
+      return curves ? engine : null;
+    } catch {
+      return null;
+    }
+  })().then((engine) => (curvesEngine = engine));
+  return curvesAsked;
+}
 
 /**
  * Play a score: each pulse at its time, with timers, so nothing waits on it. Returns
@@ -250,7 +312,67 @@ export interface Pulse { at: number; level: Level; still?: () => boolean }
  * tick whatever its level). Each pulse is played on its own, so on Android browsers a
  * score never replaces a moment's longer pattern with one of its own.
  */
-export function playScore(pulses: Pulse[], label = "score"): () => void {
+export function playScore(pulses: Pulse[], label = "score", ramps: Ramp[] = [], { ladder = false } = {}): () => void {
+  if (!ladder && curvesInstalled()) {
+    if (curvesEngine === undefined) {
+      // Not known yet whether this phone has curves: ask (a moment), then play what is left.
+      const asked = Date.now();
+      let stopped = false;
+      let stop = () => {};
+      void hapticCurves().then(() => {
+        const late = Date.now() - asked;
+        if (!stopped) stop = playScore(pulses.map((p) => ({ ...p, at: p.at - late })), label, ramps.map((r) => ({ ...r, at: r.at - late })));
+      });
+      return () => { stopped = true; stop(); };
+    }
+    if (curvesEngine) return playCurves(pulses, ramps, label, curvesEngine);
+  }
+  return playLadder(pulses, label);
+}
+
+/**
+ * A score as one native curve. It starts at its first tap (Android replaces whatever is
+ * buzzing when a new effect starts, so an earlier start would cut the one before), a
+ * pulse's `still()` is asked at its time and a no stops the rest, and if a moment is
+ * buzzing when it would start it is played as the ladder instead, which gives way pulse
+ * by pulse.
+ */
+function playCurves(pulses: Pulse[], ramps: Ramp[], label: string, engine: string): () => void {
+  const taps = pulses.filter((p) => !p.ladderOnly).flatMap((p) => p.level === "success"
+    ? SUCCESS_TAPS.map((tap) => ({ ...tap, at: p.at + tap.at }))
+    : [{ at: p.at, ...FEEL[p.level] }]);
+  const curves = ramps.map((r) => ({ at: r.at, duration: r.duration, from: rampFeel(r.from), to: rampFeel(r.to) }));
+  const first = Math.max(0, Math.min(...taps.map((t) => t.at), ...curves.map((r) => r.at)));
+  if (!Number.isFinite(first)) return () => {};
+  const timers: ReturnType<typeof setTimeout>[] = [];
+  let playing: Promise<string | null> | null = null;
+  let ladder = () => {};
+  const name = `${label} curves (${engine})`;
+  const stop = () => {
+    timers.forEach(clearTimeout);
+    ladder();
+    void playing?.then((id) => { if (id) return curvesBridge().stop({ id }).catch(() => {}); });
+    playing = null;
+  };
+  const start = () => {
+    if (busyUntil > Date.now()) {
+      ladder = playLadder(pulses.map((p) => ({ ...p, at: p.at - first })), label);
+      return;
+    }
+    const shift = <T extends { at: number }>(item: T) => ({ ...item, at: Math.max(0, item.at - first) });
+    playing = curvesBridge().play({ taps: taps.map(shift), ramps: curves.map(shift) }).then(
+      ({ id }) => { report(`${name}: ok`); return id; },
+      (error) => { report(`${name}: failed (${error instanceof Error ? error.message : String(error)})`); return null; },
+    );
+  };
+  timers.push(setTimeout(start, first));
+  for (const pulse of pulses) {
+    if (pulse.still) timers.push(setTimeout(() => { if (!pulse.still!()) stop(); }, Math.max(0, pulse.at)));
+  }
+  return stop;
+}
+
+function playLadder(pulses: Pulse[], label: string): () => void {
   const timers: ReturnType<typeof setTimeout>[] = [];
   const pulse = ({ level, still }: Pulse) => {
     const name = `${label} ${level}`;

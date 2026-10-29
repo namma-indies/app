@@ -1,14 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const plugin = vi.hoisted(() => ({ impact: vi.fn(), notification: vi.fn(), selectionStart: vi.fn(), selectionChanged: vi.fn(), selectionEnd: vi.fn() }));
-const platform = vi.hoisted(() => ({ native: true, available: true }));
+const platform = vi.hoisted(() => ({ native: true, available: true, curves: false }));
 vi.mock("@capacitor/haptics", () => ({
   Haptics: plugin,
   ImpactStyle: { Light: "LIGHT", Medium: "MEDIUM", Heavy: "HEAVY" },
   NotificationType: { Success: "SUCCESS" },
 }));
 vi.mock("@capacitor/core", () => ({
-  Capacitor: { isNativePlatform: () => platform.native, isPluginAvailable: () => platform.available },
+  Capacitor: { isNativePlatform: () => platform.native, isPluginAvailable: (name: string) => platform.available && (name === "Haptics" || platform.curves) },
 }));
 
 import { haptic, hapticChannel, LEVELS, onHapticOutcome, playScore, webPulse } from "./haptics";
