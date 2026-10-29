@@ -2,6 +2,7 @@
 // httpOnly session cookie set by /auth/magic-link/consume is included.
 
 import { API_BASE } from "./apiBase";
+import { speciesNoun, speciesWithArticle } from "./species";
 
 // "exif" is a camera-roll import: coordinates read out of the file rather than
 // observed live. It exists as its own value because "device_gps" would claim an
@@ -111,6 +112,7 @@ export interface MappableSighting {
   lng: number | null;
   attrs: SightingAttrs;
   photos: { thumb_url: string }[];
+  species?: "dog" | "cat" | null;
   /** Absent on /dex responses, where every sighting is the viewer's. */
   observer?: string;
   mine?: boolean;
@@ -328,6 +330,8 @@ export async function postSighting(
  * dog with a single sighting cannot exist. */
 export interface Dog {
   id: string;
+  /** Set only when every sighting of it agrees; otherwise null. */
+  species?: "dog" | "cat" | null;
   /** Null until naming ships (issue #4); the card falls back to a number. */
   name: string | null;
   first_seen: string;
@@ -377,6 +381,7 @@ export interface MatchSide {
   sighting_id: string;
   date: string;
   thumb_url: string | null;
+  species?: "dog" | "cat" | null;
   /** The viewer logged this side. Nothing about where it was taken is sent
    * for either side (issue #45). */
   mine?: boolean;
@@ -557,13 +562,25 @@ export type ReportReason =
   | "offensive"
   | "other";
 
-export const REPORT_REASONS: { value: ReportReason; label: string }[] = [
-  { value: "endangers_dog", label: "Puts this dog at risk" },
-  { value: "offensive", label: "Offensive or abusive" },
-  { value: "not_a_dog", label: "Not a dog" },
-  { value: "wrong_place", label: "Wrong place or time" },
-  { value: "other", label: "Something else" },
+export const REPORT_REASONS: ReportReason[] = [
+  "endangers_dog",
+  "offensive",
+  "not_a_dog",
+  "wrong_place",
+  "other",
 ];
+
+/** The reason as a person reads it. The two animal reasons name the species of
+ * the sighting being reported ("animal" when it isn't known). */
+export function reportReasonLabel(reason: ReportReason, species?: string | null): string {
+  switch (reason) {
+    case "endangers_dog": return `Puts this ${speciesNoun(species)} at risk`;
+    case "not_a_dog": return `Not ${speciesWithArticle(species)}`;
+    case "offensive": return "Offensive or abusive";
+    case "wrong_place": return "Wrong place or time";
+    case "other": return "Something else";
+  }
+}
 
 export const MAX_REPORT_NOTE = 500;
 
@@ -595,6 +612,7 @@ export interface ModerationItem {
   observer: string | null;
   report_count: number;
   reasons: ReportReason[];
+  species?: "dog" | "cat" | null;
   /** Written by whoever reported it. Untrusted text; React escapes on render. */
   notes: string[];
   thumb_url: string | null;

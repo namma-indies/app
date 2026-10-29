@@ -5,6 +5,7 @@ import { haptic } from "../haptics";
 import { playFill, useSuggestionFlow } from "../suggestionFlow";
 import { getCapture, reviewCapture, type CaptureDetail, type CaptureGroup, type CaptureInstance, type CaptureSuggestion } from "../captureApi";
 import { formatWhen } from "../formatWhen";
+import { commonSpecies, speciesNoun } from "../species";
 import ChipGroup from "./ChipGroup";
 import { CONDITION_OPTIONS, EAR_NOTCH_OPTIONS, SEX_OPTIONS } from "../detailOptions";
 
@@ -39,7 +40,7 @@ const boxStyle = (box: NonNullable<CaptureInstance["bbox"]>): CSSProperties => (
 function Evidence({ instance }: { instance: CaptureInstance }) {
   const box = instance.source_bbox ? undefined : instance.bbox;
   return <div className="capture-evidence">
-    <img src={instance.source_url && box ? instance.source_url : instance.thumb_url} alt={`Box showing a ${instance.species}`} />
+    <img src={instance.source_url && box ? instance.source_url : instance.thumb_url} alt={`Box showing a ${speciesNoun(instance.species)}`} />
     {instance.source_url && box && <span className="capture-box" style={{ left: `${box[0] * 100}%`, top: `${box[1] * 100}%`, width: `${(box[2] - box[0]) * 100}%`, height: `${(box[3] - box[1]) * 100}%` }} />}
   </div>;
 }
@@ -211,12 +212,11 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
   const saveLabel = saving ? "Saving…" : detail?.processing_state === "ready" ? "Save animal details" : groups.length === 0 ? "Discard this upload" : `Publish ${groups.length} ${groups.length === 1 ? "animal" : "animals"}`;
   // Until the capture is known there is nothing to say about it: not "ready", and not "needs grouping" either.
   const title = !detail ? "Loading…" : detail.processing_state === "ready" ? "Animal details" : "Separate the animals";
-  const kinds = new Set(detail?.instances.filter((instance) => assignments[instance.id] !== NOT_AN_ANIMAL).map((instance) => instance.species));
-  const nameHint = `A name doesn’t decide which ${kinds.size === 1 && [...kinds][0] ? [...kinds][0] : "animal"} this is.`;
+  const nameHint = `A name doesn’t decide which ${speciesNoun(commonSpecies(detail?.instances.filter((instance) => assignments[instance.id] !== NOT_AN_ANIMAL).map((instance) => instance.species) ?? []))} this is.`;
   const details = (group: string, thumb?: CaptureInstance) => <>
     <div className={thumb ? "capture-name-row" : undefined}>
       {thumb && <button type="button" className="capture-thumb" aria-label="Show the whole photo" onClick={() => setLightbox(true)}>
-        <img src={thumb.thumb_url} alt={`A ${thumb.species || "animal"} in this upload`} />
+        <img src={thumb.thumb_url} alt={`A ${speciesNoun(thumb.species)} in this upload`} />
       </button>}
       <label>Known name (optional)
         <input type="text" data-field="known_name" data-fx-into={usedInto(group, "known_name")} maxLength={80} value={attrs[group]?.known_name ?? ""} aria-describedby="known-name-hint"
@@ -300,7 +300,7 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
                       setAssignments((current) => ({ ...current, [instance.id]: group }));
                     }}>
                       {groups.filter((group) => group === assignments[instance.id] || (groupSpecies.get(group)?.size === 1 && groupSpecies.get(group)?.has(instance.species))).map((group) => <option key={group} value={group} disabled={groupSpecies.get(group)?.size !== 1}>{groupLabels.get(group)}</option>)}
-                      {emptyGroup && <option value={emptyGroup}>A new {instance.species || "animal"}</option>}
+                      {emptyGroup && <option value={emptyGroup}>A new {speciesNoun(instance.species)}</option>}
                       <option value={NOT_AN_ANIMAL}>Not an animal (leave out)</option>
                     </select>
                   </label>

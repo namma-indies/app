@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   MAX_REPORT_NOTE,
   REPORT_REASONS,
+  reportReasonLabel,
   reportSighting,
   UnauthorizedError,
   type ReportReason,
@@ -9,7 +10,7 @@ import {
 
 /** Flagging someone else's sighting.
  *
- * The first reason is "puts this dog at risk", and the order is deliberate.
+ * The first reason is "puts this animal at risk" (cat or dog, as it is), and the order is deliberate.
  * Most report flows are built for offence; this app's first concern is that a
  * photograph can show where a specific animal sleeps, which is a safety problem
  * rather than a taste one.
@@ -20,11 +21,14 @@ import {
  */
 export default function ReportSheet({
   sightingId,
+  species,
   onClose,
   onReported,
   onUnauthorized,
 }: {
   sightingId: string;
+  /** Of the sighting being reported; the animal reasons name it. */
+  species?: string | null;
   onClose: () => void;
   onReported: () => void;
   onUnauthorized: () => void;
@@ -63,14 +67,14 @@ export default function ReportSheet({
         <div className="report-reasons" role="radiogroup" aria-label="Reason">
           {REPORT_REASONS.map((r) => (
             <button
-              key={r.value}
+              key={r}
               type="button"
               role="radio"
-              aria-checked={reason === r.value}
-              className={"chip" + (reason === r.value ? " active" : "")}
-              onClick={() => setReason(r.value)}
+              aria-checked={reason === r}
+              className={"chip" + (reason === r ? " active" : "")}
+              onClick={() => setReason(r)}
             >
-              {r.label}
+              {reportReasonLabel(r, species)}
             </button>
           ))}
         </div>

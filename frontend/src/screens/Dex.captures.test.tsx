@@ -49,7 +49,7 @@ describe("uploads in the Journal", () => {
       review_suggestions: [{ id: "n", field: "known_name", value: "Billi", quote: "People call her Billi" }],
     })], [upload("c", "ready", { sighting_ids: ["a"] })]);
     await journal();
-    await userEvent.click(screen.getByAltText("dog sighting"));
+    await userEvent.click(screen.getByAltText("animal sighting"));
     expect(screen.getByText("People call her Billi").tagName).toBe("MARK");
     await userEvent.click(screen.getByRole("button", { name: "Review 1 suggestion from your note" }));
     expect(screen.getByText("review sheet for c")).toBeInTheDocument();
@@ -67,7 +67,7 @@ describe("uploads in the Journal", () => {
       ],
     })], []);
     await journal();
-    await userEvent.click(screen.getByAltText("dog sighting"));
+    await userEvent.click(screen.getByAltText("animal sighting"));
     const marks = [...document.querySelectorAll("mark.transcript-hit")];
     expect(marks.map((m) => m.textContent)).toEqual(["he was healthy back then", "He is a house cat"]);
     expect(marks.every((m) => m.classList.contains("is-used"))).toBe(true);

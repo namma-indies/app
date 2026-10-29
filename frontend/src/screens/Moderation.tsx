@@ -10,6 +10,7 @@ import {
   type ReportReason,
 } from "../api";
 import { formatWhen } from "../formatWhen";
+import { speciesNoun, speciesWithArticle } from "../species";
 
 /** The queue of reported sightings, for whoever holds `trust_tier='moderator'`.
  *
@@ -37,12 +38,12 @@ import { formatWhen } from "../formatWhen";
  * are different questions, decided independently.
  */
 
-const REASON_LABELS: Record<ReportReason, string> = {
-  endangers_dog: "PUTS THE DOG AT RISK",
-  offensive: "OFFENSIVE",
-  not_a_dog: "NOT A DOG",
-  wrong_place: "WRONG PLACE/TIME",
-  other: "OTHER",
+const REASON_LABELS: Record<ReportReason, (species?: string | null) => string> = {
+  endangers_dog: (species) => `PUTS THE ${speciesNoun(species).toUpperCase()} AT RISK`,
+  offensive: () => "OFFENSIVE",
+  not_a_dog: (species) => `NOT ${speciesWithArticle(species).toUpperCase()}`,
+  wrong_place: () => "WRONG PLACE/TIME",
+  other: () => "OTHER",
 };
 
 export default function Moderation({ onUnauthorized }: { onUnauthorized: () => void }) {
@@ -267,7 +268,7 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
                 <div className="marks">
                   {[...new Set(item.reasons)].map((r) => (
                     <span key={r} className="mk">
-                      {REASON_LABELS[r] ?? r}
+                      {REASON_LABELS[r]?.(item.species) ?? r}
                     </span>
                   ))}
                 </div>

@@ -521,7 +521,7 @@ export default function Capture() {
         {videoUrl ? (
           <video src={videoUrl} controls muted playsInline />
         ) : previewUrls.length > 0 ? (
-          <img src={previewUrls[previewUrls.length - 1]} alt="captured dog" />
+          <img src={previewUrls[previewUrls.length - 1]} alt="captured animal" />
         ) : (
           <div className="placeholder">
             <DogSprite coat="tan" scale={7} />
@@ -621,7 +621,7 @@ export default function Capture() {
               <div className="filmstrip">
                 {previewUrls.map((url, i) => (
                   <div className="filmstrip-thumb" key={url}>
-                    <img src={url} alt={`captured dog ${i + 1}`} />
+                    <img src={url} alt={`captured animal ${i + 1}`} />
                     <button
                       type="button"
                       className="thumb-remove"

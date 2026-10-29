@@ -15,6 +15,7 @@ import DogMap from "../components/DogMap";
 import CaptureReview from "../components/CaptureReview";
 import { getCaptures, type CaptureSummary } from "../captureApi";
 import ReportSheet from "../components/ReportSheet";
+import { speciesNoun } from "../species";
 import Dogs from "./Dogs";
 import { useProcessingFeed } from "../useProcessingFeed";
 import { processingLabel } from "../processing";
@@ -245,7 +246,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
           {shown.map((s) => (
             <div key={s.id} className="spec" onClick={() => setSelected(s.id)}>
               <div className="frame">
-                {s.photos[0] ? <img src={s.photos[0].thumb_url} alt="dog sighting" /> : <div className="media-placeholder">No preview yet</div>}
+                {s.photos[0] ? <img src={s.photos[0].thumb_url} alt={`${speciesNoun(s.species)} sighting`} /> : <div className="media-placeholder">No preview yet</div>}
                 <span className="no">No. {String(numberOf.get(s.id) ?? 0).padStart(3, "0")}</span>
               </div>
               <div className="meta">
@@ -299,6 +300,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
       {reporting && (
         <ReportSheet
           sightingId={reporting}
+          species={[...(everyone ?? []), ...sightings].find((s) => s.id === reporting)?.species}
           onClose={() => setReporting(null)}
           onReported={() => {
             setReporting(null);
@@ -314,7 +316,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
       {selected && (
         <div className="viewer-overlay" onClick={() => setSelected(null)}>
           <div onClick={(e) => e.stopPropagation()}>
-            {selected.photos.length > 0 ? selected.photos.map((photo, index) => <img key={photo.url} src={photo.url} alt={`dog sighting ${index + 1}`} />) : <div className="media-placeholder">{processingLabel(selected.processing_state) ?? "Preview unavailable"}</div>}
+            {selected.photos.length > 0 ? selected.photos.map((photo, index) => <img key={photo.url} src={photo.url} alt={`${speciesNoun(selected.species)} sighting ${index + 1}`} />) : <div className="media-placeholder">{processingLabel(selected.processing_state) ?? "Preview unavailable"}</div>}
             {selected.photos.length > 0 && processingLabel(selected.processing_state) && <p className="viewer-caption">{processingLabel(selected.processing_state)}</p>}
             <p className="viewer-caption">
               No. {String(numberOf.get(selected.id) ?? 0).padStart(3, "0")} ·{" "}

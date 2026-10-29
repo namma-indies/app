@@ -11,6 +11,7 @@ import {
   type SocialShared,
 } from "../api";
 import { formatDay, formatWhen } from "../formatWhen";
+import { speciesNoun } from "../species";
 
 /** The moderators' POSTS screen: what people have shared, what goes out next
  * on @nammaindies, and what has gone out.
@@ -72,7 +73,7 @@ function SharedCard({ item, onDone, onUnauthorized }: {
         </div>
       )}
       <div className="line">
-        {item.species === "cat" ? "cat" : "dog"} · {formatWhen(item.captured_at)} · @{item.handle}
+        {speciesNoun(item.species)} · {formatWhen(item.captured_at)} · @{item.handle}
       </div>
       <label className="social-caption">
         Caption
