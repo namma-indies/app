@@ -289,6 +289,20 @@ describe("one-animal sheet", () => {
     await user.click(screen.getByRole("button", { name: "Close photo" }));
     expect(screen.queryByRole("dialog", { name: "Photo with the animal boxed" })).not.toBeInTheDocument();
   });
+  it("opens a multi-photo lightbox at the first photo: Close is outside the scrolling stack and focus doesn't scroll", async () => {
+    const user = userEvent.setup();
+    const frame = (id: string, photo: string) => ({ ...one.instances[0], id, photo_id: photo, source_thumb_url: `${photo}_thumb.webp` });
+    renderOne({ groups: [{ instance_ids: ["a", "b"] }], instances: [frame("a", "frame1"), frame("b", "frame2")] });
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    await user.click(await screen.findByRole("button", { name: "Show the whole photo" }));
+    const body = document.querySelector(".capture-lightbox-body")!;
+    expect(body.querySelectorAll("img")).toHaveLength(2);
+    const close = screen.getByRole("button", { name: "Close photo" });
+    expect(body.contains(close)).toBe(false);
+    expect(focus.mock.instances).toContain(close);
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    focus.mockRestore();
+  });
   it("sets a chip on tap, clears it when the chosen one is tapped again, and saves the result", async () => {
     const user = userEvent.setup();
     vi.mocked(reviewCapture).mockResolvedValue({ capture_id: "c", sighting_ids: [], processing_state: "ready" });

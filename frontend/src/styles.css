@@ -1152,7 +1152,9 @@ button { font-family: inherit; }
 .transcript blockquote { position: relative; }
 .transcript-more { padding: 2px 4px; font-size: .85rem; }
 .capture-lightbox { position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center; padding: 12px; background: #000c; }
-.capture-lightbox-body { display: flex; flex-direction: column; gap: 10px; max-height: 100%; overflow-y: auto; align-items: stretch; }
+.capture-lightbox-frame { display: flex; flex-direction: column; gap: 10px; max-height: 100%; min-height: 0; }
+/* Close sits outside the scrolling photos, so opening starts at the first photo and Close stays reachable. */
+.capture-lightbox-body { display: flex; flex-direction: column; gap: 10px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .capture-lightbox .capture-source-image { margin: 0; }
 .overlap-count { position: absolute; right: -8px; top: -8px; min-width: 22px; padding: 3px; text-align: center; border-radius: 100%; background: var(--ink); color: var(--panel); font-weight: bold; }
 .overlap-chooser { max-height: 55vh; overflow-y: auto; }

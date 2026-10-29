@@ -48,13 +48,14 @@ function Evidence({ instance }: { instance: CaptureInstance }) {
 function Lightbox({ photos, onClose }: { photos: { instance: CaptureInstance; index: number }[][]; onClose: () => void }) {
   const closeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    closeRef.current?.focus();
+    closeRef.current?.focus({ preventScroll: true });
     const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
   }, [onClose]);
   return <div className="capture-lightbox" role="dialog" aria-modal="true" aria-label="Photo with the animal boxed" onClick={onClose}>
-    <div className="capture-lightbox-body" onClick={(event) => event.stopPropagation()}>
+    <div className="capture-lightbox-frame" onClick={(event) => event.stopPropagation()}>
+    <div className="capture-lightbox-body">
       {photos.map((items, i) => {
         const source = items.find(({ instance }) => instance.source_thumb_url && instance.source_bbox)?.instance;
         return source
@@ -64,7 +65,8 @@ function Lightbox({ photos, onClose }: { photos: { instance: CaptureInstance; in
           </div>
           : <Evidence key={items[0].instance.id} instance={items[0].instance} />;
       })}
-      <button type="button" className="btn" ref={closeRef} onClick={onClose}>Close photo</button>
+    </div>
+    <button type="button" className="btn" ref={closeRef} onClick={onClose}>Close photo</button>
     </div>
   </div>;
 }
