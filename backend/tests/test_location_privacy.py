@@ -79,9 +79,31 @@ async def test_candidacy_depends_on_the_candidates_cell_not_its_point(migrated_d
     assert outcomes == {True, False}, "the sweep must exercise both answers"
 
 
+async def test_two_queries_in_one_cell_get_the_same_candidates(migrated_db):
+    """The query side too. Which pairs exist is published to every observer
+    through `/proposals`, so where in its cell the query sighting was taken
+    must not change which candidates it is paired with."""
+    obs = await _observer(migrated_db)
+    vec = _unit(151)
+    (w, s), (dlng, dlat) = _cell(*BLR)
+    rng = random.Random(151)
+    for _ in range(45):
+        await _sighting(migrated_db, obs, vec,
+                        lat=s + rng.uniform(-3, 4) * dlat, lng=w + rng.uniform(-3, 4) * dlng)
+
+    sets = []
+    for fy, fx in ((0.05, 0.05), (0.95, 0.95), (0.05, 0.95), (0.95, 0.05), (0.5, 0.5)):
+        sets.append({c.sighting_id for c in await find_candidates(
+            migrated_db, vec, lat=s + fy * dlat, lng=w + fx * dlng,
+            radius_m=settings.reid_radius_m, limit=50)})
+
+    assert all(got == sets[0] for got in sets)
+    assert sets[0], "the sample must put someone in reach"
+
+
 async def test_no_candidate_the_exact_radius_admitted_is_lost(migrated_db):
-    """Measured to cell centres with the half-diagonal added, the candidate set
-    can only grow: recall cannot drop."""
+    """Measured between cell centres with a half-diagonal added for each end,
+    the candidate set can only grow: recall cannot drop."""
     obs = await _observer(migrated_db)
     vec = _unit(147)
     rng = random.Random(147)
@@ -201,3 +223,42 @@ async def test_a_ward_boundary_through_a_cell_does_not_split_it(migrated_db):
     assert counted == {east: 2}
     assert west not in counted
     assert await area_name(migrated_db, a) == await area_name(migrated_db, b) == "East"
+
+
+# --- GET /proposals ---------------------------------------------------------------
+
+
+async def test_proposals_pair_two_uploads_in_one_cell_alike(authed_client):
+    """`/proposals` names both sightings of a pair to every observer. Two
+    uploads in one cell -- one near the edge facing an earlier sighting, one at
+    the far edge -- must be paired with it alike, or which pairs exist says
+    where in the cell each upload was taken."""
+    from app.matching import resolve_sighting
+
+    client, viewer = authed_client
+    vec = _unit(152)
+    (w, s), (dlng, dlat) = _cell(*BLR)
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as conn:
+        uploader = await _observer(conn)
+        # The viewer's own earlier sighting, in the middle of its cell.
+        earlier = await _sighting(conn, viewer, vec, lat=s + 0.5 * dlat, lng=w + 0.5 * dlng)
+        # Two uploads in the cell two to the east: ~1.6 km and ~2.4 km from
+        # the earlier sighting's cell centre, either side of where an exact
+        # query point once drew the line.
+        near = await _sighting(conn, uploader, vec, lat=s + 0.5 * dlat, lng=w + 2.1 * dlng)
+        far = await _sighting(conn, uploader, vec, lat=s + 0.5 * dlat, lng=w + 2.9 * dlng)
+        for sid in (near, far):
+            await resolve_sighting(
+                conn, sid, auto_merge_min=1.01, propose_min=0.5,
+                radius_m=settings.reid_radius_m, max_candidates=5, new_uuid=uuid7,
+            )
+
+    pairs = {
+        frozenset((p["a"]["sighting_id"], p["b"]["sighting_id"]))
+        for p in (await client.get("/proposals")).json()["proposals"]
+    }
+    with_earlier = {frozenset((str(q), str(earlier))) in pairs for q in (near, far)}
+
+    assert len(with_earlier) == 1, "one upload was paired with it and the other was not"
+    assert with_earlier == {True}, "both are in reach of it, cell to cell"

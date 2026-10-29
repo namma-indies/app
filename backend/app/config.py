@@ -107,12 +107,12 @@ class Settings(BaseSettings):
     # be the same animal. Narrow enough that the vector check is asked to
     # separate neighbours, not strangers.
     reid_radius_m: float = 1000.0
-    # Added to reid_radius_m because the vicinity is measured to a candidate's
-    # grid cell centre, never its exact point (app/matching.py says why). A
-    # point is at most half a cell diagonal from its centre -- 707 m for a
-    # 1000 m cell -- so this keeps every candidate the exact radius would have
-    # admitted. Move it with map_coarsen_cell_m.
-    reid_cell_slack_m: float = 708.0
+    # Added to reid_radius_m because the vicinity is measured between the two
+    # sightings' grid cell centres, never from an exact point (app/matching.py
+    # says why). Each point is at most half a cell diagonal from its centre --
+    # 707 m for a 1000 m cell -- so two of them, 1415 m, keeps every candidate
+    # the exact radius would have admitted. Move it with map_coarsen_cell_m.
+    reid_cell_slack_m: float = 1416.0
     reid_recent_days: int = 365
 
     # Two-threshold merge rule, on cosine similarity of L2-normalised

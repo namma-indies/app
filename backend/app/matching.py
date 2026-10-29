@@ -108,29 +108,33 @@ async def find_candidates(
     params: list = [qs, MODEL_NAME, exclude_sighting_id]
     p_vecs, p_model, p_excl = "$1", "$2", "$3"
     if has_geo:
-        # THE VICINITY IS MEASURED TO THE CANDIDATE'S CELL, NOT ITS POINT
-        # ----------------------------------------------------------------
-        # The query point is whatever the uploader sent, and whether a
-        # candidate -- and so a proposal -- exists is visible to them. Measured
-        # to the candidate's exact point, each upload would answer "is that
-        # sighting within this distance of here", which the grid cell
-        # (app/precision.py) exists to withhold. Measured to its cell centre,
-        # the answer depends on the cell alone.
+        # THE VICINITY IS MEASURED FROM CELL TO CELL, NEVER FROM A POINT
+        # --------------------------------------------------------------
+        # Whether two sightings are near enough to be paired is visible beyond
+        # either of them: a proposal names both sightings to every observer
+        # (`GET /proposals`), and the query's own candidates go to whoever
+        # uploaded it, who chose its location. Measured from either exact
+        # point, the pair would say "these two are within this distance",
+        # which places one or both more finely than the grid cell
+        # (app/precision.py) shown for them. Measured between cell centres,
+        # the answer depends on the two cells alone.
         #
-        # reid_cell_slack_m widens the radius by the most a point can sit from
-        # its cell centre, so nothing the exact radius admitted is lost: the
-        # candidate set can only grow. The plain ST_DWithin on s.geog is a
-        # looser bound the spatial index can serve; the cell test decides.
+        # reid_cell_slack_m widens the radius by the most the two centres can
+        # add -- half a cell diagonal at each end -- so nothing the exact
+        # radius admitted is lost: the candidate set can only grow. The plain
+        # ST_DWithin on s.geog is a looser bound the spatial index can serve;
+        # the cell test decides.
         reach = radius_m + settings.reid_cell_slack_m
         params += [lng, lat, reach]
         p_lng, p_lat, p_radius = "$4", "$5", "$6"
         here = f"ST_SetSRID(ST_MakePoint({p_lng}, {p_lat}), 4326)::geography"
+        here_cell = coarse_geog(here)
         geo_filter = (
             f"AND s.geog IS NOT NULL"
             f" AND ST_DWithin(s.geog, {here}, {p_radius}::float8 + {settings.reid_cell_slack_m!r})"
-            f" AND ST_DWithin({coarse_geog()}, {here}, {p_radius}::float8)"
+            f" AND ST_DWithin({coarse_geog()}, {here_cell}, {p_radius}::float8)"
         )
-        distance = f"ST_Distance({coarse_geog()}, {here})"
+        distance = f"ST_Distance({coarse_geog()}, {here_cell})"
     else:
         geo_filter = ""
         distance = "NULL::double precision"
