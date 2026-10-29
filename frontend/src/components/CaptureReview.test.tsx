@@ -55,7 +55,7 @@ describe("private grouping review", () => {
     expect(overlappingButton).toHaveAttribute("aria-pressed", "true");
     expect(boxes[1]).toHaveClass("is-selected");
     expect(reviewCapture).not.toHaveBeenCalled();
-    expect(screen.getByText(/aren’t a count of animals/)).toBeInTheDocument();
+    expect(screen.getByText(/numbers only tell boxes apart/)).toBeInTheDocument();
   });
   it("numbers groups separately by species across boxes, evidence, options and details", async () => {
     const instances = [detail.instances[0], { ...instance("cat", "cat-frame"), species: "cat" }, detail.instances[1], detail.instances[2]].map((item) => ({
@@ -161,8 +161,8 @@ describe("private grouping review", () => {
     await userEvent.selectOptions(screen.getByLabelText("Which animal is box 3?"), "3");
     expect(screen.getByRole("button", { name: "Publish 3 animals" })).toBeEnabled();
     await userEvent.selectOptions(screen.getByLabelText("Which animal is box 3?"), "2");
-    await userEvent.selectOptions(screen.getAllByLabelText("Sex")[0], "female");
-    await userEvent.selectOptions(screen.getAllByLabelText("Condition")[1], "injured");
+    await userEvent.click(within(screen.getAllByRole("radiogroup", { name: "Sex" })[0]).getByRole("radio", { name: "♀ female" }));
+    await userEvent.click(within(screen.getAllByRole("radiogroup", { name: "Condition" })[1]).getByRole("radio", { name: "injured" }));
     await userEvent.click(screen.getByRole("button", { name: "Publish 2 animals" }));
     expect(reviewCapture).toHaveBeenCalledWith("c", [{ instance_ids: ["a"], sex: "female" }, { instance_ids: ["b", "c"], condition: "injured" }], 2, []);
     expect(onSaved).toHaveBeenCalledOnce();
@@ -195,9 +195,15 @@ describe("private grouping review", () => {
   it("shows a saved exclusion as not an animal", async () => {
     vi.mocked(getCapture).mockResolvedValue({ ...detail, processing_state: "ready", groups: [{ instance_ids: ["a", "c"] }], excluded_instance_ids: ["b"] });
     render(<CaptureReview captureId="c" onClose={() => {}} onSaved={() => {}} onUnauthorized={() => {}} />);
+    // One animal left, so the sheet is just its details: no photo blocks and no locked picker.
+    expect(await screen.findByRole("button", { name: "Save animal details" })).toBeEnabled();
+    expect(screen.queryByLabelText("Which animal is box 2?")).not.toBeInTheDocument();
+  });
+  it("shows a ready upload with boxes still grouped in two animals with the photos and a locked picker", async () => {
+    vi.mocked(getCapture).mockResolvedValue({ ...detail, processing_state: "ready" });
+    render(<CaptureReview captureId="c" onClose={() => {}} onSaved={() => {}} onUnauthorized={() => {}} />);
     await screen.findByText("Details for each animal");
-    expect(screen.getByLabelText("Which animal is box 2?")).toHaveValue(NOT_AN_ANIMAL);
-    expect(screen.getByRole("button", { name: "Save animal details" })).toBeEnabled();
+    expect(screen.getByLabelText("Which animal is box 2?")).toBeDisabled();
   });
   it("blocks publication of co-visible animals assigned to the same group", async () => {
     vi.mocked(getCapture).mockResolvedValue(detail);
@@ -214,11 +220,11 @@ describe("private grouping review", () => {
     const { rerender } = render(<CaptureReview {...props} onUnauthorized={() => {}} />);
     await screen.findByText("Details for each animal");
     await userEvent.selectOptions(screen.getByLabelText("Which animal is box 3?"), "3");
-    await userEvent.selectOptions(screen.getAllByLabelText("Sex")[0], "female");
+    await userEvent.click(within(screen.getAllByRole("radiogroup", { name: "Sex" })[0]).getByRole("radio", { name: "♀ female" }));
     rerender(<CaptureReview {...props} onUnauthorized={() => {}} />);
     expect(getCapture).toHaveBeenCalledTimes(1);
     expect(screen.getByLabelText("Which animal is box 3?")).toHaveValue("3");
-    expect(screen.getAllByLabelText("Sex")[0]).toHaveValue("female");
+    expect(within(screen.getAllByRole("radiogroup", { name: "Sex" })[0]).getByRole("radio", { name: "♀ female" })).toBeChecked();
   });
   it("requires fresh evidence after a lost save acknowledgement before submitting again", async () => {
     vi.mocked(getCapture).mockResolvedValueOnce(detail).mockResolvedValue({ ...detail, revision: 3, processing_state: "ready" });
@@ -242,7 +248,120 @@ describe("private grouping review", () => {
     vi.mocked(getCapture).mockResolvedValue({ ...detail, processing_state: "ready" });
     render(<CaptureReview captureId="c" onClose={() => {}} onSaved={() => {}} onUnauthorized={() => {}} />);
     await waitFor(() => expect(screen.getByLabelText("Which animal is box 1?")).toBeDisabled());
-    expect(screen.getAllByLabelText("Sex")[0]).toBeEnabled();
+    expect(screen.getAllByRole("radio", { name: "unsure" })[0]).toBeEnabled();
     expect(screen.getByRole("button", { name: "Save animal details" })).toBeEnabled();
+  });
+});
+
+describe("one-animal sheet", () => {
+  const one: CaptureDetail = { ...detail, processing_state: "ready", groups: [{ instance_ids: ["a"], sex: "male" }], instances: [{
+    ...instance("a", "frame1"), thumb_url: "a-crop.webp", source_thumb_url: "frame1_thumb.webp", source_width: 200, source_height: 400, source_bbox: [0.1, 0.2, 0.5, 0.6], bbox: [0.05, 0.05, 0.95, 0.95],
+  }] };
+  const renderOne = (extra: Partial<CaptureDetail> = {}) => {
+    vi.mocked(getCapture).mockResolvedValue({ ...one, ...extra });
+    return render(<CaptureReview captureId="c" onClose={() => {}} onSaved={() => {}} onUnauthorized={() => {}} />);
+  };
+  it("is just the details: no photo block, box picker or box hint", async () => {
+    const { container } = renderOne();
+    await screen.findByRole("group", { name: "Dog 1" });
+    expect(screen.queryByRole("region", { name: /Photo/ })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Which animal is box/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Tap a box/)).not.toBeInTheDocument();
+    expect(container.querySelector(".capture-source-box")).toBeNull();
+    expect(screen.queryByText("Details for each animal")).not.toBeInTheDocument();
+    // The name comes before the chips, and Save sits outside the scrolling body so it stays reachable.
+    const name = screen.getByLabelText("Known name (optional)");
+    expect(name.compareDocumentPosition(screen.getByRole("radiogroup", { name: "Sex" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save animal details" }).closest(".capture-review-body")).toBeNull();
+  });
+  it("shows a thumbnail of the animal's box that opens the whole photo with the box, and closes again", async () => {
+    const user = userEvent.setup();
+    const { container } = renderOne();
+    const thumb = await screen.findByRole("button", { name: "Show the whole photo" });
+    expect(within(thumb).getByRole("img")).toHaveAttribute("src", "a-crop.webp");
+    await user.click(thumb);
+    const box = screen.getByRole("dialog", { name: "Photo with the animal boxed" });
+    expect(within(box).getByAltText("Whole photo 1")).toHaveAttribute("src", "frame1_thumb.webp");
+    expect(container.querySelectorAll(".capture-lightbox .capture-source-box")).toHaveLength(1);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Photo with the animal boxed" })).not.toBeInTheDocument();
+    await user.click(thumb);
+    await user.click(screen.getByRole("button", { name: "Close photo" }));
+    expect(screen.queryByRole("dialog", { name: "Photo with the animal boxed" })).not.toBeInTheDocument();
+  });
+  it("opens a multi-photo lightbox at the first photo: Close is outside the scrolling stack and focus doesn't scroll", async () => {
+    const user = userEvent.setup();
+    const frame = (id: string, photo: string) => ({ ...one.instances[0], id, photo_id: photo, source_thumb_url: `${photo}_thumb.webp` });
+    renderOne({ groups: [{ instance_ids: ["a", "b"] }], instances: [frame("a", "frame1"), frame("b", "frame2")] });
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    await user.click(await screen.findByRole("button", { name: "Show the whole photo" }));
+    const body = document.querySelector(".capture-lightbox-body")!;
+    expect(body.querySelectorAll("img")).toHaveLength(2);
+    const close = screen.getByRole("button", { name: "Close photo" });
+    expect(body.contains(close)).toBe(false);
+    expect(focus.mock.instances).toContain(close);
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    focus.mockRestore();
+  });
+  it("keeps keyboard focus inside the photo dialog and hands it back to the thumbnail on close", async () => {
+    const user = userEvent.setup();
+    renderOne();
+    const thumb = await screen.findByRole("button", { name: "Show the whole photo" });
+    thumb.focus();
+    await user.keyboard("{Enter}");
+    const close = screen.getByRole("button", { name: "Close photo" });
+    expect(close).toHaveFocus();
+    // The photo viewport is in the cycle (so arrows/PageDown can scroll it); nothing behind the dialog is.
+    const viewport = screen.getByRole("region", { name: /Photos of this animal/ });
+    await user.tab({ shift: true });
+    expect(viewport).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(close).toHaveFocus();
+    await user.tab();
+    expect(viewport).toHaveFocus();
+    await user.tab();
+    expect(close).toHaveFocus();
+    expect(reviewCapture).not.toHaveBeenCalled();
+    await user.keyboard("{Escape}");
+    expect(thumb).toHaveFocus();
+  });
+  it("sets a chip on tap, clears it when the chosen one is tapped again, and saves the result", async () => {
+    const user = userEvent.setup();
+    vi.mocked(reviewCapture).mockResolvedValue({ capture_id: "c", sighting_ids: [], processing_state: "ready" });
+    renderOne();
+    const sex = await screen.findByRole("radiogroup", { name: "Sex" });
+    const male = within(sex).getByRole("radio", { name: "♂ male" });
+    expect(male).toBeChecked();
+    await user.click(within(sex).getByRole("radio", { name: "♀ female" }));
+    expect(male).not.toBeChecked();
+    await user.click(within(sex).getByRole("radio", { name: "♀ female" }));
+    expect(within(sex).queryByRole("radio", { checked: true })).not.toBeInTheDocument();
+    await user.click(within(screen.getByRole("radiogroup", { name: "Ear notch" })).getByRole("radio", { name: "left" }));
+    await user.click(screen.getByRole("button", { name: "Save animal details" }));
+    expect(reviewCapture).toHaveBeenCalledWith("c", [{ instance_ids: ["a"], sex: undefined, ear_notch: "left" }], 2, []);
+  });
+  it("is a radiogroup you can drive from the keyboard, with one tab stop", async () => {
+    const user = userEvent.setup();
+    renderOne();
+    const ear = await screen.findByRole("radiogroup", { name: "Ear notch" });
+    const radios = within(ear).getAllByRole("radio");
+    expect(radios.map((r) => r.getAttribute("tabindex"))).toEqual(["0", "-1", "-1", "-1"]);
+    radios[0].focus();
+    await user.keyboard("{ArrowRight}");
+    expect(radios[1]).toHaveFocus();
+    expect(radios[1]).toBeChecked();
+    await user.keyboard("{ArrowLeft}{ArrowLeft}");
+    expect(radios[3]).toHaveFocus();
+    expect(radios[3]).toBeChecked();
+    await user.keyboard(" ");
+    expect(radios[3]).not.toBeChecked();
+  });
+  it("keeps the photo, boxes and pinned Save in a two-animal sheet, with chips instead of selects", async () => {
+    vi.mocked(getCapture).mockResolvedValue({ ...detail, processing_state: "ready" });
+    const { container } = render(<CaptureReview captureId="c" onClose={() => {}} onSaved={() => {}} onUnauthorized={() => {}} />);
+    await screen.findByText("Details for each animal");
+    expect(screen.getAllByRole("radiogroup", { name: "Sex" })).toHaveLength(2);
+    expect(container.querySelector("fieldset select")).toBeNull();
+    expect(screen.getByRole("button", { name: "Save animal details" }).closest(".capture-review-body")).toBeNull();
   });
 });

@@ -1101,9 +1101,17 @@ button { font-family: inherit; }
 .capture-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 12px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); font-size: .8rem; }
 .capture-status span { color: var(--muted); }
 .capture-status button { flex-shrink: 0; max-width: 45%; padding: 8px; }
-.capture-review-overlay { position: fixed; inset: 0; z-index: 1100; background: #0009; overflow-y: auto; padding: 20px 12px; }
-.capture-review { max-width: 720px; margin: auto; background: var(--panel); color: var(--ink); padding: 20px; border-radius: 14px; }
-.capture-review p { line-height: 1.5; }
+.capture-review-overlay { position: fixed; inset: 0; z-index: 1100; background: #0009; display: flex; padding: 10px; }
+/* The sheet is a column: the body scrolls (only when it has to), Save stays pinned under it. */
+.capture-review { position: relative; display: flex; flex-direction: column; max-width: 720px; width: 100%; max-height: 100%; margin: auto; background: var(--panel); color: var(--ink); border-radius: 14px; overflow: hidden; }
+.capture-review-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 14px 16px 6px; }
+.capture-review-footer { flex: none; padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--line); background: var(--panel); }
+.capture-review-footer p { margin: 0 0 8px; }
+.capture-review-footer .btn { width: 100%; }
+.capture-review-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.capture-review-head h2 { margin: 0; font-size: 1.1rem; }
+.capture-review .hint { margin: 4px 0; text-align: left; }
+.capture-review p { line-height: 1.4; margin: 6px 0; }
 .capture-source { margin: 24px 0; }
 .capture-source-image { position: relative; margin-bottom: 12px; }
 .capture-source-image > img { display: block; width: 100%; height: auto; }
@@ -1126,6 +1134,28 @@ button { font-family: inherit; }
 .capture-review label { display: block; font-size: .85rem; }
 .capture-review select, .capture-review input { display: block; box-sizing: border-box; width: 100%; padding: 10px; margin: 4px 0 10px; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; }
 .capture-review fieldset { margin: 12px 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.capture-review fieldset.capture-entry-compact { margin: 8px 0 0; padding: 0; border: 0; }
+.capture-name-row { display: flex; align-items: flex-end; gap: 10px; }
+.capture-name-row label { flex: 1; min-width: 0; }
+.capture-thumb { flex: none; width: 64px; height: 64px; margin: 0 0 10px; padding: 0; border: 2px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--bg); cursor: zoom-in; }
+.capture-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.capture-thumb:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+.chip-field { margin: 0 0 8px; }
+.chip-field-head { display: flex; align-items: center; justify-content: space-between; min-height: 20px; }
+.chip-field-label { font-size: .85rem; }
+.chip-field-head .link-btn { padding: 0 4px; font-size: .8rem; }
+.chip-field .chip-row { gap: 6px; }
+.chip-choice { min-height: 40px; padding: 0 14px; }
+.chip-choice:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+.voice-suggestion .chip-choice { min-height: 32px; padding: 0 10px; }
+.transcript blockquote.is-clamped { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.transcript blockquote { position: relative; }
+.transcript-more { padding: 2px 4px; font-size: .85rem; }
+.capture-lightbox { position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center; padding: 12px; background: #000c; }
+.capture-lightbox-frame { display: flex; flex-direction: column; gap: 10px; max-height: 100%; min-height: 0; }
+/* Close sits outside the scrolling photos, so opening starts at the first photo and Close stays reachable. */
+.capture-lightbox-body { display: flex; flex-direction: column; gap: 10px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.capture-lightbox .capture-source-image { margin: 0; }
 .overlap-count { position: absolute; right: -8px; top: -8px; min-width: 22px; padding: 3px; text-align: center; border-radius: 100%; background: var(--ink); color: var(--panel); font-weight: bold; }
 .overlap-chooser { max-height: 55vh; overflow-y: auto; }
 .overlap-chooser details { border-top: 1px solid var(--line); padding: 8px 0; }
