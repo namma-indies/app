@@ -1,9 +1,24 @@
+import math
 from typing import Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.precision import pair_slack_m
+
+def pair_slack_m(cell_m: float) -> float:
+    """The most two points can add to a distance by being moved to their cell
+    centres: half a cell diagonal each.
+
+    Here rather than in app/precision.py, which lays the cells out, because
+    the GPU worker ships this module without that one.
+
+    Cells are laid out with a spherical metres-per-degree, so on the ground a
+    side can run a fraction of a percent longer than `cell_m` (the WGS84
+    ellipsoid, and a point's latitude differing from its cell centre's). The 1%
+    margin covers that for any city-scale cell away from the poles. Anything
+    that widens a radius to make up for coarsening uses this as its floor.
+    """
+    return max(cell_m, 0.0) * math.sqrt(2) * 1.01
 
 
 class Settings(BaseSettings):
@@ -115,7 +130,7 @@ class Settings(BaseSettings):
     # the two together can add a whole diagonal; widening by at least that
     # keeps every candidate the exact radius would have admitted.
     #
-    # Unset, it follows map_coarsen_cell_m (`precision.pair_slack_m`: ~1428 m
+    # Unset, it follows map_coarsen_cell_m (`pair_slack_m` above: ~1428 m
     # for 1000 m cells), so the two cannot drift apart. Set, it may only be
     # larger -- startup refuses a value too small for the cell. Read it through
     # `reid_slack_m()`.

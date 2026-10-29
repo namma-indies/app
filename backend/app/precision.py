@@ -112,19 +112,6 @@ def coarsen(lat: float, lng: float, cell_m: float) -> tuple[float, float]:
     return round(lat_centre, 5), round(lng_centre, 5)
 
 
-def pair_slack_m(cell_m: float) -> float:
-    """The most two points can add to a distance by being moved to their cell
-    centres: half a cell diagonal each.
-
-    Cells are laid out with a spherical metres-per-degree, so on the ground a
-    side can run a fraction of a percent longer than `cell_m` (the WGS84
-    ellipsoid, and a point's latitude differing from its cell centre's). The 1%
-    margin covers that for any city-scale cell away from the poles. Anything
-    that widens a radius to make up for coarsening uses this as its floor.
-    """
-    return max(cell_m, 0.0) * math.sqrt(2) * 1.01
-
-
 def resolve_precision(
     lat: float | None,
     lng: float | None,

@@ -151,8 +151,7 @@ async def test_candidate_distance_is_to_the_cell_not_the_point(migrated_db):
 def test_a_slack_too_small_for_the_cell_is_refused_at_startup():
     from pydantic import ValidationError
 
-    from app.config import Settings
-    from app.precision import pair_slack_m
+    from app.config import Settings, pair_slack_m
 
     with pytest.raises(ValidationError):
         Settings(map_coarsen_cell_m=2000.0, reid_cell_slack_m=1416.0)
