@@ -152,6 +152,27 @@ describe("the shimmer and comets around suggestions", () => {
     expect(levels()).toEqual(["soft", "light", "light", "medium", /* removed: no more for it */ "light", "light", "medium", "firm", "success"]);
   });
 
+  it("stops feeling a suggestion answered while its button stays on the page (the review sheet keeps it as a plain option)", () => {
+    render(scene(["sex", "name"]));
+    vi.advanceTimersByTime(FIRST_AT_MS + ARRIVE_MS - 200);
+    screen.getByRole("button", { name: "female" }).removeAttribute("data-fx-chip"); // accepted or "not this": still mounted
+    vi.advanceTimersByTime(5000);
+    expect(levels()).toEqual(["soft", "light", "light", "medium", "light", "light", "medium", "firm", "success"]);
+  });
+
+  it("leaves out a scan tick for a phrase whose suggestion was answered before the shimmer got there", () => {
+    Element.prototype.getBoundingClientRect = function () {
+      if (this.tagName === "BLOCKQUOTE") return { ...rect, left: 0, right: 200, width: 200 } as DOMRect;
+      if (this.getAttribute("data-fx") === "sex") return { ...rect, left: 0, right: 40, width: 40 } as DOMRect;
+      if (this.getAttribute("data-fx") === "name") return { ...rect, left: 70, right: 130, width: 60 } as DOMRect;
+      return rect;
+    };
+    render(scene(["sex", "name"]));
+    screen.getByRole("button", { name: "Kaalu" }).removeAttribute("data-fx-chip");
+    vi.advanceTimersByTime(SHIMMER_MS);
+    expect(felt.filter((pulse) => pulse.level === "soft").map((pulse) => pulse.at)).toEqual([Math.floor(shimmerCrossing(0.1))]);
+  });
+
   it("lights up, but feels no flight or landing, for a chip it cannot fly to", () => {
     Element.prototype.getBoundingClientRect = function () {
       return this.getAttribute("data-fx-chip") === "sex" ? { ...rect, top: 5000, bottom: 5020 } as DOMRect : rect;

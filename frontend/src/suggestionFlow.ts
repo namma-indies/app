@@ -263,16 +263,16 @@ export function shimmerCrossing(f: number): number {
   return bezier(0.42, 0.58, lo) * SHIMMER_MS;
 }
 
-/** Where the shimmer crosses each phrase of an open suggestion that is on screen (ms, at pace 1). */
-function crossings(root: HTMLElement, open: Set<string>): number[] {
-  const out: number[] = [];
+/** Where the shimmer crosses each phrase of an open suggestion that is on screen (ms, at pace 1), and whose phrase it is. */
+function crossings(root: HTMLElement, open: Set<string>): { at: number; ids: string[] }[] {
+  const out: { at: number; ids: string[] }[] = [];
   root.querySelectorAll<HTMLElement>(".transcript blockquote").forEach((quote) => {
     const box = quote.getBoundingClientRect();
     if (!box.width) return;
     quote.querySelectorAll("[data-fx]").forEach((mark) => {
-      if (!(mark.getAttribute("data-fx") ?? "").split(" ").some((id) => open.has(id))) return;
+      const ids = (mark.getAttribute("data-fx") ?? "").split(" ").filter((id) => open.has(id));
       const lines = [...mark.getClientRects()].filter((r) => r.width > 0 && inView(r));
-      if (lines.length) out.push(Math.min(...lines.map((r) => shimmerCrossing((r.left + r.width / 2 - box.left) / box.width))));
+      if (ids.length && lines.length) out.push({ at: Math.min(...lines.map((r) => shimmerCrossing((r.left + r.width / 2 - box.left) / box.width))), ids });
     });
   });
   return out;
@@ -366,8 +366,20 @@ export function playSuggestionFlow(root: HTMLElement, items: FlowItem[]): () => 
 
   const ordered = [...items.filter((item) => !item.used), ...items.filter((item) => item.used)];
   const open = ordered.filter((item) => !item.used);
-  const plan = suggestionHaptics(crossings(root, new Set(open.map((item) => item.id))), open.length);
-  felt.push(playScore(plan.scan.map((at) => ({ at: at * k, level: "soft" })), "suggestions scan"));
+  // Still open: its chip, if it had one, is still that suggestion's chip. Answering can leave the
+  // button on the page as a plain option (CaptureReview), so being on the page is not enough.
+  const chips = new Map(open.map(({ id }) => [id, root.querySelector<HTMLElement>(`[data-fx-chip~="${esc(id)}"]`)]));
+  const stillOpen = (id: string) => {
+    const chip = chips.get(id);
+    return !chip || (chip.isConnected && chip.matches(`[data-fx-chip~="${esc(id)}"]`));
+  };
+  const crossed = crossings(root, new Set(chips.keys()));
+  const plan = suggestionHaptics(crossed.map((crossing) => crossing.at), open.length);
+  felt.push(playScore(plan.scan.map((at) => ({
+    at: at * k,
+    level: "soft",
+    still: () => crossed.some((crossing) => crossing.at === at && crossing.ids.some(stillOpen)),
+  })), "suggestions scan"));
   let opened = 0;
   let start = FIRST_AT_MS;
   let said = 0;
@@ -409,10 +421,10 @@ export function playSuggestionFlow(root: HTMLElement, items: FlowItem[]): () => 
           bloom(run, target!, ARRIVE_MS, { soft: used, says: sound });
         }
         // Felt only for a suggestion still open: its light-up, and the flight and landing
-        // only if the comet really flies. Nothing more once the chip has been answered and removed.
+        // only if the comet really flies. Nothing more once it has been answered.
         if (!used) {
           const pulses = plan.beat(nth).filter((_, i) => flies || i === 0);
-          felt.push(playScore(pulses.map((pulse) => ({ ...pulse, at: pulse.at * k, still: () => !target || target.isConnected })), "suggestion"));
+          felt.push(playScore(pulses.map((pulse) => ({ ...pulse, at: pulse.at * k, still: () => stillOpen(id) })), "suggestion"));
         }
       }
       finish(run.anims);
