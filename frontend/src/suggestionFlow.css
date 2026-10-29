@@ -1,23 +1,33 @@
-/* The glow around voice-note suggestions (#118; see suggestionFlow.ts).
-   Every colour comes from the variables below, so a different look is a
-   different set of values: try :root[data-glow="spectrum"] for the multicolour
-   one. Nothing animates unless suggestionFlow.ts arms it (data-fx-play /
-   data-fx-fill), and nothing animates under prefers-reduced-motion. */
+/* The shimmer and comet around voice-note suggestions (#118, #136; see
+   suggestionFlow.ts). Every colour comes from the variables below, so a
+   different look is a different set of values: try :root[data-glow="warm"]
+   (the original amber) or :root[data-glow="spectrum"]. Nothing animates unless
+   suggestionFlow.ts arms it (data-fx-shimmer / data-fx-play / data-fx-fill),
+   and nothing animates under prefers-reduced-motion. */
 :root {
-  --glow-a: #e3a13a;     /* amber: the near halo */
-  --glow-b: #c65d3b;     /* terracotta: the far halo */
-  --glow-c: #f0b27a;     /* warm peach: the glow on the letters */
-  --glow-hot: #f2e6d3;   /* cream: the bright core of a ring */
-  --glow-word: var(--accent); /* the words in flight */
+  /* The speed setting: every duration and delay is multiplied by it. 2 = half speed. */
+  --fx-pace: 1;
+  /* "Rangoli": marigold, kumkum, peacock, neem, indigo. */
+  --fx-1: #f0a020;
+  --fx-2: #e0407a;
+  --fx-3: #17a497;
+  --fx-4: #6cb33f;
+  --fx-5: #5a5ee0;
+  --fx-ink: #1d1410;   /* text on a lit-up word */
 }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fx-1: #ffb83d;
+    --fx-2: #ff5c93;
+    --fx-3: #2fd0c0;
+    --fx-4: #8fd65a;
+    --fx-5: #8a8cff;
+  }
+}
+/* The first glow (#119), all warm. */
+:root[data-glow="warm"] { --fx-1: #e3a13a; --fx-2: #c65d3b; --fx-3: #f0b27a; --fx-4: #f2e6d3; --fx-5: #a44a2b; }
 /* Apple-Intelligence / Gemini-style, for comparison. */
-:root[data-glow="spectrum"] {
-  --glow-a: #4f8cff;
-  --glow-b: #b062ff;
-  --glow-c: #ff6b9d;
-  --glow-hot: #ffd66b;
-  --glow-word: #b062ff;
-}
+:root[data-glow="spectrum"] { --fx-1: #ffd66b; --fx-2: #ff6b9d; --fx-3: #4f8cff; --fx-4: #6be3ff; --fx-5: #b062ff; }
 
 .fx-scope { display: contents; }
 .sr-only {
@@ -28,55 +38,113 @@
 /* The chip a suggestion produced, as shown beside a transcript (not a button). */
 .suggested-chip { display: inline-block; padding: 0.1rem 0.5rem; font-size: 0.8rem; cursor: default; }
 
-/* Words in the transcript: a halo and a soft glow on the letters themselves. Drawn on
-   the mark (not a pseudo-element) so a quote that wraps onto a second line glows per line. */
+/* Words in the transcript. A mark that wraps onto a second line keeps its look per line. */
 .transcript-hit { -webkit-box-decoration-break: clone; box-decoration-break: clone; }
 /* Already filled in: the same words, quieter at rest (a dotted underline instead of a solid one),
    so what still needs the observer stays distinguishable without colour or motion. */
 .transcript-hit.is-used { border-bottom-style: dotted; background: transparent; }
 
-/* The chip: a ring and halo (the text is never covered), and a little pop as the words land. */
+/* A suggested chip wears a small paw stamp (a twinkle when the species isn't known): where its
+   comet landed, and the resting state with or without motion. The paw is --fx-stamp, set with
+   data-fx-species by fxScope(). */
 [data-fx-chip] { position: relative; }
-[data-fx-chip]::after {
-  content: ""; position: absolute; inset: -3px; border-radius: 6px; border: 2px solid var(--glow-hot);
-  box-shadow: 0 0 12px 3px var(--glow-a), inset 0 0 8px var(--glow-b);
-  opacity: 0; pointer-events: none;
+[data-fx-species] [data-fx-chip]::before {
+  content: ""; position: absolute; top: -9px; right: -9px; width: 18px; height: 15px;
+  background: linear-gradient(160deg, var(--fx-2) 40%, var(--fx-1) 60%);
+  -webkit-mask: var(--fx-stamp) center / contain no-repeat; mask: var(--fx-stamp) center / contain no-repeat;
+  transform: rotate(-14deg); pointer-events: none;
 }
 
-/* The words in flight: throwaway copies on a layer that never takes a tap. */
-.fx-layer { position: fixed; inset: 0; z-index: 2147483000; pointer-events: none; overflow: hidden; }
+/* Everything in flight: throwaway copies on a layer that never takes a tap. Each piece is placed
+   at a point (left/top) and centred on it, so its own transform is free to animate. */
+.fx-layer { position: fixed; inset: 0; z-index: 2147483000; pointer-events: none; overflow: hidden; color: var(--line); }
+.fx-layer > * { position: absolute; opacity: 0; will-change: transform, opacity; }
+.fx-layer svg { display: block; position: absolute; left: 0; top: 0; transform: translate(-50%, -50%); image-rendering: pixelated; }
+
+/* A word lighting up. */
 .fx-word {
-  position: fixed; margin: 0; white-space: nowrap; text-align: center; opacity: 0;
-  color: var(--glow-word); text-shadow: 0 0 8px var(--glow-a), 0 0 16px var(--glow-b);
-  will-change: transform, opacity;
+  margin: 0; white-space: nowrap; text-align: center; border-radius: 3px; color: var(--fx-ink);
+  background: linear-gradient(90deg, var(--fx-1), var(--fx-2) 50%, var(--fx-3));
+  box-shadow: 0 0 10px 1px var(--fx-2);
+}
+.fx-word.is-soft { background: transparent; color: var(--ink); box-shadow: 0 0 0 2px var(--fx-3); }
+
+/* The comet: a soft multicolour halo and the sprite, which spins or swims on its own. */
+.fx-comet { width: 0; height: 0; }
+.fx-halo {
+  position: absolute; left: -26px; top: -26px; width: 52px; height: 52px; border-radius: 50%; opacity: 0.75;
+  background: radial-gradient(circle, var(--fx-1) 0, var(--fx-2) 35%, color-mix(in srgb, var(--fx-5) 40%, transparent) 55%, transparent 70%);
+}
+.fx-sprite { position: absolute; left: 0; top: 0; width: 0; height: 0; }
+.fx-sprite.is-flipped svg { transform: translate(-50%, -50%) scaleX(-1); }
+.fx-comet.is-soft .fx-halo { opacity: 0.35; }
+.fx-comet.is-soft .fx-sprite { opacity: 0.7; }
+.fx-comet.is-soft .fx-sprite svg { transform: translate(-50%, -50%) scale(0.75); }
+
+/* A print in the trail. */
+.fx-print { width: 0; height: 0; }
+
+/* The landing: a ring of every colour, turning, around the chip or field. */
+.fx-ring {
+  overflow: hidden; padding: 3px;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+}
+.fx-ring-spin {
+  position: absolute; left: 50%; top: 50%;
+  background: conic-gradient(var(--fx-1), var(--fx-2), var(--fx-5), var(--fx-3), var(--fx-4), var(--fx-1));
+}
+.fx-ring.is-soft .fx-ring-spin { opacity: 0.55; }
+
+/* What the animal says as it lands. */
+.fx-bubble {
+  transform-origin: 0 100%; white-space: nowrap;
+  font-family: "Silkscreen", monospace; font-size: 0.68rem; line-height: 1; color: var(--ink);
+  background: var(--panel); border: 2px solid var(--line); padding: 3px 5px 2px;
+  box-shadow: 2px 2px 0 var(--fx-2);
+}
+.fx-bubble::after {
+  content: ""; position: absolute; left: 3px; bottom: -6px; width: 4px; height: 4px;
+  background: var(--panel); border: 2px solid var(--line); border-top: 0; border-right: 0;
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .transcript-hit[data-fx-play] { animation: fx-wash 1700ms ease-in-out var(--fx-delay, 0ms) 1 backwards; }
-  [data-fx-chip][data-fx-play]::after { animation: fx-ring 1500ms ease-out var(--fx-delay, 0ms) 1 backwards; }
-  [data-fx-chip][data-fx-play] { animation: fx-pop 500ms ease-out var(--fx-delay, 0ms) 1 backwards; }
-  [data-fx-fill] { animation: fx-fill 1500ms ease-out var(--fx-delay, 0ms) 1 backwards; }
+  /* The opening shimmer: one band of colour across the transcript. */
+  .transcript blockquote[data-fx-shimmer] { overflow: hidden; }
+  .transcript blockquote[data-fx-shimmer]::after {
+    content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 70%; pointer-events: none;
+    background: linear-gradient(105deg, transparent, var(--fx-1) 22%, var(--fx-2) 40%, var(--fx-5) 58%, var(--fx-3) 76%, transparent);
+    mix-blend-mode: multiply;
+    animation: fx-shimmer calc(var(--fx-pace) * 1100ms) ease-in-out var(--fx-delay, 0ms) 1 both;
+  }
+  [data-fx-chip][data-fx-play] { animation: fx-pop calc(var(--fx-pace) * 500ms) ease-out var(--fx-delay, 0ms) 1 backwards; }
+  [data-fx-species] [data-fx-chip][data-fx-play]::before {
+    animation: fx-stamp calc(var(--fx-pace) * 450ms) cubic-bezier(0.3, 1.5, 0.5, 1) calc(var(--fx-delay, 0ms) + var(--fx-pace) * 150ms) 1 backwards;
+  }
+  [data-fx-fill] { animation: fx-pop calc(var(--fx-pace) * 500ms) ease-out var(--fx-delay, 0ms) 1 backwards; }
   /* Used suggestions replay quieter than open ones. */
-  .transcript-hit[data-fx-play="soft"] { animation-name: fx-wash-soft; }
-  [data-fx-fill="soft"] { animation-name: fx-fill-soft; }
+  [data-fx-fill="soft"] { animation-name: fx-pop-soft; }
 }
-@keyframes fx-wash {
-  0%, 100% { box-shadow: 0 0 0 0 transparent; text-shadow: 0 0 0 transparent; }
-  30% { box-shadow: 0 0 10px 2px var(--glow-a), 0 0 22px 4px var(--glow-b); text-shadow: 0 0 8px var(--glow-c); }
+@media (prefers-reduced-motion: no-preference) and (prefers-color-scheme: dark) {
+  .transcript blockquote[data-fx-shimmer]::after { mix-blend-mode: screen; animation-name: fx-shimmer-dark; }
 }
-@keyframes fx-wash-soft {
-  0%, 100% { box-shadow: 0 0 0 0 transparent; text-shadow: 0 0 0 transparent; }
-  30% { box-shadow: 0 0 6px 1px var(--glow-a); text-shadow: 0 0 5px var(--glow-c); }
+@keyframes fx-shimmer {
+  0% { transform: translateX(-110%); opacity: 0; }
+  15% { opacity: 0.6; }
+  85% { opacity: 0.6; }
+  100% { transform: translateX(160%); opacity: 0; }
 }
-@keyframes fx-ring { 0% { opacity: 0; transform: scale(0.9); } 25% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(1.04); } }
-@keyframes fx-pop { 0%, 100% { transform: scale(1); } 40% { transform: scale(1.07); } }
-@keyframes fx-fill {
-  0% { box-shadow: 0 0 0 0 transparent; }
-  25% { box-shadow: 0 0 0 3px var(--glow-a), 0 0 16px 4px var(--glow-b); }
-  100% { box-shadow: 0 0 0 0 transparent; }
+@keyframes fx-shimmer-dark {
+  0% { transform: translateX(-110%); opacity: 0; }
+  15% { opacity: 0.4; }
+  85% { opacity: 0.4; }
+  100% { transform: translateX(160%); opacity: 0; }
 }
-@keyframes fx-fill-soft {
-  0% { box-shadow: 0 0 0 0 transparent; }
-  25% { box-shadow: 0 0 0 2px var(--glow-a), 0 0 8px 2px var(--glow-b); }
-  100% { box-shadow: 0 0 0 0 transparent; }
+@keyframes fx-pop { 0%, 100% { transform: scale(1); } 40% { transform: scale(1.08); } }
+@keyframes fx-pop-soft { 0%, 100% { transform: scale(1); } 40% { transform: scale(1.03); } }
+/* Pressed on like a rubber stamp: from above, a little turned, then down. */
+@keyframes fx-stamp {
+  0% { transform: rotate(-40deg) scale(2.4); opacity: 0; }
+  60% { opacity: 1; }
+  100% { transform: rotate(-14deg) scale(1); opacity: 1; }
 }
