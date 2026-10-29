@@ -109,13 +109,13 @@ function isIosWeb(): boolean {
   return /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
 }
 
-/** The switch trick: iOS 18+, a browser that knows `appearance: switch`, and not the native app. */
+/** The switch trick: iOS 18+, a browser whose <input> knows `switch`, and not the native app. */
 export function switchSupported(): boolean {
   try {
     if (native() || !isIosWeb() || typeof document === "undefined") return false;
     const major = /OS (\d+)_/.exec(navigator.userAgent ?? "")?.[1];
     if (major && Number(major) < 18) return false;
-    return typeof CSS !== "undefined" && CSS.supports("appearance", "switch");
+    return "switch" in document.createElement("input"); // the HTML attribute's reflected property, not a CSS value
   } catch {
     return false;
   }

@@ -28,7 +28,7 @@ beforeEach(() => {
   platform.native = false;
   ticks = 0;
   document.body.innerHTML = "";
-  vi.stubGlobal("CSS", { supports: (property: string, value: string) => property === "appearance" && value === "switch" });
+  Object.defineProperty(HTMLInputElement.prototype, "switch", { value: false, writable: true, configurable: true }); // WebKit's reflected attribute
   phone();
 });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
@@ -69,9 +69,9 @@ describe("the iPhone browser tick", () => {
     phone({ userAgent: "Mozilla/5.0 (X11; Linux x86_64) Chrome/120", maxTouchPoints: 0 });
     expect(switchSupported()).toBe(false);
     phone();
-    vi.stubGlobal("CSS", { supports: () => false });
+    delete (HTMLInputElement.prototype as unknown as Record<string, unknown>).switch; // a browser whose <input> has no switch
     expect(switchSupported()).toBe(false);
-    vi.stubGlobal("CSS", { supports: () => true });
+    Object.defineProperty(HTMLInputElement.prototype, "switch", { value: false, configurable: true });
     platform.native = true;
     expect(switchSupported()).toBe(false);
     expect(hapticChannel()).toBe("native");
