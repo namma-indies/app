@@ -210,16 +210,9 @@ export function haptic(moment: Moment): void {
       report(`${moment}: silent (${channel === "switch" ? "iPhone browsers only tick for a tap, and none just happened" : "no haptics channel here"})`);
       return;
     }
-    const now = Date.now();
-    const wait = Math.max(0, busyUntil - now, scoreBusyUntil - now);
-    if (wait > MAX_WAIT_MS && DROPPABLE.includes(moment)) {
-      report(`${moment}: dropped (another buzz was still running)`);
-      return;
-    }
     // Native and the switch play step by step; the web vibrate call takes the whole pattern at once.
     const stepwise = channel !== "vibrate";
     const span = Math.max(...steps.map((step) => step.at + (stepwise ? step.nativeMs : step.ms)));
-    busyUntil = now + wait + span + GAP_MS;
     const play = (step: Step) => (channel === "native" ? quietly(step.native, `${moment} native`) : quietly(tickSwitch, `${moment} ios-switch`));
     const start = () => {
       if (stepwise) {
@@ -232,10 +225,23 @@ export function haptic(moment: Moment): void {
         quietly(() => { if (!navigator.vibrate(pattern)) throw new Error("navigator.vibrate returned false"); }, `${moment} vibrate`);
       }
     };
-    const begin = () => { if (wait === 0) start(); else setTimeout(start, wait); };
-    // A curve still playing is stopped first, so its later stop can't cut this moment (see releaseCurves).
-    if (channel === "native" && liveCurves.size) void releaseCurves().then(begin);
-    else begin();
+    // Its place in the queue is taken when it can really start, so moments stay in order and apart.
+    const queue = () => {
+      if (channel === "native" && liveCurves.size) return afterRelease(queue);
+      const now = Date.now();
+      const wait = Math.max(0, busyUntil - now, scoreBusyUntil - now);
+      if (wait > MAX_WAIT_MS && DROPPABLE.includes(moment)) {
+        report(`${moment}: dropped (another buzz was still running)`);
+        return;
+      }
+      busyUntil = now + wait + span + GAP_MS;
+      if (wait === 0) start();
+      else setTimeout(start, wait);
+    };
+    // A curve still playing is stopped first, so its later stop can't cut this moment (see releaseCurves);
+    // a moment that comes while that stop is on its way waits for it too, behind the ones before it.
+    if (channel === "native" && (liveCurves.size || releasing)) afterRelease(queue);
+    else queue();
   } catch (error) {
     // Never let a buzz break the thing it was decorating.
     report(`${moment}: failed (${error instanceof Error ? error.message : String(error)})`);
@@ -350,6 +356,17 @@ function releaseCurves(): Promise<unknown> {
   return Promise.all(stops);
 }
 
+/** Curves being stopped for a moment: the moments waiting for that, and any new curve, wait for it. */
+let releasing: Promise<unknown> | null = null;
+function afterRelease(then: () => void): void {
+  if (liveCurves.size) {
+    const stopped = Promise.all([releasing, releaseCurves()]);
+    releasing = stopped;
+    void stopped.then(() => { if (releasing === stopped) releasing = null; });
+  }
+  void releasing!.then(then);
+}
+
 /** How often a playing ramp asks whether it should go on. */
 const RAMP_CHECK_MS = 100;
 
@@ -360,8 +377,8 @@ const RAMP_CHECK_MS = 100;
  * comet launches never starts buzzing), and a ramp asks again every RAMP_CHECK_MS while
  * it plays. Starting each piece at its first tap also keeps Android, which replaces
  * whatever is buzzing when a new effect starts, from cutting the piece before. If a
- * moment is buzzing when a piece would start, that piece is played as the ladder, which
- * gives way pulse by pulse.
+ * moment is buzzing (or waiting for curves to stop) when a piece would start, that piece
+ * is played as the ladder, which gives way pulse by pulse.
  */
 function playCurves(pulses: Pulse[], ramps: Ramp[], label: string, engine: string): () => void {
   type Piece = { at: number; end: number; pulses: Pulse[]; ramps: Ramp[] };
@@ -378,7 +395,7 @@ function playCurves(pulses: Pulse[], ramps: Ramp[], label: string, engine: strin
   const play = (piece: Piece) => {
     const checks = [...piece.pulses, ...piece.ramps].flatMap((item) => (item.still ? [item.still] : []));
     if (checks.some((still) => !still())) return;
-    if (busyUntil > Date.now()) {
+    if (busyUntil > Date.now() || releasing) {
       stops.add(playLadder(piece.pulses.map((p) => ({ ...p, at: p.at - piece.at })), label));
       return;
     }

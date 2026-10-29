@@ -26,14 +26,17 @@ const beat: Pulse[] = [
   { at: 1300, level: "success" },
 ];
 
+const at = { notifications: [] as number[] };
 let epoch = 0;
 beforeEach(async () => {
+  at.notifications = [];
   vi.useFakeTimers();
   vi.setSystemTime(Date.now() + (epoch += 1_000_000));
   curves.capabilities.mockResolvedValue({ curves: true, engine: "corehaptics" });
   curves.play.mockResolvedValue({ id: "p1" });
   curves.stop.mockResolvedValue(undefined);
   for (const fn of Object.values(plugin)) fn.mockResolvedValue(undefined);
+  plugin.notification.mockImplementation(async () => { at.notifications.push(Date.now()); });
   await hapticCurves(); // asked once per app run
 });
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
@@ -108,6 +111,26 @@ describe("a score on a phone with curves", () => {
     stop();
     await vi.advanceTimersByTimeAsync(0);
     expect(curves.stop).toHaveBeenCalledWith({ id: "p1" });
+  });
+
+  it("keeps moments in order and apart while a curve's stop is still on its way", async () => {
+    let stopped = () => {};
+    curves.stop.mockImplementation(() => new Promise<void>((resolve) => { stopped = resolve; }));
+    playScore(beat, "suggestion", [flight]);
+    await vi.advanceTimersByTimeAsync(700); // mid-flight
+    haptic("filled");
+    haptic("filled");
+    await vi.advanceTimersByTimeAsync(100);
+    expect(plugin.notification).not.toHaveBeenCalled(); // nothing may start before the stop has gone through
+    playScore([{ at: 0, level: "heavy" }], "suggestion"); // nor a new curve
+    await vi.advanceTimersByTimeAsync(0);
+    expect(curves.play).toHaveBeenCalledTimes(2); // only the light-up and the flight, from before
+    const released = Date.now();
+    stopped();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(plugin.notification).toHaveBeenCalledTimes(2);
+    expect(at.notifications[0]).toBeGreaterThanOrEqual(released);
+    expect(at.notifications[1] - at.notifications[0]).toBeGreaterThanOrEqual(130 + 60); // the second waits for the first, from when it really started
   });
 
   it("gives way to a moment that is buzzing: a piece that would start then is played as the ladder, pulse by pulse", async () => {
