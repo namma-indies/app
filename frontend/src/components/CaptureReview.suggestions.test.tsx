@@ -149,4 +149,25 @@ describe("voice-note suggestions in the review sheet", () => {
     expect(within(second).getByRole("radio", { name: "injured" })).toHaveAttribute("data-fx-into", "hurt");
     expect(within(second).getByRole("radio", { name: "healthy" })).not.toHaveAttribute("data-fx-into");
   });
+
+  it("ticks lightly on a chip pick or clear, buzzes success only when Save succeeds, and stays quiet on failure", async () => {
+    const user = userEvent.setup();
+    open();
+    const first = await screen.findByRole("group", { name: "Dog 1" });
+    expect(haptic).not.toHaveBeenCalled(); // opening, and the glow, are silent here
+    const sex = within(within(first).getByRole("radiogroup", { name: "Sex" }));
+    await user.click(sex.getByRole("radio", { name: "♀ female" }));
+    expect(haptic).toHaveBeenLastCalledWith("tick");
+    await user.click(sex.getByRole("radio", { name: "♀ female" }));
+    expect(haptic).toHaveBeenCalledTimes(2);
+    await user.type(within(first).getByLabelText(/Known name/), "Raja");
+    expect(haptic).toHaveBeenCalledTimes(2);
+    vi.mocked(reviewCapture).mockRejectedValueOnce(new Error("down"));
+    await user.click(screen.getByRole("button", { name: "Save animal details" }));
+    expect(haptic).toHaveBeenCalledTimes(2);
+    await user.click(screen.getByRole("button", { name: "Reload" }));
+    vi.mocked(reviewCapture).mockResolvedValue({ capture_id: "c", processing_state: "ready", sighting_ids: [] });
+    await user.click(await screen.findByRole("button", { name: "Save animal details" }));
+    expect(haptic).toHaveBeenLastCalledWith("logged");
+  });
 });

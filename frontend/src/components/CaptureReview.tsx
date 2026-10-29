@@ -159,7 +159,8 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
       haptic("filled");
       setAnnouncement(`Filled ${FIELD_LABELS[field].toLowerCase()} with ${value}.`);
       setAnswers((current) => ({ ...current, ...Object.fromEntries(used.map((suggestion) => [suggestion.id, "used" as const])) }));
-    }
+    } else haptic("tick"); // picking or clearing a chip by hand: a light tap
+
     setAttrs((current) => ({ ...current, [group]: { ...current[group], [field]: value } }));
   }
   const dismiss = (group: string, field: string) => setAnswers((current) => ({ ...current, ...Object.fromEntries(suggestionsFor(group).filter((suggestion) => suggestion.field === field).map((suggestion) => [suggestion.id, "dismissed" as const])) }));
@@ -185,6 +186,7 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
         const chosen = attrs[assignments[suggestion.instance_id]]?.[suggestion.field];
         return [decideSuggestion(suggestion.id, answer === "used" && chosen ? { verdict: "choose", value: chosen } : { verdict: "dismiss" })];
       }));
+      haptic("logged"); // only here: the server took the save, a failure stays quiet
       onSaved();
     } catch (err) {
       if (err instanceof UnauthorizedError) unauthorizedRef.current();
