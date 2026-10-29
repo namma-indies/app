@@ -209,8 +209,10 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
   const compact = detail?.processing_state === "ready" && groups.length === 1;
   const compactPhotos = compact ? [...sources.values()].map((items) => items.filter(({ instance }) => assignments[instance.id] === groups[0])).filter((items) => items.length) : [];
   const saveLabel = saving ? "Saving…" : detail?.processing_state === "ready" ? "Save animal details" : groups.length === 0 ? "Discard this upload" : `Publish ${groups.length} ${groups.length === 1 ? "animal" : "animals"}`;
-  const title = detail?.processing_state === "ready" ? "Animal details" : "Separate the animals";
-  const nameHint = "A name doesn’t decide which dog this is.";
+  // Until the capture is known there is nothing to say about it: not "ready", and not "needs grouping" either.
+  const title = !detail ? "Loading…" : detail.processing_state === "ready" ? "Animal details" : "Separate the animals";
+  const kinds = new Set(detail?.instances.filter((instance) => assignments[instance.id] !== NOT_AN_ANIMAL).map((instance) => instance.species));
+  const nameHint = `A name doesn’t decide which ${kinds.size === 1 && [...kinds][0] ? [...kinds][0] : "animal"} this is.`;
   const details = (group: string, thumb?: CaptureInstance) => <>
     <div className={thumb ? "capture-name-row" : undefined}>
       {thumb && <button type="button" className="capture-thumb" aria-label="Show the whole photo" onClick={() => setLightbox(true)}>
@@ -252,7 +254,7 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
         </header>
         {detail?.processing_state === "ready"
           ? <p className="hint">Add what you know. You can change it any time.</p>
-          : <p>More than one animal shows up at the same moment in this upload, so we can’t tell on our own which photos show which. Each box below is one animal we found. Put every box of the same animal in the same group, then publish. Only you can see this upload until you do.</p>}
+          : detail && <p>More than one animal shows up at the same moment in this upload, so we can’t tell on our own which photos show which. Each box below is one animal we found. Put every box of the same animal in the same group, then publish. Only you can see this upload until you do.</p>}
         <p className="sr-only" role="status">{announcement}</p>
         {!detail && error && <p role="alert">{error} <button disabled={saving} onClick={() => setRevision((n) => n + 1)}>Reload</button></p>}
         {!detail && !error && <p>Loading your photos…</p>}
