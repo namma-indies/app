@@ -311,8 +311,14 @@ describe("one-animal sheet", () => {
     await user.keyboard("{Enter}");
     const close = screen.getByRole("button", { name: "Close photo" });
     expect(close).toHaveFocus();
+    // The photo viewport is in the cycle (so arrows/PageDown can scroll it); nothing behind the dialog is.
+    const viewport = screen.getByRole("region", { name: /Photos of this animal/ });
+    await user.tab({ shift: true });
+    expect(viewport).toHaveFocus();
     await user.tab({ shift: true });
     expect(close).toHaveFocus();
+    await user.tab();
+    expect(viewport).toHaveFocus();
     await user.tab();
     expect(close).toHaveFocus();
     expect(reviewCapture).not.toHaveBeenCalled();

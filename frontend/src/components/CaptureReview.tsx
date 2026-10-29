@@ -65,7 +65,7 @@ function Lightbox({ photos, onClose }: { photos: { instance: CaptureInstance; in
   }, [onClose]);
   return <div className="capture-lightbox" ref={dialogRef} role="dialog" aria-modal="true" aria-label="Photo with the animal boxed" onClick={onClose}>
     <div className="capture-lightbox-frame" onClick={(event) => event.stopPropagation()}>
-    <div className="capture-lightbox-body">
+    <div className="capture-lightbox-body" tabIndex={0} role="region" aria-label="Photos of this animal, scrollable">
       {photos.map((items, i) => {
         const source = items.find(({ instance }) => instance.source_thumb_url && instance.source_bbox)?.instance;
         return source
