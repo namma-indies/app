@@ -56,7 +56,7 @@ describe("Stats", () => {
     await waitFor(() => expect(screen.getByText("71")).toBeInTheDocument());
     // Sightings overcount, confirmed individuals undercount. The screen has to
     // say so, or a reader treats whichever number they saw as exact.
-    expect(screen.getByText(/the true\s+number of dogs is somewhere between/i)).toBeInTheDocument();
+    expect(screen.getByText(/the true\s+number of animals is somewhere between/i)).toBeInTheDocument();
   });
 
   it("explains an empty area table instead of implying there is no data", async () => {

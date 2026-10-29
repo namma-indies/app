@@ -63,9 +63,9 @@ describe("matches inside the Dogs tab", () => {
     // After the verdict the dogs list is refetched and now has them in it.
     vi.mocked(getDogs).mockResolvedValue({ dogs: [dog], propose_min: 0.4 });
     vi.mocked(getProposals).mockResolvedValue({ proposals: [], propose_min: 0.4 });
-    await userEvent.click(screen.getByText("SAME DOG"));
+    await userEvent.click(screen.getByText("SAME ANIMAL"));
     await waitFor(() => expect(resolveProposal).toHaveBeenCalledWith("p1", "same"));
-    expect(await screen.findByText(/Saved as one dog/)).toBeInTheDocument();
+    expect(await screen.findByText(/Saved as one animal/)).toBeInTheDocument();
 
     await userEvent.click(screen.getByText("← Back to dogs"));
     expect(await screen.findByText(/1 INDIE IDENTIFIED/)).toBeInTheDocument();

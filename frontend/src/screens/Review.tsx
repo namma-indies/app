@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { commonSpecies, speciesNoun } from "../species";
 import {
   getProposals,
   HttpError,
@@ -24,8 +25,11 @@ import {
  * Opened from the Dogs tab, which is where the result of a verdict shows up.
  */
 
-const MERGE_WARNING =
-  "Mark these as the same dog? This joins both sightings into one animal and can't be undone here.";
+/** What to call the pair: the species if both sides agree, else "animal". */
+const pairNoun = (p: Proposal) => speciesNoun(commonSpecies([p.a.species, p.b.species]));
+
+const mergeWarning = (noun: string) =>
+  `Mark these as the same ${noun}? This joins both sightings into one animal and can't be undone here.`;
 
 export default function Review({
   onUnauthorized,
@@ -58,7 +62,7 @@ export default function Review({
   async function decide(p: Proposal, verdict: "same" | "different") {
     // Confirm only the merge. "Different" is cheap to get wrong -- the pair can
     // resurface -- while "same" fuses two identities and has no undo in the app.
-    if (verdict === "same" && !confirm(MERGE_WARNING)) return;
+    if (verdict === "same" && !confirm(mergeWarning(pairNoun(p)))) return;
     setBusy(p.id);
     try {
       await resolveProposal(p.id, verdict);
@@ -67,8 +71,8 @@ export default function Review({
       setItems((cur) => (cur ?? []).filter((x) => x.id !== p.id));
       setNote(
         verdict === "same"
-          ? "Saved as one dog. You'll find them in the dogs list."
-          : "Saved as two different dogs.",
+          ? `Saved as one ${pairNoun(p)}. You'll find them under DOGS.`
+          : `Saved as two different ${pairNoun(p)}s.`,
       );
       onDecided?.();
     } catch (err) {
@@ -114,7 +118,7 @@ export default function Review({
     <div className="review">
       {back}
       <div className="journal-head">
-        {items.length} POSSIBLE MATCH{items.length === 1 ? "" : "ES"} · SAME DOG OR NOT?
+        {items.length} POSSIBLE MATCH{items.length === 1 ? "" : "ES"} · SAME {speciesNoun(commonSpecies(items.flatMap((p) => [p.a.species, p.b.species]))).toUpperCase()} OR NOT?
       </div>
       {note && <p className="hint">{note}</p>}
       {items.map((p) => (
@@ -144,14 +148,14 @@ export default function Review({
               disabled={busy === p.id}
               onClick={() => decide(p, "different")}
             >
-              DIFFERENT DOGS
+              DIFFERENT {pairNoun(p).toUpperCase()}S
             </button>
             <button
               className="btn-same"
               disabled={busy === p.id}
               onClick={() => decide(p, "same")}
             >
-              SAME DOG
+              SAME {pairNoun(p).toUpperCase()}
             </button>
           </div>
         </div>

@@ -66,15 +66,15 @@ export default function Stats({ onUnauthorized }: { onUnauthorized: () => void }
         </div>
         <div className="stat">
           <b>{stats.totals.confirmed_individuals}</b>
-          <span>DOGS NAMED AS ONE</span>
+          <span>ANIMALS NAMED AS ONE</span>
         </div>
       </div>
-      {/* Sightings overcount dogs, confirmed individuals undercount them. Saying
+      {/* Sightings overcount animals, confirmed individuals undercount them. Saying
           so beats printing one number and letting a reader assume it is exact. */}
       <p className="stats-note">
-        A dog seen ten times is ten sightings. <b>{stats.totals.confirmed_individuals}</b> is
+        An animal seen ten times is ten sightings. <b>{stats.totals.confirmed_individuals}</b> is
         only the ones someone has confirmed as the same animal twice — the true
-        number of dogs is somewhere between.
+        number of animals is somewhere between.
       </p>
 
       <h3>BY MONTH</h3>
@@ -116,7 +116,7 @@ export default function Stats({ onUnauthorized }: { onUnauthorized: () => void }
           <>
             <b>{areas.areas_suppressed}</b> area
             {areas.areas_suppressed === 1 ? " has" : "s have"} sightings but too
-            few to show without pointing at a particular dog.{" "}
+            few to show without pointing at a particular animal.{" "}
           </>
         )}
         {areas.unattributed_sightings > 0 && (
@@ -132,7 +132,7 @@ export default function Stats({ onUnauthorized }: { onUnauthorized: () => void }
       <h3>PEOPLE</h3>
       <table className="stats-table">
         <thead>
-          <tr><th>WHO</th><th>SIGHTINGS</th><th>DOGS</th><th>LAST SEEN</th></tr>
+          <tr><th>WHO</th><th>SIGHTINGS</th><th>ANIMALS</th><th>LAST SEEN</th></tr>
         </thead>
         <tbody>
           {observers.map((o) => (

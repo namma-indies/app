@@ -39,6 +39,9 @@ describe("processing placeholders", () => {
     expect(html).not.toContain("<img");
     expect(html).toContain("somewhere in this ~1 km area");
   });
+  it.each([["cat", "cat sighting"], ["dog", "dog sighting"], ["", "animal sighting"]])("describes the photo by species: %s", (species, alt) => {
+    expect(popupHtml({ thumb: "https://example.test/p.webp", time: "1 Aug", species })).toContain(`alt="${alt}"`);
+  });
   it("retains an existing image alongside processing failure", () => {
     const html = popupHtml({ thumb: "https://example.test/photo.webp", time: "1 Aug", processing_state: "failed" });
     expect(html).toContain('<img src="https://example.test/photo.webp"');

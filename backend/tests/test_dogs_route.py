@@ -416,3 +416,22 @@ async def test_a_dog_with_no_located_sighting_gets_no_invented_one(authed_client
 
     assert d["lat"] is None and d["lng"] is None
     assert d["precision"] == "none"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("species, expected", [
+    (["cat", "cat"], "cat"),
+    (["dog", "dog"], "dog"),
+    (["dog", "cat"], None),
+    (["cat", None], None),
+])
+async def test_species_is_set_only_when_every_sighting_agrees(authed_client, species, expected):
+    """The UI words its text by species, so a mixed or partly unknown animal
+    must come back neutral rather than naming one of them."""
+    client, _ = authed_client
+    ids = [await _post(client, when=f"2026-07-0{i + 1}T09:00:00Z") for i in range(len(species))]
+    async with (await _pool(client)).acquire() as c:
+        for sid, sp in zip(ids, species):
+            await c.execute("UPDATE sightings SET species=$1 WHERE id=$2::uuid", sp, sid)
+    await _make_individual(client, ids)
+    assert (await client.get("/dogs")).json()["dogs"][0]["species"] == expected

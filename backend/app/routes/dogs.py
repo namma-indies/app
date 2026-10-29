@@ -164,6 +164,9 @@ async def get_dogs(
             min(s.captured_at) AS first_seen,
             max(s.captured_at) AS last_seen,
             count(*) AS sighting_count,
+            -- One species only when every sighting agrees; a mix or a gap is NULL.
+            CASE WHEN count(DISTINCT s.species) = 1 AND count(s.species) = count(*)
+                 THEN max(s.species::text) END AS species,
             count(DISTINCT s.observer_id) AS observer_count,
             bool_or(s.observer_id = $1) AS seen_by_me,
             -- Who logged it, excluding the viewer. `/map` names the observer on
@@ -291,6 +294,7 @@ async def get_dogs(
                 "name": d["name"],
                 "first_seen": d["first_seen"].date().isoformat(),
                 "last_seen": d["last_seen"].date().isoformat(),
+                "species": d["species"],
                 "sighting_count": d["sighting_count"],
                 "observer_count": d["observer_count"],
                 "seen_by_me": d["seen_by_me"],

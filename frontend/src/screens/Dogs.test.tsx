@@ -125,11 +125,17 @@ describe("Dogs look-alikes", () => {
       ]),
     );
     render(<Dogs onUnauthorized={() => {}} />);
-    await waitFor(() => expect(screen.getByText(/SAME DOG\? — NEEDS A HUMAN/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/SAME ANIMAL\? — NEEDS A HUMAN/)).toBeInTheDocument());
     // The score is shown so a reviewer can calibrate; it must never be
     // presented as a verdict.
     expect(screen.getByText("0.62")).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/MATCH CONFIRMED|SAME DOG$/);
+  });
+
+  it.each([["cat", "CAT"], ["dog", "DOG"]] as const)("names the %s when the card is one", async (species, upper) => {
+    vi.mocked(getDogs).mockResolvedValue(resp([dog({ id: "a", species, looks_like: [{ id: "b", similarity: 0.62 }] }), dog({ id: "b" })]));
+    render(<Dogs onUnauthorized={() => {}} />);
+    expect(await screen.findByText(new RegExp(`SAME ${upper}\\? — NEEDS A HUMAN`))).toBeInTheDocument();
   });
 
   it("marks scores that clear the review threshold", async () => {
@@ -235,7 +241,7 @@ describe("Dogs matches waiting", () => {
     vi.mocked(getProposals).mockResolvedValue({ proposals: [pair], propose_min: 0.4 });
     render(<Dogs onUnauthorized={() => {}} />);
     expect(await screen.findByText("1 MATCH WAITING")).toBeInTheDocument();
-    expect(screen.getByText(/NO DOGS IDENTIFIED YET/)).toBeInTheDocument();
+    expect(screen.getByText(/NO ANIMALS IDENTIFIED YET/)).toBeInTheDocument();
   });
 
   it("stays out of the way when nothing is waiting", async () => {
@@ -250,7 +256,7 @@ describe("Dogs matches waiting", () => {
     vi.mocked(getProposals).mockResolvedValue({ proposals: [pair], propose_min: 0.4 });
     render(<Dogs onUnauthorized={() => {}} />);
     await userEvent.click(await screen.findByText("1 MATCH WAITING"));
-    expect(await screen.findByText("SAME DOG")).toBeInTheDocument();
+    expect(await screen.findByText("SAME ANIMAL")).toBeInTheDocument();
     await userEvent.click(screen.getByText("← Back to dogs"));
     expect(await screen.findByText(/1 INDIE IDENTIFIED/)).toBeInTheDocument();
   });

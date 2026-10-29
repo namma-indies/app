@@ -4,6 +4,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import type { MappableSighting } from "../api";
 import { processingLabel } from "../processing";
 import { formatWhen } from "../formatWhen";
+import { speciesNoun } from "../species";
 
 const BANGALORE: [number, number] = [77.59, 12.97];
 const SOURCE_ID = "sightings";
@@ -61,6 +62,7 @@ function toFeature(s: MappableSighting): GeoJSON.Feature<GeoJSON.Point> {
       id: s.id,
       processing_state: s.processing_state ?? "legacy",
       thumb: s.photos[0]?.thumb_url ?? "",
+      species: s.species ?? "",
       time: formatWhen(s.captured_at),
       note: attrs.note ?? "",
       tags: tags.join("|"),
@@ -90,7 +92,7 @@ export function popupHtml(p: Record<string, string>): string {
       : "";
   return `
     <div class="map-popup">
-      ${p.thumb ? `<img src="${esc(p.thumb)}" alt="dog sighting" />` : `<div class="media-placeholder">${esc(status ?? "Preview unavailable")}</div>`}
+      ${p.thumb ? `<img src="${esc(p.thumb)}" alt="${speciesNoun(p.species)} sighting" />` : `<div class="media-placeholder">${esc(status ?? "Preview unavailable")}</div>`}
       ${p.thumb && status ? `<div class="processing-status">${esc(status)}</div>` : ""}
       <div class="time">${esc(p.time)}</div>
       ${approx}
@@ -216,7 +218,7 @@ function pinEl(p: Record<string, string>): HTMLElement {
   if (p.thumb) {
     const img = document.createElement("img");
     img.src = p.thumb;
-    img.alt = "dog sighting";
+    img.alt = `${speciesNoun(p.species)} sighting`;
     el.appendChild(img);
   } else {
     el.textContent = p.processing_state === "failed" ? "!" : p.processing_state === "no_animal" ? "—" : "…";

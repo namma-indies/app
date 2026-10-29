@@ -90,8 +90,8 @@ describe("processing sightings", () => {
     await userEvent.click(screen.getByText("JOURNAL"));
     expect(screen.getByRole("img")).toHaveAttribute("src", "http://x/failed_thumb.webp");
     await userEvent.click(screen.getByText("Processing failed · upload saved"));
-    expect(screen.getByAltText("dog sighting 1")).toHaveAttribute("src", "http://x/failed.webp");
-    expect(screen.getByAltText("dog sighting 2")).toHaveAttribute("src", "http://x/second.webp");
+    expect(screen.getByAltText("animal sighting 1")).toHaveAttribute("src", "http://x/failed.webp");
+    expect(screen.getByAltText("animal sighting 2")).toHaveAttribute("src", "http://x/second.webp");
   });
 
   it("does not turn a failed Journal request into an empty Journal", async () => {
@@ -221,5 +221,15 @@ describe("map scope: MINE by default, EVERYONE on request", () => {
     expect(screen.getByText(/YOUR GUIDE · 1 SIGHTING/)).toBeInTheDocument();
     // The scope toggle belongs to the map, not the journal.
     expect(screen.queryByText("EVERYONE")).not.toBeInTheDocument();
+  });
+});
+
+describe("journal photo wording", () => {
+  it.each([["cat", "cat sighting"], ["dog", "dog sighting"], [null, "animal sighting"]] as const)("describes a %s sighting as '%s'", async (species, alt) => {
+    getDex.mockResolvedValue({ sightings: [{ ...mine("ready"), species }] });
+    render(<Dex onUnauthorized={() => {}} />);
+    await waitFor(() => screen.getByText("1 pins"));
+    await userEvent.click(screen.getByText("JOURNAL"));
+    expect(screen.getByAltText(alt)).toBeInTheDocument();
   });
 });

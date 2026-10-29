@@ -45,9 +45,16 @@ describe("Moderation", () => {
     });
     render(<Moderation onUnauthorized={() => {}} />);
 
-    expect(await screen.findByText(/PUTS THE DOG AT RISK/)).toBeInTheDocument();
+    expect(await screen.findByText(/PUTS THE ANIMAL AT RISK/)).toBeInTheDocument();
     expect(screen.getByText(/shows the gate she sleeps behind/)).toBeInTheDocument();
     expect(screen.getByText(/3 REPORTS/)).toBeInTheDocument();
+  });
+
+  it.each([["cat", /PUTS THE CAT AT RISK/, /NOT A CAT/], ["dog", /PUTS THE DOG AT RISK/, /NOT A DOG/], [null, /PUTS THE ANIMAL AT RISK/, /NOT AN ANIMAL/]] as const)("names the animal in the reasons: %s", async (species, risk, not) => {
+    vi.mocked(getModerationQueue).mockResolvedValue({ items: [item({ species, reasons: ["endangers_dog", "not_a_dog"] })] });
+    render(<Moderation onUnauthorized={() => {}} />);
+    expect(await screen.findByText(risk)).toBeInTheDocument();
+    expect(screen.getByText(not)).toBeInTheDocument();
   });
 
   it("flags a sighting reported again after a moderator cleared it", async () => {

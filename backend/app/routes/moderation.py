@@ -195,6 +195,7 @@ async def moderation_queue(
         SELECT s.id,
                s.captured_at,
                s.review_status,
+               s.species,
                o.display_name AS observer,
                count(r.*) AS report_count,
                max(r.created_at) AS last_reported,
@@ -211,7 +212,7 @@ async def moderation_queue(
             ORDER BY created_at, id LIMIT 1
         ) p ON TRUE
         WHERE s.review_status <> 'rejected'
-        GROUP BY s.id, s.captured_at, s.review_status, s.reviewed_at,
+        GROUP BY s.id, s.captured_at, s.review_status, s.reviewed_at, s.species,
                  o.display_name, p.s3_key
         -- Still open, or reported again since the last ruling. Without the
         -- second half a moderator who restores something watches it sit in
@@ -232,6 +233,7 @@ async def moderation_queue(
                 "sighting_id": str(r["id"]),
                 "captured_at": r["captured_at"],
                 "review_status": r["review_status"],
+                "species": r["species"],
                 "observer": r["observer"],
                 "report_count": r["report_count"],
                 "reasons": list(r["reasons"] or []),

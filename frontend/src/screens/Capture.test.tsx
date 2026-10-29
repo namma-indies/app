@@ -177,7 +177,7 @@ describe("burst photo capture", () => {
     // The fallback path still works end to end: the input can still receive
     // a file and have it flow into the filmstrip.
     await userEvent.upload(input, makePhoto("shutter.jpg"));
-    expect(screen.getByAltText("captured dog")).toBeInTheDocument();
+    expect(screen.getByAltText("captured animal")).toBeInTheDocument();
   });
 
   it("shows a toast and still falls back to the file input when the native camera errors (not a cancel)", async () => {

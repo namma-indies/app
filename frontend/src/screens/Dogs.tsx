@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { getDogs, getProposals, UnauthorizedError, type Dog, type DogsResponse } from "../api";
 import Review from "./Review";
+import { speciesNoun } from "../species";
 import { formatDayRange } from "../formatWhen";
 
 /** The catalogue of identified individuals, and the matches that feed it.
@@ -113,11 +114,11 @@ export default function Dogs({ onUnauthorized }: { onUnauthorized: () => void })
         <span className="matches-count">
           {waiting} MATCH{waiting === 1 ? "" : "ES"} WAITING
         </span>
-        <span className="matches-sub">Two photos that might be one dog. Take a look.</span>
+        <span className="matches-sub">Two photos that might be one animal. Take a look.</span>
       </button>
     ) : null;
 
-  if (failed) return <div className="empty-state">COULDN'T LOAD THE DOGS — TRY AGAIN</div>;
+  if (failed) return <div className="empty-state">COULDN'T LOAD THE ANIMALS — TRY AGAIN</div>;
   if (data === null) return <div className="empty-state">READING THE CATALOGUE…</div>;
 
   const dogs = data.dogs;
@@ -128,8 +129,8 @@ export default function Dogs({ onUnauthorized }: { onUnauthorized: () => void })
       <div className="dogs">
         {matchesButton}
         <div className="empty-state">
-          <span className="big">🐕</span>
-          NO DOGS IDENTIFIED YET —<br />
+          <span className="big">🐾</span>
+          NO ANIMALS IDENTIFIED YET —<br />
           CONFIRM A MATCH AND THE FIRST ONE APPEARS HERE
         </div>
       </div>
@@ -177,7 +178,7 @@ export default function Dogs({ onUnauthorized }: { onUnauthorized: () => void })
                  would be presenting a known-wrong answer confidently. The
                  score is shown so a reviewer can calibrate their own eye. */
               <div className="lookalikes">
-                <div className="lookalike-head">SAME DOG? — NEEDS A HUMAN</div>
+                <div className="lookalike-head">SAME {speciesNoun(d.species).toUpperCase()}? — NEEDS A HUMAN</div>
                 <div className="lookalike-row">
                   {d.looks_like.map((l) => {
                     const other = byId.get(l.id);

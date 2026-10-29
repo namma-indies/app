@@ -176,9 +176,9 @@ async def list_proposals(
     rows = await conn.fetch(
         f"""
         SELECT mp.id, mp.score,
-               a.id AS a_id, a.captured_at AS a_when, pa.s3_key AS a_key,
+               a.id AS a_id, a.species AS a_species, a.captured_at AS a_when, pa.s3_key AS a_key,
                a.observer_id = $1 AS a_mine,
-               b.id AS b_id, b.captured_at AS b_when, pb.s3_key AS b_key,
+               b.id AS b_id, b.species AS b_species, b.captured_at AS b_when, pb.s3_key AS b_key,
                b.observer_id = $1 AS b_mine
         FROM match_proposals mp
         JOIN sightings a ON a.id = mp.sighting_id
@@ -239,10 +239,12 @@ async def list_proposals(
                 "id": str(r["id"]),
                 "score": round(float(r["score"]), 4),
                 "a": {"sighting_id": str(r["a_id"]),
+                      "species": r["a_species"],
                       "date": r["a_when"].date().isoformat(),
                       "thumb_url": thumb(i, "a"),
                       "mine": r["a_mine"]},
                 "b": {"sighting_id": str(r["b_id"]),
+                      "species": r["b_species"],
                       "date": r["b_when"].date().isoformat(),
                       "thumb_url": thumb(i, "b"),
                       "mine": r["b_mine"]},
