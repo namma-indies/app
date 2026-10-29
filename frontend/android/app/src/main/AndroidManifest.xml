@@ -34,6 +34,13 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <!--
+      Haptics (#142). @capacitor/haptics' own manifest declares this and Gradle
+      merges it, so it already works; stated here so the permission is visible
+      and survives the plugin ever dropping it. Not a runtime prompt.
+    -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!--
       Voice notes (#96) are recorded in the WebView with getUserMedia. Capacitor's
       BridgeWebChromeClient asks for both of these at runtime, only when someone
       taps record, and denies the WebView's request if either is undeclared.

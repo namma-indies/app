@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
 import Capture from "./screens/Capture";
 import Dex from "./screens/Dex";
 import Admin from "./screens/Admin";
@@ -6,12 +7,16 @@ import SignIn from "./screens/SignIn";
 import { failedCount, flush, setOnFlushed, setOnUnauthorized } from "./offline/queue";
 import Celebration from "./components/Celebration";
 import FailedSightings from "./components/FailedSightings";
+import HapticsCheck, { HAPTICS_CHECK_PARAM, wantsHapticsCheck } from "./components/HapticsCheck";
 import { getDex, getMe, UnauthorizedError } from "./api";
 import { API_BASE } from "./apiBase";
 import { listenForAuthLinks } from "./deepLink";
 import mark from "./assets/mark.svg";
 
 type Tab = "capture" | "dex" | "admin";
+
+/** How long the brand is held in the app to open the hidden Haptics check. */
+export const HAPTICS_HOLD_MS = 2000;
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("capture");
@@ -22,6 +27,8 @@ export default function App() {
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [failed, setFailed] = useState(0);
   const [showFailed, setShowFailed] = useState(false);
+  const [hapticsCheck, setHapticsCheck] = useState(() => wantsHapticsCheck(window.location.search));
+  const brandHold = useRef<number>();
 
   useEffect(() => {
     async function run() {
@@ -103,7 +110,19 @@ export default function App() {
   return (
     <div className="app">
       <div className="topbar">
-        <span className="brand">
+        {/* Hidden: hold the brand for two seconds in the app (or open ?haptics=check on the web). */}
+        <span
+          className="brand"
+          onPointerDown={() => {
+            if (!Capacitor.isNativePlatform()) return;
+            window.clearTimeout(brandHold.current);
+            brandHold.current = window.setTimeout(() => setHapticsCheck(true), HAPTICS_HOLD_MS);
+          }}
+          onPointerUp={() => window.clearTimeout(brandHold.current)}
+          onPointerLeave={() => window.clearTimeout(brandHold.current)}
+          onPointerCancel={() => window.clearTimeout(brandHold.current)}
+          onContextMenu={(event) => { if (Capacitor.isNativePlatform()) event.preventDefault(); }}
+        >
           <img className="mark" src={mark} alt="" />
           indiedex
         </span>
@@ -166,6 +185,18 @@ export default function App() {
           </button>
         )}
       </div>
+      {hapticsCheck && (
+        <HapticsCheck
+          onClose={() => {
+            setHapticsCheck(false);
+            const url = new URL(window.location.href);
+            if (url.searchParams.get(HAPTICS_CHECK_PARAM) === "check") {
+              url.searchParams.delete(HAPTICS_CHECK_PARAM);
+              window.history.replaceState(null, "", url);
+            }
+          }}
+        />
+      )}
       {showFailed && (
         <FailedSightings
           onClose={() => {

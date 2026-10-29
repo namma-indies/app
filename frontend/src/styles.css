@@ -1454,3 +1454,24 @@ audio { accent-color: var(--accent); }
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+
+/* Hidden Haptics check (#142): opened by ?haptics=check, or a 2 s hold on the brand in the apps. */
+.topbar .brand { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.haptics-check {
+  position: fixed; inset: 0; z-index: 100; overflow-y: auto;
+  padding: calc(env(safe-area-inset-top, 0px) + 1rem) 1rem calc(env(safe-area-inset-bottom, 0px) + 1.5rem);
+  background: var(--bg); color: var(--ink);
+}
+.haptics-check h1 { font-size: 1.3rem; margin: 0 0 0.25rem; }
+.haptics-check h2 { font-size: 0.95rem; margin: 1rem 0 0.4rem; }
+.haptics-check dl { margin: 0.75rem 0; font-size: 0.9rem; }
+.haptics-check dl div { display: flex; justify-content: space-between; gap: 1rem; padding: 0.2rem 0; border-bottom: 1px solid var(--dust); }
+.haptics-check dt { color: var(--muted); }
+.haptics-check dd { margin: 0; text-align: right; font-weight: 600; }
+.haptics-buttons { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.haptics-buttons button, .haptics-close {
+  min-height: 2.75rem; padding: 0.5rem 0.9rem; font: inherit; color: var(--ink);
+  background: var(--panel); border: 2px solid var(--line); border-radius: 0.5rem; box-shadow: 2px 2px 0 var(--line);
+}
+.haptics-log { margin: 0; padding: 0.5rem; min-height: 4rem; font-size: 0.75rem; white-space: pre-wrap; background: var(--panel); border: 1px solid var(--dust); border-radius: 0.5rem; }
+.haptics-close { margin-top: 1rem; width: 100%; }
