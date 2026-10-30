@@ -288,16 +288,25 @@ def build_request(transcript: str, language: str, animals: list[tuple[str, str]]
     }
 
 
+class UnparsableReply(ValueError):
+    """The model answered, but not in the agreed shape: cut off, say, by a
+    token cap. Recorded as "unparsable_reply" on either path, which is what
+    makes the retry leave the translation out (`wants_english`)."""
+
+
 def parse_reply(content) -> tuple[list, object]:
     """(suggestions, english) from the model's answer; english is None when
     not asked for, and still unchecked (see `clean_english`)."""
-    if not isinstance(content, str) or len(content) > MAX_REPLY_CHARS:
-        raise ValueError("unexpected reply")
-    answer = json.loads(content)
-    suggestions = answer["suggestions"]
-    if not isinstance(suggestions, list):
-        raise ValueError("unexpected reply")
-    return suggestions, answer.get("english")
+    try:
+        if not isinstance(content, str) or len(content) > MAX_REPLY_CHARS:
+            raise ValueError("unexpected reply")
+        answer = json.loads(content)
+        suggestions = answer["suggestions"]
+        if not isinstance(suggestions, list):
+            raise ValueError("unexpected reply")
+        return suggestions, answer.get("english")
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise UnparsableReply() from None
 
 
 async def ask_model(client: httpx.AsyncClient, transcript: str, language: str,
@@ -440,8 +449,9 @@ async def run_once(pool, storage, client: httpx.AsyncClient) -> bool:
                                        wants_english(row["text"], row["language"], row["suggest_error"]))
     except Exception as error:
         # Logged by type only: a response body could echo the transcript.
-        logger.warning("suggestions failed for transcript=%s: %s", row["id"], type(error).__name__)
-        await _failed(pool, row["id"], row["suggest_attempts"], type(error).__name__)
+        reason = "unparsable_reply" if isinstance(error, UnparsableReply) else type(error).__name__
+        logger.warning("suggestions failed for transcript=%s: %s", row["id"], reason)
+        await _failed(pool, row["id"], row["suggest_attempts"], reason)
         return True
     await _store(pool, row, raw, animals, settings.suggest_model, english)
     return True
@@ -540,7 +550,7 @@ async def worker_complete(transcript_id: UUID, body: Reply, request: Request):
         await conn.execute("UPDATE voice_transcripts SET suggest_lease_until=now() WHERE id=$1", transcript_id)
     try:
         raw, english = parse_reply(body.content)
-    except (ValueError, KeyError, TypeError):
+    except UnparsableReply:
         # The worker's part is done either way; an answer that is not the
         # agreed shape counts as a failed attempt here, not there.
         await _failed(pool, transcript_id, row["suggest_attempts"], "unparsable_reply")

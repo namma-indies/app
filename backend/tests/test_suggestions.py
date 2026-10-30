@@ -898,6 +898,37 @@ async def test_the_worker_is_asked_for_english_and_a_cut_off_answer_is_retried_w
 
 
 @pytest.mark.asyncio
+async def test_on_the_openai_path_a_cut_off_answer_is_retried_without_english_too(authed_client, configured):
+    client, _ = authed_client
+    sid, pool = await _sighting_with_transcript(client, KANNADA, "kn")
+    seen = []
+    cut_off = json.dumps({"suggestions": [], "english": "She is"})[:-12]
+
+    async def handler(request):
+        seen.append(json.loads(request.content))
+        content = cut_off if len(seen) == 1 else json.dumps(
+            {"suggestions": [{"field": "sex", "value": "female", "quote": "ಅವಳು"}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as llm:
+        assert await suggestions.run_once(pool, None, llm)
+        async with pool.acquire() as c:
+            assert await c.fetchval("SELECT suggest_error FROM voice_transcripts") == "unparsable_reply"
+            await c.execute("UPDATE voice_transcripts SET suggest_run_after=now()")
+        assert await suggestions.run_once(pool, None, llm)
+    assert list(seen[0]["response_format"]["json_schema"]["schema"]["properties"]) == ["suggestions", "english"]
+    assert list(seen[1]["response_format"]["json_schema"]["schema"]["properties"]) == ["suggestions"]
+    item = (await client.get("/dex")).json()["sightings"][0]
+    assert [s["field"] for s in item["suggestions"]] == ["sex"]
+
+
+@pytest.mark.parametrize("content", ["", "Sure!", "[]", '{"suggestions": {}}', '{"other": []}', None, "x" * 70_000])
+def test_any_answer_off_the_agreed_shape_is_one_kind_of_failure(content):
+    with pytest.raises(suggestions.UnparsableReply):
+        suggestions.parse_reply(content)
+
+
+@pytest.mark.asyncio
 async def test_the_worker_s_translation_is_stored_with_the_local_model_named(authed_client, on_worker):
     client, oid = authed_client
     sid, pool = await _sighting_with_transcript(client, KANNADA, "kn")
