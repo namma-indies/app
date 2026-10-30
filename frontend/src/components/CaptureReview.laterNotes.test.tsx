@@ -64,4 +64,17 @@ describe("Add voice note in the details sheet (#156)", () => {
     await waitFor(() => expect(screen.queryByText("The brown one is Kaalu.")).not.toBeInTheDocument());
     vi.unstubAllGlobals();
   });
+
+  it("looks again after a redo whose answer was lost (#170 review)", async () => {
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new TypeError("Failed to fetch"))));
+    vi.mocked(getCapture).mockResolvedValueOnce({ ...detail, later_notes: [],
+      voice_transcripts: [{ id: "t1", source: "note", language: "hi", text: "वह सो रही है", redo_language: "en" }] })
+      .mockResolvedValue({ ...detail, later_notes: [], voice_transcripts: [], relistening: [{ source: "note", state: "listening" }] });
+    render(<CaptureReview captureId="c" onClose={() => {}} onSaved={() => {}} onUnauthorized={() => {}} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Wrong language? Redo in English" }));
+    expect(await screen.findByText("Listening again…")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Redo in/ })).not.toBeInTheDocument();
+    vi.unstubAllGlobals();
+  });
 });

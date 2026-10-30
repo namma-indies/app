@@ -8,6 +8,11 @@ export interface HeardText {
   text: string;
   /** A translation of a non-English one (#152): shown under it, never highlighted. */
   english?: string | null;
+  /** Which transcript, and the language to offer "Redo in" (#169), if any. */
+  id?: string | null;
+  redo_language?: string | null;
+  /** Transcribed again, and not yet read for details (#169). */
+  reading?: boolean;
   /** A note added after the upload (#156): which one, when, and its audio. */
   note_id?: string | null;
   added_at?: string | null;
@@ -23,6 +28,14 @@ const NOTE_STATUS: Record<LaterNote["state"], string | null> = {
   no_speech: "No speech heard in this note.",
   failed: "Couldn’t transcribe this note.",
 };
+
+/** The upload's own note or clip, transcribed again (#169): its old words are
+ * gone, so how it ended is said even when no new ones came. */
+const RELISTENING = {
+  listening: "Listening again…",
+  no_speech: "No speech heard this time.",
+  failed: "Couldn’t transcribe this note again.",
+} as const;
 
 const addedLater = (when: string) => `ADDED LATER · ${formatDay(when).toUpperCase()}`;
 
@@ -60,6 +73,31 @@ const LANGUAGE_NAMES: Record<string, string> = {
  * that set, which is more likely whisper mishearing than anyone speaking it. */
 export function languageLabel(code: string): string {
   return (LANGUAGE_NAMES[code] ?? "Language unclear").toUpperCase();
+}
+
+/** "Wrong language? Redo in English" (#169): asks first, as it replaces the words
+ * and the suggestions not yet answered, and says so if it could not. */
+function RedoLine({ heardAs, language, onRedo }: { heardAs: string; language: string; onRedo: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const name = LANGUAGE_NAMES[language] ?? language;
+  async function redo() {
+    if (!confirm(`Transcribe this note again in ${name}? Suggestions from it you haven’t answered will go; details you’ve filled in stay.`)) return;
+    setBusy(true);
+    setFailed(false);
+    try {
+      await onRedo();
+    } catch {
+      setFailed(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <>
+    <p className="hint transcript-redo">Heard as {heardAs} · <button type="button" className="link-btn" disabled={busy} onClick={redo}>
+      Wrong language? Redo in {name}</button></p>
+    {failed && <p className="hint place-warning" role="alert">Couldn’t do that just now. Try again later.</p>}
+  </>;
 }
 
 /** A word or phrase a suggestion came from, and what it suggested. */
@@ -115,8 +153,9 @@ export function highlightSpans(text: string, highlights: Highlight[]): { start: 
 
 /** One heard text. Compact: clamped to about three lines with "more", opened up
  * from the start when a highlighted word would otherwise be cut off. */
-function Heard({ t, highlights, compact, state, onDelete }: {
+function Heard({ t, highlights, compact, state, onDelete, onRedo }: {
   t: HeardText; highlights: Highlight[]; compact: boolean; state?: LaterNote["state"]; onDelete?: () => Promise<void>;
+  onRedo?: (id: string, language: string) => Promise<void>;
 }) {
   const text = useRef<HTMLQuoteElement>(null);
   const [open, setOpen] = useState(false);
@@ -151,6 +190,9 @@ function Heard({ t, highlights, compact, state, onDelete }: {
       <p lang="en">{t.english}</p>
     </div>}
     {state && NOTE_STATUS[state] && <p className="hint transcript-status" role="status">{NOTE_STATUS[state]}</p>}
+    {!state && t.reading && <p className="hint transcript-status" role="status">{NOTE_STATUS.reading}</p>}
+    {t.redo_language && t.id && onRedo && <RedoLine heardAs={languageLabel(t.language)} language={t.redo_language}
+      onRedo={() => onRedo(t.id!, t.redo_language!)} />}
     {onDelete && <DeleteNote onDelete={onDelete} />}
     {compact && (overflows || open || !!t.english) && <button type="button" className="link-btn transcript-more" aria-expanded={open} onClick={() => setOpen((v) => !v)}>{open ? "less" : "more"}</button>}
   </figure>;
@@ -161,21 +203,29 @@ function Heard({ t, highlights, compact, state, onDelete }: {
  * suggestion came from marked (#112). It shows the observer what the model
  * worked from, so a wrong suggestion can be traced to a misheard word.
  */
-export default function Transcript({ transcripts, highlights = [], compact = false, notes = [], onDeleteNote }: {
+export default function Transcript({ transcripts, highlights = [], compact = false, notes = [], onDeleteNote, onRedo, relistening = [] }: {
   transcripts: HeardText[]; highlights?: Highlight[]; compact?: boolean;
   /** Notes added later (#156): their state, and a block for each with no transcript yet. */
   notes?: LaterNote[];
   /** Offers "delete note" on each note added later (#158). */
   onDeleteNote?: (noteId: string) => Promise<void>;
+  /** Offers "Redo in <language>" where the server says it may (#169). */
+  onRedo?: (transcriptId: string, language: string) => Promise<void>;
+  /** The upload's own note or clip, being transcribed again (#169). */
+  relistening?: { source: "note" | "clip"; state?: "listening" | "failed" | "no_speech" }[];
 }) {
   const stateOf = new Map(notes.map((n) => [n.id, n.state]));
   const heard = new Set(transcripts.flatMap((t) => (t.note_id ? [t.note_id] : [])));
   const waiting = notes.filter((n) => !heard.has(n.id) && NOTE_STATUS[n.state]);
-  if (!transcripts.length && !waiting.length) return null;
+  if (!transcripts.length && !waiting.length && !relistening.length) return null;
   return <div className="transcript">
     {transcripts.map((t) => <Heard key={t.note_id ?? t.source} t={t} highlights={highlights} compact={compact}
       state={t.note_id ? stateOf.get(t.note_id) : undefined}
-      onDelete={t.note_id && onDeleteNote ? () => onDeleteNote(t.note_id!) : undefined} />)}
+      onDelete={t.note_id && onDeleteNote ? () => onDeleteNote(t.note_id!) : undefined} onRedo={onRedo} />)}
+    {relistening.map((r) => <figure key={`again-${r.source}`}>
+      <figcaption className="spot-label">{r.source === "note" ? "WHAT YOU SAID" : "HEARD IN YOUR VIDEO"}</figcaption>
+      <p className="hint transcript-status" role="status">{RELISTENING[r.state ?? "listening"]}</p>
+    </figure>)}
     {waiting.map((n) => <figure key={n.id}>
       <figcaption className="spot-label">{addedLater(n.added_at)}</figcaption>
       <audio className="viewer-audio" src={n.audio_url} controls preload="none" aria-label="voice note added later" />

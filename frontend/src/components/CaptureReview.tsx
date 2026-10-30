@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { decideSuggestion, deleteVoiceNote, notePending, UnauthorizedError } from "../api";
+import { decideSuggestion, deleteVoiceNote, notePending, redoTranscript, UnauthorizedError } from "../api";
 import Transcript from "./Transcript";
 import AddVoiceNote, { type LaterNotesConfig } from "./AddVoiceNote";
 import { haptic } from "../haptics";
@@ -141,9 +141,11 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
   // A note added here, or still being worked on: check back for what was heard
   // and suggested, without reloading the sheet (that would lose unsaved edits).
   const [soundChecks, setSoundChecks] = useState(0);
-  const notesPending = (detail?.later_notes ?? []).some(notePending);
+  const notesPending = (detail?.later_notes ?? []).some(notePending)
+    || (detail?.relistening ?? []).some((r) => (r.state ?? "listening") === "listening")
+    || (detail?.voice_transcripts ?? []).some((t) => t.reading);
   const refreshSounds = useCallback(() => getCapture(captureId).then((fresh) => setDetail((current) => current && {
-    ...current, voice_transcripts: fresh.voice_transcripts, later_notes: fresh.later_notes,
+    ...current, voice_transcripts: fresh.voice_transcripts, later_notes: fresh.later_notes, relistening: fresh.relistening,
     suggestions: fresh.suggestions, answered_suggestions: fresh.answered_suggestions,
   })).catch((err: unknown) => {
     if (err instanceof UnauthorizedError) unauthorizedRef.current();
@@ -289,7 +291,18 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
             onDeleteNote={async (id) => {
               try { await deleteVoiceNote(id); } catch (err) { if (err instanceof UnauthorizedError) unauthorizedRef.current(); throw err; }
               await refreshSounds();
-            }} highlights={[
+            }} onRedo={async (id, language) => {
+              try {
+                await redoTranscript(id, language);
+              } catch (err) {
+                if (err instanceof UnauthorizedError) unauthorizedRef.current();
+                throw err;
+              } finally {
+                // A redo whose answer was lost may still have gone through.
+                setSoundChecks(0);
+                await refreshSounds();
+              }
+            }} relistening={detail.relistening ?? []} highlights={[
             ...stillOpen.filter((suggestion) => !answers[suggestion.id] && !suggestion.description_id)
               .map((suggestion) => ({ id: suggestion.id, quote: suggestion.quote, label: `${SUGGESTION_LABELS[suggestion.field]}: ${suggestion.value}`, noteId: suggestion.note_id })),
             // Used, in an earlier visit or just now: still marked, quieter. Turned down ("not this") is wrong, so it isn't.

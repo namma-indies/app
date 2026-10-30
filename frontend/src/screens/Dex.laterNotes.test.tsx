@@ -3,10 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { getDex, getMap, getMe, type LaterNote, type Sighting } from "../api";
+import { getDex, getMap, getMe, redoTranscript, type LaterNote, type Sighting } from "../api";
 import { getCaptures } from "../captureApi";
 import Dex from "./Dex";
-vi.mock("../api", async (original) => ({ ...await original<typeof import("../api")>(), getDex: vi.fn(), getMap: vi.fn(), getMe: vi.fn() }));
+vi.mock("../api", async (original) => ({ ...await original<typeof import("../api")>(), getDex: vi.fn(), getMap: vi.fn(), getMe: vi.fn(), redoTranscript: vi.fn() }));
 vi.mock("../captureApi", async (original) => ({ ...await original<typeof import("../captureApi")>(), getCaptures: vi.fn() }));
 vi.mock("../components/DogMap", () => ({ default: () => <div>map</div> }));
 vi.mock("../components/VoiceNote", () => ({ default: () => <button type="button">🎙 add a voice note</button>, voiceNotesEnabled: () => true, canRecordVoice: () => true }));
@@ -98,4 +98,57 @@ it("checks back while the photo is still being described, until the description 
   const calls = vi.mocked(getDex).mock.calls.length;
   await vi.advanceTimersByTimeAsync(60000);
   expect(vi.mocked(getDex).mock.calls.length).toBe(calls);                              // and then it stops
+});
+
+it("stops checking back once a redo has ended, words or not", async () => {
+  vi.mocked(getDex)
+    .mockResolvedValueOnce({ sightings: [sighting({ relistening: [{ source: "note", state: "listening" }] })] })
+    .mockResolvedValue({ sightings: [sighting({ relistening: [{ source: "note", state: "no_speech" }] })] });
+  vi.mocked(getMe).mockResolvedValue({ is_moderator: false } as Awaited<ReturnType<typeof getMe>>);
+  vi.mocked(getMap).mockResolvedValue({ sightings: [] });
+  vi.mocked(getCaptures).mockResolvedValue({ sightings: [] });
+  render(<Dex onUnauthorized={() => {}} />);
+  await waitFor(() => expect(getDex).toHaveBeenCalledTimes(1));
+  await vi.advanceTimersByTimeAsync(3000);
+  await waitFor(() => expect(getDex).toHaveBeenCalledTimes(2));
+  await vi.advanceTimersByTimeAsync(60000);
+  expect(getDex).toHaveBeenCalledTimes(2);
+});
+
+
+it("looks again after a redo whose answer was lost, so one that went through shows (#170 review)", async () => {
+  vi.stubGlobal("confirm", vi.fn(() => true));
+  vi.mocked(redoTranscript).mockRejectedValue(new TypeError("Failed to fetch"));   // committed, reply lost
+  vi.mocked(getDex)
+    .mockResolvedValueOnce({ sightings: [sighting({ voice_transcripts: [{ id: "t1", source: "note", language: "hi", text: "वह सो रही है", redo_language: "en" }] })] })
+    .mockResolvedValue({ sightings: [sighting({ voice_transcripts: [], relistening: [{ source: "note", state: "listening" }] })] });
+  vi.mocked(getMe).mockResolvedValue({ is_moderator: false } as Awaited<ReturnType<typeof getMe>>);
+  vi.mocked(getMap).mockResolvedValue({ sightings: [] });
+  vi.mocked(getCaptures).mockResolvedValue({ sightings: [] });
+  render(<Dex onUnauthorized={() => {}} />);
+  await userEvent.click(await screen.findByRole("button", { name: "JOURNAL" }));
+  await userEvent.click(await screen.findByAltText("animal sighting"));
+  await userEvent.click(screen.getByRole("button", { name: "Wrong language? Redo in English" }));
+  expect(await screen.findByText("Listening again…")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Redo in/ })).not.toBeInTheDocument();
+  vi.unstubAllGlobals();
+});
+
+
+it("keeps checking back after a redo's words arrive until its suggestions do (#170 review)", async () => {
+  const words = { id: "t2", source: "note" as const, language: "en", text: "She is asleep." };
+  vi.mocked(getDex)
+    .mockResolvedValueOnce({ sightings: [sighting({ voice_transcripts: [{ ...words, reading: true }] })] })
+    .mockResolvedValue({ sightings: [sighting({ voice_transcripts: [{ ...words, reading: false }],
+      suggestions: [{ id: "s1", field: "sex", value: "female", quote: "She is asleep" }] })] });
+  vi.mocked(getMe).mockResolvedValue({ is_moderator: false } as Awaited<ReturnType<typeof getMe>>);
+  vi.mocked(getMap).mockResolvedValue({ sightings: [] });
+  vi.mocked(getCaptures).mockResolvedValue({ sightings: [] });
+  render(<Dex onUnauthorized={() => {}} />);
+  await userEvent.click(await screen.findByRole("button", { name: "JOURNAL" }));
+  await userEvent.click(await screen.findByAltText("animal sighting"));
+  expect(screen.getByRole("status")).toHaveTextContent("Reading it for details…");
+  await vi.advanceTimersByTimeAsync(3000);
+  expect(await screen.findByText("FROM YOUR VOICE NOTE")).toBeInTheDocument();   // the chips came without a reload
+  expect(screen.queryByText("Reading it for details…")).not.toBeInTheDocument();
 });

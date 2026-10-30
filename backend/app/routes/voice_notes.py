@@ -29,10 +29,12 @@ Limits: the recorder stops at 60 s (the server never decodes audio, as at
 upload); the upload's byte cap; `later_voice_notes_max` per sighting or
 capture; `rl_voice_note_*` per person.
 """
+from typing import Literal
 from uuid import UUID, uuid5
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from app.auth.deps import require_observer
 from app.config import settings
@@ -44,6 +46,7 @@ from app.ratelimit import check, voice_note_limit
 from app.routes.capture import owned
 from app.routes.sighting import read_voice_note
 from app.transcription_jobs import enqueue_transcription, transcription_enabled
+from app.voice_notes import redo_allowed
 
 router = APIRouter()
 # Names a note after its recording's client_token (see `_note_id`).
@@ -181,3 +184,52 @@ async def delete_note(note_id: UUID, request: Request, observer_id: UUID = Depen
     # in time; what it will not delete waits for scripts/purge_media.py.
     purge_later(request.app.state.pool, storage, key)
     return Response(status_code=204)
+
+
+class Redo(BaseModel):
+    # One of the languages the app offers; "auto" is not a language to redo in.
+    language: Literal["en", "kn", "hi", "ta", "te", "ml"]
+
+
+@router.post("/voice-transcript/{transcript_id}/redo", status_code=202)
+async def redo_transcript(transcript_id: UUID, body: Redo, observer_id: UUID = Depends(require_observer),
+                          conn=Depends(get_conn)):
+    """Transcribe one of your recordings again, in the language given (#169).
+
+    Once per recording. Its transcript and the suggestions from it still open
+    go; the job is queued again with the language forced, and the new
+    transcript is read for suggestions like any other. Details already chosen
+    stay. Only while the worker honours the language (LANGUAGE_HINTS_ENABLED):
+    before that it would hear the same language again.
+    """
+    if not redo_allowed():
+        raise HTTPException(503, "transcribing again in another language is not available yet")
+    check(f"voice-note:obs:{observer_id}", voice_note_limit())
+    async with conn.transaction():
+        # Its job first, then the transcript: the order a completing
+        # transcription takes them in.
+        job = await conn.fetchrow(
+            """SELECT j.id, j.redo_count FROM transcription_jobs j
+               JOIN voice_transcripts t ON t.id = $1
+               JOIN captures c ON c.id = t.capture_id AND c.observer_id = $2
+               WHERE j.capture_id = t.capture_id AND j.source = t.source
+                 AND j.note_id IS NOT DISTINCT FROM t.note_id AND j.pipeline_version = t.pipeline_version
+               FOR UPDATE OF j""", transcript_id, observer_id)
+        if job is None:
+            raise HTTPException(404, "no such transcript")
+        heard = await conn.fetchrow(
+            "SELECT language FROM voice_transcripts WHERE id=$1 FOR UPDATE", transcript_id)
+        if heard is None:
+            raise HTTPException(404, "no such transcript")
+        if job["redo_count"] >= 1:
+            raise HTTPException(409, "this recording was already transcribed again")
+        if heard["language"] == body.language:
+            raise HTTPException(409, "it was already heard in that language")
+        await conn.execute("DELETE FROM detail_suggestions WHERE transcript_id=$1 AND status='open'", transcript_id)
+        await conn.execute("DELETE FROM voice_transcripts WHERE id=$1", transcript_id)
+        await conn.execute(
+            """UPDATE transcription_jobs SET status='pending', attempts=0, run_after=now(),
+               lease_token_hash=NULL, lease_owner=NULL, lease_expires_at=NULL, last_error=NULL,
+               language_hint=$2, language_forced=true, redo_count=redo_count+1, updated_at=now()
+               WHERE id=$1""", job["id"], body.language)
+    return JSONResponse({"state": "transcribing"}, status_code=202)

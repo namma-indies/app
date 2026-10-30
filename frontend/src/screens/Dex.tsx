@@ -6,6 +6,7 @@ import {
   setSightingShared,
   UnauthorizedError,
   deleteVoiceNote,
+  redoTranscript,
   isUsed,
   notePending,
   type Sighting,
@@ -70,6 +71,8 @@ function highlightsOf(s: Sighting, fromPhoto: boolean) {
 
 /** A sighting worth checking back for: its media, a note added to it, or its AI description is still being worked on. */
 const ownBusy = (s: Sighting) => isProcessing(s.processing_state) || (s.later_notes ?? []).some(notePending)
+  || (s.relistening ?? []).some((r) => (r.state ?? "listening") === "listening")
+  || (s.voice_transcripts ?? []).some((t) => t.reading)
   || s.photo_description?.status === "describing";
 
 const UNFINISHED = new Set<CaptureSummary["processing_state"]>(["queued", "processing", "failed", "needs_review"]);
@@ -146,6 +149,19 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
       })
       .catch(() => {});
   }, []);
+
+  async function redo(id: string, language: string) {
+    try {
+      await redoTranscript(id, language);
+    } catch (err) {
+      if (err instanceof UnauthorizedError) onUnauthorized();
+      throw err;
+    } finally {
+      // Even when it seemed to fail: a redo whose answer was lost may have
+      // gone through, and only a fresh look shows it (and drops the old words).
+      ownFeed.refresh();
+    }
+  }
 
   async function removeNote(id: string) {
     try {
@@ -367,7 +383,8 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
               {selected.photo_description && selected.photo_description.status !== "describing" && <PhotoDescription described={selected.photo_description}
                 highlights={highlightsOf(selected, true)} onChanged={ownFeed.refresh} onUnauthorized={onUnauthorized} />}
               <Transcript transcripts={selected.voice_transcripts ?? []} notes={selected.later_notes ?? []}
-                onDeleteNote={(id) => removeNote(id)} highlights={highlightsOf(selected, false)} />
+                onDeleteNote={(id) => removeNote(id)} highlights={highlightsOf(selected, false)}
+                onRedo={(id, language) => redo(id, language)} relistening={selected.relistening ?? []} />
               {!!selected.review_suggestions?.length && selected.capture_id && (
                 <button className="btn" data-fx-chip={selected.review_suggestions.map((s) => s.id).join(" ")} onClick={() => { const id = selected.capture_id!; setSelected(null); setReviewCaptureId(id); }}>
                   Review {selected.review_suggestions.length} {selected.review_suggestions.length === 1 ? "suggestion" : "suggestions"} from your note
