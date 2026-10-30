@@ -11,7 +11,7 @@ vi.mock("@capacitor/core", () => ({
   Capacitor: { isNativePlatform: () => platform.native, isPluginAvailable: () => platform.available },
 }));
 
-import { haptic } from "./haptics";
+import { haptic, hapticChannel, onHapticOutcome } from "./haptics";
 
 let epoch = 0;
 beforeEach(() => {
@@ -65,6 +65,18 @@ describe("haptics on the native app", () => {
     expect(plugin.impact).toHaveBeenCalledTimes(3); // logged's second tap, then the queued tick
   });
 
+  it("uses the native plugin, never the iPhone switch, and says when it fails", async () => {
+    vi.stubGlobal("navigator", { userAgent: "iPhone OS 18_0", maxTouchPoints: 5, userActivation: { isActive: true } });
+    expect(hapticChannel()).toBe("native");
+    const heard: string[] = [];
+    const stop = onHapticOutcome((outcome) => heard.push(outcome));
+    plugin.impact.mockRejectedValue(new Error("UNIMPLEMENTED"));
+    haptic("tick");
+    await vi.advanceTimersByTimeAsync(10);
+    stop();
+    expect(heard).toEqual(["tick native: failed (UNIMPLEMENTED)"]);
+  });
+
   it("stays silent when the plugin rejects, throws, or is missing from an old build", async () => {
     plugin.impact.mockRejectedValue(new Error("UNIMPLEMENTED"));
     expect(() => haptic("tick")).not.toThrow();
@@ -105,12 +117,37 @@ describe("haptics on the web", () => {
     expect(calls[2].at - calls[1].at).toBeGreaterThanOrEqual(8);
   });
 
-  it("drops a tap that would have to wait too long to mean anything", () => {
+  it("drops a tick that would have to wait too long to mean anything, and says so", () => {
+    const vibrate = vi.fn();
+    vi.stubGlobal("navigator", { vibrate });
+    const heard: string[] = [];
+    const stop = onHapticOutcome((outcome) => heard.push(outcome));
+    for (let i = 0; i < 3; i++) haptic("logged");
+    haptic("tick");
+    stop();
+    vi.advanceTimersByTime(10000);
+    expect(vibrate).toHaveBeenCalledTimes(3);
+    expect(heard).toContain("tick: dropped (another buzz was still running)");
+  });
+
+  it("never drops a moment that answers the person's own action, however busy", () => {
     const vibrate = vi.fn();
     vi.stubGlobal("navigator", { vibrate });
     for (let i = 0; i < 6; i++) haptic("logged");
-    vi.advanceTimersByTime(10000);
-    expect(vibrate.mock.calls.length).toBeLessThan(6);
+    haptic("recordStop");
+    vi.advanceTimersByTime(20000);
+    expect(vibrate).toHaveBeenCalledTimes(7);
+  });
+
+  it("reports a refused vibrate call", () => {
+    vi.stubGlobal("navigator", { vibrate: () => false });
+    const heard: string[] = [];
+    const stop = onHapticOutcome((outcome) => heard.push(outcome));
+    haptic("tick");
+    return Promise.resolve().then(() => {
+      stop();
+      expect(heard).toEqual(["tick vibrate: failed (navigator.vibrate returned false)"]);
+    });
   });
 
   it("does nothing where there is no vibrate (iOS Safari, desktop)", () => {
