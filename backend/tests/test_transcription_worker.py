@@ -282,6 +282,13 @@ def test_a_note_s_own_language_is_one_pass_in_it(tools):
     assert (heard.language, heard.text, made) == ("kn", "ನಾಯಿ ಮಲಗಿದೆ", ["kn"])
 
 
+def test_a_hinted_pass_that_hears_nothing_does_not_bring_back_the_overruled_language(tools):
+    hindi = whisper_json([(0, 900, " वह सो रही है")], "hindi", {"hi": 0.62, "en": 0.30})
+    silent = whisper_json([(0, 900, " [BLANK_AUDIO]")], "english", {"hi": 0.62, "en": 0.30})
+    heard, made = _run(tools, 18955, hindi, {"en": silent}, hint="en")
+    assert (heard.outcome, heard.language, made) == ("no_speech", None, ["auto", "en"])
+
+
 def test_a_hint_it_does_not_know_is_no_hint(tools):
     kannada = whisper_json([(0, 900, " ನಾಯಿ ಮಲಗಿದೆ")], "kannada", {"kn": 0.8})
     heard, made = _run(tools, 18954, kannada, hint="xx", forced=True)

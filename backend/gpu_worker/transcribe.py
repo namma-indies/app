@@ -209,6 +209,11 @@ class Transcriber:
             logger.warning("whisper language %s replaced by %s (%s)", heard.language, chosen,
                            _odds(raw, heard.language, chosen))
             again = parse(self._infer(wav, chosen))
+            if hint is not None:
+                # The person's language, or one whisper was sure of: what it
+                # hears in that stands, even nothing. Falling back to the first
+                # reading would bring back the language the hint just overruled.
+                return again
             # Named, it may find no words where auto-detection found some; the
             # first reading is then all there is.
             return again if again.outcome == "transcribed" else heard
