@@ -91,7 +91,7 @@ async def me(observer_id: UUID = Depends(require_observer), conn=Depends(get_con
     endpoint checks the tier itself, because a client-side flag is a suggestion.
     """
     row = await conn.fetchrow(
-        "SELECT display_name, trust_tier, social_consent, x_handle FROM observers WHERE id = $1",
+        "SELECT display_name, trust_tier, social_consent, x_handle, note_language FROM observers WHERE id = $1",
         observer_id,
     )
     if row is None:
@@ -108,6 +108,8 @@ async def me(observer_id: UUID = Depends(require_observer), conn=Depends(get_con
         # transcribing, and how many a sighting can take.
         "later_voice_notes_enabled": transcription_enabled(),
         "later_voice_notes_max": settings.later_voice_notes_max,
+        # The language they speak their notes in (#167); null until asked and answered.
+        "note_language": row["note_language"],
     }
 
 

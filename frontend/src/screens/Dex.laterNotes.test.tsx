@@ -9,7 +9,7 @@ import Dex from "./Dex";
 vi.mock("../api", async (original) => ({ ...await original<typeof import("../api")>(), getDex: vi.fn(), getMap: vi.fn(), getMe: vi.fn() }));
 vi.mock("../captureApi", async (original) => ({ ...await original<typeof import("../captureApi")>(), getCaptures: vi.fn() }));
 vi.mock("../components/DogMap", () => ({ default: () => <div>map</div> }));
-vi.mock("../components/VoiceNote", () => ({ default: () => <button type="button">🎙 add a voice note</button>, voiceNotesEnabled: () => true }));
+vi.mock("../components/VoiceNote", () => ({ default: () => <button type="button">🎙 add a voice note</button>, voiceNotesEnabled: () => true, canRecordVoice: () => true }));
 
 beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
 afterEach(() => { cleanup(); vi.clearAllMocks(); vi.useRealTimers(); });

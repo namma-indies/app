@@ -8,7 +8,7 @@ import { getCapture, type CaptureDetail, type CaptureInstance } from "../capture
 
 vi.mock("../haptics", () => ({ haptic: vi.fn() }));
 vi.mock("../captureApi", () => ({ getCapture: vi.fn(), reviewCapture: vi.fn() }));
-vi.mock("./VoiceNote", () => ({ default: () => <button type="button">🎙 add a voice note</button>, voiceNotesEnabled: () => true }));
+vi.mock("./VoiceNote", () => ({ default: () => <button type="button">🎙 add a voice note</button>, voiceNotesEnabled: () => true, canRecordVoice: () => true }));
 beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
 afterEach(() => { cleanup(); vi.clearAllMocks(); vi.useRealTimers(); });
 

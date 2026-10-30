@@ -9,6 +9,7 @@ import Celebration from "./components/Celebration";
 import FailedSightings from "./components/FailedSightings";
 import HapticsCheck, { HAPTICS_CHECK_PARAM, wantsHapticsCheck } from "./components/HapticsCheck";
 import { getDex, getMe, UnauthorizedError } from "./api";
+import { forgetNoteLanguage } from "./components/NoteLanguagePicker";
 import { API_BASE } from "./apiBase";
 import { listenForAuthLinks } from "./deepLink";
 import mark from "./assets/mark.svg";
@@ -137,6 +138,7 @@ export default function App() {
             // Confirm first: the tabbar is right there and a stray tap costs
             // a round-trip through email to get back in.
             if (!confirm("Sign out of indiedex?")) return;
+            forgetNoteLanguage();
             await fetch(`${API_BASE}/auth/logout`, {
               method: "POST",
               headers: { Accept: "application/json" },

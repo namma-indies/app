@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { addVoiceNote, HttpError, UnauthorizedError } from "../api";
+import { addVoiceNote, HttpError, UnauthorizedError, type NoteLanguage } from "../api";
+import NoteLanguagePicker, { useNoteLanguage } from "./NoteLanguagePicker";
 import { newClientToken } from "../clientToken";
-import VoiceNote, { voiceNotesEnabled } from "./VoiceNote";
+import VoiceNote, { canRecordVoice, voiceNotesEnabled } from "./VoiceNote";
 
 /** The server's say on later notes (/me): on at all, and how many each takes. */
 export interface LaterNotesConfig {
@@ -41,6 +42,9 @@ export default function AddVoiceNote({ target, added, max, onAdded, onUnauthoriz
   const [token, setToken] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The language picked for this note, if any; the usual one is asked once (#167).
+  const [language, setLanguage] = useState<NoteLanguage | null>(null);
+  const spoken = useNoteLanguage(onUnauthorized);
 
   if (added >= max) {
     return <p className="hint add-voice-note">{max === 1 ? "A note has" : `${max} notes have`} been added here, as many as it can take.</p>;
@@ -51,9 +55,10 @@ export default function AddVoiceNote({ target, added, max, onAdded, onUnauthoriz
     setSaving(true);
     setError(null);
     try {
-      await addVoiceNote(target, note, token);
+      await addVoiceNote(target, note, token, language, spoken.usual);
       setNote(null);
       setToken(null);
+      setLanguage(null);
       onAdded();
     } catch (err) {
       if (err instanceof UnauthorizedError) onUnauthorized();
@@ -64,6 +69,8 @@ export default function AddVoiceNote({ target, added, max, onAdded, onUnauthoriz
   }
 
   return <div className="add-voice-note">
+    {canRecordVoice() && <NoteLanguagePicker usual={spoken.usual} onKeep={(l) => void spoken.keep(l)}
+      chosen={language} onChoose={setLanguage} />}
     <VoiceNote value={note} onChange={(next) => { setNote(next); setToken(next ? newClientToken() : null); setError(null); }} />
     {note && <button type="button" className="btn" disabled={saving} onClick={save}>{saving ? "Saving…" : "Save note"}</button>}
     {error && <p className="hint place-warning" role="alert">{error}</p>}

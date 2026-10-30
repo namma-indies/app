@@ -12,6 +12,12 @@ vi.mock("./VoiceNote", () => ({
     ? <button type="button" onClick={() => onChange(null)}>delete</button>
     : <button type="button" onClick={() => onChange(new Blob(["voice"], { type: "audio/mp4" }))}>🎙 add a voice note</button>,
   voiceNotesEnabled: () => buildHasVoiceNotes,
+  canRecordVoice: () => true,
+}));
+// The language question has its own tests (NoteLanguagePicker.test.tsx); here it is answered.
+vi.mock("./NoteLanguagePicker", async (original) => ({
+  ...await original<typeof import("./NoteLanguagePicker")>(),
+  useNoteLanguage: () => ({ usual: "en", keep: vi.fn() }),
 }));
 
 const fetchMock = vi.fn();
@@ -103,5 +109,20 @@ describe("adding a voice note after upload (#156)", () => {
     expect(tokens[0]).toBeTruthy();
     expect(tokens[1]).toBe(tokens[0]);
     expect(tokens[2]).not.toBe(tokens[0]);
+  });
+
+  it("sends the language picked for this note, and none when it goes with the usual one (#167)", async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(reply(202, { note_id: "n1" })));
+    renderIt();
+    await userEvent.click(screen.getByRole("button", { name: "🎙 add a voice note" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save note" }));
+    expect((fetchMock.mock.calls[0][1].body as FormData).get("note_language")).toBeNull();
+    expect((fetchMock.mock.calls[0][1].body as FormData).get("usual_language")).toBe("en");   // even if its own save failed
+    await userEvent.click(await screen.findByRole("button", { name: /Language for this note: English/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Kannada" }));
+    await userEvent.click(screen.getByRole("button", { name: "🎙 add a voice note" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save note" }));
+    expect((fetchMock.mock.calls[1][1].body as FormData).get("note_language")).toBe("kn");
+    expect(await screen.findByRole("button", { name: /Language for this note: English/ })).toBeInTheDocument();   // back to the usual one
   });
 });

@@ -26,7 +26,9 @@ import {
 } from "../capture/importOrigin";
 import { howToEnableCameraLocation, locate } from "../capture/geolocate";
 import LocationPicker, { type PickedPlace } from "../components/LocationPicker";
-import VoiceNote, { voiceNotesEnabled } from "../components/VoiceNote";
+import VoiceNote, { canRecordVoice, voiceNotesEnabled } from "../components/VoiceNote";
+import NoteLanguagePicker, { useNoteLanguage } from "../components/NoteLanguagePicker";
+import type { NoteLanguage } from "../api";
 import { CONDITION_OPTIONS, EAR_NOTCH_OPTIONS, SEX_OPTIONS } from "../detailOptions";
 import { formatWhen } from "../formatWhen";
 
@@ -100,6 +102,9 @@ export default function Capture() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [voiceNote, setVoiceNote] = useState<Blob | null>(null);
+  // The language picked for this note on the recorder, if any (#167).
+  const [noteLanguage, setNoteLanguage] = useState<NoteLanguage | null>(null);
+  const spoken = useNoteLanguage();
   const [sex, setSex] = useState<Sex | null>(null);
   const [earNotch, setEarNotch] = useState<EarNotch | null>(null);
   const [condition, setCondition] = useState<Condition | null>(null);
@@ -425,6 +430,7 @@ export default function Capture() {
     setPicking(false);
     setNote("");
     setVoiceNote(null);
+    setNoteLanguage(null);
     setShareWithTeam(false);
     setSex(null);
     setEarNotch(null);
@@ -490,6 +496,8 @@ export default function Capture() {
       video: video ?? undefined,
       // A clip's own sound is its note; the recorder is hidden while one is staged.
       audio: video ? undefined : voiceNote ?? undefined,
+      note_language: !video && voiceNote && noteLanguage ? noteLanguage : undefined,
+      usual_language: spoken.usual ?? undefined,
       lat,
       lng,
       geo_accuracy_m: accuracy,
@@ -721,6 +729,8 @@ export default function Capture() {
             />
             {/* Not for a clip: the clip records sound already, and that is
                 its note (#96). */}
+            {!video && voiceNotesEnabled() && canRecordVoice() && <NoteLanguagePicker usual={spoken.usual}
+              onKeep={(language) => void spoken.keep(language)} chosen={noteLanguage} onChoose={setNoteLanguage} />}
             {!video && voiceNotesEnabled() && <VoiceNote value={voiceNote} onChange={setVoiceNote} />}
           </div>
 
