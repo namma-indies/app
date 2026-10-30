@@ -251,3 +251,50 @@ describe("deleting a note added later (#158)", () => {
     expect(screen.queryByRole("button", { name: "delete note" })).not.toBeInTheDocument();
   });
 });
+
+describe("Wrong language? Redo in yours (#169)", () => {
+  const hindi = { id: "t1", source: "note" as const, language: "hi", text: "वह सो रही है", redo_language: "en" };
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("offers it where the server says, asks first, and redoes in that language", async () => {
+    const confirm = vi.fn((_message: string) => true);
+    vi.stubGlobal("confirm", confirm);
+    const onRedo = vi.fn(() => Promise.resolve());
+    render(<Transcript transcripts={[hindi]} onRedo={onRedo} />);
+    expect(screen.getByText(/Heard as HINDI/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Wrong language? Redo in English" }));
+    expect(confirm.mock.calls[0][0]).toMatch(/Transcribe this note again in English\?.*details you’ve filled in stay/);
+    expect(onRedo).toHaveBeenCalledWith("t1", "en");
+  });
+
+  it("is not offered when the server does not, or nothing can redo it", () => {
+    const { unmount } = render(<Transcript transcripts={[{ ...hindi, redo_language: null }]} onRedo={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: /Redo in/ })).not.toBeInTheDocument();
+    unmount();
+    render(<Transcript transcripts={[hindi]} />);
+    expect(screen.queryByRole("button", { name: /Redo in/ })).not.toBeInTheDocument();
+  });
+
+  it("does nothing on second thoughts, and says so when it could not", async () => {
+    vi.stubGlobal("confirm", vi.fn(() => false));
+    const onRedo = vi.fn(() => Promise.reject(new Error("503")));
+    render(<Transcript transcripts={[hindi]} onRedo={onRedo} />);
+    await userEvent.click(screen.getByRole("button", { name: "Wrong language? Redo in English" }));
+    expect(onRedo).not.toHaveBeenCalled();
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    await userEvent.click(screen.getByRole("button", { name: "Wrong language? Redo in English" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn’t do that just now. Try again later.");
+  });
+
+  it("says how a redo ended when no new words came", () => {
+    render(<Transcript transcripts={[]} relistening={[{ source: "note", state: "no_speech" }, { source: "clip", state: "failed" }]} />);
+    expect(screen.getAllByRole("status").map((s) => s.textContent)).toEqual(
+      ["No speech heard this time.", "Couldn’t transcribe this note again."]);
+  });
+
+  it("says the upload's own note is being listened to again", () => {
+    render(<Transcript transcripts={[]} relistening={[{ source: "note" }]} />);
+    expect(screen.getByText("WHAT YOU SAID")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Listening again…");
+  });
+});

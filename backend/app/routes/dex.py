@@ -137,9 +137,11 @@ async def get_dex(
     heard = await heard_on(conn, storage, [UUID(c) for c in capture_ids])
     for sighting in sightings.values():
         found = heard.get(UUID(sighting["capture_id"])) if sighting["capture_id"] else None
-        shown = for_sighting(found, UUID(sighting["id"])) if found else {"transcripts": [], "notes": []}
+        shown = (for_sighting(found, UUID(sighting["id"])) if found
+                 else {"transcripts": [], "notes": [], "relistening": []})
         sighting["voice_transcripts"] = shown["transcripts"]
         sighting["later_notes"] = shown["notes"]
+        sighting["relistening"] = shown["relistening"]
 
     # Details a model read from that transcript, for the observer to confirm
     # or correct (app/suggestions.py). Only for a detail still left blank: a

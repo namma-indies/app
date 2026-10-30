@@ -1,4 +1,5 @@
 """API side of voice-note transcription: enqueue, lease, store, read back."""
+from unittest.mock import ANY
 import io
 
 import pytest
@@ -68,7 +69,7 @@ async def test_a_voice_note_is_queued_transcribed_and_read_back(authed_client, e
         assert await c.fetchval("SELECT count(*) FROM voice_transcripts WHERE capture_id=$1", sid) == 1
     item = (await client.get("/dex")).json()["sightings"][0]
     assert item["voice_transcripts"] == [{"source": "note", "language": "kn", "text": "ನಾಯಿ ಮಲಗಿದೆ",
-                                          "english": None, "note_id": None, "added_at": None, "audio_url": None}]
+                                          "english": None, "note_id": None, "added_at": None, "audio_url": None, "id": ANY, "redo_language": None, "reading": False}]
 
     nothing = await client.post("/internal/transcription-jobs/claim", json={"owner": "dgx-1"}, headers=GPU)
     assert nothing.json() == {"job": None}

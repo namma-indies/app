@@ -105,7 +105,13 @@ export interface Sighting {
     source: "note" | "clip"; language: string; text: string; english?: string | null;
     /** Set for a note added later (#156). */
     note_id?: string | null; added_at?: string | null; audio_url?: string | null;
+    /** The transcript, and the language to offer "Redo in" (#169), if any. */
+    id?: string | null; redo_language?: string | null;
+    /** Transcribed again, and not yet read for details (#169). */
+    reading?: boolean;
   }[];
+  /** Present on /dex only. The upload's own note or clip, being transcribed again (#169). */
+  relistening?: { source: "note" | "clip"; state?: "listening" | "failed" | "no_speech" }[];
   /** Present on /dex only. Notes added after the upload, oldest first (#156). */
   later_notes?: LaterNote[];
   /** Present on /dex only, for your own sightings with nothing noted (#160). */
@@ -360,6 +366,19 @@ export async function decideDescription(
     body: JSON.stringify(decision),
   });
   return handle(res);
+}
+
+/** Transcribe one recording again in the language given, once (#169). 503
+ * while the worker cannot honour a language yet; 409 if already redone. */
+export async function redoTranscript(id: string, language: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/voice-transcript/${encodeURIComponent(id)}/redo`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ language }),
+  });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok) throw new HttpError(res.status);
 }
 
 /** The observer's answer to a suggestion: the option they tapped, or no. */

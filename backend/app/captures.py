@@ -52,14 +52,18 @@ async def status(conn, storage, capture):
         for r in rows:
             tracks.setdefault(r["track_id"], []).append(r["id"])
         groups = [AnimalGroup(instance_ids=ids) for ids in tracks.values()]
+    # Progress before suggestions: if the model finishes in between, the sheet
+    # sees it still reading beside the new suggestions, and looks once more,
+    # rather than done reading beside the old ones, and stops looking (#169).
+    sounds = for_sighting((await heard(conn, storage, [capture["id"]]))[capture["id"]], None)
     open_suggestions, answered_suggestions = await for_capture(
         conn, capture["id"], {i.instance_id: i.details.model_dump() for i in instances})
-    sounds = for_sighting((await heard(conn, storage, [capture["id"]]))[capture["id"]], None)
     return CaptureStatus(**await receipt(conn, capture), revision=capture["revision"],
         captured_at=capture["captured_at"], note=decoded(capture["attrs"]).get("note"),
         instances=instances, groups=groups, excluded_instance_ids=excluded,
         suggestions=open_suggestions, answered_suggestions=answered_suggestions,
-        voice_transcripts=sounds["transcripts"], later_notes=sounds["notes"])
+        voice_transcripts=sounds["transcripts"], later_notes=sounds["notes"],
+        relistening=sounds["relistening"])
 
 
 def validate_groups(rows, groups, excluded=()):

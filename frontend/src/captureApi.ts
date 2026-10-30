@@ -66,6 +66,7 @@ export interface CaptureDetail extends CaptureSummary {
   excluded_instance_ids?: string[];
   voice_transcripts?: HeardText[];
   later_notes?: LaterNote[];
+  relistening?: { source: "note" | "clip"; state?: "listening" | "failed" | "no_speech" }[];
 }
 export interface PostCaptureResponse {
   capture_id: string;
@@ -99,6 +100,7 @@ interface WireCapture extends CaptureSummary {
   excluded_instance_ids?: string[];
   voice_transcripts?: HeardText[];
   later_notes?: LaterNote[];
+  relistening?: { source: "note" | "clip"; state?: "listening" | "failed" | "no_speech" }[];
 }
 export function adaptCapture(wire: WireCapture): CaptureDetail {
   return { ...wire, instances: wire.instances.map((instance) => {

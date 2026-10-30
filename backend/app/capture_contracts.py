@@ -121,10 +121,21 @@ class Transcript(WireModel):
     text: str
     # Translation of a non-English one, shown under it; never evidence.
     english: str | None = None
+    # Which transcript, and the language to offer "Redo in" (#169), if any.
+    id: UUID | None = None
+    redo_language: str | None = None
+    # Transcribed again, and not yet read for details (#169).
+    reading: bool = False
     # A note added after the upload (#156): which, when, and its audio.
     note_id: UUID | None = None
     added_at: datetime | None = None
     audio_url: str | None = None
+
+
+class Relistening(WireModel):
+    """The upload's own note or clip, transcribed again (#169), and how far along."""
+    source: Literal["note", "clip"]
+    state: Literal["listening", "failed", "no_speech"] = "listening"
 
 
 class LaterNote(WireModel):
@@ -149,6 +160,7 @@ class CaptureStatus(CaptureReceipt):
     answered_suggestions: list[AnsweredSuggestion] = Field(default_factory=list)
     voice_transcripts: list[Transcript] = Field(default_factory=list)
     later_notes: list[LaterNote] = Field(default_factory=list)
+    relistening: list[Relistening] = Field(default_factory=list)
 
 
 class MultiUpload(WireModel):

@@ -337,6 +337,7 @@ button { font-family: inherit; }
 .transcript-english p { margin: 0.15rem 0 0; color: var(--muted); line-height: 1.5; }
 .transcript .viewer-audio { margin: 0.25rem 0; }
 .transcript-status { margin: 0.25rem 0 0; text-align: left; }
+.transcript-redo { margin: 0.25rem 0 0; text-align: left; }
 .transcript-delete { padding: 2px 0; font-size: .85rem; }
 /* An AI photo description (#160): plainly the model's until its observer takes it. */
 .photo-description { text-align: left; margin: 0.6rem 0; }

@@ -131,6 +131,10 @@ class Settings(BaseSettings):
     # per sighting (or per capture, from its details sheet), on top of the
     # note recorded at upload.
     later_voice_notes_max: int = Field(default=5, ge=0, le=50)
+    # "Wrong language? Redo in <yours>" (#169). Off until the DGX worker
+    # honours the language hint: before that a redo would only hear the same
+    # wrong language again.
+    language_hints_enabled: bool = False
 
     # --- re-identification -------------------------------------------------
     # Candidate scope for a new sighting. Street dogs hold small territories,
