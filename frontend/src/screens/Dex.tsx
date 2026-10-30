@@ -11,6 +11,7 @@ import {
 import SuggestedDetails from "../components/SuggestedDetails";
 import Transcript from "../components/Transcript";
 import SuggestionFlow from "../components/SuggestionFlow";
+import SightingFrames from "../components/SightingFrames";
 import DogMap from "../components/DogMap";
 import CaptureReview from "../components/CaptureReview";
 import { getCaptures, type CaptureSummary } from "../captureApi";
@@ -315,8 +316,8 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
 
       {selected && (
         <div className="viewer-overlay" onClick={() => setSelected(null)}>
-          <div onClick={(e) => e.stopPropagation()}>
-            {selected.photos.length > 0 ? selected.photos.map((photo, index) => <img key={photo.url} src={photo.url} alt={`${speciesNoun(selected.species)} sighting ${index + 1}`} />) : <div className="media-placeholder">{processingLabel(selected.processing_state) ?? "Preview unavailable"}</div>}
+          <div className="viewer-card" onClick={(e) => e.stopPropagation()}>
+            {selected.photos.length > 0 ? <SightingFrames key={selected.id} photos={selected.photos} noun={speciesNoun(selected.species)} /> : <div className="media-placeholder">{processingLabel(selected.processing_state) ?? "Preview unavailable"}</div>}
             {selected.photos.length > 0 && processingLabel(selected.processing_state) && <p className="viewer-caption">{processingLabel(selected.processing_state)}</p>}
             <p className="viewer-caption">
               No. {String(numberOf.get(selected.id) ?? 0).padStart(3, "0")} ·{" "}
