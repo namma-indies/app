@@ -36,7 +36,7 @@ Flags, each for a measured reason on real field recordings:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 import logging
 import math
@@ -83,6 +83,10 @@ class Transcript:
     language: str | None = None
     text: str = ""
     segments: list[dict] = field(default_factory=list)
+    # How the language was settled, in codes and numbers only (never words):
+    # what whisper detected, what it was transcribed in, and its three likeliest
+    # languages. Sent only to an API that says it takes it (client.py).
+    diagnostics: dict | None = None
 
 
 def _ffmpeg() -> str:
@@ -197,26 +201,29 @@ class Transcriber:
             if not self.alive():
                 self.start()
             if forced:
-                return parse(self._infer(wav, hint))
+                raw = self._infer(wav, hint)
+                return _diagnosed(parse(raw), raw, None, hint)
             raw = self._infer(wav)
             heard = parse(raw)
             if heard.outcome != "transcribed":
-                return heard
+                return _diagnosed(heard, raw, None, None)
             chosen = choose_language(raw) if hint is None else with_hint(raw, hint)
             if chosen is None or chosen == heard.language:
-                return heard
+                return _diagnosed(heard, raw, heard.language, heard.language)
             # Codes and probabilities only, never what was said.
             logger.warning("whisper language %s replaced by %s (%s)", heard.language, chosen,
                            _odds(raw, heard.language, chosen))
             again = parse(self._infer(wav, chosen))
-            if hint is not None:
-                # The person's language, or one whisper was sure of: what it
-                # hears in that stands, even nothing. Falling back to the first
-                # reading would bring back the language the hint just overruled.
-                return again
-            # Named, it may find no words where auto-detection found some; the
-            # first reading is then all there is.
-            return again if again.outcome == "transcribed" else heard
+            if hint is not None or heard.language not in ALLOWED:
+                # What it hears in the language chosen stands, even nothing:
+                # falling back to the first reading would bring back a language
+                # the hint overruled, or one outside the set (the Malay a noisy
+                # English clip came back as).
+                return _diagnosed(again, raw, heard.language, chosen)
+            # The first reading is in an allowed language but unsure: named, it
+            # may find no words where auto-detection found some, and then the
+            # first reading is all there is.
+            return _diagnosed(again if again.outcome == "transcribed" else heard, raw, heard.language, chosen)
 
     def _infer(self, wav: Path, language: str | None = None) -> bytes:
         data = {"response_format": "verbose_json", "temperature": "0.0"}
@@ -278,6 +285,15 @@ def with_hint(raw: bytes, hint: str) -> str:
         return hint
     best = max(ALLOWED, key=lambda code: odds.get(code, 0.0))
     return best if best != hint and odds.get(best, 0.0) >= HINT_OVERRIDE_MIN else hint
+
+
+def _diagnosed(heard: Transcript, raw: bytes, detected: str | None, chosen: str | None) -> Transcript:
+    """`heard` with how its language was settled: codes and numbers only."""
+    odds = _probabilities(raw) or {}
+    top = sorted(odds.items(), key=lambda item: (-item[1], item[0]))[:3]
+    return replace(heard, diagnostics={
+        "detected": detected, "chosen": chosen,
+        "top": [[code, round(p, 4)] for code, p in top if _LANGUAGE.match(code)]})
 
 
 def _odds(raw: bytes, *codes: str) -> str:

@@ -204,7 +204,7 @@ def test_a_likely_allowed_language_costs_no_second_pass(tools):
     assert requests_made(root) == ["auto"]
 
 
-def test_if_the_named_language_hears_nothing_the_first_reading_stands(tools):
+def test_a_reading_outside_the_set_is_never_returned_even_when_the_named_language_hears_nothing(tools):
     root, ffmpeg, server = tools
     welsh = whisper_json([(0, 900, " Mae hi'n cysgu.")], "welsh", {"cy": 0.9})
     silent = whisper_json([(0, 900, " [BLANK_AUDIO]")], "english", {"cy": 0.9})
@@ -215,7 +215,8 @@ def test_if_the_named_language_hears_nothing_the_first_reading_stands(tools):
         heard = t.transcribe(b"note")
     finally:
         t.stop()
-    assert (heard.outcome, heard.language) == ("transcribed", "cy")
+    # Not the Welsh: a language outside the set is never stored. Nothing heard, said so.
+    assert (heard.outcome, heard.language, heard.text) == ("no_speech", None, "")
     assert requests_made(root) == ["auto", "en"]
 
 
@@ -287,6 +288,36 @@ def test_a_hinted_pass_that_hears_nothing_does_not_bring_back_the_overruled_lang
     silent = whisper_json([(0, 900, " [BLANK_AUDIO]")], "english", {"hi": 0.62, "en": 0.30})
     heard, made = _run(tools, 18955, hindi, {"en": silent}, hint="en")
     assert (heard.outcome, heard.language, made) == ("no_speech", None, ["auto", "en"])
+
+
+def test_malay_with_nothing_heard_in_english_is_no_speech_not_malay(tools):
+    malay = whisper_json([(0, 900, " Dia sedang tidur.")], "malay", {"ms": 0.6, "en": 0.3})
+    silent = whisper_json([(0, 900, " [BLANK_AUDIO]")], "english", {"ms": 0.6, "en": 0.3})
+    heard, made = _run(tools, 18956, malay, {"en": silent})
+    assert (heard.outcome, heard.language, made) == ("no_speech", None, ["auto", "en"])
+
+
+def test_malay_with_english_words_is_english(tools):
+    malay = whisper_json([(0, 900, " Dia sedang tidur.")], "malay", {"ms": 0.6, "en": 0.3})
+    english = whisper_json([(0, 900, " She is asleep.")], "english", {"ms": 0.6, "en": 0.3})
+    heard, made = _run(tools, 18957, malay, {"en": english})
+    assert (heard.outcome, heard.language, heard.text) == ("transcribed", "en", "She is asleep.")
+    assert heard.diagnostics == {"detected": "ms", "chosen": "en", "top": [["ms", 0.6], ["en", 0.3]]}
+
+
+def test_an_unsure_reading_inside_the_set_still_stands_when_english_hears_nothing(tools):
+    kannada = whisper_json([(0, 900, " ನಾಯಿ ಮಲಗಿದೆ")], "kannada", {"kn": 0.15, "ta": 0.1})
+    silent = whisper_json([(0, 900, " [BLANK_AUDIO]")], "english", {"kn": 0.15})
+    heard, made = _run(tools, 18958, kannada, {"en": silent})
+    assert (heard.outcome, heard.language, made) == ("transcribed", "kn", ["auto", "en"])   # as before
+
+
+def test_a_confident_kannada_reading_is_unchanged(tools):
+    kannada = whisper_json([(0, 900, " ನಾಯಿ ಮಲಗಿದೆ")], "kannada", {"kn": 0.8, "en": 0.1, "ta": 0.05, "hi": 0.02})
+    heard, made = _run(tools, 18959, kannada)
+    assert (heard.language, made) == ("kn", ["auto"])
+    assert heard.diagnostics == {"detected": "kn", "chosen": "kn",
+                                 "top": [["kn", 0.8], ["en", 0.1], ["ta", 0.05]]}           # three, codes and numbers only
 
 
 def test_a_hint_it_does_not_know_is_no_hint(tools):
@@ -427,6 +458,36 @@ async def test_a_job_s_language_reaches_whisper_and_an_old_job_s_absence_changes
     assert transcriber.hints == [(None, False)]
     assert set(server.completions[0]) == {"lease_token", "pipeline_version", "model", "outcome",
                                           "language", "text", "segments"}  # nothing new on the wire
+
+
+class DiagnosedTranscriber(FakeTranscriber):
+    def transcribe(self, raw, hint=None, forced=False):
+        heard = super().transcribe(raw, hint, forced)
+        from dataclasses import replace
+        return replace(heard, diagnostics={"detected": "ms", "chosen": "hi", "top": [["ms", 0.5], ["hi", 0.3]]})
+
+
+async def test_how_the_language_was_settled_goes_only_to_an_api_that_takes_it():
+    server, transcriber = Server(), DiagnosedTranscriber()              # an API from before: no "accepts"
+    async with server.worker(transcriber) as worker:
+        assert await worker.run_once()
+    assert "language_diagnostics" not in server.completions[0]           # and today's model accepts it (validated)
+
+    server, transcriber = Server(), DiagnosedTranscriber()
+    server.job["accepts"] = ["language_diagnostics"]
+    sent = []
+    original = server.api
+
+    async def api(request):
+        if request.url.path.endswith("/complete"):
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, json={"status": "done"})
+        return await original(request)
+    server.api = api
+    async with server.worker(transcriber) as worker:
+        assert await worker.run_once()
+    assert sent[0]["language_diagnostics"] == {"detected": "ms", "chosen": "hi", "top": [["ms", 0.5], ["hi", 0.3]]}
+    assert "Dia" not in json.dumps(sent[0]["language_diagnostics"])
 
 
 async def test_a_worker_without_whisper_never_asks_for_transcription():

@@ -421,10 +421,16 @@ class Worker:
             heard = await self._thread(self.transcriber.transcribe, raw, lease)
         else:
             heard = await self._thread(lambda data: self.transcriber.transcribe(data, hint, forced), raw, lease)
-        payload = json.dumps(dict(
+        body = dict(
             lease_token=job["lease_token"], pipeline_version=TRANSCRIBE_PIPELINE_VERSION,
             model=WHISPER_MODEL, outcome=heard.outcome, language=heard.language,
-            text=heard.text, segments=heard.segments), allow_nan=False).encode()
+            text=heard.text, segments=heard.segments)
+        # How the language was settled, only to an API that says it takes it:
+        # one from before rejects any field it does not know.
+        accepts = job.get("accepts")
+        if isinstance(accepts, list) and "language_diagnostics" in accepts and getattr(heard, "diagnostics", None):
+            body["language_diagnostics"] = heard.diagnostics
+        payload = json.dumps(body, allow_nan=False).encode()
         if len(payload) > 4 * 1024 * 1024:
             raise MediaLimit()
         await self._complete(lease, payload)
