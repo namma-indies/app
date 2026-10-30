@@ -126,6 +126,9 @@ async def publish_groups(conn, capture, groups, excluded=()):
         # posted sighting's take-down flag). A group whose instances already
         # point at a sighting is a re-publication.
         created = members[0]["sighting_id"] is None
+        if created:
+            from app.describe import enqueue as enqueue_description
+            await enqueue_description(conn, sid)
         if created and attrs.get("share_with_team") is True and capture["observer_id"] is not None:
             from app.social import mark_shared
             await mark_shared(conn, sid, capture["observer_id"])

@@ -9,8 +9,10 @@ import {
   isUsed,
   notePending,
   type Sighting,
+  type Suggestion,
 } from "../api";
 import AddVoiceNote, { laterNotesOffered, type LaterNotesConfig } from "../components/AddVoiceNote";
+import PhotoDescription, { describedAlt } from "../components/PhotoDescription";
 import SuggestedDetails from "../components/SuggestedDetails";
 import Transcript from "../components/Transcript";
 import SuggestionFlow from "../components/SuggestionFlow";
@@ -54,8 +56,21 @@ function where(s: Sighting): string {
 
 const SUGGESTION_NAMES = { sex: "Sex", ear_notch: "Ear notch", condition: "Condition", known_name: "Name" } as const;
 
-/** A sighting worth checking back for: its media, or a note added to it, is still being worked on. */
-const ownBusy = (s: Sighting) => isProcessing(s.processing_state) || (s.later_notes ?? []).some(notePending);
+/** Where each suggestion's words are marked: in a transcript, or in the AI photo description (#160). */
+function highlightsOf(s: Sighting, fromPhoto: boolean) {
+  const mine = (x: Suggestion) => !!x.description_id === fromPhoto;
+  return [
+    ...[...(s.suggestions ?? []), ...(s.review_suggestions ?? [])].filter(mine)
+      .map((x) => ({ id: x.id, quote: x.quote, label: `${SUGGESTION_NAMES[x.field]}: ${x.value}`, noteId: x.note_id })),
+    // Answered and saved: still marked, quieter. A rejected or corrected one was wrong, so it isn't.
+    ...(s.answered_suggestions ?? []).filter(isUsed).filter(mine)
+      .map((x) => ({ id: x.id, quote: x.quote, label: `${SUGGESTION_NAMES[x.field]}: ${x.value}`, used: true, noteId: x.note_id })),
+  ];
+}
+
+/** A sighting worth checking back for: its media, a note added to it, or its AI description is still being worked on. */
+const ownBusy = (s: Sighting) => isProcessing(s.processing_state) || (s.later_notes ?? []).some(notePending)
+  || s.photo_description?.status === "describing";
 
 const UNFINISHED = new Set<CaptureSummary["processing_state"]>(["queued", "processing", "failed", "needs_review"]);
 
@@ -269,7 +284,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
           {shown.map((s) => (
             <div key={s.id} className="spec" onClick={() => setSelected(s.id)}>
               <div className="frame">
-                {s.photos[0] ? <img src={s.photos[0].thumb_url} alt={`${speciesNoun(s.species)} sighting`} /> : <div className="media-placeholder">No preview yet</div>}
+                {s.photos[0] ? <img src={s.photos[0].thumb_url} alt={describedAlt(s.photo_description) ?? `${speciesNoun(s.species)} sighting`} /> : <div className="media-placeholder">No preview yet</div>}
                 <span className="no">No. {String(numberOf.get(s.id) ?? 0).padStart(3, "0")}</span>
               </div>
               <div className="meta">
@@ -339,7 +354,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
       {selected && (
         <div className="viewer-overlay" onClick={() => setSelected(null)}>
           <div className="viewer-card" onClick={(e) => e.stopPropagation()}>
-            {selected.photos.length > 0 ? <SightingFrames key={selected.id} photos={selected.photos} noun={speciesNoun(selected.species)} /> : <div className="media-placeholder">{processingLabel(selected.processing_state) ?? "Preview unavailable"}</div>}
+            {selected.photos.length > 0 ? <SightingFrames key={selected.id} photos={selected.photos} noun={speciesNoun(selected.species)} alt={describedAlt(selected.photo_description)} /> : <div className="media-placeholder">{processingLabel(selected.processing_state) ?? "Preview unavailable"}</div>}
             {selected.photos.length > 0 && processingLabel(selected.processing_state) && <p className="viewer-caption">{processingLabel(selected.processing_state)}</p>}
             <p className="viewer-caption">
               No. {String(numberOf.get(selected.id) ?? 0).padStart(3, "0")} ·{" "}
@@ -349,14 +364,10 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
             {selected.audio_url && <audio className="viewer-audio" src={selected.audio_url} controls preload="none" aria-label="voice note" />}
             <SuggestionFlow key={selected.id} species={selected.species} ids={[...(selected.suggestions ?? []), ...(selected.review_suggestions ?? [])].map((s) => s.id)}
               usedIds={(selected.answered_suggestions ?? []).filter(isUsed).map((s) => s.id)}>
+              {selected.photo_description && selected.photo_description.status !== "describing" && <PhotoDescription described={selected.photo_description}
+                highlights={highlightsOf(selected, true)} onChanged={ownFeed.refresh} onUnauthorized={onUnauthorized} />}
               <Transcript transcripts={selected.voice_transcripts ?? []} notes={selected.later_notes ?? []}
-                onDeleteNote={(id) => removeNote(id)} highlights={[
-                ...[...(selected.suggestions ?? []), ...(selected.review_suggestions ?? [])]
-                  .map((s) => ({ id: s.id, quote: s.quote, label: `${SUGGESTION_NAMES[s.field]}: ${s.value}`, noteId: s.note_id })),
-                // Answered and saved: still marked, quieter. A rejected or corrected one was wrong, so it isn't.
-                ...(selected.answered_suggestions ?? []).filter(isUsed)
-                  .map((s) => ({ id: s.id, quote: s.quote, label: `${SUGGESTION_NAMES[s.field]}: ${s.value}`, used: true, noteId: s.note_id })),
-              ]} />
+                onDeleteNote={(id) => removeNote(id)} highlights={highlightsOf(selected, false)} />
               {!!selected.review_suggestions?.length && selected.capture_id && (
                 <button className="btn" data-fx-chip={selected.review_suggestions.map((s) => s.id).join(" ")} onClick={() => { const id = selected.capture_id!; setSelected(null); setReviewCaptureId(id); }}>
                   Review {selected.review_suggestions.length} {selected.review_suggestions.length === 1 ? "suggestion" : "suggestions"} from your note

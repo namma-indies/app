@@ -20,6 +20,7 @@ from app.scoring import recompute_animal_confidence
 from app.social import mark_shared
 from app.storage.s3 import S3Storage
 from app.transcription_jobs import enqueue_transcription
+from app.describe import enqueue as enqueue_description
 from app.video import extract_diverse_frames
 
 logger = logging.getLogger(__name__)
@@ -624,6 +625,8 @@ async def create_sighting(
                         # The clip's sound is its note (#96).
                         await enqueue_transcription(conn, capture_id, "clip", clip_key)
                     await enqueue(conn, sighting_id, "video" if video is not None else "photo")
+                # Nothing noted about it: the local model may describe the animal (#160).
+                await enqueue_description(conn, sighting_id)
 
             if clip_key is not None and not settings.media_jobs_enabled:
                 # A follow-up UPDATE rather than a column in both INSERT

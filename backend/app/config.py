@@ -118,6 +118,14 @@ class Settings(BaseSettings):
     # answer at 1024 tokens, and one cut off mid-JSON would cost the note its
     # suggestions. 2,000 covers a 60 s note in any script; 0 turns it off.
     suggest_translate_max_chars: int = Field(default=2000, ge=0, le=20_000)
+    # AI-written descriptions of the animal in a sighting with no note (#160),
+    # on the local model only (SUGGEST_VIA=worker, SUGGESTIONS_ENABLED). Off
+    # until deliberately switched on.
+    describe_enabled: bool = False
+    # Descriptions for sightings from before (scripts/describe_backfill.py)
+    # are handed out at most this many an hour, after all other work. 0
+    # leaves any queued backfill waiting.
+    describe_backfill_per_hour: int = Field(default=0, ge=0, le=10_000)
     media_max_audio_bytes: int = Field(default=8 * 1024 * 1024, gt=0, le=50 * 1024 * 1024)
     # Voice notes added to a sighting after it was uploaded (#156): this many
     # per sighting (or per capture, from its details sheet), on top of the

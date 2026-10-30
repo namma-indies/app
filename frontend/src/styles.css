@@ -338,6 +338,13 @@ button { font-family: inherit; }
 .transcript .viewer-audio { margin: 0.25rem 0; }
 .transcript-status { margin: 0.25rem 0 0; text-align: left; }
 .transcript-delete { padding: 2px 0; font-size: .85rem; }
+/* An AI photo description (#160): plainly the model's until its observer takes it. */
+.photo-description { text-align: left; margin: 0.6rem 0; }
+.photo-description p { margin: 0.25rem 0 0; padding: 0.4rem 0.6rem; border-left: 3px dashed var(--line); background: var(--panel); line-height: 1.6; }
+.photo-description p.is-suggested { color: var(--muted); font-style: italic; }
+.photo-description textarea { width: 100%; margin-top: 0.25rem; }
+.photo-description-actions { display: flex; gap: 0.6rem; align-items: center; margin-top: 0.35rem; }
+.chip-ai { margin-left: 0.3rem; padding: 0 0.25rem; font-size: 0.65rem; border: 1px solid currentColor; border-radius: 3px; }
 .add-voice-note { display: flex; flex-direction: column; gap: 0.4rem; margin: 0.6rem 0; text-align: left; }
 
 .social-card { display: flex; flex-direction: column; gap: 0.6rem; }

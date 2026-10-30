@@ -12,13 +12,15 @@ export interface ChipOption { value: string; label: string }
  * (data-fx-chip: where the transcript words land); `filledBy` does the same for
  * an answered one (data-fx-into: where the glow lands).
  */
-export default function ChipGroup({ label, field, options, value, onChange, suggested, filledBy, onDismiss, disabled }: {
+export default function ChipGroup({ label, field, options, value, onChange, suggested, fromPhoto, filledBy, onDismiss, disabled }: {
   label: string;
   field: string;
   options: ChipOption[];
   value: string | null | undefined;
   onChange: (value: string | undefined, chip: HTMLElement) => void;
   suggested?: Record<string, string[]>;
+  /** Suggested values read from the AI photo description, not a note: marked AI (#160). */
+  fromPhoto?: Set<string>;
   filledBy?: (value: string) => string | undefined;
   /** Shown beside the label while a suggestion is open for this field. */
   onDismiss?: () => void;
@@ -52,7 +54,9 @@ export default function ChipGroup({ label, field, options, value, onChange, sugg
           data-fx-into={checked ? filledBy?.(option.value) : undefined}
           onKeyDown={(event) => onKeyDown(event, index)}
           onClick={(event) => onChange(checked ? undefined : option.value, event.currentTarget)}>
-          {option.label}{ids?.length && !checked ? <span className="sr-only"> (suggested from your voice note)</span> : null}
+          {option.label}{ids?.length && !checked ? (fromPhoto?.has(option.value)
+            ? <><span className="chip-ai" aria-hidden="true">AI</span><span className="sr-only"> (suggested by AI from the photo)</span></>
+            : <span className="sr-only"> (suggested from your voice note)</span>) : null}
         </button>;
       })}
     </div>

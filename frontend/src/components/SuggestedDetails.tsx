@@ -18,7 +18,9 @@ function optionsFor(s: Suggestion): { value: string; label: string }[] {
 }
 
 /**
- * Details read from the observer's voice note, as blanks to fill in.
+ * Details read from the observer's voice note (or, for a sighting with no
+ * note, from the AI photo description: grouped apart and marked AI), as blanks
+ * to fill in.
  *
  * Each shows the usual options with the suggested one marked and the words it
  * came from underneath. Nothing is saved until a person taps an option: the
@@ -59,8 +61,10 @@ export default function SuggestedDetails({
 
   return (
     <div className="suggested-details">
-      <p className="spot-label">FROM YOUR VOICE NOTE</p>
-      {open.map((s) => (
+      {[open.filter((s) => !s.description_id), open.filter((s) => s.description_id)].map((group) => group.length > 0 && <div key={group[0].description_id ? "photo" : "voice"}>
+      {/* A photo suggestion is the model's reading of a picture, so it says so (#160). */}
+      <p className="spot-label">{group[0].description_id ? "FROM THE PHOTO · AI" : "FROM YOUR VOICE NOTE"}</p>
+      {group.map((s) => (
         <div className="field-group suggested-field" key={s.id}>
           <label>{LABELS[s.field]}</label>
           <div className="chip-row">
@@ -89,6 +93,7 @@ export default function SuggestedDetails({
           <p className="hint suggestion-quote">“{s.quote}”</p>
         </div>
       ))}
+      </div>)}
       {failed && <p className="hint place-warning">Couldn't save that. Try again.</p>}
     </div>
   );

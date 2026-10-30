@@ -63,3 +63,39 @@ describe("Add voice note in the Journal viewer (#156)", () => {
     expect(getDex).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("an AI photo description in the Journal (#160)", () => {
+  it("shows in the viewer, and becomes the photo's alt text only once used", async () => {
+    await open([sighting({ photo_description: { id: "d", text: "A tan dog with a red collar.", status: "open" },
+      suggestions: [{ id: "s", field: "condition", value: "healthy", quote: "A tan dog", description_id: "d" }] })], {});
+    expect(screen.getByText("AI · SUGGESTED")).toBeInTheDocument();
+    expect(screen.getByText("FROM THE PHOTO · AI")).toBeInTheDocument();
+    expect(screen.getAllByRole("img").map((i) => i.getAttribute("alt"))).not.toContain("A tan dog with a red collar.");
+    cleanup();
+    vi.mocked(getDex).mockResolvedValue({ sightings: [sighting({ photo_description: { id: "d", text: "A tan dog with a red collar.", status: "accepted" } })] });
+    render(<Dex onUnauthorized={() => {}} />);
+    await userEvent.click(await screen.findByRole("button", { name: "JOURNAL" }));
+    await userEvent.click(await screen.findByAltText("A tan dog with a red collar."));   // the card's photo
+    expect(screen.getAllByAltText("A tan dog with a red collar.")).toHaveLength(2);       // and the viewer's
+    expect(screen.getByText("AI-WRITTEN")).toBeInTheDocument();
+  });
+});
+
+
+it("checks back while the photo is still being described, until the description arrives", async () => {
+  vi.mocked(getDex)
+    .mockResolvedValueOnce({ sightings: [sighting({ photo_description: { id: "d", text: null, status: "describing" } })] })
+    .mockResolvedValue({ sightings: [sighting({ photo_description: { id: "d", text: "A tan dog with a red collar.", status: "open" } })] });
+  vi.mocked(getMe).mockResolvedValue({ is_moderator: false } as Awaited<ReturnType<typeof getMe>>);
+  vi.mocked(getMap).mockResolvedValue({ sightings: [] });
+  vi.mocked(getCaptures).mockResolvedValue({ sightings: [] });
+  render(<Dex onUnauthorized={() => {}} />);
+  await userEvent.click(await screen.findByRole("button", { name: "JOURNAL" }));
+  await userEvent.click(await screen.findByAltText("animal sighting"));
+  expect(screen.queryByText("AI · SUGGESTED")).not.toBeInTheDocument();
+  await vi.advanceTimersByTimeAsync(3000);
+  expect(await screen.findByText("A tan dog with a red collar.")).toBeInTheDocument();   // no reload needed
+  const calls = vi.mocked(getDex).mock.calls.length;
+  await vi.advanceTimersByTimeAsync(60000);
+  expect(vi.mocked(getDex).mock.calls.length).toBe(calls);                              // and then it stops
+});
