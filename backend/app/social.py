@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import date
 from uuid import UUID
 
+from app.aggregates import coarse_geog
 from app.config import settings
 from app.x_client import XUncertain, prepare_image
 
@@ -105,14 +106,16 @@ async def is_postable(conn, sighting_id: UUID, photo_id: UUID) -> bool:
 
 async def area_name(conn, sighting_id: UUID) -> str | None:
     """The ward a sighting falls in, by the same rule `/stats/areas` uses: the
-    first covering area by id, so a point on a shared boundary does not move
-    between names from one request to the next. None when there is no
-    location or no area covers it -- the moderator types the place instead,
-    since guessing a city is how a caption ends up false."""
+    area covering its grid cell centre (never the exact point, which near a
+    boundary would say which side of it the dog is), first by id, so a point
+    on a shared boundary does not move between names from one request to the
+    next. None when there is no location or no area covers it -- the moderator
+    types the place instead, since guessing a city is how a caption ends up
+    false."""
     return await conn.fetchval(
-        """
+        f"""
         SELECT a.name FROM sightings s
-        JOIN areas a ON a.kind = $2 AND ST_Covers(a.geog, s.geog)
+        JOIN areas a ON a.kind = $2 AND ST_Covers(a.geog, {coarse_geog()})
         WHERE s.id = $1
         ORDER BY a.id
         LIMIT 1

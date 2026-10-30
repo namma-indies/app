@@ -7,11 +7,17 @@ and taken, and a map that resolves a specific animal to a specific street is
 directly useful to someone who wants to do that. The corpus is small enough
 that a determined reader could work out a dog's routine from a handful of pins.
 
-So the rule is: you get full precision for animals you have personally
-photographed, and an area for everyone else's. That is standing earned by
-contribution, the same model `POST /proposal/{id}` uses to decide who may merge
-two sightings, and it needs no new schema -- `observer_id` has always been on
-the row.
+So the rule is: you get full precision for sightings you logged yourself, and
+an area for everyone else's. That is standing earned by contribution, and it
+needs no new schema -- `observer_id` has always been on the row. It is per
+sighting, not per animal: having photographed a dog once is not standing to see
+exactly where someone else saw it since.
+
+The rule covers everything derived from the point, not just the coordinate
+returned. Which sightings an area query returns, which ward one is counted in,
+whether one is near enough to be a match candidate: each is decided on the
+cell, or it becomes a way of learning what the cell withholds. In SQL the cell
+centre is `coarse_point()` (migration 0022; `app.aggregates.coarse_geog`).
 
 WHY A GRID CELL AND NOT A JITTERED POINT
 ----------------------------------------
@@ -145,8 +151,8 @@ def resolve_precision(
 ) -> Located | None:
     """The one place that decides what a viewer is told.
 
-    `viewer_contributed` is the standing test: did this person photograph this
-    animal. Everything else about who they are is deliberately not consulted --
+    `viewer_contributed` is the standing test: did this person log this
+    sighting. Everything else about who they are is deliberately not consulted --
     a role or a trust tier would be a permission granted by a form, and the
     thing that actually makes full precision safe here is that the viewer was
     already standing next to the dog.

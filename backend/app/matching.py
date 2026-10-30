@@ -34,7 +34,8 @@ from uuid import UUID
 import asyncpg
 import numpy as np
 
-from app.aggregates import animal_present
+from app.aggregates import animal_present, coarse_geog
+from app.config import settings
 from app.embed import EMBED_DIM, MODEL_NAME
 
 # How many neighbours the ANN stage pulls before exact re-ranking. Larger costs
@@ -107,16 +108,37 @@ async def find_candidates(
     params: list = [qs, MODEL_NAME, exclude_sighting_id]
     p_vecs, p_model, p_excl = "$1", "$2", "$3"
     if has_geo:
-        params += [lng, lat, radius_m]
+        # THE VICINITY IS MEASURED FROM CELL TO CELL, NEVER FROM A POINT
+        # --------------------------------------------------------------
+        # Whether two sightings are near enough to be paired is visible beyond
+        # either of them: a proposal names both sightings to every observer
+        # (`GET /proposals`), and the query's own candidates go to whoever
+        # uploaded it, who chose its location. Measured from either exact
+        # point, the pair would say "these two are within this distance",
+        # which places one or both more finely than the grid cell
+        # (app/precision.py) shown for them. Measured between cell centres,
+        # the answer depends on the two cells alone.
+        #
+        # The radius is widened by the most the two centres can add -- half a
+        # cell diagonal at each end, `settings.reid_slack_m()` -- so nothing the
+        # exact radius admitted is lost: the candidate set can only grow.
+        #
+        # No exact-point prefilter beside it, deliberately. One would be safe
+        # only while the slack outran every cell's diagonal, a relationship
+        # between two settings nothing here can see; if they drifted it would
+        # drop one sighting of a cell and keep another, and the leak would be
+        # back behind a predicate that looks right. The ANN walk post-filters
+        # on this anyway, so a spatial index had little to save.
+        reach = radius_m + settings.reid_slack_m()
+        params += [lng, lat, reach]
         p_lng, p_lat, p_radius = "$4", "$5", "$6"
+        here = f"ST_SetSRID(ST_MakePoint({p_lng}, {p_lat}), 4326)::geography"
+        here_cell = coarse_geog(here)
         geo_filter = (
-            f"AND s.geog IS NOT NULL AND ST_DWithin(s.geog, "
-            f"ST_SetSRID(ST_MakePoint({p_lng}, {p_lat}), 4326)::geography, {p_radius})"
+            f"AND s.geog IS NOT NULL"
+            f" AND ST_DWithin({coarse_geog()}, {here_cell}, {p_radius}::float8)"
         )
-        distance = (
-            f"ST_Distance(s.geog, ST_SetSRID("
-            f"ST_MakePoint({p_lng}, {p_lat}), 4326)::geography)"
-        )
+        distance = f"ST_Distance({coarse_geog()}, {here_cell})"
     else:
         geo_filter = ""
         distance = "NULL::double precision"

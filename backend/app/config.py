@@ -1,7 +1,24 @@
+import math
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def pair_slack_m(cell_m: float) -> float:
+    """The most two points can add to a distance by being moved to their cell
+    centres: half a cell diagonal each.
+
+    Here rather than in app/precision.py, which lays the cells out, because
+    the GPU worker ships this module without that one.
+
+    Cells are laid out with a spherical metres-per-degree, so on the ground a
+    side can run a fraction of a percent longer than `cell_m` (the WGS84
+    ellipsoid, and a point's latitude differing from its cell centre's). The 1%
+    margin covers that for any city-scale cell away from the poles. Anything
+    that widens a radius to make up for coarsening uses this as its floor.
+    """
+    return max(cell_m, 0.0) * math.sqrt(2) * 1.01
 
 
 class Settings(BaseSettings):
@@ -107,6 +124,17 @@ class Settings(BaseSettings):
     # be the same animal. Narrow enough that the vector check is asked to
     # separate neighbours, not strangers.
     reid_radius_m: float = 1000.0
+    # Added to reid_radius_m because the vicinity is measured between the two
+    # sightings' grid cell centres, never from an exact point (app/matching.py
+    # says why). Each point is at most half a cell diagonal from its centre, so
+    # the two together can add a whole diagonal; widening by at least that
+    # keeps every candidate the exact radius would have admitted.
+    #
+    # Unset, it follows map_coarsen_cell_m (`pair_slack_m` above: ~1428 m
+    # for 1000 m cells), so the two cannot drift apart. Set, it may only be
+    # larger -- startup refuses a value too small for the cell. Read it through
+    # `reid_slack_m()`.
+    reid_cell_slack_m: float | None = None
     reid_recent_days: int = 365
 
     # Two-threshold merge rule, on cosine similarity of L2-normalised
@@ -368,6 +396,23 @@ class Settings(BaseSettings):
     s3_access_key: str = "minio"
     s3_secret_key: str = "minio123"
     s3_region: str = "ap-south-1"
+
+    def reid_slack_m(self) -> float:
+        """How far the re-ID radius is widened; see reid_cell_slack_m."""
+        if self.reid_cell_slack_m is None:
+            return pair_slack_m(self.map_coarsen_cell_m)
+        return self.reid_cell_slack_m
+
+    @model_validator(mode="after")
+    def _slack_covers_the_cell(self):
+        floor = pair_slack_m(self.map_coarsen_cell_m)
+        if self.reid_cell_slack_m is not None and self.reid_cell_slack_m < floor:
+            raise ValueError(
+                f"reid_cell_slack_m={self.reid_cell_slack_m} is too small for "
+                f"map_coarsen_cell_m={self.map_coarsen_cell_m}; it must be at least "
+                f"{floor:.0f} or unset"
+            )
+        return self
 
 
 settings = Settings()
