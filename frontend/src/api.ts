@@ -43,6 +43,8 @@ export interface Suggestion {
   value: string;
   /** The words in the note that prompted it, in the note's own language. */
   quote: string;
+  /** The note added later those words are in (#156); null for the upload's own note or clip. */
+  note_id?: string | null;
 }
 
 /** A suggestion that is no longer open. `accepted` and `filled` (never answered, but the field
@@ -54,6 +56,20 @@ export interface AnsweredSuggestion extends Suggestion {
 }
 
 export const isUsed = (a: AnsweredSuggestion) => a.status === "accepted" || a.status === "filled";
+
+/** A voice note added after the upload (#156), and how far along it is:
+ * on the GPU worker's whisper, then read by the model for details. */
+export interface LaterNote {
+  id: string;
+  /** The animal it was recorded about; null when added to a whole capture. */
+  sighting_id?: string | null;
+  added_at: string;
+  audio_url: string;
+  state: "transcribing" | "reading" | "done" | "no_speech" | "failed";
+}
+
+/** Still being worked on, so worth checking back for. */
+export const notePending = (n: LaterNote) => n.state === "transcribing" || n.state === "reading";
 
 export interface Sighting {
   id: string;
@@ -76,7 +92,13 @@ export interface Sighting {
   audio_url?: string | null;
   /** Present on /dex only. What the GPU worker heard in the voice note or the
    * clip's sound, shown with the words behind each suggestion marked (#112). */
-  voice_transcripts?: { source: "note" | "clip"; language: string; text: string; english?: string | null }[];
+  voice_transcripts?: {
+    source: "note" | "clip"; language: string; text: string; english?: string | null;
+    /** Set for a note added later (#156). */
+    note_id?: string | null; added_at?: string | null; audio_url?: string | null;
+  }[];
+  /** Present on /dex only. Notes added after the upload, oldest first (#156). */
+  later_notes?: LaterNote[];
   /** Present on /dex only. Details a model read from the voice note, for
    * blank details only. Nothing is saved until the observer picks an option. */
   suggestions?: Suggestion[];
@@ -276,6 +298,25 @@ function audioExtension(type: string): string {
   return "m4a";
 }
 
+/** Add a voice note to your own sighting (it is about that animal) or to a
+ * whole capture from its details sheet (#156). 409 when it already has as
+ * many as it can take, 429 when you have added a lot in the last hour. */
+export async function addVoiceNote(
+  target: { sightingId: string } | { captureId: string },
+  note: Blob,
+  /** The recording's own id: a retry of the same one gets the note it already made. */
+  clientToken: string,
+): Promise<{ note_id: string; duplicate?: boolean }> {
+  const path = "sightingId" in target
+    ? `/sighting/${encodeURIComponent(target.sightingId)}/voice-note`
+    : `/capture/${encodeURIComponent(target.captureId)}/voice-note`;
+  const form = new FormData();
+  form.append("audio", note, `note.${audioExtension(note.type)}`);
+  form.append("client_token", clientToken);
+  const res = await fetch(`${API_BASE}${path}`, { method: "POST", credentials: "include", body: form });
+  return handle(res);
+}
+
 /** The observer's answer to a suggestion: the option they tapped, or no. */
 export async function decideSuggestion(
   id: string,
@@ -432,6 +473,9 @@ export interface Me {
   display_name: string | null;
   is_moderator: boolean;
   multi_animal_enabled?: boolean;
+  /** Whether a voice note can be added after upload now, and how many each sighting takes (#156). */
+  later_voice_notes_enabled?: boolean;
+  later_voice_notes_max?: number;
   /** Has agreed to be posted on @nammaindies and has a handle to be credited
    * by. Decides whether "share with the Namma Indies team" is offered at all. */
   can_share_socially?: boolean;

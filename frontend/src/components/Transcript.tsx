@@ -1,4 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
+import type { LaterNote } from "../api";
+import { formatDay } from "../formatWhen";
 
 export interface HeardText {
   source: "note" | "clip";
@@ -6,7 +8,23 @@ export interface HeardText {
   text: string;
   /** A translation of a non-English one (#152): shown under it, never highlighted. */
   english?: string | null;
+  /** A note added after the upload (#156): which one, when, and its audio. */
+  note_id?: string | null;
+  added_at?: string | null;
+  audio_url?: string | null;
 }
+
+/** What a later note's block says while there is no transcript to show, or
+ * while the model is still reading the one there is. */
+const NOTE_STATUS: Record<LaterNote["state"], string | null> = {
+  transcribing: "Listening to your note…",
+  reading: "Reading it for details…",
+  done: null,
+  no_speech: "No speech heard in this note.",
+  failed: "Couldn’t transcribe this note.",
+};
+
+const addedLater = (when: string) => `ADDED LATER · ${formatDay(when).toUpperCase()}`;
 
 /** The languages people here speak (app/suggestions.EXPECTED_LANGUAGES), by name. */
 const LANGUAGE_NAMES: Record<string, string> = {
@@ -28,6 +46,14 @@ export interface Highlight {
   id?: string;
   /** Already answered and saved: still marked, but quieter than one that still needs you. */
   used?: boolean;
+  /** The note added later the quote is from, null for the upload's own note or clip:
+   * only that transcript marks it. Left out, any transcript may (an older server). */
+  noteId?: string | null;
+}
+
+/** The highlights that belong to one transcript: a quote is evidence only where it was said. */
+export function highlightsFor(t: HeardText, highlights: Highlight[]): Highlight[] {
+  return highlights.filter((h) => h.noteId === undefined || h.noteId === (t.note_id ?? null));
 }
 
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -65,7 +91,7 @@ export function highlightSpans(text: string, highlights: Highlight[]): { start: 
 
 /** One heard text. Compact: clamped to about three lines with "more", opened up
  * from the start when a highlighted word would otherwise be cut off. */
-function Heard({ t, highlights, compact }: { t: HeardText; highlights: Highlight[]; compact: boolean }) {
+function Heard({ t, highlights, compact, state }: { t: HeardText; highlights: Highlight[]; compact: boolean; state?: LaterNote["state"] }) {
   const text = useRef<HTMLQuoteElement>(null);
   const [open, setOpen] = useState(false);
   const [overflows, setOverflows] = useState(false);
@@ -76,7 +102,7 @@ function Heard({ t, highlights, compact }: { t: HeardText; highlights: Highlight
     const clipped = [...el.querySelectorAll<HTMLElement>("mark")].some((mark) => mark.offsetTop + mark.offsetHeight > el.clientHeight + 1);
     if (clipped) setOpen(true);
   }, [compact, t.text]);
-  const spans = highlightSpans(t.text, highlights);
+  const spans = highlightSpans(t.text, highlightsFor(t, highlights));
   const parts: (string | JSX.Element)[] = [];
   let at = 0;
   spans.forEach((span, i) => {
@@ -88,14 +114,17 @@ function Heard({ t, highlights, compact }: { t: HeardText; highlights: Highlight
   parts.push(t.text.slice(at));
   const clamped = compact && !open;
   const known = t.language in LANGUAGE_NAMES;
+  const said = t.added_at ? addedLater(t.added_at) : t.source === "note" ? "WHAT YOU SAID" : "HEARD IN YOUR VIDEO";
   return <figure>
-    <figcaption className="spot-label">{t.source === "note" ? "WHAT YOU SAID" : "HEARD IN YOUR VIDEO"} · {languageLabel(t.language)}</figcaption>
+    <figcaption className="spot-label">{said} · {languageLabel(t.language)}</figcaption>
+    {t.audio_url && <audio className="viewer-audio" src={t.audio_url} controls preload="none" aria-label="voice note added later" />}
     <blockquote ref={text} lang={known ? t.language : undefined} className={clamped ? "is-clamped" : undefined}>{parts}</blockquote>
     {/* Folded away with the rest in the compact sheet; "more" opens both. */}
     {t.english && !clamped && <div className="transcript-english">
       <span className="spot-label">IN ENGLISH</span>
       <p lang="en">{t.english}</p>
     </div>}
+    {state && NOTE_STATUS[state] && <p className="hint transcript-status" role="status">{NOTE_STATUS[state]}</p>}
     {compact && (overflows || open || !!t.english) && <button type="button" className="link-btn transcript-more" aria-expanded={open} onClick={() => setOpen((v) => !v)}>{open ? "less" : "more"}</button>}
   </figure>;
 }
@@ -105,10 +134,23 @@ function Heard({ t, highlights, compact }: { t: HeardText; highlights: Highlight
  * suggestion came from marked (#112). It shows the observer what the model
  * worked from, so a wrong suggestion can be traced to a misheard word.
  */
-export default function Transcript({ transcripts, highlights = [], compact = false }: { transcripts: HeardText[]; highlights?: Highlight[]; compact?: boolean }) {
-  if (!transcripts.length) return null;
+export default function Transcript({ transcripts, highlights = [], compact = false, notes = [] }: {
+  transcripts: HeardText[]; highlights?: Highlight[]; compact?: boolean;
+  /** Notes added later (#156): their state, and a block for each with no transcript yet. */
+  notes?: LaterNote[];
+}) {
+  const stateOf = new Map(notes.map((n) => [n.id, n.state]));
+  const heard = new Set(transcripts.flatMap((t) => (t.note_id ? [t.note_id] : [])));
+  const waiting = notes.filter((n) => !heard.has(n.id) && NOTE_STATUS[n.state]);
+  if (!transcripts.length && !waiting.length) return null;
   return <div className="transcript">
-    {transcripts.map((t) => <Heard key={t.source} t={t} highlights={highlights} compact={compact} />)}
+    {transcripts.map((t) => <Heard key={t.note_id ?? t.source} t={t} highlights={highlights} compact={compact}
+      state={t.note_id ? stateOf.get(t.note_id) : undefined} />)}
+    {waiting.map((n) => <figure key={n.id}>
+      <figcaption className="spot-label">{addedLater(n.added_at)}</figcaption>
+      <audio className="viewer-audio" src={n.audio_url} controls preload="none" aria-label="voice note added later" />
+      <p className="hint transcript-status" role="status">{NOTE_STATUS[n.state]}</p>
+    </figure>)}
     {!compact && highlights.length > 0 && <p className="hint">
       Highlighted words are where the suggestions came from.{highlights.some((h) => h.used) && " Dotted ones are already filled in."}
     </p>}

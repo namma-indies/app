@@ -342,18 +342,22 @@ async def claim(conn, lease_s: float, token: str | None = None):
                  AND (suggest_status='pending'
                       OR (suggest_status='running' AND suggest_lease_until<=now()))
                ORDER BY created_at, id FOR UPDATE SKIP LOCKED LIMIT 1)
-           RETURNING id, capture_id, language, text, suggest_attempts, suggest_error""",
+           RETURNING id, capture_id, note_id, language, text, suggest_attempts, suggest_error""",
         lease_s, token_hash(token) if token else None,
     )
 
 
-async def plan(conn, capture_id: UUID):
+async def plan(conn, capture_id: UUID, note_id: UUID | None = None):
     """What to show the model for this capture.
 
     ("single", None) for a /sighting upload; ("animals", [(label, instance_id,
     thumb key)]) for a multi-animal capture whose animals are known;
     ("wait", None) while they are still being found; ("skip", None) when there
     is nothing to attach a suggestion to.
+
+    A note added later from one sighting of a multi-animal capture is about
+    that animal: it is planned as that animal alone (see `solo`), so the
+    model reads the note without photos and all it finds goes to that animal.
     """
     capture = await conn.fetchrow("SELECT processing_state FROM captures WHERE id=$1", capture_id)
     if capture is None:
@@ -366,6 +370,13 @@ async def plan(conn, capture_id: UUID):
         return "wait", None
     if state not in ("needs_review", "ready"):
         return "skip", None
+    about = await conn.fetchval("SELECT sighting_id FROM voice_notes WHERE id=$1", note_id) if note_id else None
+    if about is not None:
+        row = await conn.fetchrow(
+            """SELECT a.id, p.s3_key FROM animal_instances a JOIN photos p ON p.id = a.evidence_photo_id
+               WHERE a.capture_id = $1 AND a.sighting_id = $2
+               ORDER BY a.confidence DESC, a.id LIMIT 1""", capture_id, about)
+        return ("animals", [("A", row["id"], thumb_key(row["s3_key"]))]) if row else ("skip", None)
     # One photo per animal the tracker followed: its most confident box.
     rows = await conn.fetch(
         """SELECT DISTINCT ON (a.track_id) a.id, p.s3_key FROM animal_instances a
@@ -436,7 +447,7 @@ async def run_once(pool, storage, client: httpx.AsyncClient) -> bool:
         row = await claim(conn, settings.suggest_timeout_s * 2)
         if row is None:
             return False
-        kind, animals = await plan(conn, row["capture_id"])
+        kind, animals = await plan(conn, row["capture_id"], row["note_id"])
     if kind == "skip":
         await _finish(pool, row["id"], "skipped")
         return True
@@ -484,7 +495,7 @@ class Reply(Lease):
 
 async def _leased(conn, transcript_id: UUID, token: str):
     row = await conn.fetchrow(
-        """SELECT id, capture_id, language, text, suggest_attempts, suggest_status,
+        """SELECT id, capture_id, note_id, language, text, suggest_attempts, suggest_status,
                   suggest_lease_token_hash, suggest_lease_until > clock_timestamp() AS live
            FROM voice_transcripts WHERE id=$1 FOR UPDATE""", transcript_id)
     if (row is None or row["suggest_status"] != "running" or not row["live"]
@@ -510,7 +521,7 @@ async def worker_claim(body: Claim, request: Request, storage=Depends(get_storag
             row = await claim(conn, settings.media_lease_s, token)
             if row is None:
                 return {"job": None}
-            kind, animals = await plan(conn, row["capture_id"])
+            kind, animals = await plan(conn, row["capture_id"], row["note_id"])
             expires = await conn.fetchval("SELECT suggest_lease_until FROM voice_transcripts WHERE id=$1", row["id"])
         if kind == "skip":
             await _finish(pool, row["id"], "skipped")
@@ -544,7 +555,7 @@ async def worker_complete(transcript_id: UUID, body: Reply, request: Request):
     pool = request.app.state.pool
     async with pool.acquire() as conn, conn.transaction():
         row = await _leased(conn, transcript_id, body.lease_token)
-        _, animals = await plan(conn, row["capture_id"])
+        _, animals = await plan(conn, row["capture_id"], row["note_id"])
         # Fence the lease before the slower checks: a second completion of the
         # same lease now finds it no longer running.
         await conn.execute("UPDATE voice_transcripts SET suggest_lease_until=now() WHERE id=$1", transcript_id)
@@ -573,6 +584,25 @@ def suggestions_running() -> bool:
     return settings.suggestions_enabled and settings.suggest_via == "api" and bool(settings.suggest_api_key)
 
 
+def suggestions_active() -> bool:
+    """Whether anything reads transcripts for suggestions, on either path."""
+    return worker_drains() or suggestions_running()
+
+
+def newest_per_field(items: list[dict], key=lambda item: item["field"]) -> list[dict]:
+    """One open suggestion per detail: the newest. A note added later can
+    suggest a detail an earlier one already did; its word is the latest, and
+    the earlier one stays open (and on record) but is not offered twice.
+    Ids are uuid7, so the larger is the newer. Keeps the input's order."""
+    newest: dict = {}
+    for item in items:
+        k = key(item)
+        if k not in newest or str(item["id"]) > str(newest[k]["id"]):
+            newest[k] = item
+    kept = {id(item) for item in newest.values()}
+    return [item for item in items if id(item) in kept]
+
+
 def answered(rows, held) -> list[dict]:
     """The suggestions in `rows` that are no longer open, as the transcript should show them.
 
@@ -593,7 +623,8 @@ def answered(rows, held) -> list[dict]:
         else:
             chosen = row["decided_value"]
         out.append({"id": row["id"], "instance_id": row["instance_id"], "field": row["field"],
-                    "value": row["value"], "quote": row["quote"], "status": status, "chosen": chosen})
+                    "value": row["value"], "quote": row["quote"], "status": status, "chosen": chosen,
+                    "note_id": row.get("note_id")})
     return out
 
 
@@ -603,9 +634,13 @@ async def for_capture(conn, capture_id: UUID, details: dict) -> tuple[list[dict]
     One query for both. `details` maps instance id to what that animal holds now.
     """
     rows = await conn.fetch(
-        "SELECT id, instance_id, field, value, quote, status, decided_value FROM detail_suggestions "
-        "WHERE capture_id=$1 AND instance_id IS NOT NULL ORDER BY field, id", capture_id)
-    opened = [{k: r[k] for k in ("id", "instance_id", "field", "value", "quote")} for r in rows if r["status"] == "open"]
+        "SELECT d.id, d.instance_id, d.field, d.value, d.quote, d.status, d.decided_value, t.note_id "
+        "FROM detail_suggestions d JOIN voice_transcripts t ON t.id = d.transcript_id "
+        "WHERE d.capture_id=$1 AND d.instance_id IS NOT NULL ORDER BY d.field, d.id", capture_id)
+    opened = newest_per_field(
+        [{k: r[k] for k in ("id", "instance_id", "field", "value", "quote", "note_id")}
+         for r in rows if r["status"] == "open"],
+        key=lambda item: (item["instance_id"], item["field"]))
     return opened, answered(rows, lambda r: details.get(r["instance_id"], {}).get(r["field"]))
 
 

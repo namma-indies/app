@@ -150,3 +150,60 @@ describe("the language and an English translation (#152)", () => {
     expect(screen.queryByText("IN ENGLISH")).not.toBeInTheDocument();
   });
 });
+
+describe("notes added later (#156)", () => {
+  const added = (id: string, state: "transcribing" | "reading" | "done" | "no_speech" | "failed") =>
+    ({ id, sighting_id: "s", added_at: "2026-10-30T09:00:00Z", audio_url: `${id}.m4a`, state });
+
+  it("captions a later note with its date and language, and gives it its own player", () => {
+    render(<Transcript transcripts={[
+      { source: "note", language: "en", text: "Brown dog by the gate." },
+      { source: "note", language: "kn", text: "ಅವಳು ಮಲಗಿದ್ದಾಳೆ", english: "She is asleep.", note_id: "n1", added_at: "2026-10-30T09:00:00Z", audio_url: "n1.m4a" },
+      { source: "note", language: "en", text: "Same dog again.", note_id: "n2", added_at: "2026-10-30T10:00:00Z", audio_url: "n2.m4a" },
+    ]} notes={[added("n1", "done"), added("n2", "done")]} />);
+    expect(screen.getByText("WHAT YOU SAID · ENGLISH")).toBeInTheDocument();
+    expect(screen.getByText(/^ADDED LATER · 30 OCT(?: 2026)? · KANNADA$/)).toBeInTheDocument();
+    expect(screen.getAllByText(/^ADDED LATER/)).toHaveLength(2);
+    expect(screen.getAllByLabelText("voice note added later").map((a) => a.getAttribute("src"))).toEqual(["n1.m4a", "n2.m4a"]);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("says what is happening to a note not heard yet, or never heard", () => {
+    render(<Transcript transcripts={[]} notes={[added("a", "transcribing"), added("b", "no_speech"), added("c", "failed")]} />);
+    expect(screen.getAllByRole("status").map((s) => s.textContent)).toEqual([
+      "Listening to your note…", "No speech heard in this note.", "Couldn’t transcribe this note."]);
+    expect(screen.getAllByLabelText("voice note added later")).toHaveLength(3);
+  });
+
+  it("shows the words while the model is still reading them", () => {
+    render(<Transcript transcripts={[{ source: "note", language: "en", text: "She limps.", note_id: "a", added_at: "2026-10-30T09:00:00Z" }]}
+      notes={[added("a", "reading")]} />);
+    expect(screen.getByText("She limps.")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Reading it for details…");
+  });
+});
+
+describe("a quote is marked only in the note it came from (#156)", () => {
+  const upload = { source: "note" as const, language: "en", text: "The black one is limping." };
+  const later = { source: "note" as const, language: "en", text: "This one is limping too.", note_id: "n2", added_at: "2026-10-30T09:00:00Z" };
+
+  it("marks the later note's word in the later note only, and the upload's in the upload's only", () => {
+    const { container } = render(<Transcript transcripts={[upload, later]} highlights={[
+      { id: "from-later", quote: "limping", label: "Condition: injured", noteId: "n2" },
+    ]} />);
+    const [first, second] = container.querySelectorAll("blockquote");
+    expect(first.querySelector("mark")).toBeNull();
+    expect(second.querySelector("mark")).toHaveAttribute("data-fx", "from-later");
+    cleanup();
+    const again = render(<Transcript transcripts={[upload, later]} highlights={[
+      { id: "from-upload", quote: "limping", label: "Condition: injured", noteId: null },
+    ]} />).container.querySelectorAll("blockquote");
+    expect(again[0].querySelector("mark")).toHaveAttribute("data-fx", "from-upload");
+    expect(again[1].querySelector("mark")).toBeNull();
+  });
+
+  it("marks anywhere when an older server does not say which note", () => {
+    const { container } = render(<Transcript transcripts={[upload, later]} highlights={[{ quote: "limping", label: "Condition: injured" }]} />);
+    expect(container.querySelectorAll("mark")).toHaveLength(2);
+  });
+});

@@ -11,7 +11,7 @@ from app.ids import uuid7
 from app.media_jobs import MODEL_NAME, vector_text
 from app.photos import thumb_key
 from app.suggestions import for_capture
-from app.transcription_jobs import transcripts_for
+from app.voice_notes import for_sighting, heard
 
 
 def decoded(value):
@@ -54,11 +54,12 @@ async def status(conn, storage, capture):
         groups = [AnimalGroup(instance_ids=ids) for ids in tracks.values()]
     open_suggestions, answered_suggestions = await for_capture(
         conn, capture["id"], {i.instance_id: i.details.model_dump() for i in instances})
+    sounds = for_sighting((await heard(conn, storage, [capture["id"]]))[capture["id"]], None)
     return CaptureStatus(**await receipt(conn, capture), revision=capture["revision"],
         captured_at=capture["captured_at"], note=decoded(capture["attrs"]).get("note"),
         instances=instances, groups=groups, excluded_instance_ids=excluded,
         suggestions=open_suggestions, answered_suggestions=answered_suggestions,
-        voice_transcripts=await transcripts_for(conn, capture["id"]))
+        voice_transcripts=sounds["transcripts"], later_notes=sounds["notes"])
 
 
 def validate_groups(rows, groups, excluded=()):

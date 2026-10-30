@@ -4,13 +4,18 @@ import { isProcessing, UPLOAD_COMPLETE_EVENT } from "./processing";
 
 const MAX_POLLS = 12;
 
+const processing = (item: { processing_state?: string }) => isProcessing(item.processing_state);
+
 /** Poll only an actively viewed feed. Stop after twelve checks or any error;
- * the last successful data stays visible and a person can explicitly retry. */
+ * the last successful data stays visible and a person can explicitly retry.
+ * `busy` says which items are worth checking back for: by default those whose
+ * media is still being processed. */
 export function useProcessingFeed<T extends { processing_state?: string }>(
   load: (signal?: AbortSignal) => Promise<{ sightings: T[] }>,
   enabled: boolean,
   onUnauthorized: () => void,
   refreshOnResume = false,
+  busy: (item: T) => boolean = processing,
 ) {
   const [data, setData] = useState<T[] | null>(null);
   const [error, setError] = useState(false);
@@ -21,6 +26,8 @@ export function useProcessingFeed<T extends { processing_state?: string }>(
   const needsRefresh = useRef(false);
   const unauthorizedRef = useRef(onUnauthorized);
   unauthorizedRef.current = onUnauthorized;
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
   const refresh = useCallback(() => {
     needsRefresh.current = true;
     setRevision((n) => n + 1);
@@ -42,7 +49,7 @@ export function useProcessingFeed<T extends { processing_state?: string }>(
     function schedule() {
       if (disposed || stopped || document.hidden || inFlight) return;
       if (dataRef.current === null || needsRefresh.current) { void request(); return; }
-      if (!dataRef.current.some((s) => isProcessing(s.processing_state))) return;
+      if (!dataRef.current.some((s) => busyRef.current(s))) return;
       if (polls >= MAX_POLLS) { setPaused(true); return; }
       clearTimeout(timer);
       timer = setTimeout(() => { polls++; void request(); }, Math.min(3000 * 2 ** polls, 30000));

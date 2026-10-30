@@ -1,6 +1,6 @@
 import { API_BASE } from "./apiBase";
 import type { HeardText } from "./components/Transcript";
-import { buildSightingForm, HttpError, UnauthorizedError, type PostSightingInput, type SightingAttrs } from "./api";
+import { buildSightingForm, HttpError, UnauthorizedError, type LaterNote, type PostSightingInput, type SightingAttrs } from "./api";
 
 export type CaptureState = "queued" | "processing" | "needs_review" | "ready" | "no_animal" | "failed" | "legacy";
 export interface CaptureSummary {
@@ -46,6 +46,8 @@ export interface CaptureSuggestion {
   field: "sex" | "ear_notch" | "condition" | "known_name";
   value: string;
   quote: string;
+  /** The note added later its words are in; null for the upload's own. */
+  note_id?: string | null;
 }
 /** A suggestion no longer open: see AnsweredSuggestion in api.ts. */
 export interface AnsweredCaptureSuggestion extends CaptureSuggestion {
@@ -61,6 +63,7 @@ export interface CaptureDetail extends CaptureSummary {
   /** Boxes the observer marked as not an animal (#105). */
   excluded_instance_ids?: string[];
   voice_transcripts?: HeardText[];
+  later_notes?: LaterNote[];
 }
 export interface PostCaptureResponse {
   capture_id: string;
@@ -93,6 +96,7 @@ interface WireCapture extends CaptureSummary {
   groups: CaptureGroup[];
   excluded_instance_ids?: string[];
   voice_transcripts?: HeardText[];
+  later_notes?: LaterNote[];
 }
 export function adaptCapture(wire: WireCapture): CaptureDetail {
   return { ...wire, instances: wire.instances.map((instance) => {
