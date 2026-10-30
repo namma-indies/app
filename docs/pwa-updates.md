@@ -11,7 +11,7 @@ nothing, and otherwise shows **"New version ready — Reload"**.
 | Service worker | `vite.config.ts` (VitePWA `autoUpdate`) | precaches the build; new SW `skipWaiting`s and claims pages |
 | Update checks | `frontend/src/update/appUpdate.ts` | `registration.update()` on load, every 30 min, on resume, on `online` (60 s floor) |
 | Reload when safe | same, driven by `UpdateBanner.tsx` | reload on SW takeover; prompt if busy |
-| "Busy" signal | `update/reloadGuard.ts` (`useReloadGuard`) | capture draft, recording, review / report / voice-note sheets |
+| "Busy" signal | `update/reloadGuard.ts` (`useReloadGuard`) | capture draft, recording, review / report / voice-note sheets, photo-description edit |
 | Headers | `backend/app/static.py` | `no-cache` on `index.html`, `sw.js`, `registerSW.js`, `manifest.webmanifest`; `immutable` on `/assets/*` |
 | Native | `update/registerServiceWorker.ts` | no SW in Capacitor; any existing one is unregistered and its caches cleared |
 
