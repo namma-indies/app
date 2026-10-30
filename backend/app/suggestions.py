@@ -42,6 +42,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app import describe
 from app.auth.deps import require_observer
 from app.capture_contracts import AnimalDetails
 from app.config import settings
@@ -526,7 +527,7 @@ async def worker_claim(body: Claim, request: Request, storage=Depends(get_storag
         async with pool.acquire() as conn:
             row = await claim(conn, settings.media_lease_s, token)
             if row is None:
-                return {"job": None}
+                break
             kind, animals = await plan(conn, row["capture_id"], row["note_id"])
             expires = await conn.fetchval("SELECT suggest_lease_until FROM voice_transcripts WHERE id=$1", row["id"])
         if kind == "skip":
@@ -543,11 +544,15 @@ async def worker_claim(body: Claim, request: Request, storage=Depends(get_storag
                         "request": build_request(row["text"], row["language"], labelled,
                                                  wants_english(row["text"], row["language"],
                                                                row["suggest_error"]))}}
-    return {"job": None}
+    # No note waiting: a photo to describe, if that is on (app/describe.py).
+    return {"job": await describe.worker_job(pool, storage) if describe.describing() else None}
 
 
+# A job id is a transcript's or a photo description's (uuid7: never both).
 @worker_router.post("/{transcript_id}/heartbeat")
 async def worker_heartbeat(transcript_id: UUID, body: Lease, request: Request):
+    if await describe.owns(request.app.state.pool, transcript_id):
+        return await describe.heartbeat(request.app.state.pool, transcript_id, body.lease_token)
     async with request.app.state.pool.acquire() as conn, conn.transaction():
         await _leased(conn, transcript_id, body.lease_token)
         expires = await conn.fetchval(
@@ -559,6 +564,8 @@ async def worker_heartbeat(transcript_id: UUID, body: Lease, request: Request):
 @worker_router.post("/{transcript_id}/complete")
 async def worker_complete(transcript_id: UUID, body: Reply, request: Request):
     pool = request.app.state.pool
+    if await describe.owns(pool, transcript_id):
+        return await describe.complete(pool, transcript_id, body.lease_token, body.content)
     async with pool.acquire() as conn, conn.transaction():
         row = await _leased(conn, transcript_id, body.lease_token)
         _, animals = await plan(conn, row["capture_id"], row["note_id"])
@@ -579,6 +586,8 @@ async def worker_complete(transcript_id: UUID, body: Reply, request: Request):
 @worker_router.post("/{transcript_id}/fail")
 async def worker_fail(transcript_id: UUID, body: Failure, request: Request):
     pool = request.app.state.pool
+    if await describe.owns(pool, transcript_id):
+        return await describe.fail(pool, transcript_id, body.lease_token, body.error, body.retryable)
     async with pool.acquire() as conn, conn.transaction():
         row = await _leased(conn, transcript_id, body.lease_token)
     await _failed(pool, transcript_id, row["suggest_attempts"], body.error, retryable=body.retryable)
@@ -630,7 +639,7 @@ def answered(rows, held) -> list[dict]:
             chosen = row["decided_value"]
         out.append({"id": row["id"], "instance_id": row["instance_id"], "field": row["field"],
                     "value": row["value"], "quote": row["quote"], "status": status, "chosen": chosen,
-                    "note_id": row.get("note_id")})
+                    "note_id": row.get("note_id"), "description_id": row.get("description_id")})
     return out
 
 
@@ -640,11 +649,12 @@ async def for_capture(conn, capture_id: UUID, details: dict) -> tuple[list[dict]
     One query for both. `details` maps instance id to what that animal holds now.
     """
     rows = await conn.fetch(
-        "SELECT d.id, d.instance_id, d.field, d.value, d.quote, d.status, d.decided_value, t.note_id "
-        "FROM detail_suggestions d JOIN voice_transcripts t ON t.id = d.transcript_id "
-        "WHERE d.capture_id=$1 AND d.instance_id IS NOT NULL ORDER BY d.field, d.id", capture_id)
+        "SELECT d.id, d.instance_id, d.field, d.value, d.quote, d.status, d.decided_value, t.note_id, "
+        "d.description_id FROM detail_suggestions d LEFT JOIN voice_transcripts t ON t.id = d.transcript_id "
+        "WHERE d.capture_id=$1 AND d.instance_id IS NOT NULL "
+        "AND (d.transcript_id IS NOT NULL OR d.description_id IS NOT NULL) ORDER BY d.field, d.id", capture_id)
     opened = newest_per_field(
-        [{k: r[k] for k in ("id", "instance_id", "field", "value", "quote", "note_id")}
+        [{k: r[k] for k in ("id", "instance_id", "field", "value", "quote", "note_id", "description_id")}
          for r in rows if r["status"] == "open"],
         key=lambda item: (item["instance_id"], item["field"]))
     return opened, answered(rows, lambda r: details.get(r["instance_id"], {}).get(r["field"]))

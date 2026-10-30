@@ -203,6 +203,9 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
     suggestionsFor(group).filter((suggestion) => suggestion.field === field).forEach((suggestion) => { (byValue[suggestion.value] ??= []).push(suggestion.id); });
     return byValue;
   };
+  /** Suggested values that came from the AI photo description, to mark as AI's (#160). */
+  const photoChips = (group: string, field: string) => new Set(suggestionsFor(group)
+    .filter((suggestion) => suggestion.field === field && suggestion.description_id).map((suggestion) => suggestion.value));
   const canSave = !!detail && (detail.processing_state === "needs_review" || detail.processing_state === "ready") && !error && !invalid && !saving && detail.instances.length > 0;
   async function save() {
     if (!detail || !canSave) return;
@@ -257,7 +260,7 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
     </p>)}
     {!compact && groups.length > 1 && <p className="hint">Box {detail!.instances.flatMap((instance, index) => assignments[instance.id] === group ? [index + 1] : []).join(", ")}</p>}
     {CHIP_FIELDS.map(([field, options]) => <ChipGroup key={field} label={FIELD_LABELS[field]} field={field} options={[...options]} value={attrs[group]?.[field]}
-      suggested={suggestedChips(group, field)} filledBy={(value) => usedInto(group, field, value)} disabled={saving}
+      suggested={suggestedChips(group, field)} fromPhoto={photoChips(group, field)} filledBy={(value) => usedInto(group, field, value)} disabled={saving}
       onDismiss={suggestionsFor(group).some((suggestion) => suggestion.field === field) ? () => dismiss(group, field) : undefined}
       onChange={(value, chip) => choose(group, field, value, chip)} />)}
   </>;
@@ -287,10 +290,11 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
               try { await deleteVoiceNote(id); } catch (err) { if (err instanceof UnauthorizedError) unauthorizedRef.current(); throw err; }
               await refreshSounds();
             }} highlights={[
-            ...stillOpen.filter((suggestion) => !answers[suggestion.id])
+            ...stillOpen.filter((suggestion) => !answers[suggestion.id] && !suggestion.description_id)
               .map((suggestion) => ({ id: suggestion.id, quote: suggestion.quote, label: `${SUGGESTION_LABELS[suggestion.field]}: ${suggestion.value}`, noteId: suggestion.note_id })),
             // Used, in an earlier visit or just now: still marked, quieter. Turned down ("not this") is wrong, so it isn't.
             ...[...alreadyUsed, ...(detail.suggestions ?? []).filter((suggestion) => answers[suggestion.id] === "used")]
+              .filter((suggestion) => !suggestion.description_id)
               .map((suggestion) => ({ id: suggestion.id, quote: suggestion.quote, label: `${SUGGESTION_LABELS[suggestion.field]}: ${suggestion.value}`, used: true, noteId: suggestion.note_id })),
           ]} />
           {laterNotes && <AddVoiceNote target={{ captureId }} max={laterNotes.max}

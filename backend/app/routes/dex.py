@@ -3,6 +3,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends
 
+from app import describe
 from app.aggregates import animal_present
 from app.auth.deps import require_observer
 from app.deps import get_conn, get_storage
@@ -157,10 +158,12 @@ async def get_dex(
     if capture_ids:
         for row in await conn.fetch(
             "SELECT d.id, d.capture_id, d.instance_id, d.field, d.value, d.quote, d.status, "
-            "d.decided_value, a.sighting_id, t.note_id "
-            "FROM detail_suggestions d JOIN voice_transcripts t ON t.id = d.transcript_id "
+            "d.decided_value, a.sighting_id, t.note_id, d.description_id "
+            "FROM detail_suggestions d LEFT JOIN voice_transcripts t ON t.id = d.transcript_id "
             "LEFT JOIN animal_instances a ON a.id = d.instance_id "
-            "WHERE d.capture_id = ANY($1::uuid[]) ORDER BY d.field, d.id",
+            # From a note or a photo still there: one from a deleted note is only a record now.
+            "WHERE d.capture_id = ANY($1::uuid[]) "
+            "AND (d.transcript_id IS NOT NULL OR d.description_id IS NOT NULL) ORDER BY d.field, d.id",
             list(capture_ids),
         ):
             own = str(row["capture_id"]) if row["instance_id"] is None else (
@@ -171,7 +174,9 @@ async def get_dex(
                 continue
             # Which note's words it came from, so only that transcript marks them.
             item = {"id": str(row["id"]), "field": row["field"], "value": row["value"],
-                    "quote": row["quote"], "note_id": str(row["note_id"]) if row["note_id"] else None}
+                    "quote": row["quote"], "note_id": str(row["note_id"]) if row["note_id"] else None,
+                    # Read from the AI photo description rather than a note (#160).
+                    "description_id": str(row["description_id"]) if row["description_id"] else None}
             if row["instance_id"] is None:
                 offered.setdefault(str(row["capture_id"]), []).append(item)
             elif row["sighting_id"] is not None:
@@ -190,8 +195,15 @@ async def get_dex(
         own = sighting["capture_id"] if sighting["capture_id"] == sighting["id"] else sighting["id"]
         sighting["answered_suggestions"] = [
             {**o, "id": str(o["id"]), "instance_id": None if o["instance_id"] is None else str(o["instance_id"]),
-             "note_id": None if o["note_id"] is None else str(o["note_id"])}
+             "note_id": None if o["note_id"] is None else str(o["note_id"]),
+             "description_id": None if o["description_id"] is None else str(o["description_id"])}
             for o in answered(closed.get(own, []), lambda r, s=sighting: s["attrs"].get(r["field"]))
         ]
+
+    # An AI-written description of the animal where nothing was noted (#160),
+    # for its observer alone: /map never carries it.
+    described = await describe.for_sightings(conn, [UUID(sid) for sid in order])
+    for sid in order:
+        sightings[sid]["photo_description"] = described.get(UUID(sid))
 
     return {"sightings": [sightings[sid] for sid in order]}

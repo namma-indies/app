@@ -99,6 +99,8 @@ class DetailSuggestion(WireModel):
     # The note added later it was read from (#156); None for the upload's own
     # note or clip. The quote is marked in that transcript only.
     note_id: UUID | None = None
+    # Read from the AI photo description instead (#160); its quote is in that.
+    description_id: UUID | None = None
 
 
 class AnsweredSuggestion(DetailSuggestion):

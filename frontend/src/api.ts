@@ -45,7 +45,16 @@ export interface Suggestion {
   quote: string;
   /** The note added later those words are in (#156); null for the upload's own note or clip. */
   note_id?: string | null;
+  /** Set when read from the AI photo description instead of a note (#160): its words are in that. */
+  description_id?: string | null;
 }
+
+/** An AI-written line about the animal in a sighting with nothing noted (#160).
+ * Only ever its observer's to see. `open` until they use, edit or dismiss it;
+ * `describing` (no text yet) while the model is still looking. */
+export type PhotoDescription =
+  | { id: string; text: string; status: "open" | "accepted" | "edited" }
+  | { id: string; text: null; status: "describing" };
 
 /** A suggestion that is no longer open. `accepted` and `filled` (never answered, but the field
  * holds the suggested value) are "used": what it suggested is saved. `corrected` and `dismissed`
@@ -99,6 +108,8 @@ export interface Sighting {
   }[];
   /** Present on /dex only. Notes added after the upload, oldest first (#156). */
   later_notes?: LaterNote[];
+  /** Present on /dex only, for your own sightings with nothing noted (#160). */
+  photo_description?: PhotoDescription | null;
   /** Present on /dex only. Details a model read from the voice note, for
    * blank details only. Nothing is saved until the observer picks an option. */
   suggestions?: Suggestion[];
@@ -323,6 +334,20 @@ export async function deleteVoiceNote(noteId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/voice-note/${encodeURIComponent(noteId)}`, { method: "DELETE", credentials: "include" });
   if (res.status === 401) throw new UnauthorizedError();
   if (!res.ok && res.status !== 404) throw new HttpError(res.status);   // already gone is gone
+}
+
+/** The observer's answer to an AI photo description. */
+export async function decideDescription(
+  id: string,
+  decision: { verdict: "use" } | { verdict: "edit"; text: string } | { verdict: "dismiss" },
+): Promise<{ status: "accepted" | "edited" | "dismissed"; text: string | null }> {
+  const res = await fetch(`${API_BASE}/description/${encodeURIComponent(id)}`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(decision),
+  });
+  return handle(res);
 }
 
 /** The observer's answer to a suggestion: the option they tapped, or no. */

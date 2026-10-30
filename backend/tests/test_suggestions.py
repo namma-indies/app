@@ -258,8 +258,8 @@ async def test_a_sheet_suggestion_filled_in_by_hand_is_listed_open_for_older_bui
     from unittest.mock import AsyncMock
     dog, other = uuid7(), uuid7()
     rows = [
-        {"id": uuid7(), "instance_id": dog, "field": "condition", "value": "healthy", "quote": "q", "status": "open", "decided_value": None, "note_id": None},
-        {"id": uuid7(), "instance_id": other, "field": "condition", "value": "injured", "quote": "q", "status": "open", "decided_value": None, "note_id": None},
+        {"id": uuid7(), "instance_id": dog, "field": "condition", "value": "healthy", "quote": "q", "status": "open", "decided_value": None, "note_id": None, "description_id": None},
+        {"id": uuid7(), "instance_id": other, "field": "condition", "value": "injured", "quote": "q", "status": "open", "decided_value": None, "note_id": None, "description_id": None},
     ]
     conn = SimpleNamespace(fetch=AsyncMock(return_value=rows))
     opened, answered = await suggestions.for_capture(
