@@ -305,6 +305,28 @@ def test_malay_with_english_words_is_english(tools):
     assert heard.diagnostics == {"detected": "ms", "chosen": "en", "top": [["ms", 0.6], ["en", 0.3]]}
 
 
+@pytest.mark.parametrize("odds,port", [(None, 18960), ({}, 18961), ({"ms": "high"}, 18962), ({"ms": 1.5}, 18963)],
+                         ids=["missing", "empty", "text", "out-of-range"])
+def test_malay_without_usable_probabilities_is_still_never_kept(tools, odds, port):
+    malay = whisper_json([(0, 900, " Dia sedang tidur.")], "malay", odds)
+    english = whisper_json([(0, 900, " She is asleep.")], "english", odds)
+    heard, made = _run(tools, port, malay, {"en": english})
+    assert (heard.outcome, heard.language, heard.text, made) == ("transcribed", "en", "She is asleep.", ["auto", "en"])
+
+
+def test_malay_without_probabilities_and_nothing_heard_in_english_is_no_speech(tools):
+    malay = whisper_json([(0, 900, " Dia sedang tidur.")], "malay")
+    silent = whisper_json([(0, 900, " [BLANK_AUDIO]")], "english")
+    heard, made = _run(tools, 18964, malay, {"en": silent})
+    assert (heard.outcome, heard.language, made) == ("no_speech", None, ["auto", "en"])
+
+
+def test_an_allowed_reading_without_probabilities_stands_as_before(tools):
+    kannada = whisper_json([(0, 900, " ನಾಯಿ ಮಲಗಿದೆ")], "kannada")
+    heard, made = _run(tools, 18965, kannada)
+    assert (heard.language, made) == ("kn", ["auto"])
+
+
 def test_an_unsure_reading_inside_the_set_still_stands_when_english_hears_nothing(tools):
     kannada = whisper_json([(0, 900, " ನಾಯಿ ಮಲಗಿದೆ")], "kannada", {"kn": 0.15, "ta": 0.1})
     silent = whisper_json([(0, 900, " [BLANK_AUDIO]")], "english", {"kn": 0.15})

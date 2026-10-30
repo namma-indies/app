@@ -208,6 +208,11 @@ class Transcriber:
             if heard.outcome != "transcribed":
                 return _diagnosed(heard, raw, None, None)
             chosen = choose_language(raw) if hint is None else with_hint(raw, hint)
+            if chosen is None and heard.language not in ALLOWED:
+                # No probabilities to choose by (an older server, or a reply
+                # without usable ones): a reading outside the set is still never
+                # kept. English, the fallback, is tried instead.
+                chosen = "en"
             if chosen is None or chosen == heard.language:
                 return _diagnosed(heard, raw, heard.language, heard.language)
             # Codes and probabilities only, never what was said.
