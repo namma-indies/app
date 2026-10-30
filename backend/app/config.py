@@ -126,6 +126,10 @@ class Settings(BaseSettings):
     # are handed out at most this many an hour, after all other work. 0
     # leaves any queued backfill waiting.
     describe_backfill_per_hour: int = Field(default=0, ge=0, le=10_000)
+    # Today's model pass over transcripts made before it (scripts/
+    # transcript_backfill.py, #176): at most this many an hour, after all
+    # other model work. 0 leaves any queued backfill waiting.
+    transcript_backfill_per_hour: int = Field(default=0, ge=0, le=10_000)
     media_max_audio_bytes: int = Field(default=8 * 1024 * 1024, gt=0, le=50 * 1024 * 1024)
     # Voice notes added to a sighting after it was uploaded (#156): this many
     # per sighting (or per capture, from its details sheet), on top of the
