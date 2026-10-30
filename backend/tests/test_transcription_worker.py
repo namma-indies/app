@@ -16,10 +16,14 @@ from gpu_worker.client import (Config, ProtocolError, TRANSCRIBE_PIPELINE_VERSIO
 from tests.test_gpu_client import LEASE, SIGNED, TOKEN, FakeAdapter, expiry
 
 
-def whisper_json(segments, language="kannada"):
-    """A whisper-server ``verbose_json`` reply; times in seconds, as it sends them."""
-    return json.dumps({"language": language, "text": "", "segments": [
-        {"start": a / 1000, "end": b / 1000, "text": t} for a, b, t in segments]}).encode()
+def whisper_json(segments, language="kannada", odds=None):
+    """A whisper-server ``verbose_json`` reply; times in seconds, as it sends them.
+    `odds` is its ``language_probabilities`` (code to probability)."""
+    reply = {"language": language, "text": "", "segments": [
+        {"start": a / 1000, "end": b / 1000, "text": t} for a, b, t in segments]}
+    if odds is not None:
+        reply["language_probabilities"] = odds
+    return json.dumps(reply).encode()
 
 
 # ---------------------------------------------------------------------------
@@ -79,16 +83,22 @@ FAKE_SERVER = textwrap.dedent('''\
         f.write("\\n".join(f"{{k}}={{v}}" for k, v in os.environ.items()))
     with open({starts!r}, "a") as f:
         f.write("start\\n")
-    REPLY = {reply!r}
+    REPLY, FORCED = {reply!r}, {forced!r}
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a): pass
         def do_GET(self):
             self.send_response(200 if self.path == "/health" else 404); self.end_headers()
         def do_POST(self):
-            self.rfile.read(int(self.headers["Content-Length"]))
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            # The language the worker named, if any: the multipart field after its header.
+            named = 'auto'
+            if b'name="language"' in body:
+                named = body.split(b'name="language"', 1)[1].split(b'\\r\\n\\r\\n', 1)[1].split(b'\\r\\n', 1)[0].decode()
+            with open({requests!r}, "a") as f:
+                f.write(named + "\\n")
             if {hang}:
                 time.sleep(30)
-            data = REPLY.encode()
+            data = (FORCED.get(named, REPLY) if FORCED else REPLY).encode()
             self.send_response(200); self.send_header("Content-Length", str(len(data))); self.end_headers()
             self.wfile.write(data)
     HTTPServer(("127.0.0.1", port), H).serve_forever()
@@ -100,12 +110,14 @@ def tools(tmp_path):
     # Writes its last argument (the output WAV): a header plus some samples.
     ffmpeg = script(tmp_path / "ffmpeg", 'for a; do out="$a"; done; head -c 4044 /dev/zero > "$out"\n')
 
-    def server(name="whisper-server", hang=False):
+    def server(name="whisper-server", hang=False, reply=None, forced=None):
+        """`forced` maps a language the worker names to the reply for it."""
         path = tmp_path / name
         path.write_text(FAKE_SERVER.format(
             python=sys.executable, env=str(tmp_path / "whisper.env"), starts=str(tmp_path / "starts"),
-            reply=whisper_json([(0, 900, " Friendly, wags his tail.")], language="english").decode(),
-            hang=hang))
+            requests=str(tmp_path / "requests"),
+            reply=(reply or whisper_json([(0, 900, " Friendly, wags his tail.")], language="english")).decode(),
+            forced={k: v.decode() for k, v in (forced or {}).items()}, hang=hang))
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
         return path
     return tmp_path, ffmpeg, server
@@ -128,6 +140,95 @@ def test_whisper_stays_loaded_across_notes_and_never_sees_the_worker_token(tools
     finally:
         t.stop()
     assert "never-in-a-child" not in (root / "whisper.env").read_text()
+
+
+# ---------------------------------------------------------------------------
+# Only the languages people here speak; English when none is likely
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("odds,chosen", [
+    ({"kn": 0.81, "en": 0.12}, "kn"),          # an allowed language, kept
+    ({"en": 0.95}, "en"),
+    ({"cy": 0.62, "en": 0.31}, "en"),          # English heard as Welsh
+    ({"ms": 0.55, "hi": 0.35, "en": 0.05}, "hi"),  # the likeliest allowed one
+    ({"cy": 0.9, "hi": 0.05}, "en"),           # no allowed language is likely: English
+    ({"hi": 0.15, "en": 0.12, "ur": 0.1}, "en"),   # even an allowed detection, too unsure
+    ({"hi": 0.2}, "hi"),                       # the threshold itself is enough
+])
+def test_chooses_from_the_languages_people_here_speak(odds, chosen):
+    assert transcribe.choose_language(whisper_json([(0, 900, " ok")], "welsh", odds)) == chosen
+
+
+@pytest.mark.parametrize("odds", [None, {}, {"en": "high"}, {"en": 1.5}, {"en": True}, [0.9]])
+def test_without_usable_probabilities_the_detection_stands(odds):
+    assert transcribe.choose_language(whisper_json([(0, 900, " ok")], "welsh", odds)) is None
+
+
+def test_allowed_set_is_whisper_codes_and_english_first():
+    assert transcribe.ALLOWED[0] == "en"
+    assert set(transcribe.ALLOWED) <= set(transcribe._CODES.values())
+
+
+def requests_made(root):
+    return (root / "requests").read_text().split()
+
+
+def test_english_heard_as_welsh_is_transcribed_again_as_english(tools, caplog):
+    root, ffmpeg, server = tools
+    welsh = whisper_json([(0, 900, " Mae hi'n cysgu.")], "welsh", {"cy": 0.62, "en": 0.31})
+    english = whisper_json([(0, 900, " She is asleep.")], "english", {"cy": 0.62, "en": 0.31})
+    t = transcribe.Transcriber(server(reply=welsh, forced={"en": english}), root / "m", root / "v",
+                               ffmpeg=str(ffmpeg), port=18945)
+    t.start()
+    try:
+        heard = t.transcribe(b"note")
+    finally:
+        t.stop()
+    assert (heard.outcome, heard.language, heard.text) == ("transcribed", "en", "She is asleep.")
+    assert requests_made(root) == ["auto", "en"]
+    (record,) = [r for r in caplog.records if r.name == "gpu_worker.transcribe"]
+    assert record.getMessage() == "whisper language cy replaced by en (cy=0.62, en=0.31)"
+    assert "asleep" not in caplog.text and "cysgu" not in caplog.text  # never what was said
+
+
+def test_a_likely_allowed_language_costs_no_second_pass(tools):
+    root, ffmpeg, server = tools
+    kannada = whisper_json([(0, 900, " ನಾಯಿ ಮಲಗಿದೆ")], "kannada", {"kn": 0.8, "en": 0.1})
+    t = transcribe.Transcriber(server(reply=kannada), root / "m", root / "v", ffmpeg=str(ffmpeg), port=18946)
+    t.start()
+    try:
+        heard = t.transcribe(b"note")
+    finally:
+        t.stop()
+    assert (heard.language, heard.text) == ("kn", "ನಾಯಿ ಮಲಗಿದೆ")
+    assert requests_made(root) == ["auto"]
+
+
+def test_if_the_named_language_hears_nothing_the_first_reading_stands(tools):
+    root, ffmpeg, server = tools
+    welsh = whisper_json([(0, 900, " Mae hi'n cysgu.")], "welsh", {"cy": 0.9})
+    silent = whisper_json([(0, 900, " [BLANK_AUDIO]")], "english", {"cy": 0.9})
+    t = transcribe.Transcriber(server(reply=welsh, forced={"en": silent}), root / "m", root / "v",
+                               ffmpeg=str(ffmpeg), port=18947)
+    t.start()
+    try:
+        heard = t.transcribe(b"note")
+    finally:
+        t.stop()
+    assert (heard.outcome, heard.language) == ("transcribed", "cy")
+    assert requests_made(root) == ["auto", "en"]
+
+
+def test_silence_is_never_transcribed_twice(tools):
+    root, ffmpeg, server = tools
+    silent = whisper_json([(0, 30000, " [BLANK_AUDIO]")], "welsh", {"cy": 0.9})
+    t = transcribe.Transcriber(server(reply=silent), root / "m", root / "v", ffmpeg=str(ffmpeg), port=18948)
+    t.start()
+    try:
+        assert t.transcribe(b"note").outcome == "no_speech"
+    finally:
+        t.stop()
+    assert requests_made(root) == ["auto"]
 
 
 def test_whisper_server_listens_on_loopback_only(tools):

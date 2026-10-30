@@ -14,6 +14,12 @@ and the next transcription starts a fresh one, which costs one model load.
 Flags, each for a measured reason on real field recordings:
 - ``-l auto``: observers speak Kannada, Hindi and Tamil as well as English.
   Forcing English garbles those; the detected language is returned instead.
+  But only from the languages people here speak (``ALLOWED``): auto-detection
+  also heard English in a video as some other language entirely, and then
+  wrote the note out in it. ``choose_language`` reads the probabilities
+  whisper-server already returns and, when the detection is outside that
+  set, transcribes once more with the language named: the most likely one in
+  the set, or English when none of them is likely (``FALLBACK_MIN``).
 - ``--vad``: without it large-v3 invents repeated lines over silent windows.
 - ``-vp 200``: pad each detected speech span by 200 ms. whisper-server's
   default pad clipped the first word whenever speech began at the very start
@@ -27,6 +33,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import logging
+import math
 import os
 from pathlib import Path
 import re
@@ -43,6 +51,14 @@ _LANGUAGE = re.compile(r"^[a-z]{2,3}$")
 # whisper-server names languages in full ("kannada"); transcripts store the
 # code. Generated from whisper.cpp's own table (src/whisper.cpp, g_lang).
 _CODES = {"english": "en", "chinese": "zh", "german": "de", "spanish": "es", "russian": "ru", "korean": "ko", "french": "fr", "japanese": "ja", "portuguese": "pt", "turkish": "tr", "polish": "pl", "catalan": "ca", "dutch": "nl", "arabic": "ar", "swedish": "sv", "italian": "it", "indonesian": "id", "hindi": "hi", "finnish": "fi", "vietnamese": "vi", "hebrew": "he", "ukrainian": "uk", "greek": "el", "malay": "ms", "czech": "cs", "romanian": "ro", "danish": "da", "hungarian": "hu", "tamil": "ta", "norwegian": "no", "thai": "th", "urdu": "ur", "croatian": "hr", "bulgarian": "bg", "lithuanian": "lt", "latin": "la", "maori": "mi", "malayalam": "ml", "welsh": "cy", "slovak": "sk", "telugu": "te", "persian": "fa", "latvian": "lv", "bengali": "bn", "serbian": "sr", "azerbaijani": "az", "slovenian": "sl", "kannada": "kn", "estonian": "et", "macedonian": "mk", "breton": "br", "basque": "eu", "icelandic": "is", "armenian": "hy", "nepali": "ne", "mongolian": "mn", "bosnian": "bs", "kazakh": "kk", "albanian": "sq", "swahili": "sw", "galician": "gl", "marathi": "mr", "punjabi": "pa", "sinhala": "si", "khmer": "km", "shona": "sn", "yoruba": "yo", "somali": "so", "afrikaans": "af", "occitan": "oc", "georgian": "ka", "belarusian": "be", "tajik": "tg", "sindhi": "sd", "gujarati": "gu", "amharic": "am", "yiddish": "yi", "lao": "lo", "uzbek": "uz", "faroese": "fo", "haitian creole": "ht", "pashto": "ps", "turkmen": "tk", "nynorsk": "nn", "maltese": "mt", "sanskrit": "sa", "luxembourgish": "lb", "myanmar": "my", "tibetan": "bo", "tagalog": "tl", "malagasy": "mg", "assamese": "as", "tatar": "tt", "hawaiian": "haw", "lingala": "ln", "hausa": "ha", "bashkir": "ba", "javanese": "jw", "sundanese": "su", "cantonese": "yue"}
+# English and the Indian languages whisper knows (it has no Odia). Kept in
+# step with app/suggestions.EXPECTED_LANGUAGES by hand: this module must not
+# import the API.
+ALLOWED = ("en", "hi", "kn", "ta", "te", "ml", "mr", "bn", "gu", "pa", "ur")
+# Below this, the likeliest allowed language is a guess too; English is the
+# safer one (it is what most notes are in, and what a misheard one was).
+FALLBACK_MIN = 0.2
+logger = logging.getLogger(__name__)
 # Never hand the worker's API token to a child process.
 _SECRET_ENV = ("MEDIA_GPU_TOKEN",)
 # As in clip.py: an uploaded file must not make FFmpeg open anything but
@@ -168,21 +184,75 @@ class Transcriber:
                 return Transcript("no_speech")
             if not self.alive():
                 self.start()
-            try:
-                with httpx.Client(trust_env=False, timeout=self.request_timeout) as client, wav.open("rb") as audio:
-                    response = client.post(self.url + "/inference",
-                                           files={"file": ("audio.wav", audio, "audio/wav")},
-                                           data={"response_format": "verbose_json", "temperature": "0.0"})
-            except httpx.TimeoutException:
-                # A hung request means a server not to trust with the next one.
-                self.stop()
-                raise TimeoutError("whisper server exceeded its time limit") from None
-            except httpx.TransportError:
-                self.stop()
-                raise TranscriberError("whisper server unreachable") from None
-            if response.status_code != 200:
-                raise TranscriberError("whisper server refused the audio")
-            return parse(response.content)
+            raw = self._infer(wav)
+            heard = parse(raw)
+            if heard.outcome != "transcribed":
+                return heard
+            chosen = choose_language(raw)
+            if chosen is None or chosen == heard.language:
+                return heard
+            # Codes and probabilities only, never what was said.
+            logger.warning("whisper language %s replaced by %s (%s)", heard.language, chosen,
+                           _odds(raw, heard.language, chosen))
+            again = parse(self._infer(wav, chosen))
+            # Named, it may find no words where auto-detection found some; the
+            # first reading is then all there is.
+            return again if again.outcome == "transcribed" else heard
+
+    def _infer(self, wav: Path, language: str | None = None) -> bytes:
+        data = {"response_format": "verbose_json", "temperature": "0.0"}
+        if language is not None:
+            data["language"] = language
+        try:
+            with httpx.Client(trust_env=False, timeout=self.request_timeout) as client, wav.open("rb") as audio:
+                response = client.post(self.url + "/inference",
+                                       files={"file": ("audio.wav", audio, "audio/wav")}, data=data)
+        except httpx.TimeoutException:
+            # A hung request means a server not to trust with the next one.
+            self.stop()
+            raise TimeoutError("whisper server exceeded its time limit") from None
+        except httpx.TransportError:
+            self.stop()
+            raise TranscriberError("whisper server unreachable") from None
+        if response.status_code != 200:
+            raise TranscriberError("whisper server refused the audio")
+        return response.content
+
+
+def _probabilities(raw: bytes) -> dict[str, float] | None:
+    """whisper-server's ``language_probabilities`` (code to probability,
+    negligible ones left out), or None when absent or not that shape."""
+    try:
+        found = json.loads(raw.decode("utf-8", "replace")).get("language_probabilities")
+    except (ValueError, AttributeError):
+        return None
+    if not isinstance(found, dict) or not found:
+        return None
+    odds = {}
+    for code, p in found.items():
+        if not isinstance(code, str) or isinstance(p, bool) or not isinstance(p, (int, float)):
+            return None
+        if not math.isfinite(p) or not 0 <= p <= 1:
+            return None
+        odds[code] = float(p)
+    return odds
+
+
+def choose_language(raw: bytes) -> str | None:
+    """The language to transcribe in: the likeliest of ``ALLOWED``, or English
+    when even that one is below ``FALLBACK_MIN``. None when the reply carries
+    no probabilities (an older server): then the detection stands, as before.
+    """
+    odds = _probabilities(raw)
+    if odds is None:
+        return None
+    best = max(ALLOWED, key=lambda code: odds.get(code, 0.0))
+    return best if odds.get(best, 0.0) >= FALLBACK_MIN else "en"
+
+
+def _odds(raw: bytes, *codes: str) -> str:
+    odds = _probabilities(raw) or {}
+    return ", ".join(f"{code}={odds.get(code, 0.0):.2f}" for code in codes)
 
 
 def parse(raw: bytes) -> Transcript:
