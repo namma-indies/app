@@ -4,6 +4,20 @@ export interface HeardText {
   source: "note" | "clip";
   language: string;
   text: string;
+  /** A translation of a non-English one (#152): shown under it, never highlighted. */
+  english?: string | null;
+}
+
+/** The languages people here speak (app/suggestions.EXPECTED_LANGUAGES), by name. */
+const LANGUAGE_NAMES: Record<string, string> = {
+  en: "English", hi: "Hindi", kn: "Kannada", ta: "Tamil", te: "Telugu", ml: "Malayalam",
+  mr: "Marathi", bn: "Bengali", gu: "Gujarati", pa: "Punjabi", ur: "Urdu",
+};
+
+/** The caption's language: a name, or "language unclear" for a code outside
+ * that set, which is more likely whisper mishearing than anyone speaking it. */
+export function languageLabel(code: string): string {
+  return (LANGUAGE_NAMES[code] ?? "Language unclear").toUpperCase();
 }
 
 /** A word or phrase a suggestion came from, and what it suggested. */
@@ -73,10 +87,16 @@ function Heard({ t, highlights, compact }: { t: HeardText; highlights: Highlight
   });
   parts.push(t.text.slice(at));
   const clamped = compact && !open;
+  const known = t.language in LANGUAGE_NAMES;
   return <figure>
-    <figcaption className="spot-label">{t.source === "note" ? "WHAT YOU SAID" : "HEARD IN YOUR VIDEO"} · {t.language.toUpperCase()}</figcaption>
-    <blockquote ref={text} className={clamped ? "is-clamped" : undefined}>{parts}</blockquote>
-    {compact && (overflows || open) && <button type="button" className="link-btn transcript-more" aria-expanded={open} onClick={() => setOpen((v) => !v)}>{open ? "less" : "more"}</button>}
+    <figcaption className="spot-label">{t.source === "note" ? "WHAT YOU SAID" : "HEARD IN YOUR VIDEO"} · {languageLabel(t.language)}</figcaption>
+    <blockquote ref={text} lang={known ? t.language : undefined} className={clamped ? "is-clamped" : undefined}>{parts}</blockquote>
+    {/* Folded away with the rest in the compact sheet; "more" opens both. */}
+    {t.english && !clamped && <div className="transcript-english">
+      <span className="spot-label">IN ENGLISH</span>
+      <p lang="en">{t.english}</p>
+    </div>}
+    {compact && (overflows || open || !!t.english) && <button type="button" className="link-btn transcript-more" aria-expanded={open} onClick={() => setOpen((v) => !v)}>{open ? "less" : "more"}</button>}
   </figure>;
 }
 

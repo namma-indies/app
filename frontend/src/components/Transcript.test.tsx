@@ -4,7 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import Transcript, { highlightSpans } from "./Transcript";
+import Transcript, { highlightSpans, languageLabel } from "./Transcript";
 
 afterEach(cleanup);
 
@@ -57,7 +57,7 @@ describe("highlighting the words a suggestion came from", () => {
   it("shows what was heard with each suggestion's words marked", () => {
     render(<Transcript transcripts={[{ source: "note", language: "en", text: heard }]}
       highlights={[{ quote: "She looks healthy", label: "Condition: healthy" }]} />);
-    expect(screen.getByText(/WHAT YOU SAID · EN/)).toBeInTheDocument();
+    expect(screen.getByText("WHAT YOU SAID · ENGLISH")).toBeInTheDocument();
     const mark = screen.getByText("She looks healthy");
     expect(mark.tagName).toBe("MARK");
     expect(mark).toHaveAttribute("title", "Condition: healthy");
@@ -113,5 +113,40 @@ describe("the transcript's spacing", () => {
       expect(lineHeight).toMatch(/^\d+(\.\d+)?$/);
       expect(Number(lineHeight) * 16).toBeGreaterThanOrEqual(1.25 * 16 + 2);
     } finally { style.remove(); }
+  });
+});
+
+describe("the language and an English translation (#152)", () => {
+  const kannada = "ಅವಳು ಮಲಗಿದ್ದಾಳೆ. ಅವಳ ಹೆಸರು ಕಾಳು.";
+
+  it("names the language instead of showing its code", () => {
+    expect(languageLabel("kn")).toBe("KANNADA");
+    expect(languageLabel("hi")).toBe("HINDI");
+    expect(languageLabel("en")).toBe("ENGLISH");
+  });
+
+  it("says the language is unclear rather than showing a stray code", () => {
+    expect(languageLabel("cy")).toBe("LANGUAGE UNCLEAR");
+    expect(languageLabel("haw")).toBe("LANGUAGE UNCLEAR");
+    render(<Transcript transcripts={[{ source: "clip", language: "cy", text: "Mae hi'n cysgu.", english: "She is asleep." }]} />);
+    expect(screen.getByText("HEARD IN YOUR VIDEO · LANGUAGE UNCLEAR")).toBeInTheDocument();
+    expect(screen.getByText("Mae hi'n cysgu.").closest("blockquote")).not.toHaveAttribute("lang");
+  });
+
+  it("shows the English under the words it translates, unmarked", () => {
+    render(<Transcript transcripts={[{ source: "note", language: "kn", text: kannada, english: "She is asleep. Her name is Kaalu." }]}
+      highlights={[{ quote: "ಅವಳು ಮಲಗಿದ್ದಾಳೆ", label: "Sex: female" }]} />);
+    expect(screen.getByText("WHAT YOU SAID · KANNADA")).toBeInTheDocument();
+    expect(screen.getByText("IN ENGLISH")).toBeInTheDocument();
+    const english = screen.getByText("She is asleep. Her name is Kaalu.");
+    expect(english).toHaveAttribute("lang", "en");
+    expect(english.querySelector("mark")).toBeNull();
+    expect(screen.getByText("ಅವಳು ಮಲಗಿದ್ದಾಳೆ").tagName).toBe("MARK");   // the highlight stays on what was said
+    expect(english.closest("figure")!.querySelector("blockquote")).toHaveAttribute("lang", "kn");
+  });
+
+  it("adds no English line when there is none", () => {
+    render(<Transcript transcripts={[{ source: "note", language: "kn", text: kannada, english: null }]} />);
+    expect(screen.queryByText("IN ENGLISH")).not.toBeInTheDocument();
   });
 });

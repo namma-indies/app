@@ -74,6 +74,12 @@ MAX_ANIMALS = 8
 NOT_READY_DELAY_S = 60
 # Four fields with short quotes; anything longer is not an answer to this.
 MAX_REPLY_CHARS = 64 * 1024
+# Languages an observer here is expected to speak: English and the Indian
+# languages whisper knows. Any other label is more likely a misdetection
+# (English heard as Welsh, say) than a visitor, so the model is told so.
+EXPECTED_LANGUAGES = frozenset(("en", "hi", "kn", "ta", "te", "ml", "mr", "bn", "gu", "pa", "ur"))
+# A translation is a few sentences; more than this is not one.
+MAX_ENGLISH_CHARS = 8000
 
 SYSTEM_PROMPT = """\
 You read a short spoken note an observer recorded while logging a street dog \
@@ -102,8 +108,15 @@ match it to a photo. If the note does not make clear which animal it is \
 about, set "animal" to "unclear". Never infer a detail from the photos \
 alone: a suggestion still needs the speaker's words."""
 
+TRANSLATE_PROMPT = """
 
-def response_schema(labels: list[str] | None) -> dict:
+After the suggestions, put a faithful English translation of the whole note \
+in "english". Translate only: add, explain and leave out nothing, and keep \
+names as they were said. The quotes stay in the note's own language and \
+script."""
+
+
+def response_schema(labels: list[str] | None, english: bool = False) -> dict:
     item = {
         "field": {"type": "string", "enum": list(FIELDS)},
         "value": {"type": "string"},
@@ -111,14 +124,19 @@ def response_schema(labels: list[str] | None) -> dict:
     }
     if labels:
         item["animal"] = {"type": "string", "enum": [*labels, "unclear"]}
+    # "english" after "suggestions": a constrained decoder writes properties
+    # in this order, so the suggestions come out exactly as they did before.
+    properties = {"suggestions": {"type": "array", "items": {
+        "type": "object", "additionalProperties": False,
+        "required": list(item), "properties": item,
+    }}}
+    if english:
+        properties["english"] = {"type": "string"}
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["suggestions"],
-        "properties": {"suggestions": {"type": "array", "items": {
-            "type": "object", "additionalProperties": False,
-            "required": list(item), "properties": item,
-        }}},
+        "required": list(properties),
+        "properties": properties,
     }
 
 
@@ -218,45 +236,86 @@ def validate(raw: list, transcript: str, labels: list[str] | None = None) -> lis
     return list(kept.values())
 
 
-def build_request(transcript: str, language: str, animals: list[tuple[str, str]] | None = None) -> dict:
+def wants_english(text: str, language: str | None, last_error: str | None = None) -> bool:
+    """Whether to ask for a translation along with the suggestions.
+
+    Not for English, not past the length cap (see settings), and not again
+    after an answer that could not be parsed: a translation cut off by the
+    worker's token cap must not keep costing the note its suggestions.
+    """
+    return (language != "en" and 0 < len(text) <= settings.suggest_translate_max_chars
+            and last_error != "unparsable_reply")
+
+
+def clean_english(value, transcript: str) -> str | None:
+    """The translation to keep, or None: a string, not empty, not huge, and
+    not the note handed back unchanged."""
+    if not isinstance(value, str):
+        return None
+    value = " ".join(value.split())
+    if not value or len(value) > MAX_ENGLISH_CHARS or _normal(value) == _normal(transcript):
+        return None
+    return value
+
+
+def build_request(transcript: str, language: str, animals: list[tuple[str, str]] | None = None,
+                  english: bool = False) -> dict:
     """The chat request for one transcript, minus the model name.
 
     `animals` is (label, image URL) per animal on a multi-animal upload: a
     data: URL on the OpenAI path, a short-lived storage URL when the DGX worker
     runs the model (it downloads and inlines each one; its model never fetches).
     Built here for both, so the prompt and the checks on the answer live in
-    one place whichever model reads it.
+    one place whichever model reads it. `english` also asks for a translation
+    (see `wants_english`).
     """
     labels = [label for label, _ in animals] if animals else None
-    content: list[dict] = [{"type": "text", "text": f"Detected language: {language}\nNote:\n{transcript}"}]
+    detected = f"Detected language: {language}"
+    if language not in EXPECTED_LANGUAGES:
+        detected += " (probably misdetected; read the note for what it says)"
+    content: list[dict] = [{"type": "text", "text": f"{detected}\nNote:\n{transcript}"}]
     for label, url in animals or []:
         content.append({"type": "text", "text": f"Animal {label}:"})
         content.append({"type": "image_url", "image_url": {"url": url}})
     return {
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT + (ANIMALS_PROMPT if labels else "")},
+            {"role": "system", "content": SYSTEM_PROMPT + (ANIMALS_PROMPT if labels else "")
+             + (TRANSLATE_PROMPT if english else "")},
             {"role": "user", "content": content},
         ],
         "response_format": {"type": "json_schema", "json_schema": {
-            "name": "animal_details", "strict": True, "schema": response_schema(labels)}},
+            "name": "animal_details", "strict": True, "schema": response_schema(labels, english)}},
     }
 
 
-def parse_reply(content) -> list:
-    if not isinstance(content, str) or len(content) > MAX_REPLY_CHARS:
-        raise ValueError("unexpected reply")
-    suggestions = json.loads(content)["suggestions"]
-    if not isinstance(suggestions, list):
-        raise ValueError("unexpected reply")
-    return suggestions
+class UnparsableReply(ValueError):
+    """The model answered, but not in the agreed shape: cut off, say, by a
+    token cap. Recorded as "unparsable_reply" on either path, which is what
+    makes the retry leave the translation out (`wants_english`)."""
+
+
+def parse_reply(content) -> tuple[list, object]:
+    """(suggestions, english) from the model's answer; english is None when
+    not asked for, and still unchecked (see `clean_english`)."""
+    try:
+        if not isinstance(content, str) or len(content) > MAX_REPLY_CHARS:
+            raise ValueError("unexpected reply")
+        answer = json.loads(content)
+        suggestions = answer["suggestions"]
+        if not isinstance(suggestions, list):
+            raise ValueError("unexpected reply")
+        return suggestions, answer.get("english")
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise UnparsableReply() from None
 
 
 async def ask_model(client: httpx.AsyncClient, transcript: str, language: str,
-                    animals: list[tuple[str, bytes]] | None = None) -> list:
+                    animals: list[tuple[str, bytes]] | None = None,
+                    english: bool = False) -> tuple[list, object]:
     """The OpenAI path. `animals` is (label, WebP thumbnail) per animal."""
     body = build_request(transcript, language, [
         (label, "data:image/webp;base64," + base64.b64encode(image).decode())
-        for label, image in animals or []] or None)
+        for label, image in animals or []] or None, english)
     body["model"] = settings.suggest_model
     if settings.suggest_reasoning_effort:
         body["reasoning_effort"] = settings.suggest_reasoning_effort
@@ -283,7 +342,7 @@ async def claim(conn, lease_s: float, token: str | None = None):
                  AND (suggest_status='pending'
                       OR (suggest_status='running' AND suggest_lease_until<=now()))
                ORDER BY created_at, id FOR UPDATE SKIP LOCKED LIMIT 1)
-           RETURNING id, capture_id, language, text, suggest_attempts""",
+           RETURNING id, capture_id, language, text, suggest_attempts, suggest_error""",
         lease_s, token_hash(token) if token else None,
     )
 
@@ -344,15 +403,17 @@ async def _failed(pool, transcript_id, attempts, error: str, *, retryable=True):
                   delay_s=min(MAX_RETRY_DELAY_S, 30 * 2 ** attempts))
 
 
-async def _store(pool, row, raw, animals, model: str):
-    """Check the model's answer against the note and keep what survives."""
+async def _store(pool, row, raw, animals, model: str, english=None):
+    """Check the model's answer against the note and keep what survives,
+    with its translation of the note if it gave a usable one."""
     # With one animal the model was never asked to pick one (see `solo`).
     only = solo(animals)
     labels = [label for label, _, _ in animals] if animals and not only else None
     suggestions = validate(raw, row["text"], labels)
     instance_of = {None: only} if only else {label: instance for label, instance, _ in animals or []}
-    logger.info("suggestions for transcript=%s: model gave %d, kept %d", row["id"],
-                len(raw) if isinstance(raw, list) else 0, len(suggestions))
+    english = clean_english(english, row["text"]) if row["language"] != "en" else None
+    logger.info("suggestions for transcript=%s: model gave %d, kept %d; english=%s", row["id"],
+                len(raw) if isinstance(raw, list) else 0, len(suggestions), english is not None)
     async with pool.acquire() as conn, conn.transaction():
         for s in suggestions:
             await conn.execute(
@@ -364,7 +425,9 @@ async def _store(pool, row, raw, animals, model: str):
                 s["field"], s["value"], s["quote"], model)
         await conn.execute(
             "UPDATE voice_transcripts SET suggest_status='done',suggest_lease_until=NULL,"
-            "suggest_lease_token_hash=NULL,suggest_error=NULL WHERE id=$1", row["id"])
+            "suggest_lease_token_hash=NULL,suggest_error=NULL,"
+            "english=COALESCE($2,english),english_model=CASE WHEN $2::text IS NULL "
+            "THEN english_model ELSE $3 END WHERE id=$1", row["id"], english, model)
 
 
 async def run_once(pool, storage, client: httpx.AsyncClient) -> bool:
@@ -382,13 +445,15 @@ async def run_once(pool, storage, client: httpx.AsyncClient) -> bool:
         return True
     try:
         images = [(label, await storage.get(key)) for label, _, key in animals] if animals and not solo(animals) else None
-        raw = await ask_model(client, row["text"], row["language"], images)
+        raw, english = await ask_model(client, row["text"], row["language"], images,
+                                       wants_english(row["text"], row["language"], row["suggest_error"]))
     except Exception as error:
         # Logged by type only: a response body could echo the transcript.
-        logger.warning("suggestions failed for transcript=%s: %s", row["id"], type(error).__name__)
-        await _failed(pool, row["id"], row["suggest_attempts"], type(error).__name__)
+        reason = "unparsable_reply" if isinstance(error, UnparsableReply) else type(error).__name__
+        logger.warning("suggestions failed for transcript=%s: %s", row["id"], reason)
+        await _failed(pool, row["id"], row["suggest_attempts"], reason)
         return True
-    await _store(pool, row, raw, animals, settings.suggest_model)
+    await _store(pool, row, raw, animals, settings.suggest_model, english)
     return True
 
 
@@ -419,7 +484,7 @@ class Reply(Lease):
 
 async def _leased(conn, transcript_id: UUID, token: str):
     row = await conn.fetchrow(
-        """SELECT id, capture_id, text, suggest_attempts, suggest_status,
+        """SELECT id, capture_id, language, text, suggest_attempts, suggest_status,
                   suggest_lease_token_hash, suggest_lease_until > clock_timestamp() AS live
            FROM voice_transcripts WHERE id=$1 FOR UPDATE""", transcript_id)
     if (row is None or row["suggest_status"] != "running" or not row["live"]
@@ -458,7 +523,9 @@ async def worker_claim(body: Claim, request: Request, storage=Depends(get_storag
         labelled = [(label, url) for (label, _, _), url in zip(animals or [], urls)] or None
         return {"job": {"id": str(row["id"]), "kind": "suggest", "lease_token": token,
                         "lease_expires_at": expires,
-                        "request": build_request(row["text"], row["language"], labelled)}}
+                        "request": build_request(row["text"], row["language"], labelled,
+                                                 wants_english(row["text"], row["language"],
+                                                               row["suggest_error"]))}}
     return {"job": None}
 
 
@@ -482,13 +549,13 @@ async def worker_complete(transcript_id: UUID, body: Reply, request: Request):
         # same lease now finds it no longer running.
         await conn.execute("UPDATE voice_transcripts SET suggest_lease_until=now() WHERE id=$1", transcript_id)
     try:
-        raw = parse_reply(body.content)
-    except (ValueError, KeyError, TypeError):
+        raw, english = parse_reply(body.content)
+    except UnparsableReply:
         # The worker's part is done either way; an answer that is not the
         # agreed shape counts as a failed attempt here, not there.
         await _failed(pool, transcript_id, row["suggest_attempts"], "unparsable_reply")
         return {"status": "done"}
-    await _store(pool, row, raw, animals, settings.suggest_local_model)
+    await _store(pool, row, raw, animals, settings.suggest_local_model, english)
     return {"status": "done"}
 
 

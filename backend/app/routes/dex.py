@@ -134,13 +134,15 @@ async def get_dex(
     heard: dict[str, list[dict]] = {}
     if capture_ids:
         for row in await conn.fetch(
-            "SELECT capture_id, source, language, text FROM voice_transcripts "
+            "SELECT capture_id, source, language, text, english FROM voice_transcripts "
             "WHERE capture_id = ANY($1::uuid[]) AND pipeline_version = $2 "
             "AND outcome = 'transcribed' ORDER BY source DESC",
             list(capture_ids), TRANSCRIBE_PIPELINE,
         ):
             heard.setdefault(str(row["capture_id"]), []).append(
-                {"source": row["source"], "language": row["language"], "text": row["text"]})
+                {"source": row["source"], "language": row["language"], "text": row["text"],
+                 # A translation of a non-English one, shown under it; never evidence.
+                 "english": row["english"]})
     for sighting in sightings.values():
         sighting["voice_transcripts"] = heard.get(sighting["capture_id"], [])
 

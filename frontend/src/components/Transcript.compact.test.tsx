@@ -40,4 +40,12 @@ describe("compact transcript", () => {
     render(<Transcript compact transcripts={heard} highlights={[{ quote: "back leg", label: "Condition: injured" }]} />);
     expect(screen.getByRole("button", { name: "less" })).toHaveAttribute("aria-expanded", "true");
   });
+  it("folds the English line away with the text, and offers more even when the text itself fits", async () => {
+    layout(40, 60);
+    render(<Transcript compact transcripts={[{ source: "note", language: "hi", text: "वह सो रही है।", english: "She is asleep." }]} />);
+    expect(screen.queryByText("She is asleep.")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "more" }));
+    expect(screen.getByText("IN ENGLISH")).toBeInTheDocument();
+    expect(screen.getByText("She is asleep.")).toBeInTheDocument();
+  });
 });

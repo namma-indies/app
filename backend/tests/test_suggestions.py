@@ -139,7 +139,7 @@ async def test_asks_for_strict_structured_output(configured):
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         got = await suggestions.ask_model(client, HEARD, "en")
-    assert got == [{"field": "sex", "value": "female", "quote": "She"}]
+    assert got == ([{"field": "sex", "value": "female", "quote": "She"}], None)
     request = seen[0]
     assert str(request.url) == "https://llm.example/v1/chat/completions"
     assert request.headers["authorization"] == "Bearer sk-test"
@@ -156,7 +156,7 @@ async def test_asks_for_strict_structured_output(configured):
 # End to end: transcript -> suggestion -> the observer's decision
 # ---------------------------------------------------------------------------
 
-async def _sighting_with_transcript(client, text=HEARD):
+async def _sighting_with_transcript(client, text=HEARD, language="en"):
     r = await client.post("/sighting", files={"photos": ("d.jpg", _jpeg(), "image/jpeg")},
                           data={"geo_source": "none", "captured_at": "2026-10-24T10:00:00Z"})
     assert r.status_code == 201, r.text
@@ -166,8 +166,8 @@ async def _sighting_with_transcript(client, text=HEARD):
         await c.execute(
             """INSERT INTO voice_transcripts (id, capture_id, source, pipeline_version, model,
                    outcome, language, text, segments)
-               VALUES ($1,$2,'note',$3,$4,'transcribed','en',$5,'[]')""",
-            uuid7(), sid, PIPELINE_VERSION, MODEL_NAME, text)
+               VALUES ($1,$2,'note',$3,$4,'transcribed',$6,$5,'[]')""",
+            uuid7(), sid, PIPELINE_VERSION, MODEL_NAME, text, language)
     return sid, pool
 
 
@@ -483,7 +483,8 @@ async def test_a_multi_animal_capture_gets_suggestions_per_animal(authed_client,
 
     # The sheet previews what was heard, to highlight the words behind each (#112).
     assert detail["voice_transcripts"] == [
-        {"source": "note", "language": "en", "text": "The brown one is Kaalu. The black one is limping."}]
+        {"source": "note", "language": "en", "text": "The brown one is Kaalu. The black one is limping.",
+         "english": None}]
 
     # Once published, the Journal lists each animal's own open suggestions,
     # to highlight and to point at the sheet, never to answer there.
@@ -765,3 +766,187 @@ def test_the_count_line_reaches_the_log_under_the_deployed_logging_setup():
     done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=backend,
                           env={**os.environ, "PYTHONPATH": backend}, timeout=60)
     assert "model gave 2, kept 1" in done.stderr, done.stderr[-500:]
+
+
+# ---------------------------------------------------------------------------
+# An English translation of a non-English note, asked for in the same pass (#152)
+# ---------------------------------------------------------------------------
+
+KANNADA = "ಅವಳು ಮಲಗಿದ್ದಾಳೆ. ಅವಳ ಹೆಸರು ಕಾಳು."
+IN_ENGLISH = "She is asleep. Her name is Kaalu."
+
+
+def test_a_translation_is_asked_for_only_where_it_can_help(monkeypatch):
+    monkeypatch.setattr(settings, "suggest_translate_max_chars", 2000)
+    assert suggestions.wants_english(KANNADA, "kn")
+    assert suggestions.wants_english("Mae hi'n cysgu", "cy")    # misheard English is worth reading too
+    assert not suggestions.wants_english(HEARD, "en")
+    assert not suggestions.wants_english("ಅ" * 2001, "kn")      # past the cap: the answer could be cut off
+    assert not suggestions.wants_english(KANNADA, "kn", "unparsable_reply")  # the retry drops it
+    assert suggestions.wants_english(KANNADA, "kn", "ReadTimeout")
+    monkeypatch.setattr(settings, "suggest_translate_max_chars", 0)
+    assert not suggestions.wants_english(KANNADA, "kn")
+
+
+def test_an_english_note_gets_exactly_the_request_it_got_before():
+    request = suggestions.build_request(HEARD, "en")
+    schema = request["response_format"]["json_schema"]["schema"]
+    assert list(schema["properties"]) == ["suggestions"] and schema["required"] == ["suggestions"]
+    assert request["messages"][0]["content"] == suggestions.SYSTEM_PROMPT
+    assert request["messages"][1]["content"][0]["text"] == f"Detected language: en\nNote:\n{HEARD}"
+
+
+def test_the_translation_comes_after_the_suggestions():
+    request = suggestions.build_request(KANNADA, "kn", english=True)
+    schema = request["response_format"]["json_schema"]["schema"]
+    assert list(schema["properties"]) == ["suggestions", "english"]
+    assert schema["required"] == ["suggestions", "english"]
+    assert request["messages"][0]["content"].endswith(suggestions.TRANSLATE_PROMPT)
+    assert "own language and script" in suggestions.TRANSLATE_PROMPT
+
+
+@pytest.mark.parametrize("language,hinted", [("en", False), ("kn", False), ("hi", False), ("cy", True), ("ms", True)])
+def test_an_unexpected_language_is_called_out_to_the_model(language, hinted):
+    text = suggestions.build_request(HEARD, language)["messages"][1]["content"][0]["text"]
+    assert text.startswith(f"Detected language: {language}")
+    assert ("probably misdetected" in text) is hinted
+
+
+@pytest.mark.parametrize("value,kept", [
+    (IN_ENGLISH, IN_ENGLISH),
+    ("  She is asleep.\n\nHer name is Kaalu. ", IN_ENGLISH),
+    ("", None), ("   ", None), (None, None), (42, None), (["She"], None),
+    (KANNADA, None),              # the note handed back is not a translation
+    ("x" * 8001, None),
+])
+def test_only_a_usable_translation_is_kept(value, kept):
+    assert suggestions.clean_english(value, KANNADA) == kept
+
+
+def english_reply(items, english):
+    return {"choices": [{"message": {"content": json.dumps({"suggestions": items, "english": english})}}]}
+
+
+@pytest.mark.asyncio
+async def test_a_kannada_note_is_shown_with_its_english(authed_client, configured):
+    client, _ = authed_client
+    sid, pool = await _sighting_with_transcript(client, KANNADA, "kn")
+    seen = []
+
+    async def handler(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json=english_reply(
+            [{"field": "sex", "value": "female", "quote": "ಅವಳು ಮಲಗಿದ್ದಾಳೆ"}], IN_ENGLISH))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as llm:
+        assert await suggestions.run_once(pool, None, llm)
+    assert "english" in seen[0]["response_format"]["json_schema"]["schema"]["properties"]
+    item = (await client.get("/dex")).json()["sightings"][0]
+    assert item["voice_transcripts"] == [{"source": "note", "language": "kn", "text": KANNADA, "english": IN_ENGLISH}]
+    assert [s["field"] for s in item["suggestions"]] == ["sex"]   # the translation costs nothing here
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT english_model FROM voice_transcripts") == "test-model"
+
+
+@pytest.mark.asyncio
+async def test_an_english_note_never_stores_a_translation(authed_client, configured):
+    client, _ = authed_client
+    sid, pool = await _sighting_with_transcript(client)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=english_reply([], "She is asleep.")))) as llm:
+        assert await suggestions.run_once(pool, None, llm)
+    item = (await client.get("/dex")).json()["sightings"][0]
+    assert item["voice_transcripts"][0]["english"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_bad_translation_still_keeps_the_suggestions(authed_client, configured):
+    client, _ = authed_client
+    sid, pool = await _sighting_with_transcript(client, KANNADA, "kn")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, json=english_reply([{"field": "sex", "value": "female", "quote": "ಅವಳು"}], KANNADA)))) as llm:
+        assert await suggestions.run_once(pool, None, llm)
+    item = (await client.get("/dex")).json()["sightings"][0]
+    assert item["voice_transcripts"][0]["english"] is None
+    assert [s["field"] for s in item["suggestions"]] == ["sex"]
+
+
+@pytest.mark.asyncio
+async def test_the_worker_is_asked_for_english_and_a_cut_off_answer_is_retried_without_it(authed_client, on_worker):
+    client, _ = authed_client
+    sid, pool = await _sighting_with_transcript(client, KANNADA, "kn")
+    job = await _claim(client)
+    assert "english" in job["request"]["response_format"]["json_schema"]["schema"]["properties"]
+    cut_off = json.dumps({"suggestions": [], "english": "She is"})[:-12]
+    r = await client.post(f"/internal/suggestion-jobs/{job['id']}/complete",
+                          json={"lease_token": job["lease_token"], "content": cut_off}, headers=GPU)
+    assert r.json() == {"status": "done"}
+    async with pool.acquire() as c:
+        await c.execute("UPDATE voice_transcripts SET suggest_run_after=now()")
+
+    retry = await _claim(client)
+    assert retry["id"] == job["id"]
+    schema = retry["request"]["response_format"]["json_schema"]["schema"]
+    assert list(schema["properties"]) == ["suggestions"]
+    assert not retry["request"]["messages"][0]["content"].endswith(suggestions.TRANSLATE_PROMPT)
+    r = await client.post(f"/internal/suggestion-jobs/{retry['id']}/complete", headers=GPU, json={
+        "lease_token": retry["lease_token"],
+        "content": json.dumps({"suggestions": [{"field": "sex", "value": "female", "quote": "ಅವಳು"}]})})
+    item = (await client.get("/dex")).json()["sightings"][0]
+    assert [s["field"] for s in item["suggestions"]] == ["sex"]
+    assert item["voice_transcripts"][0]["english"] is None
+
+
+@pytest.mark.asyncio
+async def test_on_the_openai_path_a_cut_off_answer_is_retried_without_english_too(authed_client, configured):
+    client, _ = authed_client
+    sid, pool = await _sighting_with_transcript(client, KANNADA, "kn")
+    seen = []
+    cut_off = json.dumps({"suggestions": [], "english": "She is"})[:-12]
+
+    async def handler(request):
+        seen.append(json.loads(request.content))
+        content = cut_off if len(seen) == 1 else json.dumps(
+            {"suggestions": [{"field": "sex", "value": "female", "quote": "ಅವಳು"}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as llm:
+        assert await suggestions.run_once(pool, None, llm)
+        async with pool.acquire() as c:
+            assert await c.fetchval("SELECT suggest_error FROM voice_transcripts") == "unparsable_reply"
+            await c.execute("UPDATE voice_transcripts SET suggest_run_after=now()")
+        assert await suggestions.run_once(pool, None, llm)
+    assert list(seen[0]["response_format"]["json_schema"]["schema"]["properties"]) == ["suggestions", "english"]
+    assert list(seen[1]["response_format"]["json_schema"]["schema"]["properties"]) == ["suggestions"]
+    item = (await client.get("/dex")).json()["sightings"][0]
+    assert [s["field"] for s in item["suggestions"]] == ["sex"]
+
+
+@pytest.mark.parametrize("content", ["", "Sure!", "[]", '{"suggestions": {}}', '{"other": []}', None, "x" * 70_000])
+def test_any_answer_off_the_agreed_shape_is_one_kind_of_failure(content):
+    with pytest.raises(suggestions.UnparsableReply):
+        suggestions.parse_reply(content)
+
+
+@pytest.mark.asyncio
+async def test_the_worker_s_translation_is_stored_with_the_local_model_named(authed_client, on_worker):
+    client, oid = authed_client
+    sid, pool = await _sighting_with_transcript(client, KANNADA, "kn")
+    job = await _claim(client)
+    r = await client.post(f"/internal/suggestion-jobs/{job['id']}/complete", headers=GPU, json={
+        "lease_token": job["lease_token"], "content": json.dumps({"suggestions": [], "english": IN_ENGLISH})})
+    assert r.json() == {"status": "done"}
+    async with pool.acquire() as c:
+        row = await c.fetchrow("SELECT english, english_model FROM voice_transcripts")
+    assert (row["english"], row["english_model"]) == (IN_ENGLISH, settings.suggest_local_model)
+
+
+@pytest.mark.asyncio
+async def test_the_review_sheet_shows_the_english_too(authed_client, on_worker):
+    client, oid = authed_client
+    pool = client._transport.app.state.pool
+    cid, _, _ = await _two_dog_capture(pool, oid, dogs=1, text=KANNADA)
+    async with pool.acquire() as c:
+        await c.execute("UPDATE voice_transcripts SET language='kn', english=$1", IN_ENGLISH)
+    sheet = (await client.get(f"/capture/{cid}")).json()
+    assert sheet["voice_transcripts"][0]["english"] == IN_ENGLISH

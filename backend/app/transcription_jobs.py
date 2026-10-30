@@ -66,7 +66,7 @@ class TranscriptCompletion(Lease):
 async def transcripts_for(conn, capture_id: UUID) -> list[dict]:
     """What was heard on one capture, the note before the clip."""
     rows = await conn.fetch(
-        "SELECT source, language, text FROM voice_transcripts WHERE capture_id=$1 "
+        "SELECT source, language, text, english FROM voice_transcripts WHERE capture_id=$1 "
         "AND pipeline_version=$2 AND outcome='transcribed' ORDER BY source DESC",
         capture_id, PIPELINE_VERSION)
     return [dict(r) for r in rows]

@@ -114,6 +114,8 @@ class Transcript(WireModel):
     source: Literal["note", "clip"]
     language: str
     text: str
+    # Translation of a non-English one, shown under it; never evidence.
+    english: str | None = None
 
 
 class CaptureStatus(CaptureReceipt):
