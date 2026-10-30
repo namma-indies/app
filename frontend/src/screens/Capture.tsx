@@ -31,6 +31,7 @@ import NoteLanguagePicker, { useNoteLanguage } from "../components/NoteLanguageP
 import type { NoteLanguage } from "../api";
 import { CONDITION_OPTIONS, EAR_NOTCH_OPTIONS, SEX_OPTIONS } from "../detailOptions";
 import { formatWhen } from "../formatWhen";
+import { useReloadGuard } from "../update/reloadGuard";
 
 const MAX_PHOTOS = 5;
 
@@ -140,6 +141,11 @@ export default function Capture() {
   // browser fix failed) must not save silently — the person confirms the
   // placeless save instead of it being the default.
   const [confirmingPlaceless, setConfirmingPlaceless] = useState(false);
+  // A reload now would throw away the draft, so a new version waits for it.
+  useReloadGuard(
+    photos.length > 0 || !!video || !!voiceNote || note.trim() !== "" || submitting ||
+      !!asking || picking || confirmingPlaceless,
+  );
   // True once the shutter file's own EXIF GPS is in hand. A placeless-save
   // confirm is only warranted when neither the file nor the browser fix gave
   // us a coordinate.

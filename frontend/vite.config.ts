@@ -16,7 +16,11 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
+      // The new SW skips waiting and claims open pages itself; the page-side
+      // half (update checks, reload-when-safe) is src/update/. The stock
+      // registerSW.js does neither, so it is not injected.
       registerType: "autoUpdate",
+      injectRegister: false,
       workbox: {
         // Server-owned routes must reach the network, not the cached SPA shell.
         // Without this the SW's navigateFallback serves index.html for the

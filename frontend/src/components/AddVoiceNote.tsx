@@ -3,6 +3,7 @@ import { addVoiceNote, HttpError, UnauthorizedError, type NoteLanguage } from ".
 import NoteLanguagePicker, { useNoteLanguage } from "./NoteLanguagePicker";
 import { newClientToken } from "../clientToken";
 import VoiceNote, { canRecordVoice, voiceNotesEnabled } from "./VoiceNote";
+import { useReloadGuard } from "../update/reloadGuard";
 
 /** The server's say on later notes (/me): on at all, and how many each takes. */
 export interface LaterNotesConfig {
@@ -41,6 +42,7 @@ export default function AddVoiceNote({ target, added, max, onAdded, onUnauthoriz
   // One per recording, kept across retries of it (a lost answer must not save it twice).
   const [token, setToken] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  useReloadGuard(!!note || saving);
   const [error, setError] = useState<string | null>(null);
   // The language picked for this note, if any; the usual one is asked once (#167).
   const [language, setLanguage] = useState<NoteLanguage | null>(null);
