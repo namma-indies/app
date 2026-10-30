@@ -1,5 +1,7 @@
 import io
 
+import pytest
+
 import piexif
 from PIL import Image
 
@@ -48,6 +50,34 @@ def test_original_strips_all_exif_but_keeps_dimensions():
     assert (out.width, out.height) == (1200, 900)  # original not downscaled
     assert reopened.size == (1200, 900)
 
+
+
+@pytest.mark.parametrize("fmt", ["JPEG", "PNG", "WEBP"])
+def test_no_location_metadata_survives_in_anything_stored(fmt):
+    """Originals and thumbnails are both served to other observers, so neither
+    may carry the uploader's GPS -- as EXIF or as an XMP packet, whatever the
+    upload's format. Crops and clip frames are re-encoded through this same
+    function, so this covers them too."""
+    gps_exif = piexif.dump({"GPS": {
+        piexif.GPSIFD.GPSLatitudeRef: b"N",
+        piexif.GPSIFD.GPSLatitude: [(12, 1), (58, 1), (0, 1)],
+    }})
+    xmp = (b'<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF '
+           b'xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description '
+           b'xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:GPSLatitude="12,58.0N"/>'
+           b'</rdf:RDF></x:xmpmeta>')
+    buf = io.BytesIO()
+    extra = {"xmp": xmp} if fmt != "PNG" else {}
+    Image.new("RGB", (640, 480), (90, 130, 110)).save(buf, fmt, exif=gps_exif, **extra)
+    assert Image.open(io.BytesIO(buf.getvalue())).info.get("exif"), "fixture must carry EXIF"
+
+    out = process_photo(buf.getvalue())
+
+    for stored in (out.original, out.thumbnail):
+        reopened = Image.open(io.BytesIO(stored))
+        assert dict(reopened.getexif()) == {}
+        assert not reopened.info.get("exif") and not reopened.info.get("xmp")
+        assert b"xmpmeta" not in stored and b"GPS" not in stored
 
 def test_thumbnail_is_smaller():
     out = process_photo(_jpeg_with_gps(size=(1200, 900)))

@@ -387,15 +387,131 @@ async def test_several_sightings_of_one_area_collapse_to_one_point(authed_client
     assert len(points) == 1
 
 
+# --- area filter -------------------------------------------------------------
+# A sighting shown as its cell centre has to be *selected* by its cell centre
+# too. Filtering on the exact point means the answer to "is it in this area"
+# changes inside the cell, so a small enough area says more than the cell does.
+
+
+def _cell(lat, lng):
+    """The cell containing (lat, lng): its centre and its south-west corner and
+    size in degrees, computed the way app/precision.py computes it."""
+    import math
+
+    from app.config import settings
+    from app.precision import _M_PER_DEG_LAT, coarsen
+
+    cell_m = settings.map_coarsen_cell_m
+    lat_step = cell_m / _M_PER_DEG_LAT
+    south = math.floor(lat / lat_step) * lat_step
+    clat, clng = coarsen(lat, lng, cell_m)
+    lng_step = cell_m / (_M_PER_DEG_LAT * math.cos(math.radians(south + lat_step / 2)))
+    west = math.floor(lng / lng_step) * lng_step
+    return (clat, clng), (west, south), (lng_step, lat_step)
+
+
+def _box(west, south, east, north):
+    return f"{west:.9f},{south:.9f},{east:.9f},{north:.9f}"
+
+
 @pytest.mark.asyncio
-async def test_bbox_still_filters_on_the_true_position(authed_client):
-    """Coarsening is a presentation concern. Filtering on the coarse point
-    instead would drop sightings near a cell edge out of their own viewport."""
+async def test_two_points_in_one_cell_are_indistinguishable_to_any_area(authed_client):
+    """For someone else's sightings, any area query returns both of two
+    sightings in the same cell or neither -- including areas far smaller than
+    the cell, and areas whose edges run between the two points."""
+    import random
+
     client, oid_a = authed_client
+    centre, (w, s), (dlng, dlat) = _cell(12.9716, 77.5946)
+    a = (s + 0.2 * dlat, w + 0.25 * dlng)
+    b = (s + 0.8 * dlat, w + 0.7 * dlng)
     await _second_observer(client)
-    theirs = await _post(client, lat="12.9716", lng="77.5946")
+    ida = await _post(client, lat=f"{a[0]:.9f}", lng=f"{a[1]:.9f}")
+    idb = await _post(client, lat=f"{b[0]:.9f}", lng=f"{b[1]:.9f}")
     _become(client, oid_a)
 
-    r = await client.get("/map", params={"bbox": "77.59,12.97,77.60,12.98"})
+    tiny = 1e-5
+    mid_lat, mid_lng = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+    boxes = [
+        # Hugging each point, far smaller than the cell.
+        (a[1] - tiny, a[0] - tiny, a[1] + tiny, a[0] + tiny),
+        (b[1] - tiny, b[0] - tiny, b[1] + tiny, b[0] + tiny),
+        # An edge between the two points, in each direction.
+        (mid_lng, s - dlat, w + 3 * dlng, s + 2 * dlat),
+        (w - 2 * dlng, s - dlat, mid_lng, s + 2 * dlat),
+        (w - dlng, mid_lat, w + 2 * dlng, s + 3 * dlat),
+        (w - dlng, s - 2 * dlat, w + 2 * dlng, mid_lat),
+        # Around the cell centre only, and the whole cell.
+        (centre[1] - tiny, centre[0] - tiny, centre[1] + tiny, centre[0] + tiny),
+        (w, s, w + dlng, s + dlat),
+    ]
+    rng = random.Random(146)
+    for _ in range(40):
+        lat0 = s + rng.uniform(-0.5, 1.5) * dlat
+        lng0 = w + rng.uniform(-0.5, 1.5) * dlng
+        size = 10 ** rng.uniform(-5, 0.5)
+        boxes.append((lng0, lat0, lng0 + size * dlng, lat0 + size * dlat))
 
-    assert theirs in [s["id"] for s in r.json()["sightings"]]
+    outcomes = set()
+    for box in boxes:
+        r = await client.get("/map", params={"bbox": _box(*box)})
+        assert r.status_code == 200, r.text
+        got = {x["id"]: (x["lat"], x["lng"]) for x in r.json()["sightings"]}
+        assert (ida in got) == (idb in got), f"split by {box}"
+        if ida in got:
+            assert got[ida] == got[idb] == centre
+        outcomes.add(ida in got)
+
+    assert outcomes == {True, False}, "the sweep must exercise both answers"
+
+
+@pytest.mark.asyncio
+async def test_area_hugging_the_true_point_misses_someone_elses_sighting(authed_client):
+    client, oid_a = authed_client
+    centre, (w, s), (dlng, dlat) = _cell(12.9716, 77.5946)
+    lat, lng = s + 0.1 * dlat, w + 0.1 * dlng
+    await _second_observer(client)
+    theirs = await _post(client, lat=f"{lat:.9f}", lng=f"{lng:.9f}")
+    _become(client, oid_a)
+
+    around_point = _box(lng - 1e-4, lat - 1e-4, lng + 1e-4, lat + 1e-4)
+    around_centre = _box(centre[1] - 1e-4, centre[0] - 1e-4, centre[1] + 1e-4, centre[0] + 1e-4)
+
+    ids = lambda r: [x["id"] for x in r.json()["sightings"]]
+    assert theirs not in ids(await client.get("/map", params={"bbox": around_point}))
+    assert theirs in ids(await client.get("/map", params={"bbox": around_centre}))
+
+
+@pytest.mark.asyncio
+async def test_your_own_sightings_still_filter_on_their_true_position(authed_client):
+    client, _ = authed_client
+    centre, (w, s), (dlng, dlat) = _cell(12.9716, 77.5946)
+    lat, lng = s + 0.1 * dlat, w + 0.1 * dlng
+    mine = await _post(client, lat=f"{lat:.9f}", lng=f"{lng:.9f}")
+
+    around_point = _box(lng - 1e-4, lat - 1e-4, lng + 1e-4, lat + 1e-4)
+    around_centre = _box(centre[1] - 1e-4, centre[0] - 1e-4, centre[1] + 1e-4, centre[0] + 1e-4)
+
+    ids = lambda r: [x["id"] for x in r.json()["sightings"]]
+    assert mine in ids(await client.get("/map", params={"bbox": around_point}))
+    assert mine not in ids(await client.get("/map", params={"bbox": around_centre}))
+
+
+@pytest.mark.asyncio
+async def test_limit_counts_only_sightings_inside_the_area(authed_client):
+    """The area test happens before the cut. A sighting the wider prefilter
+    picked up only because of where it sits in a neighbouring cell must not
+    take a slot -- that would make what survives depend on exact positions."""
+    client, oid_a = authed_client
+    centre, (w, s), (dlng, dlat) = _cell(12.9716, 77.5946)
+    await _second_observer(client)
+    # Created first, so it sorts first: just over the cell's west edge, inside
+    # the prefilter for an area around this cell, but in the cell next door.
+    outside = await _post(client, lat=f"{s + 0.5 * dlat:.9f}", lng=f"{w - 0.05 * dlng:.9f}")
+    inside = await _post(client, lat=f"{s + 0.5 * dlat:.9f}", lng=f"{w + 0.5 * dlng:.9f}")
+    _become(client, oid_a)
+
+    r = await client.get("/map", params={"bbox": _box(w, s, w + dlng, s + dlat), "limit": "1"})
+
+    assert [x["id"] for x in r.json()["sightings"]] == [inside]
+    assert outside != inside
