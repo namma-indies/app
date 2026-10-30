@@ -8,8 +8,8 @@ from app.auth.deps import require_observer
 from app.deps import get_conn, get_storage
 from app.photos import thumb_key
 from app.storage.s3 import S3Storage
-from app.suggestions import answered
-from app.transcription_jobs import PIPELINE_VERSION as TRANSCRIBE_PIPELINE
+from app.suggestions import answered, newest_per_field
+from app.voice_notes import for_sighting, heard as heard_on
 
 router = APIRouter()
 
@@ -129,22 +129,16 @@ async def get_dex(
         sighting["audio_url"] = audio_urls.get(id(sighting))
 
     # What the GPU worker heard in the note or the clip, shown in the viewer
-    # with the words each open suggestion came from highlighted (#112).
+    # with the words each open suggestion came from highlighted (#112), and
+    # each note added later with how far along it is (#156). A later note
+    # recorded about one animal of a capture shows on that animal only.
     capture_ids = {s["capture_id"] for s in sightings.values() if s["capture_id"]}
-    heard: dict[str, list[dict]] = {}
-    if capture_ids:
-        for row in await conn.fetch(
-            "SELECT capture_id, source, language, text, english FROM voice_transcripts "
-            "WHERE capture_id = ANY($1::uuid[]) AND pipeline_version = $2 "
-            "AND outcome = 'transcribed' ORDER BY source DESC",
-            list(capture_ids), TRANSCRIBE_PIPELINE,
-        ):
-            heard.setdefault(str(row["capture_id"]), []).append(
-                {"source": row["source"], "language": row["language"], "text": row["text"],
-                 # A translation of a non-English one, shown under it; never evidence.
-                 "english": row["english"]})
+    heard = await heard_on(conn, storage, [UUID(c) for c in capture_ids])
     for sighting in sightings.values():
-        sighting["voice_transcripts"] = heard.get(sighting["capture_id"], [])
+        found = heard.get(UUID(sighting["capture_id"])) if sighting["capture_id"] else None
+        shown = for_sighting(found, UUID(sighting["id"])) if found else {"transcripts": [], "notes": []}
+        sighting["voice_transcripts"] = shown["transcripts"]
+        sighting["later_notes"] = shown["notes"]
 
     # Details a model read from that transcript, for the observer to confirm
     # or correct (app/suggestions.py). Only for a detail still left blank: a
@@ -181,12 +175,13 @@ async def get_dex(
             elif row["sighting_id"] is not None:
                 for_animal.setdefault(str(row["sighting_id"]), []).append(item)
     for sighting in sightings.values():
+        # Two notes can suggest the same detail; the newest is offered.
         sighting["suggestions"] = [
-            o for o in offered.get(sighting["capture_id"], [])
+            o for o in newest_per_field(offered.get(sighting["capture_id"], []))
             if sighting["capture_id"] == sighting["id"] and not sighting["attrs"].get(o["field"])
         ]
         sighting["review_suggestions"] = [
-            o for o in for_animal.get(sighting["id"], [])
+            o for o in newest_per_field(for_animal.get(sighting["id"], []))
             if sighting["details_editable"] and not sighting["attrs"].get(o["field"])
         ]
         # A /sighting upload's suggestions are keyed by its capture; an animal's by itself.

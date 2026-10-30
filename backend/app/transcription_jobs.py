@@ -63,30 +63,29 @@ class TranscriptCompletion(Lease):
         return self
 
 
-async def transcripts_for(conn, capture_id: UUID) -> list[dict]:
-    """What was heard on one capture, the note before the clip."""
-    rows = await conn.fetch(
-        "SELECT source, language, text, english FROM voice_transcripts WHERE capture_id=$1 "
-        "AND pipeline_version=$2 AND outcome='transcribed' ORDER BY source DESC",
-        capture_id, PIPELINE_VERSION)
-    return [dict(r) for r in rows]
+def transcription_enabled() -> bool:
+    """Whether a queued sound will be transcribed: the GPU worker and its
+    transcription are both switched on."""
+    return settings.media_jobs_enabled and settings.transcription_enabled
 
 
-async def enqueue_transcription(conn, capture_id: UUID, source: str, s3_key: str) -> None:
+async def enqueue_transcription(conn, capture_id: UUID, source: str, s3_key: str,
+                                note_id: UUID | None = None) -> None:
     """Queue one sound to transcribe, inside the upload's own transaction.
 
-    A no-op unless both the GPU worker and transcription are switched on: with
-    no worker to drain it, a queued row would only ever age.
+    `note_id` is a note added after the upload (app/voice_notes.py); the
+    upload's own note and clip have none. A no-op unless transcription is
+    switched on: with no worker to drain it, a queued row would only ever age.
     """
-    if not (settings.media_jobs_enabled and settings.transcription_enabled):
+    if not transcription_enabled():
         return
     if source not in ("note", "clip"):
         raise ValueError("invalid transcription source")
     await conn.execute(
-        """INSERT INTO transcription_jobs (id, capture_id, source, s3_key, pipeline_version)
-           VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (capture_id, source, pipeline_version) DO NOTHING""",
-        uuid7(), capture_id, source, s3_key, PIPELINE_VERSION,
+        """INSERT INTO transcription_jobs (id, capture_id, source, s3_key, pipeline_version, note_id)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           ON CONFLICT ON CONSTRAINT transcription_jobs_one_per_sound DO NOTHING""",
+        uuid7(), capture_id, source, s3_key, PIPELINE_VERSION, note_id,
     )
 
 
@@ -170,14 +169,15 @@ async def complete(job_id: UUID, body: TranscriptCompletion, request: Request):
             return {"status": "done"}
         await conn.execute(
             """INSERT INTO voice_transcripts (id, capture_id, source, pipeline_version, model,
-                                              outcome, language, text, segments, suggest_status)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10)
-               ON CONFLICT (capture_id, source, pipeline_version) DO NOTHING""",
+                                              outcome, language, text, segments, suggest_status,
+                                              note_id)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11)
+               ON CONFLICT ON CONSTRAINT voice_transcripts_one_per_sound DO NOTHING""",
             uuid7(), job["capture_id"], job["source"], body.pipeline_version, body.model,
             body.outcome, body.language, body.text.strip(),
             json.dumps([s.model_dump() for s in body.segments]),
             # Nothing to suggest from silence or a mute clip (app/suggestions.py).
-            "pending" if body.outcome == "transcribed" else "skipped")
+            "pending" if body.outcome == "transcribed" else "skipped", job["note_id"])
         await conn.execute(
             "UPDATE transcription_jobs SET status='done',lease_expires_at=NULL,last_error=NULL,"
             "updated_at=now() WHERE id=$1", job_id)

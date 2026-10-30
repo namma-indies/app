@@ -28,6 +28,7 @@ from app.routes.photo_metadata import router as photo_metadata_router
 from app.media_jobs import cpu_consumer, router as media_jobs_router
 from app.routes.capture import router as capture_router
 from app.routes.social import router as social_router
+from app.routes.voice_notes import router as voice_notes_router
 from app.capture_jobs import router as capture_jobs_router
 from app.transcription_jobs import router as transcription_jobs_router
 from app.suggestions import (consumer as suggestion_consumer, router as suggestions_router,
@@ -124,6 +125,7 @@ app.include_router(capture_jobs_router)
 app.include_router(transcription_jobs_router)
 app.include_router(suggestions_router)
 app.include_router(suggestion_jobs_router)
+app.include_router(voice_notes_router)
 
 
 @app.get("/health")

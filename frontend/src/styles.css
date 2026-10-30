@@ -335,6 +335,9 @@ button { font-family: inherit; }
 /* The translation sits under the words it translates, quieter: it is a reading aid, not what was said. */
 .transcript-english { margin: 0.3rem 0 0; padding: 0 0.6rem 0 calc(0.6rem + 3px); }
 .transcript-english p { margin: 0.15rem 0 0; color: var(--muted); line-height: 1.5; }
+.transcript .viewer-audio { margin: 0.25rem 0; }
+.transcript-status { margin: 0.25rem 0 0; text-align: left; }
+.add-voice-note { display: flex; flex-direction: column; gap: 0.4rem; margin: 0.6rem 0; text-align: left; }
 
 .social-card { display: flex; flex-direction: column; gap: 0.6rem; }
 .social-photo { width: 100%; height: auto; border: 3px solid var(--line); border-radius: 4px; }

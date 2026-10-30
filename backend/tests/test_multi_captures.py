@@ -197,8 +197,8 @@ async def test_private_status_returns_source_dimensions_without_signing_original
         "bbox": [20, 40, 80, 100], "crop_bbox": [10, 20, 110, 120],
         "timestamp_ms": 1500, "s3_key": "crop.webp", "source_key": "source.webp",
         "source_width": 200, "source_height": 400, "details": {}}
-    # Instances, the receipt's sightings, open voice-note suggestions, transcripts.
-    conn = SimpleNamespace(fetch=AsyncMock(side_effect=[[row], [], [], []]), fetchrow=AsyncMock(return_value=None))
+    # Instances, the receipt's sightings, open voice-note suggestions, notes added later, transcripts.
+    conn = SimpleNamespace(fetch=AsyncMock(side_effect=[[row], [], [], [], []]), fetchrow=AsyncMock(return_value=None))
     storage = SimpleNamespace(urls=AsyncMock(side_effect=lambda keys: ["signed:" + key for key in keys]))
     response = await status(conn, storage, capture)
     evidence = response.model_dump(mode="json")["instances"][0]

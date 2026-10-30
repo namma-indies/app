@@ -62,6 +62,7 @@ from app.deps import get_conn, get_storage
 from app.detect_reid import DETECTOR_NAME
 from app.photos import thumb_key
 from app.storage.s3 import S3Storage
+from app.transcription_jobs import transcription_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,10 @@ async def me(observer_id: UUID = Depends(require_observer), conn=Depends(get_con
         # someone who has agreed to be posted and has a handle to be credited.
         "can_share_socially": bool(row["social_consent"] and row["x_handle"]),
         "multi_animal_enabled": settings.multi_animal_enabled and settings.media_jobs_enabled,
+        # Whether "Add voice note" can work now (#156): only with a worker
+        # transcribing, and how many a sighting can take.
+        "later_voice_notes_enabled": transcription_enabled(),
+        "later_voice_notes_max": settings.later_voice_notes_max,
     }
 
 

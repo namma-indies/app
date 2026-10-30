@@ -6,8 +6,10 @@ import {
   setSightingShared,
   UnauthorizedError,
   isUsed,
+  notePending,
   type Sighting,
 } from "../api";
+import AddVoiceNote, { laterNotesOffered, type LaterNotesConfig } from "../components/AddVoiceNote";
 import SuggestedDetails from "../components/SuggestedDetails";
 import Transcript from "../components/Transcript";
 import SuggestionFlow from "../components/SuggestionFlow";
@@ -18,7 +20,7 @@ import ReportSheet from "../components/ReportSheet";
 import { speciesNoun } from "../species";
 import Dogs from "./Dogs";
 import { useProcessingFeed } from "../useProcessingFeed";
-import { processingLabel } from "../processing";
+import { isProcessing, processingLabel } from "../processing";
 import { formatWhen } from "../formatWhen";
 
 const TAG_LABELS: Record<string, string> = {
@@ -49,6 +51,9 @@ function where(s: Sighting): string {
 }
 
 const SUGGESTION_NAMES = { sex: "Sex", ear_notch: "Ear notch", condition: "Condition", known_name: "Name" } as const;
+
+/** A sighting worth checking back for: its media, or a note added to it, is still being worked on. */
+const ownBusy = (s: Sighting) => isProcessing(s.processing_state) || (s.later_notes ?? []).some(notePending);
 
 const UNFINISHED = new Set<CaptureSummary["processing_state"]>(["queued", "processing", "failed", "needs_review"]);
 
@@ -87,7 +92,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
   // for the journal, so the common case costs no extra request. /map is loaded
   // lazily; only pending media or a new upload triggers automatic refreshes.
   const [scope, setScope] = useState<"mine" | "everyone">("mine");
-  const ownFeed = useProcessingFeed(getDex, view === "map" || view === "journal", onUnauthorized);
+  const ownFeed = useProcessingFeed(getDex, view === "map" || view === "journal", onUnauthorized, false, ownBusy);
   const sharedFeed = useProcessingFeed(getMap, view === "map" && scope === "everyone", onUnauthorized);
   const captureFeed = useProcessingFeed(getCaptures, view === "map" || view === "journal", onUnauthorized, true);
   // Only uploads that are not yet sightings get a Journal entry of their own.
@@ -110,12 +115,18 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
   // Local overrides after a toggle, so the button answers at once instead of
   // waiting for the next /dex refresh.
   const [sharedNow, setSharedNow] = useState<Record<string, boolean>>({});
+  // Whether "Add voice note" works now; null until /me answers, and then only
+  // offered when it does (#156).
+  const [laterNotes, setLaterNotes] = useState<LaterNotesConfig | null>(null);
 
   useEffect(() => {
     // Failure is not surfaced: lacking consent and the call failing look the
     // same from here, and both mean "do not offer the share toggle".
     getMe()
-      .then((me) => setCanShare(me.can_share_socially === true))
+      .then((me) => {
+        setCanShare(me.can_share_socially === true);
+        setLaterNotes({ enabled: me.later_voice_notes_enabled === true, max: me.later_voice_notes_max ?? 0 });
+      })
       .catch(() => {});
   }, []);
 
@@ -202,7 +213,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
         </button>
       </div>
 
-      {reviewCaptureId && <CaptureReview captureId={reviewCaptureId} onClose={() => setReviewCaptureId(null)} onUnauthorized={onUnauthorized} onSaved={() => { setReviewCaptureId(null); captureFeed.refresh(); ownFeed.refresh(); sharedFeed.refresh(); }} />}
+      {reviewCaptureId && <CaptureReview captureId={reviewCaptureId} laterNotes={laterNotesOffered(laterNotes) ? laterNotes : undefined} onClose={() => setReviewCaptureId(null)} onUnauthorized={onUnauthorized} onSaved={() => { setReviewCaptureId(null); captureFeed.refresh(); ownFeed.refresh(); sharedFeed.refresh(); }} />}
 
       {ownFeed.error && <p className="hint" role="alert">Couldn't refresh your Journal — showing the last update. <button onClick={ownFeed.refresh}>Try again</button></p>}
       {(view === "journal" || view === "map") && (ownFeed.paused || (scope === "everyone" && sharedFeed.paused)) && (
@@ -326,7 +337,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
             {selected.audio_url && <audio className="viewer-audio" src={selected.audio_url} controls preload="none" aria-label="voice note" />}
             <SuggestionFlow key={selected.id} species={selected.species} ids={[...(selected.suggestions ?? []), ...(selected.review_suggestions ?? [])].map((s) => s.id)}
               usedIds={(selected.answered_suggestions ?? []).filter(isUsed).map((s) => s.id)}>
-              <Transcript transcripts={selected.voice_transcripts ?? []} highlights={[
+              <Transcript transcripts={selected.voice_transcripts ?? []} notes={selected.later_notes ?? []} highlights={[
                 ...[...(selected.suggestions ?? []), ...(selected.review_suggestions ?? [])]
                   .map((s) => ({ id: s.id, quote: s.quote, label: `${SUGGESTION_NAMES[s.field]}: ${s.value}` })),
                 // Answered and saved: still marked, quieter. A rejected or corrected one was wrong, so it isn't.
@@ -357,6 +368,9 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
                 </div>
               )}
             </SuggestionFlow>
+            {laterNotesOffered(laterNotes) && <AddVoiceNote key={selected.id} target={{ sightingId: selected.id }} max={laterNotes.max}
+              added={(selected.later_notes ?? []).filter((n) => n.sighting_id === selected.id).length}
+              onAdded={ownFeed.refresh} onUnauthorized={onUnauthorized} />}
           </div>
         </div>
       )}

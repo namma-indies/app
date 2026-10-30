@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { decideSuggestion, UnauthorizedError } from "../api";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { decideSuggestion, notePending, UnauthorizedError } from "../api";
 import Transcript from "./Transcript";
+import AddVoiceNote, { type LaterNotesConfig } from "./AddVoiceNote";
 import { haptic } from "../haptics";
 import { playFill, useSuggestionFlow } from "../suggestionFlow";
 import { fxScope } from "../fxSprites";
@@ -83,8 +84,10 @@ function Lightbox({ photos, onClose }: { photos: { instance: CaptureInstance; in
   </div>;
 }
 
-export default function CaptureReview({ captureId, onClose, onSaved, onUnauthorized }: {
+export default function CaptureReview({ captureId, onClose, onSaved, onUnauthorized, laterNotes }: {
   captureId: string; onClose: () => void; onSaved: () => void; onUnauthorized: () => void;
+  /** Set when "Add voice note" can be offered here (#156). */
+  laterNotes?: LaterNotesConfig;
 }) {
   const [detail, setDetail] = useState<CaptureDetail | null>(null);
   const [assignments, setAssignments] = useState<Record<string, string>>({});
@@ -135,6 +138,22 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
     });
     return () => controller.abort();
   }, [captureId, revision]);
+  // A note added here, or still being worked on: check back for what was heard
+  // and suggested, without reloading the sheet (that would lose unsaved edits).
+  const [soundChecks, setSoundChecks] = useState(0);
+  const notesPending = (detail?.later_notes ?? []).some(notePending);
+  const refreshSounds = useCallback(() => getCapture(captureId).then((fresh) => setDetail((current) => current && {
+    ...current, voice_transcripts: fresh.voice_transcripts, later_notes: fresh.later_notes,
+    suggestions: fresh.suggestions, answered_suggestions: fresh.answered_suggestions,
+  })).catch((err: unknown) => {
+    if (err instanceof UnauthorizedError) unauthorizedRef.current();
+  }), [captureId]);
+  useEffect(() => {
+    if (!notesPending || soundChecks >= 12) return;
+    const timer = setTimeout(() => { void refreshSounds().finally(() => setSoundChecks((n) => n + 1)); },
+      Math.min(3000 * 2 ** soundChecks, 30000));
+    return () => clearTimeout(timer);
+  }, [notesPending, soundChecks, refreshSounds]);
   const sources = new Map<string, { instance: CaptureInstance; index: number }[]>();
   detail?.instances.forEach((instance, index) => {
     const items = sources.get(instance.photo_id) ?? [];
@@ -262,13 +281,16 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
         {detail && <>
           <p className="hint">Taken {formatWhen(detail.captured_at)}.{!compact && " Every animal from this upload shares this time and place."}</p>
           {detail.note && <p>Your note: {detail.note}</p>}
-          <Transcript compact={compact} transcripts={detail.voice_transcripts ?? []} highlights={[
+          <Transcript compact={compact} transcripts={detail.voice_transcripts ?? []} notes={detail.later_notes ?? []} highlights={[
             ...stillOpen.filter((suggestion) => !answers[suggestion.id])
               .map((suggestion) => ({ id: suggestion.id, quote: suggestion.quote, label: `${SUGGESTION_LABELS[suggestion.field]}: ${suggestion.value}` })),
             // Used, in an earlier visit or just now: still marked, quieter. Turned down ("not this") is wrong, so it isn't.
             ...[...alreadyUsed, ...(detail.suggestions ?? []).filter((suggestion) => answers[suggestion.id] === "used")]
               .map((suggestion) => ({ id: suggestion.id, quote: suggestion.quote, label: `${SUGGESTION_LABELS[suggestion.field]}: ${suggestion.value}`, used: true })),
           ]} />
+          {laterNotes && <AddVoiceNote target={{ captureId }} max={laterNotes.max}
+            added={(detail.later_notes ?? []).filter((note) => !note.sighting_id).length}
+            onAdded={() => { setSoundChecks(0); void refreshSounds(); }} onUnauthorized={onUnauthorized} />}
           {!compact && detail.instances.length > 0 && <p className="hint">Tap a box to find it in the photo. The numbers only tell boxes apart.</p>}
           {!compact && [...sources].map(([photoId, items], sourceIndex) => {
             const source = items.find(({ instance }) => instance.source_thumb_url && instance.source_bbox)?.instance;

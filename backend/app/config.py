@@ -119,6 +119,10 @@ class Settings(BaseSettings):
     # suggestions. 2,000 covers a 60 s note in any script; 0 turns it off.
     suggest_translate_max_chars: int = Field(default=2000, ge=0, le=20_000)
     media_max_audio_bytes: int = Field(default=8 * 1024 * 1024, gt=0, le=50 * 1024 * 1024)
+    # Voice notes added to a sighting after it was uploaded (#156): this many
+    # per sighting (or per capture, from its details sheet), on top of the
+    # note recorded at upload.
+    later_voice_notes_max: int = Field(default=5, ge=0, le=50)
 
     # --- re-identification -------------------------------------------------
     # Candidate scope for a new sighting. Street dogs hold small territories,
@@ -325,6 +329,12 @@ class Settings(BaseSettings):
     # is enforced separately, for the whole service, in routes/places.py.
     rl_places_times: int = 30
     rl_places_window_s: int = 60
+
+    # Voice notes added after upload (#156). Per person: each one is a whisper
+    # pass and a model pass on the shared GPU, so a runaway client must not
+    # be able to queue hours of them. Far above anyone talking about dogs.
+    rl_voice_note_times: int = 20
+    rl_voice_note_window_s: int = 3600
 
     # The reason rate limiting is in this change at all: this path had no
     # throttle of any kind and sits in front of production SES, so it was both

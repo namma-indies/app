@@ -484,7 +484,7 @@ async def test_a_multi_animal_capture_gets_suggestions_per_animal(authed_client,
     # The sheet previews what was heard, to highlight the words behind each (#112).
     assert detail["voice_transcripts"] == [
         {"source": "note", "language": "en", "text": "The brown one is Kaalu. The black one is limping.",
-         "english": None}]
+         "english": None, "note_id": None, "added_at": None, "audio_url": None}]
 
     # Once published, the Journal lists each animal's own open suggestions,
     # to highlight and to point at the sheet, never to answer there.
@@ -842,7 +842,7 @@ async def test_a_kannada_note_is_shown_with_its_english(authed_client, configure
         assert await suggestions.run_once(pool, None, llm)
     assert "english" in seen[0]["response_format"]["json_schema"]["schema"]["properties"]
     item = (await client.get("/dex")).json()["sightings"][0]
-    assert item["voice_transcripts"] == [{"source": "note", "language": "kn", "text": KANNADA, "english": IN_ENGLISH}]
+    assert item["voice_transcripts"] == [{"source": "note", "language": "kn", "text": KANNADA, "english": IN_ENGLISH, "note_id": None, "added_at": None, "audio_url": None}]
     assert [s["field"] for s in item["suggestions"]] == ["sex"]   # the translation costs nothing here
     async with pool.acquire() as c:
         assert await c.fetchval("SELECT english_model FROM voice_transcripts") == "test-model"

@@ -116,6 +116,20 @@ class Transcript(WireModel):
     text: str
     # Translation of a non-English one, shown under it; never evidence.
     english: str | None = None
+    # A note added after the upload (#156): which, when, and its audio.
+    note_id: UUID | None = None
+    added_at: datetime | None = None
+    audio_url: str | None = None
+
+
+class LaterNote(WireModel):
+    """A voice note added after the upload, and how far along it is (app/voice_notes.py)."""
+    id: UUID
+    # The animal it was recorded about; None for one added to the whole capture.
+    sighting_id: UUID | None = None
+    added_at: datetime
+    audio_url: str
+    state: Literal["transcribing", "reading", "done", "no_speech", "failed"]
 
 
 class CaptureStatus(CaptureReceipt):
@@ -129,6 +143,7 @@ class CaptureStatus(CaptureReceipt):
     # Added beside `suggestions` (open only), never in place of it: older builds read that.
     answered_suggestions: list[AnsweredSuggestion] = Field(default_factory=list)
     voice_transcripts: list[Transcript] = Field(default_factory=list)
+    later_notes: list[LaterNote] = Field(default_factory=list)
 
 
 class MultiUpload(WireModel):
