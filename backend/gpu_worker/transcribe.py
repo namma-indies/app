@@ -20,6 +20,11 @@ Flags, each for a measured reason on real field recordings:
   whisper-server already returns and, when the detection is outside that
   set, transcribes once more with the language named: the most likely one in
   the set, or English when none of them is likely (``FALLBACK_MIN``).
+  A job may also carry a language hint (#171), from what the person said they
+  speak their notes in: forced, it is the language, in one pass; otherwise it
+  is transcribed in unless whisper is very sure (``HINT_OVERRIDE_MIN``) of
+  another language in the set. Indian English heard as Hindi is the case it
+  catches. Jobs without one behave exactly as before.
 - ``--vad``: without it large-v3 invents repeated lines over silent windows.
 - ``-vp 200``: pad each detected speech span by 200 ms. whisper-server's
   default pad clipped the first word whenever speech began at the very start
@@ -31,7 +36,7 @@ Flags, each for a measured reason on real field recordings:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 import logging
 import math
@@ -58,6 +63,9 @@ ALLOWED = ("en", "hi", "kn", "ta", "te", "ml", "mr", "bn", "gu", "pa", "ur")
 # Below this, the likeliest allowed language is a guess too; English is the
 # safer one (it is what most notes are in, and what a misheard one was).
 FALLBACK_MIN = 0.2
+# A hinted language gives way only to another allowed one whisper is this
+# sure of: Indian English heard as Hindi scores well below it.
+HINT_OVERRIDE_MIN = 0.8
 logger = logging.getLogger(__name__)
 # Never hand the worker's API token to a child process.
 _SECRET_ENV = ("MEDIA_GPU_TOKEN",)
@@ -75,6 +83,10 @@ class Transcript:
     language: str | None = None
     text: str = ""
     segments: list[dict] = field(default_factory=list)
+    # How the language was settled, in codes and numbers only (never words):
+    # what whisper detected, what it was transcribed in, and its three likeliest
+    # languages. Sent only to an API that says it takes it (client.py).
+    diagnostics: dict | None = None
 
 
 def _ffmpeg() -> str:
@@ -159,7 +171,11 @@ class Transcriber:
                 pass
             self.process.wait()
 
-    def transcribe(self, raw: bytes) -> Transcript:
+    def transcribe(self, raw: bytes, hint: str | None = None, forced: bool = False) -> Transcript:
+        """`hint` is the language the person speaks their notes in, `forced` if
+        they chose it for this one note (see the module docstring)."""
+        if hint not in ALLOWED:
+            hint, forced = None, False
         if not isinstance(raw, bytes) or not raw:
             raise ValueError("empty audio")
         with tempfile.TemporaryDirectory(prefix="gpu-audio-") as directory:
@@ -184,20 +200,35 @@ class Transcriber:
                 return Transcript("no_speech")
             if not self.alive():
                 self.start()
+            if forced:
+                raw = self._infer(wav, hint)
+                return _diagnosed(parse(raw), raw, None, hint)
             raw = self._infer(wav)
             heard = parse(raw)
             if heard.outcome != "transcribed":
-                return heard
-            chosen = choose_language(raw)
+                return _diagnosed(heard, raw, None, None)
+            chosen = choose_language(raw) if hint is None else with_hint(raw, hint)
+            if chosen is None and heard.language not in ALLOWED:
+                # No probabilities to choose by (an older server, or a reply
+                # without usable ones): a reading outside the set is still never
+                # kept. English, the fallback, is tried instead.
+                chosen = "en"
             if chosen is None or chosen == heard.language:
-                return heard
+                return _diagnosed(heard, raw, heard.language, heard.language)
             # Codes and probabilities only, never what was said.
             logger.warning("whisper language %s replaced by %s (%s)", heard.language, chosen,
                            _odds(raw, heard.language, chosen))
             again = parse(self._infer(wav, chosen))
-            # Named, it may find no words where auto-detection found some; the
-            # first reading is then all there is.
-            return again if again.outcome == "transcribed" else heard
+            if hint is not None or heard.language not in ALLOWED:
+                # What it hears in the language chosen stands, even nothing:
+                # falling back to the first reading would bring back a language
+                # the hint overruled, or one outside the set (the Malay a noisy
+                # English clip came back as).
+                return _diagnosed(again, raw, heard.language, chosen)
+            # The first reading is in an allowed language but unsure: named, it
+            # may find no words where auto-detection found some, and then the
+            # first reading is all there is.
+            return _diagnosed(again if again.outcome == "transcribed" else heard, raw, heard.language, chosen)
 
     def _infer(self, wav: Path, language: str | None = None) -> bytes:
         data = {"response_format": "verbose_json", "temperature": "0.0"}
@@ -248,6 +279,26 @@ def choose_language(raw: bytes) -> str | None:
         return None
     best = max(ALLOWED, key=lambda code: odds.get(code, 0.0))
     return best if odds.get(best, 0.0) >= FALLBACK_MIN else "en"
+
+
+def with_hint(raw: bytes, hint: str) -> str:
+    """The language to transcribe in when the person speaks `hint`: theirs,
+    unless whisper is at least ``HINT_OVERRIDE_MIN`` sure of another allowed
+    language. With no probabilities to go on (an older server), theirs."""
+    odds = _probabilities(raw)
+    if odds is None:
+        return hint
+    best = max(ALLOWED, key=lambda code: odds.get(code, 0.0))
+    return best if best != hint and odds.get(best, 0.0) >= HINT_OVERRIDE_MIN else hint
+
+
+def _diagnosed(heard: Transcript, raw: bytes, detected: str | None, chosen: str | None) -> Transcript:
+    """`heard` with how its language was settled: codes and numbers only."""
+    odds = _probabilities(raw) or {}
+    top = sorted(odds.items(), key=lambda item: (-item[1], item[0]))[:3]
+    return replace(heard, diagnostics={
+        "detected": detected, "chosen": chosen,
+        "top": [[code, round(p, 4)] for code, p in top if _LANGUAGE.match(code)]})
 
 
 def _odds(raw: bytes, *codes: str) -> str:
