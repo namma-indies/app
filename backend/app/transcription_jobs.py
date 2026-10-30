@@ -13,7 +13,7 @@ step to suggest field values from, which an observer then confirms.
 import hmac
 import json
 import secrets
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -40,6 +40,18 @@ class Segment(WireModel):
     text: str = Field(max_length=MAX_TEXT)
 
 
+_CODE = r"^[a-z]{2,3}$"
+
+
+class LanguageDiagnostics(WireModel):
+    """How the worker settled the language (#173): codes and numbers only."""
+    detected: str | None = Field(default=None, pattern=_CODE)
+    chosen: str | None = Field(default=None, pattern=_CODE)
+    # The likeliest languages and their probabilities, at most three.
+    top: list[tuple[Annotated[str, Field(pattern=_CODE)], Annotated[float, Field(ge=0, le=1)]]] = Field(
+        default_factory=list, max_length=3)
+
+
 class TranscriptCompletion(Lease):
     pipeline_version: Literal[PIPELINE_VERSION]
     model: Literal[MODEL_NAME]
@@ -48,6 +60,8 @@ class TranscriptCompletion(Lease):
     language: str | None = Field(default=None, pattern=r"^[a-z]{2,3}$")
     text: str = Field(default="", max_length=MAX_TEXT)
     segments: list[Segment] = Field(default_factory=list, max_length=MAX_SEGMENTS)
+    # Sent only by a worker told this API takes it (`accepts` in the claim).
+    language_diagnostics: LanguageDiagnostics | None = None
 
     @model_validator(mode="after")
     def consistent(self):
@@ -151,7 +165,10 @@ async def claim(body: Claim, request: Request, storage=Depends(get_storage)):
                     "source": {"url": url},
                     # The language to transcribe in (app/note_language.py). A worker
                     # from before these fields reads only the ones it knows.
-                    "language_hint": job["language_hint"], "language_forced": job["language_forced"]}}
+                    "language_hint": job["language_hint"], "language_forced": job["language_forced"],
+                    # What this API takes back besides the transcript (#173): a worker
+                    # sends extras only when listed, as one from before would refuse them.
+                    "accepts": ["language_diagnostics"]}}
 
 
 @router.post("/{job_id}/heartbeat")
@@ -176,14 +193,15 @@ async def complete(job_id: UUID, body: TranscriptCompletion, request: Request):
         await conn.execute(
             """INSERT INTO voice_transcripts (id, capture_id, source, pipeline_version, model,
                                               outcome, language, text, segments, suggest_status,
-                                              note_id)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11)
+                                              note_id, language_diagnostics)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12::jsonb)
                ON CONFLICT ON CONSTRAINT voice_transcripts_one_per_sound DO NOTHING""",
             uuid7(), job["capture_id"], job["source"], body.pipeline_version, body.model,
             body.outcome, body.language, body.text.strip(),
             json.dumps([s.model_dump() for s in body.segments]),
             # Nothing to suggest from silence or a mute clip (app/suggestions.py).
-            "pending" if body.outcome == "transcribed" else "skipped", job["note_id"])
+            "pending" if body.outcome == "transcribed" else "skipped", job["note_id"],
+            body.language_diagnostics.model_dump_json() if body.language_diagnostics else None)
         await conn.execute(
             "UPDATE transcription_jobs SET status='done',lease_expires_at=NULL,last_error=NULL,"
             "updated_at=now() WHERE id=$1", job_id)
