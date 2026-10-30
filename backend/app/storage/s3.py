@@ -66,6 +66,12 @@ class S3Storage:
                 ContentType=content_type,
             )
 
+    async def delete(self, key: str) -> None:
+        """Remove one object. Removing one that is not there succeeds, as
+        S3 does, so a retried deletion finishes rather than fails."""
+        async with self._client() as client:
+            await client.delete_object(Bucket=self.bucket, Key=key)
+
     async def put_file(self, key: str, path: str, content_type: str) -> int:
         """Upload a file by streaming it, and return the byte count.
 

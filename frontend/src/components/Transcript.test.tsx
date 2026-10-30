@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import Transcript, { highlightSpans, languageLabel } from "./Transcript";
+import userEvent from "@testing-library/user-event";
+import Transcript, { DELETE_NOTE_WARNING, highlightSpans, languageLabel } from "./Transcript";
 
 afterEach(cleanup);
 
@@ -205,5 +206,48 @@ describe("a quote is marked only in the note it came from (#156)", () => {
   it("marks anywhere when an older server does not say which note", () => {
     const { container } = render(<Transcript transcripts={[upload, later]} highlights={[{ quote: "limping", label: "Condition: injured" }]} />);
     expect(container.querySelectorAll("mark")).toHaveLength(2);
+  });
+});
+
+describe("deleting a note added later (#158)", () => {
+  const later = { source: "note" as const, language: "en", text: "Same dog again.", note_id: "n1", added_at: "2026-10-30T09:00:00Z", audio_url: "n1.m4a" };
+  const waiting = { id: "n2", sighting_id: "s", added_at: "2026-10-30T10:00:00Z", audio_url: "n2.m4a", state: "transcribing" as const };
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("offers it on every note added later, never on the upload's own, and asks first", async () => {
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal("confirm", confirm);
+    const onDeleteNote = vi.fn(() => Promise.resolve());
+    render(<Transcript transcripts={[{ source: "note", language: "en", text: "Brown dog by the gate." }, later]}
+      notes={[{ ...waiting, id: "n1", state: "done" }, waiting]} onDeleteNote={onDeleteNote} />);
+    const buttons = screen.getAllByRole("button", { name: "delete note" });
+    expect(buttons).toHaveLength(2);
+    await userEvent.click(buttons[0]);
+    expect(confirm).toHaveBeenCalledWith(DELETE_NOTE_WARNING);
+    expect(DELETE_NOTE_WARNING).toMatch(/Details you’ve already filled in stay/);
+    expect(onDeleteNote).toHaveBeenCalledWith("n1");
+    await userEvent.click(buttons[1]);
+    expect(onDeleteNote).toHaveBeenLastCalledWith("n2");
+  });
+
+  it("does nothing when the person changes their mind", async () => {
+    vi.stubGlobal("confirm", vi.fn(() => false));
+    const onDeleteNote = vi.fn(() => Promise.resolve());
+    render(<Transcript transcripts={[later]} onDeleteNote={onDeleteNote} />);
+    await userEvent.click(screen.getByRole("button", { name: "delete note" }));
+    expect(onDeleteNote).not.toHaveBeenCalled();
+  });
+
+  it("says so when it could not delete", async () => {
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    render(<Transcript transcripts={[later]} onDeleteNote={() => Promise.reject(new Error("503"))} />);
+    await userEvent.click(screen.getByRole("button", { name: "delete note" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn’t delete the note. Try again.");
+    expect(screen.getByRole("button", { name: "delete note" })).toBeEnabled();
+  });
+
+  it("is not offered without a way to delete", () => {
+    render(<Transcript transcripts={[later]} />);
+    expect(screen.queryByRole("button", { name: "delete note" })).not.toBeInTheDocument();
   });
 });

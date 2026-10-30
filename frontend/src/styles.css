@@ -337,6 +337,7 @@ button { font-family: inherit; }
 .transcript-english p { margin: 0.15rem 0 0; color: var(--muted); line-height: 1.5; }
 .transcript .viewer-audio { margin: 0.25rem 0; }
 .transcript-status { margin: 0.25rem 0 0; text-align: left; }
+.transcript-delete { padding: 2px 0; font-size: .85rem; }
 .add-voice-note { display: flex; flex-direction: column; gap: 0.4rem; margin: 0.6rem 0; text-align: left; }
 
 .social-card { display: flex; flex-direction: column; gap: 0.6rem; }

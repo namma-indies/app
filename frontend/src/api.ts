@@ -317,6 +317,14 @@ export async function addVoiceNote(
   return handle(res);
 }
 
+/** Delete a note you added later, for good: its recording, its words and the
+ * suggestions read from it. Details already filled in from it stay (#158). */
+export async function deleteVoiceNote(noteId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/voice-note/${encodeURIComponent(noteId)}`, { method: "DELETE", credentials: "include" });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok && res.status !== 404) throw new HttpError(res.status);   // already gone is gone
+}
+
 /** The observer's answer to a suggestion: the option they tapped, or no. */
 export async function decideSuggestion(
   id: string,

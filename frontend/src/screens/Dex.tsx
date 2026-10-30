@@ -5,6 +5,7 @@ import {
   getMe,
   setSightingShared,
   UnauthorizedError,
+  deleteVoiceNote,
   isUsed,
   notePending,
   type Sighting,
@@ -129,6 +130,16 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
       })
       .catch(() => {});
   }, []);
+
+  async function removeNote(id: string) {
+    try {
+      await deleteVoiceNote(id);
+    } catch (err) {
+      if (err instanceof UnauthorizedError) onUnauthorized();
+      throw err;
+    }
+    ownFeed.refresh();
+  }
 
   async function toggleShared(id: string, shared: boolean) {
     try {
@@ -337,7 +348,8 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
             {selected.audio_url && <audio className="viewer-audio" src={selected.audio_url} controls preload="none" aria-label="voice note" />}
             <SuggestionFlow key={selected.id} species={selected.species} ids={[...(selected.suggestions ?? []), ...(selected.review_suggestions ?? [])].map((s) => s.id)}
               usedIds={(selected.answered_suggestions ?? []).filter(isUsed).map((s) => s.id)}>
-              <Transcript transcripts={selected.voice_transcripts ?? []} notes={selected.later_notes ?? []} highlights={[
+              <Transcript transcripts={selected.voice_transcripts ?? []} notes={selected.later_notes ?? []}
+                onDeleteNote={(id) => removeNote(id)} highlights={[
                 ...[...(selected.suggestions ?? []), ...(selected.review_suggestions ?? [])]
                   .map((s) => ({ id: s.id, quote: s.quote, label: `${SUGGESTION_NAMES[s.field]}: ${s.value}`, noteId: s.note_id })),
                 // Answered and saved: still marked, quieter. A rejected or corrected one was wrong, so it isn't.

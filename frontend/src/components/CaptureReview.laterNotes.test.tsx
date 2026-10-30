@@ -49,4 +49,19 @@ describe("Add voice note in the details sheet (#156)", () => {
     await vi.advanceTimersByTimeAsync(60000);
     await waitFor(() => expect(getCapture).toHaveBeenCalledTimes(2));
   });
+
+  it("lets you delete a saved note even when adding one is not offered", async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(null, { status: 204 })));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    vi.mocked(getCapture).mockResolvedValueOnce({ ...detail, later_notes: [{ ...detail.later_notes![0], state: "done" }],
+      voice_transcripts: [{ source: "note", language: "en", text: "The brown one is Kaalu.", note_id: "n1", added_at: "2026-10-30T09:00:00Z" }] })
+      .mockResolvedValue({ ...detail, later_notes: [], voice_transcripts: [] });
+    render(<CaptureReview captureId="c" onClose={() => {}} onSaved={() => {}} onUnauthorized={() => {}} />);
+    expect(screen.queryByRole("button", { name: "🎙 add a voice note" })).not.toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: "delete note" }));
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/\/voice-note\/n1$/), expect.objectContaining({ method: "DELETE" }));
+    await waitFor(() => expect(screen.queryByText("The brown one is Kaalu.")).not.toBeInTheDocument());
+    vi.unstubAllGlobals();
+  });
 });

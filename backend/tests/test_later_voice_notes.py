@@ -9,6 +9,7 @@ from app.config import settings
 from app.deps import get_storage
 from app.ids import uuid7
 from app.transcription_jobs import MODEL_NAME, PIPELINE_VERSION
+from app.media_purges import settled
 from app.voice_notes import note_state
 from tests.test_suggestions import _jpeg, _two_dog_capture
 from tests.test_transcription_jobs import GPU, NOTE, _post_note
@@ -378,3 +379,294 @@ async def test_two_saves_of_one_recording_at_once_leave_one_note_and_one_copy_of
         assert await c.fetchval("SELECT count(*) FROM transcription_jobs WHERE note_id IS NOT NULL") == 1
         key = await c.fetchval("SELECT s3_key FROM voice_notes")
     assert await get_storage().list_keys(f"sightings/{sid}/notes/") == [key]
+
+
+# ---------------------------------------------------------------------------
+# Deleting a note added later (#158)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_deleting_a_note_removes_its_audio_words_and_open_suggestions_but_not_what_was_chosen(authed_client, enabled):
+    client, _ = authed_client
+    sid = await _post_note(client)
+    await _transcribe(client, "Brown dog by the gate.")
+    await _suggest(client, [])
+    note_id = (await _add(client, f"/sighting/{sid}/voice-note")).json()["note_id"]
+    await _transcribe(client, "She is a female and her left ear is notched.")
+    await _suggest(client, [{"field": "sex", "value": "female", "quote": "She is a female"},
+                            {"field": "ear_notch", "value": "left", "quote": "her left ear is notched"}])
+    offered = {s["field"]: s for s in _entry((await client.get("/dex")).json())["suggestions"]}
+    r = await client.post(f"/suggestion/{offered['sex']['id']}", json={"verdict": "choose", "value": "female"})
+    assert r.status_code == 200
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as c:
+        key = await c.fetchval("SELECT s3_key FROM voice_notes WHERE id=$1", note_id)
+
+    r = await client.delete(f"/voice-note/{note_id}")
+    assert r.status_code == 204
+    entry = _entry((await client.get("/dex")).json())
+    assert entry["later_notes"] == []
+    assert [h["text"] for h in entry["voice_transcripts"]] == ["Brown dog by the gate."]   # the upload's own stays
+    assert entry["suggestions"] == [] and entry["answered_suggestions"] == []
+    assert entry["attrs"]["sex"] == "female"                                           # chosen, so kept
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT count(*) FROM voice_notes") == 0
+        # The open ear-notch suggestion is gone; the answered one stays on record, without the words.
+        kept = await c.fetch("SELECT field, value, status, decided_value, quote, transcript_id FROM detail_suggestions")
+        assert [dict(r) for r in kept] == [{"field": "sex", "value": "female", "status": "accepted",
+                                            "decided_value": "female", "quote": "", "transcript_id": None}]
+        assert await c.fetchval("SELECT count(*) FROM voice_transcripts") == 1
+        assert await c.fetchval("SELECT count(*) FROM transcription_jobs WHERE note_id IS NOT NULL") == 0
+    assert key not in await get_storage().list_keys(f"sightings/{sid}/")
+    assert (await client.delete(f"/voice-note/{note_id}")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_only_the_owner_deletes_a_note(authed_client, enabled):
+    client, _ = authed_client
+    sid = await _photo_sighting(client)
+    note_id = (await _add(client, f"/sighting/{sid}/voice-note")).json()["note_id"]
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as c:
+        stranger = uuid4()
+        await c.execute("INSERT INTO observers(id) VALUES($1)", stranger)
+        await c.execute("UPDATE voice_notes SET observer_id=$1", stranger)
+    assert (await client.delete(f"/voice-note/{note_id}")).status_code == 404
+    assert (await client.delete(f"/voice-note/{uuid7()}")).status_code == 404
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT count(*) FROM voice_notes") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_store_that_refuses_still_deletes_the_note_and_owes_the_audio(authed_client, enabled, monkeypatch, caplog):
+    import logging
+    client, _ = authed_client
+    sid = await _photo_sighting(client)
+    note_id = (await _add(client, f"/sighting/{sid}/voice-note")).json()["note_id"]
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as c:
+        key = await c.fetchval("SELECT s3_key FROM voice_notes")
+    from app.storage.s3 import S3Storage
+    real_delete = S3Storage.delete
+
+    async def refuse(self, key):
+        raise PermissionError("AccessDenied")
+    monkeypatch.setattr(S3Storage, "delete", refuse)
+    with caplog.at_level(logging.WARNING):
+        assert (await client.delete(f"/voice-note/{note_id}")).status_code == 204   # never the store's to refuse
+        await settled()
+    assert _entry((await client.get("/dex")).json())["later_notes"] == []
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT count(*) FROM voice_notes") == 0
+        owed = dict(await c.fetchrow("SELECT s3_key, reason, attempts, last_error FROM media_purges"))
+    assert owed == {"s3_key": key, "reason": "voice_note_deleted", "attempts": 1, "last_error": "PermissionError"}
+    assert key in caplog.text
+    assert key in await get_storage().list_keys(f"sightings/{sid}/notes/")             # still there, and on record
+
+    # Aswin's script, with credentials that may delete: dry run first, then for real.
+    monkeypatch.setattr(S3Storage, "delete", real_delete)
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import purge_media
+    assert await purge_media.run(pool, get_storage(), apply=False) == (1, 0, 0)
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT count(*) FROM media_purges") == 1
+    assert await purge_media.run(pool, get_storage(), apply=True) == (1, 1, 0)
+    assert key not in await get_storage().list_keys(f"sightings/{sid}/notes/")
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT count(*) FROM media_purges") == 0
+    assert await purge_media.run(pool, get_storage(), apply=True) == (0, 0, 0)       # safe to repeat
+
+
+@pytest.mark.asyncio
+async def test_a_delete_the_store_accepts_owes_nothing(authed_client, enabled):
+    client, _ = authed_client
+    sid = await _photo_sighting(client)
+    note_id = (await _add(client, f"/sighting/{sid}/voice-note")).json()["note_id"]
+    assert (await client.delete(f"/voice-note/{note_id}")).status_code == 204
+    await settled()
+    async with client._transport.app.state.pool.acquire() as c:
+        assert await c.fetchval("SELECT count(*) FROM media_purges") == 0
+    assert await get_storage().list_keys(f"sightings/{sid}/notes/") == []
+
+
+@pytest.mark.asyncio
+async def test_a_note_deleted_mid_transcription_is_refused_to_the_worker(authed_client, enabled):
+    client, _ = authed_client
+    sid = await _photo_sighting(client)
+    note_id = (await _add(client, f"/sighting/{sid}/voice-note")).json()["note_id"]
+    job = (await client.post("/internal/transcription-jobs/claim", json={"owner": "dgx-1"}, headers=GPU)).json()["job"]
+    assert (await client.delete(f"/voice-note/{note_id}")).status_code == 204
+    r = await client.post(f"/internal/transcription-jobs/{job['id']}/complete", headers=GPU, json={
+        "lease_token": job["lease_token"], "pipeline_version": PIPELINE_VERSION, "model": MODEL_NAME,
+        "outcome": "transcribed", "language": "en", "text": "too late", "segments": [{"start_ms": 0, "end_ms": 1, "text": "too late"}]})
+    assert r.status_code == 409
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT count(*) FROM voice_transcripts") == 0
+
+
+@pytest.mark.asyncio
+async def test_answered_suggestions_from_two_deleted_notes_can_share_a_detail(authed_client, enabled):
+    client, _ = authed_client
+    sid = await _photo_sighting(client)
+    for text in ("She is a female.", "Yes she is a female."):
+        note_id = (await _add(client, f"/sighting/{sid}/voice-note")).json()["note_id"]
+        await _transcribe(client, text)
+        await _suggest(client, [{"field": "sex", "value": "female", "quote": "she is a female"}])
+        (offer,) = _entry((await client.get("/dex")).json())["suggestions"]
+        assert (await client.post(f"/suggestion/{offer['id']}", json={"verdict": "dismiss"})).status_code == 200
+        assert (await client.delete(f"/voice-note/{note_id}")).status_code == 204
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT count(*) FROM detail_suggestions WHERE transcript_id IS NULL") == 2
+
+
+@pytest.mark.asyncio
+async def test_suggestions_stored_while_a_note_is_deleted_are_cleared_with_it(authed_client, enabled):
+    """The model's answer is being stored (its transcript held) when the
+    delete arrives: the delete waits for it, then clears what it wrote."""
+    import asyncio
+    client, _ = authed_client
+    sid = await _photo_sighting(client)
+    note_id = (await _add(client, f"/sighting/{sid}/voice-note")).json()["note_id"]
+    await _transcribe(client, "She is a female.")
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as c:
+        transcript = await c.fetchval("SELECT id FROM voice_transcripts WHERE note_id=$1", note_id)
+    storing = await pool.acquire()
+    try:
+        tx = storing.transaction()
+        await tx.start()
+        # What _store does: hold the transcript, then write an open suggestion quoting it.
+        await storing.execute("SELECT id FROM voice_transcripts WHERE id=$1 FOR KEY SHARE", transcript)
+        await storing.execute(
+            """INSERT INTO detail_suggestions (id, capture_id, transcript_id, field, value, quote, model)
+               VALUES ($1,$2,$3,'sex','female','She is a female','m')""", uuid7(), sid, transcript)
+        deleting = asyncio.create_task(client.delete(f"/voice-note/{note_id}"))
+        await asyncio.sleep(0.3)
+        assert not deleting.done()                     # fenced: waits for the write in flight
+        await tx.commit()
+    finally:
+        await pool.release(storing)
+    assert (await deleting).status_code == 204
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT count(*) FROM detail_suggestions") == 0
+
+
+@pytest.mark.asyncio
+async def test_an_answer_stored_after_its_note_was_deleted_writes_nothing(authed_client, enabled):
+    from app import suggestions as s
+    client, _ = authed_client
+    sid = await _photo_sighting(client)
+    note_id = (await _add(client, f"/sighting/{sid}/voice-note")).json()["note_id"]
+    await _transcribe(client, "She is a female.")
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as c:
+        row = dict(await c.fetchrow("SELECT id, capture_id, language, text FROM voice_transcripts WHERE note_id=$1", note_id))
+    assert (await client.delete(f"/voice-note/{note_id}")).status_code == 204
+    await s._store(pool, row, [{"field": "sex", "value": "female", "quote": "She is a female"}], None, "m")
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT count(*) FROM detail_suggestions") == 0
+
+
+@pytest.mark.asyncio
+async def test_a_store_that_never_answers_does_not_hold_up_the_delete(authed_client, enabled, monkeypatch):
+    import asyncio
+    from app import media_purges
+    from app.storage.s3 import S3Storage
+    client, _ = authed_client
+    sid = await _photo_sighting(client)
+    note_id = (await _add(client, f"/sighting/{sid}/voice-note")).json()["note_id"]
+    answer = asyncio.Event()
+
+    async def hang(self, key):
+        await answer.wait()
+    monkeypatch.setattr(S3Storage, "delete", hang)
+    r = await asyncio.wait_for(client.delete(f"/voice-note/{note_id}"), timeout=5)
+    assert r.status_code == 204                                                    # returned while the store is silent
+    assert _entry((await client.get("/dex")).json())["later_notes"] == []          # and the viewer has it gone
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT count(*) FROM media_purges") == 1         # owed, on record
+    answer.set()
+    await settled()
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT count(*) FROM media_purges") == 0
+    # A store that never answers at all is given up on, bounded, and left recorded.
+    note_id = (await _add(client, f"/sighting/{sid}/voice-note", token="rec-9")).json()["note_id"]
+    monkeypatch.setattr(media_purges, "PURGE_TIMEOUT_S", 0.2)
+    answer.clear()
+    assert (await client.delete(f"/voice-note/{note_id}")).status_code == 204
+    await settled()
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT last_error FROM media_purges") == "TimeoutError"
+
+
+@pytest.mark.asyncio
+async def test_a_recording_saved_again_after_its_note_was_deleted_keeps_its_audio(authed_client, enabled, monkeypatch):
+    """add with token T, delete while the store refuses, save T again, then purge: the live note keeps its audio."""
+    import sys
+    from pathlib import Path
+    from app.storage.s3 import S3Storage
+    client, _ = authed_client
+    sid = await _photo_sighting(client)
+    path = f"/sighting/{sid}/voice-note"
+    first = (await _add(client, path, token="rec-1")).json()["note_id"]
+    real_delete = S3Storage.delete
+
+    async def refuse(self, key):
+        raise PermissionError("AccessDenied")
+    monkeypatch.setattr(S3Storage, "delete", refuse)
+    assert (await client.delete(f"/voice-note/{first}")).status_code == 204
+    await settled()
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as c:
+        key = await c.fetchval("SELECT s3_key FROM media_purges")
+    again = await _add(client, path, token="rec-1")
+    assert again.status_code == 202 and again.json()["note_id"] == first        # the same recording, the same key
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT count(*) FROM media_purges") == 0         # taken back from the purge
+    monkeypatch.setattr(S3Storage, "delete", real_delete)
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import purge_media
+    assert await purge_media.run(pool, get_storage(), apply=True) == (0, 0, 0)
+    assert await get_storage().get(key) == LATER                                   # still there for the live note
+    # And a purge record that somehow survived would still not delete a live note's audio.
+    async with pool.acquire() as c:
+        await c.execute("INSERT INTO media_purges (s3_key, reason) VALUES ($1, 'test')", key)
+    assert await purge_media.run(pool, get_storage(), apply=True) == (1, 1, 0)
+    assert await get_storage().get(key) == LATER
+
+
+@pytest.mark.asyncio
+async def test_a_delete_and_a_transcription_completing_at_once_do_not_deadlock(authed_client, enabled):
+    """Completion holds the note's job and then writes a transcript pointing at the
+    note; a delete arriving in between waits for it rather than deadlocking."""
+    import asyncio
+    client, _ = authed_client
+    sid = await _photo_sighting(client)
+    note_id = (await _add(client, f"/sighting/{sid}/voice-note")).json()["note_id"]
+    pool = client._transport.app.state.pool
+    completing = await pool.acquire()
+    try:
+        tx = completing.transaction()
+        await tx.start()
+        job = await completing.fetchval("SELECT id FROM transcription_jobs WHERE note_id=$1 FOR UPDATE", note_id)
+        deleting = asyncio.create_task(client.delete(f"/voice-note/{note_id}"))
+        await asyncio.sleep(0.3)
+        assert not deleting.done()
+        await completing.execute(
+            """INSERT INTO voice_transcripts (id, capture_id, source, pipeline_version, model, outcome, language,
+                   text, segments, note_id) VALUES ($1,$2,'note',$3,$4,'transcribed','en','She limps.','[]',$5)""",
+            uuid7(), sid, PIPELINE_VERSION, MODEL_NAME, note_id)
+        await completing.execute("UPDATE transcription_jobs SET status='done' WHERE id=$1", job)
+        await tx.commit()                                                          # no deadlock: this commits
+    finally:
+        await pool.release(completing)
+    assert (await deleting).status_code == 204
+    await settled()
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT count(*) FROM voice_transcripts") == 0
+        assert await c.fetchval("SELECT count(*) FROM transcription_jobs") == 0
