@@ -46,6 +46,14 @@ export interface Highlight {
   id?: string;
   /** Already answered and saved: still marked, but quieter than one that still needs you. */
   used?: boolean;
+  /** The note added later the quote is from, null for the upload's own note or clip:
+   * only that transcript marks it. Left out, any transcript may (an older server). */
+  noteId?: string | null;
+}
+
+/** The highlights that belong to one transcript: a quote is evidence only where it was said. */
+export function highlightsFor(t: HeardText, highlights: Highlight[]): Highlight[] {
+  return highlights.filter((h) => h.noteId === undefined || h.noteId === (t.note_id ?? null));
 }
 
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -94,7 +102,7 @@ function Heard({ t, highlights, compact, state }: { t: HeardText; highlights: Hi
     const clipped = [...el.querySelectorAll<HTMLElement>("mark")].some((mark) => mark.offsetTop + mark.offsetHeight > el.clientHeight + 1);
     if (clipped) setOpen(true);
   }, [compact, t.text]);
-  const spans = highlightSpans(t.text, highlights);
+  const spans = highlightSpans(t.text, highlightsFor(t, highlights));
   const parts: (string | JSX.Element)[] = [];
   let at = 0;
   spans.forEach((span, i) => {

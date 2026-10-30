@@ -157,8 +157,9 @@ async def get_dex(
     if capture_ids:
         for row in await conn.fetch(
             "SELECT d.id, d.capture_id, d.instance_id, d.field, d.value, d.quote, d.status, "
-            "d.decided_value, a.sighting_id "
-            "FROM detail_suggestions d LEFT JOIN animal_instances a ON a.id = d.instance_id "
+            "d.decided_value, a.sighting_id, t.note_id "
+            "FROM detail_suggestions d JOIN voice_transcripts t ON t.id = d.transcript_id "
+            "LEFT JOIN animal_instances a ON a.id = d.instance_id "
             "WHERE d.capture_id = ANY($1::uuid[]) ORDER BY d.field, d.id",
             list(capture_ids),
         ):
@@ -168,8 +169,9 @@ async def get_dex(
                 closed.setdefault(own, []).append(row)
             if row["status"] != "open":
                 continue
+            # Which note's words it came from, so only that transcript marks them.
             item = {"id": str(row["id"]), "field": row["field"], "value": row["value"],
-                    "quote": row["quote"]}
+                    "quote": row["quote"], "note_id": str(row["note_id"]) if row["note_id"] else None}
             if row["instance_id"] is None:
                 offered.setdefault(str(row["capture_id"]), []).append(item)
             elif row["sighting_id"] is not None:
@@ -187,7 +189,8 @@ async def get_dex(
         # A /sighting upload's suggestions are keyed by its capture; an animal's by itself.
         own = sighting["capture_id"] if sighting["capture_id"] == sighting["id"] else sighting["id"]
         sighting["answered_suggestions"] = [
-            {**o, "id": str(o["id"]), "instance_id": None if o["instance_id"] is None else str(o["instance_id"])}
+            {**o, "id": str(o["id"]), "instance_id": None if o["instance_id"] is None else str(o["instance_id"]),
+             "note_id": None if o["note_id"] is None else str(o["note_id"])}
             for o in answered(closed.get(own, []), lambda r, s=sighting: s["attrs"].get(r["field"]))
         ]
 

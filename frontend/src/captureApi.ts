@@ -46,6 +46,8 @@ export interface CaptureSuggestion {
   field: "sex" | "ear_notch" | "condition" | "known_name";
   value: string;
   quote: string;
+  /** The note added later its words are in; null for the upload's own. */
+  note_id?: string | null;
 }
 /** A suggestion no longer open: see AnsweredSuggestion in api.ts. */
 export interface AnsweredCaptureSuggestion extends CaptureSuggestion {

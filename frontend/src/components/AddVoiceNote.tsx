@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { addVoiceNote, HttpError, UnauthorizedError } from "../api";
+import { newClientToken } from "../clientToken";
 import VoiceNote, { voiceNotesEnabled } from "./VoiceNote";
 
 /** The server's say on later notes (/me): on at all, and how many each takes. */
@@ -36,6 +37,8 @@ export default function AddVoiceNote({ target, added, max, onAdded, onUnauthoriz
   onUnauthorized: () => void;
 }) {
   const [note, setNote] = useState<Blob | null>(null);
+  // One per recording, kept across retries of it (a lost answer must not save it twice).
+  const [token, setToken] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -44,12 +47,13 @@ export default function AddVoiceNote({ target, added, max, onAdded, onUnauthoriz
   }
 
   async function save() {
-    if (!note) return;
+    if (!note || !token) return;
     setSaving(true);
     setError(null);
     try {
-      await addVoiceNote(target, note);
+      await addVoiceNote(target, note, token);
       setNote(null);
+      setToken(null);
       onAdded();
     } catch (err) {
       if (err instanceof UnauthorizedError) onUnauthorized();
@@ -60,7 +64,7 @@ export default function AddVoiceNote({ target, added, max, onAdded, onUnauthoriz
   }
 
   return <div className="add-voice-note">
-    <VoiceNote value={note} onChange={(next) => { setNote(next); setError(null); }} />
+    <VoiceNote value={note} onChange={(next) => { setNote(next); setToken(next ? newClientToken() : null); setError(null); }} />
     {note && <button type="button" className="btn" disabled={saving} onClick={save}>{saving ? "Saving…" : "Save note"}</button>}
     {error && <p className="hint place-warning" role="alert">{error}</p>}
   </div>;

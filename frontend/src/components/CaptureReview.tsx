@@ -283,10 +283,10 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
           {detail.note && <p>Your note: {detail.note}</p>}
           <Transcript compact={compact} transcripts={detail.voice_transcripts ?? []} notes={detail.later_notes ?? []} highlights={[
             ...stillOpen.filter((suggestion) => !answers[suggestion.id])
-              .map((suggestion) => ({ id: suggestion.id, quote: suggestion.quote, label: `${SUGGESTION_LABELS[suggestion.field]}: ${suggestion.value}` })),
+              .map((suggestion) => ({ id: suggestion.id, quote: suggestion.quote, label: `${SUGGESTION_LABELS[suggestion.field]}: ${suggestion.value}`, noteId: suggestion.note_id })),
             // Used, in an earlier visit or just now: still marked, quieter. Turned down ("not this") is wrong, so it isn't.
             ...[...alreadyUsed, ...(detail.suggestions ?? []).filter((suggestion) => answers[suggestion.id] === "used")]
-              .map((suggestion) => ({ id: suggestion.id, quote: suggestion.quote, label: `${SUGGESTION_LABELS[suggestion.field]}: ${suggestion.value}`, used: true })),
+              .map((suggestion) => ({ id: suggestion.id, quote: suggestion.quote, label: `${SUGGESTION_LABELS[suggestion.field]}: ${suggestion.value}`, used: true, noteId: suggestion.note_id })),
           ]} />
           {laterNotes && <AddVoiceNote target={{ captureId }} max={laterNotes.max}
             added={(detail.later_notes ?? []).filter((note) => !note.sighting_id).length}

@@ -96,6 +96,9 @@ class DetailSuggestion(WireModel):
     field: Literal["sex", "ear_notch", "condition", "known_name"]
     value: str
     quote: str
+    # The note added later it was read from (#156); None for the upload's own
+    # note or clip. The quote is marked in that transcript only.
+    note_id: UUID | None = None
 
 
 class AnsweredSuggestion(DetailSuggestion):

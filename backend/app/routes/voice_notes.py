@@ -10,13 +10,17 @@ animal, which on a multi-animal capture means it is read for that animal
 alone. From a capture's details sheet (`POST /capture/{id}/voice-note`) it is
 about the whole capture, like the upload's own note.
 
+A save is safe to retry: the app sends the recording's own `client_token`,
+and a retry whose first answer was lost gets the note already made back
+(202, `duplicate`), before any limit is applied, rather than a second copy.
+
 Limits: the recorder stops at 60 s (the server never decodes audio, as at
 upload); the upload's byte cap; `later_voice_notes_max` per sighting or
 capture; `rl_voice_note_*` per person.
 """
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 from app.auth.deps import require_observer
@@ -44,9 +48,21 @@ async def _count(conn, capture_id: UUID, sighting_id: UUID | None) -> int:
         capture_id, sighting_id)
 
 
+async def _already(conn, observer_id: UUID, client_token: str | None) -> JSONResponse | None:
+    """The note this recording already made, if a save of it got through before."""
+    if not client_token:
+        return None
+    found = await conn.fetchval(
+        "SELECT id FROM voice_notes WHERE observer_id=$1 AND client_token=$2", observer_id, client_token)
+    return None if found is None else JSONResponse(
+        {"note_id": str(found), "duplicate": True}, status_code=202)
+
+
 async def _add(conn, storage, observer_id: UUID, capture_id: UUID, legacy: bool,
-               sighting_id: UUID | None, audio: UploadFile) -> JSONResponse:
+               sighting_id: UUID | None, audio: UploadFile, client_token: str | None) -> JSONResponse:
     raw, ext, content_type = await read_voice_note(audio)
+    if (done := await _already(conn, observer_id, client_token)) is not None:
+        return done
     if await _count(conn, capture_id, sighting_id) >= settings.later_voice_notes_max:
         raise HTTPException(409, "this sighting already has as many added notes as it can take")
     note_id = uuid7()
@@ -60,18 +76,23 @@ async def _add(conn, storage, observer_id: UUID, capture_id: UUID, legacy: bool,
     async with conn.transaction():
         # Serialises two notes saved at once, so the limit holds.
         await conn.execute("SELECT 1 FROM captures WHERE id=$1 FOR UPDATE", capture_id)
+        # The same recording saved twice at once: the second finds the first.
+        if (done := await _already(conn, observer_id, client_token)) is not None:
+            return done
         if await _count(conn, capture_id, sighting_id) >= settings.later_voice_notes_max:
             raise HTTPException(409, "this sighting already has as many added notes as it can take")
         await conn.execute(
-            """INSERT INTO voice_notes (id, capture_id, sighting_id, observer_id, s3_key, content_type, bytes)
-               VALUES ($1,$2,$3,$4,$5,$6,$7)""",
-            note_id, capture_id, sighting_id, observer_id, key, content_type, len(raw))
+            """INSERT INTO voice_notes (id, capture_id, sighting_id, observer_id, s3_key, content_type, bytes,
+                                        client_token)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
+            note_id, capture_id, sighting_id, observer_id, key, content_type, len(raw), client_token)
         await enqueue_transcription(conn, capture_id, "note", key, note_id)
     return JSONResponse({"note_id": str(note_id), "state": "transcribing"}, status_code=202)
 
 
 @router.post("/sighting/{sighting_id}/voice-note", status_code=202)
 async def add_to_sighting(sighting_id: UUID, audio: UploadFile = File(...),
+                          client_token: str | None = Form(None, max_length=200),
                           observer_id: UUID = Depends(require_observer), conn=Depends(get_conn),
                           storage=Depends(get_storage)):
     _ready(observer_id)
@@ -81,11 +102,12 @@ async def add_to_sighting(sighting_id: UUID, audio: UploadFile = File(...),
     if row is None:
         raise HTTPException(404, "no such sighting")
     return await _add(conn, storage, observer_id, row["capture_id"], row["processing_state"] == "legacy",
-                      sighting_id, audio)
+                      sighting_id, audio, client_token)
 
 
 @router.post("/capture/{capture_id}/voice-note", status_code=202)
 async def add_to_capture(capture_id: UUID, audio: UploadFile = File(...),
+                         client_token: str | None = Form(None, max_length=200),
                          observer_id: UUID = Depends(require_observer), conn=Depends(get_conn),
                          storage=Depends(get_storage)):
     _ready(observer_id)
@@ -93,4 +115,4 @@ async def add_to_capture(capture_id: UUID, audio: UploadFile = File(...),
     # A /sighting upload's stand-in capture has no sheet; its note goes on the sighting.
     if capture["processing_state"] == "legacy":
         raise HTTPException(404, "no such capture")
-    return await _add(conn, storage, observer_id, capture_id, False, None, audio)
+    return await _add(conn, storage, observer_id, capture_id, False, None, audio, client_token)

@@ -5,6 +5,10 @@ sighting or capture): nothing about those changes. A note added later is a
 `voice_notes` row of its own, because there can be several, and each is
 transcribed and read for suggestions exactly as an upload's note is.
 
+`client_token` is the recording's own id, made by the app when it was
+recorded: a save retried after its answer was lost finds the note it already
+made instead of making another (unique per observer, as captures' is).
+
 `sighting_id` is the animal the note was recorded about: set when it was
 added from that sighting in the Journal, NULL when added to the whole capture
 from its details sheet. On a multi-animal capture a sighting's note is read
@@ -41,9 +45,12 @@ def upgrade() -> None:
             s3_key text NOT NULL,
             content_type text NOT NULL,
             bytes int NOT NULL CHECK (bytes > 0),
+            client_token text,
             created_at timestamptz NOT NULL DEFAULT now()
         );
         CREATE INDEX ix_voice_notes_capture ON voice_notes (capture_id, created_at);
+        CREATE UNIQUE INDEX ux_voice_notes_client_token ON voice_notes (observer_id, client_token)
+            WHERE client_token IS NOT NULL;
 
         ALTER TABLE transcription_jobs
             ADD COLUMN note_id uuid REFERENCES voice_notes(id) ON DELETE CASCADE,

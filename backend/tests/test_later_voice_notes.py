@@ -33,8 +33,9 @@ async def _photo_sighting(client):
     return r.json()["sighting_id"]
 
 
-async def _add(client, path, audio=LATER, content_type="audio/mp4"):
-    return await client.post(path, files={"audio": ("note.m4a", audio, content_type)})
+async def _add(client, path, audio=LATER, content_type="audio/mp4", token=None):
+    return await client.post(path, files={"audio": ("note.m4a", audio, content_type)},
+                             data={"client_token": token} if token else None)
 
 
 async def _transcribe(client, text, language="en"):
@@ -309,3 +310,54 @@ def test_newest_per_field_keeps_the_newest_in_place():
     a, b, c = (str(uuid7()) for _ in range(3))
     items = [{"id": a, "field": "sex"}, {"id": c, "field": "condition"}, {"id": b, "field": "sex"}]
     assert suggestions.newest_per_field(items) == [items[1], items[2]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target", ["sighting", "capture"])
+async def test_a_save_retried_after_its_answer_was_lost_finds_the_note_it_made(authed_client, enabled, monkeypatch, target):
+    client, oid = authed_client
+    monkeypatch.setattr(settings, "later_voice_notes_max", 1)
+    if target == "sighting":
+        path = f"/sighting/{await _photo_sighting(client)}/voice-note"
+    else:
+        pool = client._transport.app.state.pool
+        cid, _, _ = await _two_dog_capture(pool, oid)
+        path = f"/capture/{cid}/voice-note"
+    first = await _add(client, path, token="rec-1")
+    assert first.status_code == 202 and "duplicate" not in first.json()
+    # The answer never arrived; the app saves the same recording again. The
+    # limit is reached now, but this is not a new note.
+    again = await _add(client, path, token="rec-1")
+    assert again.status_code == 202
+    assert again.json() == {"note_id": first.json()["note_id"], "duplicate": True}
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT count(*) FROM voice_notes") == 1
+        assert await c.fetchval("SELECT count(*) FROM transcription_jobs WHERE note_id IS NOT NULL") == 1
+    assert (await _add(client, path, token="rec-2")).status_code == 409   # a different recording is new
+
+
+@pytest.mark.asyncio
+async def test_each_suggestion_names_the_note_its_words_are_in(authed_client, enabled):
+    client, _ = authed_client
+    sid = await _post_note(client)
+    await _transcribe(client, "She is limping.")
+    await _suggest(client, [{"field": "condition", "value": "injured", "quote": "limping"}])
+    note_id = (await _add(client, f"/sighting/{sid}/voice-note")).json()["note_id"]
+    await _transcribe(client, "She is limping and she is a female.")
+    await _suggest(client, [{"field": "sex", "value": "female", "quote": "she is a female"}])
+    offered = {s["field"]: s["note_id"] for s in _entry((await client.get("/dex")).json())["suggestions"]}
+    assert offered == {"condition": None, "sex": note_id}
+
+
+@pytest.mark.asyncio
+async def test_the_sheet_s_suggestions_name_their_note_too(authed_client, enabled):
+    client, oid = authed_client
+    pool = client._transport.app.state.pool
+    cid, (brown, _), _ = await _two_dog_capture(pool, oid)
+    job = (await client.post("/internal/suggestion-jobs/claim", json={"owner": "dgx-1"}, headers=GPU)).json()["job"]
+    await client.post(f"/internal/suggestion-jobs/{job['id']}/complete", headers=GPU, json={
+        "lease_token": job["lease_token"], "content": json.dumps({"suggestions": [
+            {"field": "known_name", "value": "Kaalu", "quote": "The brown one is Kaalu", "animal": "A"}]})})
+    (s,) = (await client.get(f"/capture/{cid}")).json()["suggestions"]
+    assert s["note_id"] is None

@@ -339,10 +339,10 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
               usedIds={(selected.answered_suggestions ?? []).filter(isUsed).map((s) => s.id)}>
               <Transcript transcripts={selected.voice_transcripts ?? []} notes={selected.later_notes ?? []} highlights={[
                 ...[...(selected.suggestions ?? []), ...(selected.review_suggestions ?? [])]
-                  .map((s) => ({ id: s.id, quote: s.quote, label: `${SUGGESTION_NAMES[s.field]}: ${s.value}` })),
+                  .map((s) => ({ id: s.id, quote: s.quote, label: `${SUGGESTION_NAMES[s.field]}: ${s.value}`, noteId: s.note_id })),
                 // Answered and saved: still marked, quieter. A rejected or corrected one was wrong, so it isn't.
                 ...(selected.answered_suggestions ?? []).filter(isUsed)
-                  .map((s) => ({ id: s.id, quote: s.quote, label: `${SUGGESTION_NAMES[s.field]}: ${s.value}`, used: true })),
+                  .map((s) => ({ id: s.id, quote: s.quote, label: `${SUGGESTION_NAMES[s.field]}: ${s.value}`, used: true, noteId: s.note_id })),
               ]} />
               {!!selected.review_suggestions?.length && selected.capture_id && (
                 <button className="btn" data-fx-chip={selected.review_suggestions.map((s) => s.id).join(" ")} onClick={() => { const id = selected.capture_id!; setSelected(null); setReviewCaptureId(id); }}>

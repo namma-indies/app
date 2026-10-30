@@ -43,6 +43,8 @@ export interface Suggestion {
   value: string;
   /** The words in the note that prompted it, in the note's own language. */
   quote: string;
+  /** The note added later those words are in (#156); null for the upload's own note or clip. */
+  note_id?: string | null;
 }
 
 /** A suggestion that is no longer open. `accepted` and `filled` (never answered, but the field
@@ -302,12 +304,15 @@ function audioExtension(type: string): string {
 export async function addVoiceNote(
   target: { sightingId: string } | { captureId: string },
   note: Blob,
-): Promise<{ note_id: string }> {
+  /** The recording's own id: a retry of the same one gets the note it already made. */
+  clientToken: string,
+): Promise<{ note_id: string; duplicate?: boolean }> {
   const path = "sightingId" in target
     ? `/sighting/${encodeURIComponent(target.sightingId)}/voice-note`
     : `/capture/${encodeURIComponent(target.captureId)}/voice-note`;
   const form = new FormData();
   form.append("audio", note, `note.${audioExtension(note.type)}`);
+  form.append("client_token", clientToken);
   const res = await fetch(`${API_BASE}${path}`, { method: "POST", credentials: "include", body: form });
   return handle(res);
 }

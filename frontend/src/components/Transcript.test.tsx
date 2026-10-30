@@ -182,3 +182,28 @@ describe("notes added later (#156)", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Reading it for details…");
   });
 });
+
+describe("a quote is marked only in the note it came from (#156)", () => {
+  const upload = { source: "note" as const, language: "en", text: "The black one is limping." };
+  const later = { source: "note" as const, language: "en", text: "This one is limping too.", note_id: "n2", added_at: "2026-10-30T09:00:00Z" };
+
+  it("marks the later note's word in the later note only, and the upload's in the upload's only", () => {
+    const { container } = render(<Transcript transcripts={[upload, later]} highlights={[
+      { id: "from-later", quote: "limping", label: "Condition: injured", noteId: "n2" },
+    ]} />);
+    const [first, second] = container.querySelectorAll("blockquote");
+    expect(first.querySelector("mark")).toBeNull();
+    expect(second.querySelector("mark")).toHaveAttribute("data-fx", "from-later");
+    cleanup();
+    const again = render(<Transcript transcripts={[upload, later]} highlights={[
+      { id: "from-upload", quote: "limping", label: "Condition: injured", noteId: null },
+    ]} />).container.querySelectorAll("blockquote");
+    expect(again[0].querySelector("mark")).toHaveAttribute("data-fx", "from-upload");
+    expect(again[1].querySelector("mark")).toBeNull();
+  });
+
+  it("marks anywhere when an older server does not say which note", () => {
+    const { container } = render(<Transcript transcripts={[upload, later]} highlights={[{ quote: "limping", label: "Condition: injured" }]} />);
+    expect(container.querySelectorAll("mark")).toHaveLength(2);
+  });
+});

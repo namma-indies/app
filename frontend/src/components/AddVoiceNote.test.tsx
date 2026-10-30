@@ -89,4 +89,19 @@ describe("adding a voice note after upload (#156)", () => {
     buildHasVoiceNotes = false;
     expect(laterNotesOffered({ enabled: true, max: 5 })).toBe(false);
   });
+
+  it("sends a retry of the same recording with the same token, and a new recording with a new one", async () => {
+    fetchMock.mockResolvedValueOnce(reply(500)).mockResolvedValue(reply(202, { note_id: "n1" }));
+    renderIt();
+    await userEvent.click(screen.getByRole("button", { name: "🎙 add a voice note" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save note" }));
+    await screen.findByRole("alert");
+    await userEvent.click(screen.getByRole("button", { name: "Save note" }));
+    await userEvent.click(screen.getByRole("button", { name: "🎙 add a voice note" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save note" }));
+    const tokens = fetchMock.mock.calls.map(([, init]) => (init.body as FormData).get("client_token"));
+    expect(tokens[0]).toBeTruthy();
+    expect(tokens[1]).toBe(tokens[0]);
+    expect(tokens[2]).not.toBe(tokens[0]);
+  });
 });

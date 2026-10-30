@@ -623,7 +623,8 @@ def answered(rows, held) -> list[dict]:
         else:
             chosen = row["decided_value"]
         out.append({"id": row["id"], "instance_id": row["instance_id"], "field": row["field"],
-                    "value": row["value"], "quote": row["quote"], "status": status, "chosen": chosen})
+                    "value": row["value"], "quote": row["quote"], "status": status, "chosen": chosen,
+                    "note_id": row.get("note_id")})
     return out
 
 
@@ -633,10 +634,12 @@ async def for_capture(conn, capture_id: UUID, details: dict) -> tuple[list[dict]
     One query for both. `details` maps instance id to what that animal holds now.
     """
     rows = await conn.fetch(
-        "SELECT id, instance_id, field, value, quote, status, decided_value FROM detail_suggestions "
-        "WHERE capture_id=$1 AND instance_id IS NOT NULL ORDER BY field, id", capture_id)
+        "SELECT d.id, d.instance_id, d.field, d.value, d.quote, d.status, d.decided_value, t.note_id "
+        "FROM detail_suggestions d JOIN voice_transcripts t ON t.id = d.transcript_id "
+        "WHERE d.capture_id=$1 AND d.instance_id IS NOT NULL ORDER BY d.field, d.id", capture_id)
     opened = newest_per_field(
-        [{k: r[k] for k in ("id", "instance_id", "field", "value", "quote")} for r in rows if r["status"] == "open"],
+        [{k: r[k] for k in ("id", "instance_id", "field", "value", "quote", "note_id")}
+         for r in rows if r["status"] == "open"],
         key=lambda item: (item["instance_id"], item["field"]))
     return opened, answered(rows, lambda r: details.get(r["instance_id"], {}).get(r["field"]))
 
