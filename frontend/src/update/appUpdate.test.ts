@@ -23,8 +23,16 @@ function controllerHarness(opts: { busy?: boolean; hidden?: boolean } = {}) {
     reload,
     setPrompt,
     isHidden: () => state.hidden,
+    defer: (cb) => deferred.push(cb),
   });
-  return { c, state, reload, setPrompt, fireBusy: () => busyCb() };
+  const deferred: (() => void)[] = [];
+  return {
+    c, state, reload, setPrompt,
+    fireBusy: () => {
+      busyCb();
+      deferred.splice(0).forEach((cb) => cb());
+    },
+  };
 }
 
 describe("createUpdateController", () => {

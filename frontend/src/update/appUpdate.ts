@@ -17,6 +17,8 @@ export type UpdateDeps = {
   /** Show or hide the "New version ready" prompt. */
   setPrompt: (visible: boolean) => void;
   isHidden: () => boolean;
+  /** Run later, after the current synchronous work (default: setTimeout 0). */
+  defer?: (cb: () => void) => void;
 };
 
 export type UpdateController = {
@@ -48,10 +50,16 @@ export function createUpdateController(deps: UpdateDeps): UpdateController {
     }
   }
 
+  const defer = deps.defer ?? ((cb: () => void) => void setTimeout(cb, 0));
   const stopWatching = deps.onBusyChange(() => {
     // Work finished while the prompt was up: take the update when the page is
     // out of sight (invisible), otherwise leave the prompt for the user.
-    if (ready && !deps.isBusy() && deps.isHidden()) reload();
+    // Re-check after the change settles: one React commit can release a hold
+    // (recording stops) before the next mounts (the unsaved note), and the
+    // gap between them looks idle.
+    defer(() => {
+      if (ready && !deps.isBusy() && deps.isHidden()) reload();
+    });
   });
 
   return {
