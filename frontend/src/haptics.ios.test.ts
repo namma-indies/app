@@ -11,7 +11,7 @@ vi.mock("@capacitor/core", () => ({
   Capacitor: { isNativePlatform: () => platform.native, isPluginAvailable: () => platform.native },
 }));
 
-import { haptic, hapticChannel, onHapticOutcome, switchSupported } from "./haptics";
+import { haptic, hapticChannel, onHapticOutcome, playScore, switchSupported } from "./haptics";
 
 const IPHONE_18 = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 Version/18.6 Mobile/15E148 Safari/604.1";
 const IPHONE_17 = IPHONE_18.replace("18_6", "17_5").replace("18.6", "17.5");
@@ -80,5 +80,18 @@ describe("the iPhone browser tick", () => {
   it("prefers navigator.vibrate where a browser has it", () => {
     phone({ vibrate: vi.fn() });
     expect(hapticChannel()).toBe("vibrate");
+  });
+});
+
+describe("a score in an iPhone browser", () => {
+  it("ticks (flat, whatever the level) only while a tap is fresh, and stays silent after", () => {
+    const heard: string[] = [];
+    const stop = onHapticOutcome((outcome) => heard.push(outcome));
+    playScore([{ at: 0, level: "soft" }, { at: 300, level: "heavy" }]);
+    phone({ userActivation: { isActive: false, hasBeenActive: true } }); // the tap has worn off
+    vi.advanceTimersByTime(400);
+    stop();
+    expect(ticks).toBe(1);
+    expect(heard).toContain("score heavy: silent (iPhone browsers only tick for a tap, and none just happened)");
   });
 });

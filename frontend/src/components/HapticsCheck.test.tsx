@@ -2,11 +2,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
-const plugin = vi.hoisted(() => ({ impact: vi.fn(), notification: vi.fn() }));
+const plugin = vi.hoisted(() => ({ impact: vi.fn(), notification: vi.fn(), selectionStart: vi.fn(), selectionChanged: vi.fn(), selectionEnd: vi.fn() }));
 const platform = vi.hoisted(() => ({ native: true }));
 vi.mock("@capacitor/haptics", () => ({
   Haptics: plugin,
-  ImpactStyle: { Light: "LIGHT", Medium: "MEDIUM" },
+  ImpactStyle: { Light: "LIGHT", Medium: "MEDIUM", Heavy: "HEAVY" },
   NotificationType: { Success: "SUCCESS" },
 }));
 vi.mock("@capacitor/core", () => ({
@@ -78,5 +78,23 @@ describe("the Haptics check", () => {
     expect(plugin.impact).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(onClose).toHaveBeenCalled();
+  });
+});
+
+describe("the suggestion pattern in the Haptics check", () => {
+  it("plays the animation's pulses, building to a heavy landing and a success, and stops when closed", async () => {
+    const heard: string[] = [];
+    const { onHapticOutcome } = await import("../haptics");
+    const stop = onHapticOutcome((outcome) => heard.push(outcome.replace(/: .*/, "")));
+    const view = render(<HapticsCheck onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Play the suggestion pattern" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(heard[0]).toBe("suggestion soft native");
+    expect(heard).toContain("suggestion heavy native");
+    view.unmount();
+    const before = heard.length;
+    await vi.advanceTimersByTimeAsync(5000);
+    stop();
+    expect(heard).toHaveLength(before); // closing the check stops the rest
   });
 });
