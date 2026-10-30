@@ -1502,3 +1502,31 @@ audio { accent-color: var(--accent); }
 }
 .haptics-log { margin: 0; padding: 0.5rem; min-height: 4rem; font-size: 0.75rem; white-space: pre-wrap; background: var(--panel); border: 1px solid var(--dust); border-radius: 0.5rem; }
 .haptics-close { margin-top: 1rem; width: 100%; }
+
+/* "New version ready" prompt (see update/UpdateBanner.tsx). Sits above the tabbar. */
+.update-banner {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: #3a2a22;
+  color: #faf7f2;
+  font-size: 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+.update-banner button {
+  border: 0;
+  border-radius: 8px;
+  padding: 6px 14px;
+  background: #faf7f2;
+  color: #3a2a22;
+  font: inherit;
+  font-weight: 600;
+}

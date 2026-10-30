@@ -93,3 +93,26 @@ describe("a suggestion from the photo says it is AI's", () => {
     expect(screen.getByRole("radio", { name: /^healthy ?\(suggested from your voice note\)$/ })).toBeInTheDocument();
   });
 });
+
+describe("a service-worker update while the description is being edited (#175)", () => {
+  it("prompts instead of reloading, and releases once the edit is cancelled", async () => {
+    const { createUpdateController } = await import("../update/appUpdate");
+    const { isBusy, onBusyChange } = await import("../update/reloadGuard");
+    const reload = vi.fn();
+    const setPrompt = vi.fn();
+    const c = createUpdateController({
+      isBusy, onBusyChange, reload, setPrompt,
+      isHidden: () => true,
+      defer: (cb) => cb(),
+    });
+    render(<PhotoDescription described={{ id: "d", text: TEXT, status: "open" }} onChanged={() => {}} onUnauthorized={() => {}} />);
+    await userEvent.click(screen.getByRole("button", { name: /edit/i }));
+    await userEvent.type(screen.getByRole("textbox"), " more");
+    c.updateReady();
+    expect(reload).not.toHaveBeenCalled();
+    expect(setPrompt).toHaveBeenCalledWith(true);
+    await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
+    expect(reload).toHaveBeenCalledTimes(1);
+    c.dispose();
+  });
+});

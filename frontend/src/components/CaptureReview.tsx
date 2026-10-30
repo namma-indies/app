@@ -10,6 +10,7 @@ import { formatWhen } from "../formatWhen";
 import { commonSpecies, speciesNoun } from "../species";
 import ChipGroup from "./ChipGroup";
 import { CONDITION_OPTIONS, EAR_NOTCH_OPTIONS, SEX_OPTIONS } from "../detailOptions";
+import { useReloadGuard } from "../update/reloadGuard";
 
 /** The choice for a box that shows no animal: a doubled box, or a detector
  * mistake. It is left out of every group and publishes nothing (#105). */
@@ -90,6 +91,8 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
   laterNotes?: LaterNotesConfig;
 }) {
   const [detail, setDetail] = useState<CaptureDetail | null>(null);
+  // Open for the whole review: assignments and attributes are unsaved until Save.
+  useReloadGuard();
   const [assignments, setAssignments] = useState<Record<string, string>>({});
   const [attrs, setAttrs] = useState<Record<string, Omit<CaptureGroup, "instance_ids">>>({});
   const [error, setError] = useState<string | null>(null);

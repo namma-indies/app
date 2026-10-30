@@ -9,11 +9,11 @@ from fastapi.responses import JSONResponse
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.db import effective_dsn
 from app.deps import get_storage
+from app.static import FrontendStaticFiles
 from app.routes.auth import router as auth_router
 from app.routes.dex import router as dex_router
 from app.routes.dogs import router as dogs_router
@@ -214,4 +214,4 @@ async def log_validation_error(request: Request, exc: RequestValidationError):
 # Guarded so tests/dev without a build don't break.
 _frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 if _frontend_dist.is_dir():
-    app.mount("/", StaticFiles(directory=_frontend_dist, html=True), name="frontend")
+    app.mount("/", FrontendStaticFiles(directory=_frontend_dist, html=True), name="frontend")
