@@ -42,7 +42,20 @@ Rules:
 | **Android browser** | Buzz length stands in for strength: 6, 10, 16, 22 and 32 ms; success is 28 · 60 · 40. |
 | **iPhone browser** | Only within about a second of a tap: opening a sighting by tapping it can tick the first scan ticks, as identical flat ticks. Everything later, and suggestions that arrive on their own after a voice note, stay silent. |
 
-The Haptics check has a **Play the suggestion pattern** button. It plays the same pulses for a made-up showing (four phrases, three suggestions, about 4.5 s) without the animation.
+### Smooth curves in the apps (#145)
+
+The apps carry their own small plugin, `HapticCurves`. It lives in `ios/App/App/HapticCurvesPlugin.swift` and `android/app/src/main/java/.../HapticCurvesPlugin.java`, and is registered by `AppViewController` and `MainActivity`. With it, a flight is **one smooth build** instead of three ticks: intensity and sharpness rise from launch to landing. The light-ups, landings and scan ticks are taps on the same engine.
+
+| Phone | Engine | How |
+| --- | --- | --- |
+| iPhone with a Taptic Engine | `corehaptics` | Core Haptics: transient events for the taps, a continuous event with intensity and sharpness curves for the flight, and the success as a tap then a stronger one |
+| Android 12+ with composition primitives (Pixels, recent Samsung flagships) | `composition` | TICK or CLICK for a tap; SLOW_RISE then QUICK_RISE for a flight, ending on the landing |
+| Android with amplitude control | `amplitude` | The score drawn as a waveform in 10 ms amplitude steps |
+| Anything else, browsers, and app builds without the plugin | none | The step-by-step ladder above |
+
+The Haptics check shows which engine applies ("Smooth curves (HapticCurves)"). It has two buttons: **Play the suggestion pattern**, which uses curves when the phone has them, and **Play it as the step-by-step ladder**, which always plays the ladder, to compare. Both play a made-up showing (four phrases, three suggestions, about 4.5 s) without the animation.
+
+CI compiles both native projects when a PR changes them (`.github/workflows/native-check.yml`: an unsigned simulator build, an Android debug build and the renderer's unit tests). Feeling it still needs a real phone.
 
 ### Limits of the iPhone-browser trick
 
@@ -82,11 +95,14 @@ Before anything: ringer and vibration on, Low Power Mode off, and (iPhone) Setti
 2. Tap each moment: all buzz, patterns as above. Confetti and comet landings also buzz here (after the first tap).
 
 ### The suggestion pattern, on every device
+0. Apps only: the check's "Smooth curves (HapticCurves)" row should say `corehaptics` on an iPhone. On Android it should say `composition` or `amplitude`, or "no" on a phone without either. Note which.
 1. Open the Haptics check and tap **Play the suggestion pattern**. Expect, over about 4.5 s:
    - a couple of soft ticks (the scan);
    - then, three times: a light tap, three ticks getting firmer and faster, and a heavy tap;
    - the third landing is a success buzz instead.
-   The log lists each pulse as `suggestion <level> ...: ok`.
+   - With curves (apps), each flight is one rising buzz rather than three ticks, and the log shows `suggestion curves (<engine>): ok`.
+   - Without curves, the log lists each pulse as `suggestion <level> ...: ok`.
+   - Then tap **Play it as the step-by-step ladder** and compare. Note which you prefer.
 2. In the real app, open a sighting with a voice note whose suggestions are still open. Feel the same build-up, in step with the shimmer, each phrase lighting up, the comet's flight and its landing.
 3. Use or dismiss every suggestion and reopen the sighting. The replay should be silent.
 4. Turn on reduced motion and reopen a sighting with open suggestions. Nothing moves, and you feel one light tap.

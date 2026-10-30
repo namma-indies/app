@@ -12,7 +12,7 @@ vi.mock("@capacitor/haptics", () => ({
 vi.mock("@capacitor/core", () => ({
   Capacitor: {
     isNativePlatform: () => platform.native,
-    isPluginAvailable: () => platform.native,
+    isPluginAvailable: (name: string) => platform.native && name === "Haptics",
     getPlatform: () => (platform.native ? "ios" : "web"),
   },
 }));
@@ -96,5 +96,18 @@ describe("the suggestion pattern in the Haptics check", () => {
     await vi.advanceTimersByTimeAsync(5000);
     stop();
     expect(heard).toHaveLength(before); // closing the check stops the rest
+  });
+
+  it("says whether the phone has smooth curves, and can play the ladder to compare", async () => {
+    const heard: string[] = [];
+    const { onHapticOutcome } = await import("../haptics");
+    const stop = onHapticOutcome((outcome) => heard.push(outcome.replace(/: .*/, "")));
+    render(<HapticsCheck onClose={() => {}} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+    expect(document.body.textContent).toContain("Smooth curves (HapticCurves)no (the step-by-step ladder is used)");
+    fireEvent.click(screen.getByRole("button", { name: "Play it as the step-by-step ladder" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    stop();
+    expect(heard).toContain("suggestion light native");
   });
 });

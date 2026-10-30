@@ -1,0 +1,88 @@
+name: Native check
+
+# Compiles the native iOS and Android projects when a PR changes them (#145):
+# CI otherwise only builds the web bundle, so Swift or Java that doesn't build
+# would first show up in a release. Build and unit tests only: no signing, no
+# upload, no secrets. The Deploy workflows are separate and only run on tags.
+on:
+  pull_request:
+    paths:
+      - "frontend/ios/**"
+      - "frontend/android/**"
+      - ".github/workflows/native-check.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Capacitor 8's CLI needs Node 22 or newer.
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      # Capacitor 8's generated capacitor.build.gradle compiles for Java 21.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+          cache-dependency-path: |
+            frontend/android/**/*.gradle*
+            frontend/android/gradle/wrapper/gradle-wrapper.properties
+      - run: npm ci
+      - run: npm run build
+      - run: npx cap sync android
+      - name: Build the debug app and run the unit tests
+        working-directory: frontend/android
+        run: ./gradlew --no-daemon :app:assembleDebug :app:testDebugUnitTest
+
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      # The same Ruby setup as the iOS deploy, so `cap sync` runs CocoaPods the same way.
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: frontend/ios
+      - uses: actions/cache@v4
+        with:
+          path: frontend/ios/App/Pods
+          key: pods-${{ runner.os }}-${{ hashFiles('frontend/ios/App/Podfile', 'frontend/package-lock.json') }}
+      - run: npm ci
+      - run: npm run build
+      - run: npx cap sync ios
+      - name: Build for the simulator, unsigned
+        working-directory: frontend/ios
+        # -quiet: only warnings and errors in the log.
+        run: >-
+          xcodebuild build -quiet
+          -workspace App/App.xcworkspace
+          -scheme App
+          -configuration Debug
+          -sdk iphonesimulator
+          -destination "generic/platform=iOS Simulator"
+          CODE_SIGNING_ALLOWED=NO

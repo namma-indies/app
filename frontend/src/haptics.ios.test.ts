@@ -8,7 +8,7 @@ vi.mock("@capacitor/haptics", () => ({
   NotificationType: { Success: "SUCCESS" },
 }));
 vi.mock("@capacitor/core", () => ({
-  Capacitor: { isNativePlatform: () => platform.native, isPluginAvailable: () => platform.native },
+  Capacitor: { isNativePlatform: () => platform.native, isPluginAvailable: (name: string) => platform.native && name === "Haptics" },
 }));
 
 import { haptic, hapticChannel, onHapticOutcome, playScore, switchSupported } from "./haptics";
