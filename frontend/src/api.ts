@@ -252,6 +252,12 @@ export interface PostSightingInput {
   /** A spoken note recorded with photos. Never sent with a clip, whose own
    * sound is its note. */
   audio?: Blob;
+  /** The language picked on the recorder for this note (#167). Left out, the
+   * observer's usual language is the hint. */
+  note_language?: NoteLanguage;
+  /** The usual language the app showed when the note was recorded: a hint,
+   * and kept if the server has none yet (its own save may have failed). */
+  usual_language?: NoteLanguage;
   lat?: number;
   lng?: number;
   geo_accuracy_m?: number;
@@ -317,6 +323,10 @@ export async function addVoiceNote(
   note: Blob,
   /** The recording's own id: a retry of the same one gets the note it already made. */
   clientToken: string,
+  /** The language picked for this note on the recorder, if any (#167). */
+  noteLanguage?: NoteLanguage | null,
+  /** The usual language shown when it was recorded, if answered. */
+  usualLanguage?: NoteLanguage | null,
 ): Promise<{ note_id: string; duplicate?: boolean }> {
   const path = "sightingId" in target
     ? `/sighting/${encodeURIComponent(target.sightingId)}/voice-note`
@@ -324,6 +334,8 @@ export async function addVoiceNote(
   const form = new FormData();
   form.append("audio", note, `note.${audioExtension(note.type)}`);
   form.append("client_token", clientToken);
+  if (noteLanguage) form.append("note_language", noteLanguage);
+  if (usualLanguage) form.append("usual_language", usualLanguage);
   const res = await fetch(`${API_BASE}${path}`, { method: "POST", credentials: "include", body: form });
   return handle(res);
 }
@@ -371,12 +383,16 @@ export function buildSightingForm(input: PostSightingInput): FormData {
   } else {
     (input.photos ?? []).forEach((p, i) => form.append("photos", p, `photo-${i}.jpg`));
     if (input.audio) form.append("audio", input.audio, `note.${audioExtension(input.audio.type)}`);
+    if (input.audio && input.note_language) form.append("note_language", input.note_language);
+
   }
   if (input.lat !== undefined) form.append("lat", String(input.lat));
   if (input.lng !== undefined) form.append("lng", String(input.lng));
   if (input.geo_accuracy_m !== undefined)
     form.append("geo_accuracy_m", String(input.geo_accuracy_m));
   if (input.client_token) form.append("client_token", input.client_token);
+  // With a note or a clip alike: a clip's sound is transcribed with it as the hint.
+  if (input.usual_language) form.append("usual_language", input.usual_language);
   form.append("geo_source", input.geo_source);
   form.append("captured_at", input.captured_at);
   if (input.reported_at) form.append("reported_at", input.reported_at);
@@ -506,12 +522,29 @@ export interface Me {
   display_name: string | null;
   is_moderator: boolean;
   multi_animal_enabled?: boolean;
+  /** The language they speak their notes in (#167); null until asked and answered. */
+  note_language?: NoteLanguage | null;
   /** Whether a voice note can be added after upload now, and how many each sighting takes (#156). */
   later_voice_notes_enabled?: boolean;
   later_voice_notes_max?: number;
   /** Has agreed to be posted on @nammaindies and has a handle to be credited
    * by. Decides whether "share with the Namma Indies team" is offered at all. */
   can_share_socially?: boolean;
+}
+
+/** The languages a note can be spoken in, as offered on the recorder (#167);
+ * "auto" is mixed: let the app decide. */
+export type NoteLanguage = "en" | "kn" | "hi" | "ta" | "te" | "ml" | "auto";
+
+/** Keep the language someone usually speaks their notes in. */
+export async function setNoteLanguage(language: NoteLanguage): Promise<{ note_language: NoteLanguage }> {
+  const res = await fetch(`${API_BASE}/me/note-language`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ language }),
+  });
+  return handle(res);
 }
 
 /** Used only to decide whether to render the moderation tab. Every moderation

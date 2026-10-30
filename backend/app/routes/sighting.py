@@ -20,6 +20,7 @@ from app.scoring import recompute_animal_confidence
 from app.social import mark_shared
 from app.storage.s3 import S3Storage
 from app.transcription_jobs import enqueue_transcription
+from app.note_language import check_choice, hint_for
 from app.describe import enqueue as enqueue_description
 from app.video import extract_diverse_frames
 
@@ -299,6 +300,10 @@ async def create_sighting(
     # unless the observer has consented -- see app/social.py.
     share_with_team: bool = Form(False),
     sex: Literal["male", "female", "unsure"] | None = Form(None),
+    # The language picked on the recorder for this note (#167); absent, the
+    # observer's usual one is the hint.
+    note_language: str | None = Form(None, max_length=8),
+    usual_language: str | None = Form(None, max_length=8),
     ear_notch: Literal["none", "left", "right", "unsure"] | None = Form(None),
     condition: Literal["healthy", "injured", "unsure"] | None = Form(None),
     # Accepted and ignored: queued offline captures still carry this field, and
@@ -392,6 +397,8 @@ async def create_sighting(
         )
     # Read before any media is stored, so a bad note is refused up front.
     voice_note = await read_voice_note(audio) if audio is not None else None
+    chosen_language = check_choice(note_language)
+    usual_sent = check_choice(usual_language)
 
     sighting_id = uuid7()
 
@@ -589,7 +596,8 @@ async def create_sighting(
                         "UPDATE sightings SET audio_s3_key = $1 WHERE id = $2 RETURNING capture_id",
                         audio_key, sighting_id,
                     )
-                    await enqueue_transcription(conn, capture_id, "note", audio_key)
+                    hint, forced = await hint_for(conn, observer_id, chosen_language, usual_sent)
+                    await enqueue_transcription(conn, capture_id, "note", audio_key, hint=hint, forced=forced)
 
                 for row in photo_rows:
                     await conn.execute(
@@ -623,7 +631,8 @@ async def create_sighting(
                             "UPDATE sightings SET clip_s3_key=$1 WHERE id=$2 RETURNING capture_id",
                             clip_key, sighting_id)
                         # The clip's sound is its note (#96).
-                        await enqueue_transcription(conn, capture_id, "clip", clip_key)
+                        hint, _ = await hint_for(conn, observer_id, None, usual_sent)
+                        await enqueue_transcription(conn, capture_id, "clip", clip_key, hint=hint)
                     await enqueue(conn, sighting_id, "video" if video is not None else "photo")
                 # Nothing noted about it: the local model may describe the animal (#160).
                 await enqueue_description(conn, sighting_id)

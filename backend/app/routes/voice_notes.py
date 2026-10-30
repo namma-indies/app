@@ -39,6 +39,7 @@ from app.config import settings
 from app.deps import get_conn, get_storage
 from app.ids import uuid7
 from app.media_purges import lock_key, purge_later
+from app.note_language import check_choice, hint_for
 from app.ratelimit import check, voice_note_limit
 from app.routes.capture import owned
 from app.routes.sighting import read_voice_note
@@ -80,8 +81,11 @@ def _note_id(observer_id: UUID, client_token: str | None) -> UUID:
 
 
 async def _add(conn, storage, observer_id: UUID, capture_id: UUID, legacy: bool,
-               sighting_id: UUID | None, audio: UploadFile, client_token: str | None) -> JSONResponse:
+               sighting_id: UUID | None, audio: UploadFile, client_token: str | None,
+               note_language: str | None = None, usual_language: str | None = None) -> JSONResponse:
     raw, ext, content_type = await read_voice_note(audio)
+    chosen_language = check_choice(note_language)
+    usual_sent = check_choice(usual_language)
     if (done := await _already(conn, observer_id, client_token)) is not None:
         return done
     if await _count(conn, capture_id, sighting_id) >= settings.later_voice_notes_max:
@@ -111,13 +115,16 @@ async def _add(conn, storage, observer_id: UUID, capture_id: UUID, legacy: bool,
                                         client_token)
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
             note_id, capture_id, sighting_id, observer_id, key, content_type, len(raw), client_token)
-        await enqueue_transcription(conn, capture_id, "note", key, note_id)
+        hint, forced = await hint_for(conn, observer_id, chosen_language, usual_sent)
+        await enqueue_transcription(conn, capture_id, "note", key, note_id, hint=hint, forced=forced)
     return JSONResponse({"note_id": str(note_id), "state": "transcribing"}, status_code=202)
 
 
 @router.post("/sighting/{sighting_id}/voice-note", status_code=202)
 async def add_to_sighting(sighting_id: UUID, audio: UploadFile = File(...),
                           client_token: str | None = Form(None, max_length=200),
+                          note_language: str | None = Form(None, max_length=8),
+                          usual_language: str | None = Form(None, max_length=8),
                           observer_id: UUID = Depends(require_observer), conn=Depends(get_conn),
                           storage=Depends(get_storage)):
     _ready(observer_id)
@@ -127,12 +134,14 @@ async def add_to_sighting(sighting_id: UUID, audio: UploadFile = File(...),
     if row is None:
         raise HTTPException(404, "no such sighting")
     return await _add(conn, storage, observer_id, row["capture_id"], row["processing_state"] == "legacy",
-                      sighting_id, audio, client_token)
+                      sighting_id, audio, client_token, note_language, usual_language)
 
 
 @router.post("/capture/{capture_id}/voice-note", status_code=202)
 async def add_to_capture(capture_id: UUID, audio: UploadFile = File(...),
                          client_token: str | None = Form(None, max_length=200),
+                         note_language: str | None = Form(None, max_length=8),
+                         usual_language: str | None = Form(None, max_length=8),
                          observer_id: UUID = Depends(require_observer), conn=Depends(get_conn),
                          storage=Depends(get_storage)):
     _ready(observer_id)
@@ -140,7 +149,8 @@ async def add_to_capture(capture_id: UUID, audio: UploadFile = File(...),
     # A /sighting upload's stand-in capture has no sheet; its note goes on the sighting.
     if capture["processing_state"] == "legacy":
         raise HTTPException(404, "no such capture")
-    return await _add(conn, storage, observer_id, capture_id, False, None, audio, client_token)
+    return await _add(conn, storage, observer_id, capture_id, False, None, audio, client_token, note_language,
+                      usual_language)
 
 
 @router.delete("/voice-note/{note_id}", status_code=204)

@@ -345,6 +345,9 @@ button { font-family: inherit; }
 .photo-description textarea { width: 100%; margin-top: 0.25rem; }
 .photo-description-actions { display: flex; gap: 0.6rem; align-items: center; margin-top: 0.35rem; }
 .chip-ai { margin-left: 0.3rem; padding: 0 0.25rem; font-size: 0.65rem; border: 1px solid currentColor; border-radius: 3px; }
+/* Which language a note is spoken in (#167): asked once, then a small chip. */
+.note-language { display: flex; flex-direction: column; gap: 0.35rem; margin: 0.4rem 0; text-align: left; }
+.note-language-chip { align-self: flex-start; font-variant-numeric: tabular-nums; }
 .add-voice-note { display: flex; flex-direction: column; gap: 0.4rem; margin: 0.6rem 0; text-align: left; }
 
 .social-card { display: flex; flex-direction: column; gap: 0.6rem; }

@@ -70,11 +70,13 @@ def transcription_enabled() -> bool:
 
 
 async def enqueue_transcription(conn, capture_id: UUID, source: str, s3_key: str,
-                                note_id: UUID | None = None) -> None:
+                                note_id: UUID | None = None, *, hint: str | None = None,
+                                forced: bool = False) -> None:
     """Queue one sound to transcribe, inside the upload's own transaction.
 
     `note_id` is a note added after the upload (app/voice_notes.py); the
-    upload's own note and clip have none. A no-op unless transcription is
+    upload's own note and clip have none. `hint` and `forced` are the language
+    to transcribe in (app/note_language.hint_for). A no-op unless transcription is
     switched on: with no worker to drain it, a queued row would only ever age.
     """
     if not transcription_enabled():
@@ -82,10 +84,11 @@ async def enqueue_transcription(conn, capture_id: UUID, source: str, s3_key: str
     if source not in ("note", "clip"):
         raise ValueError("invalid transcription source")
     await conn.execute(
-        """INSERT INTO transcription_jobs (id, capture_id, source, s3_key, pipeline_version, note_id)
-           VALUES ($1, $2, $3, $4, $5, $6)
+        """INSERT INTO transcription_jobs (id, capture_id, source, s3_key, pipeline_version, note_id,
+                                           language_hint, language_forced)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
            ON CONFLICT ON CONSTRAINT transcription_jobs_one_per_sound DO NOTHING""",
-        uuid7(), capture_id, source, s3_key, PIPELINE_VERSION, note_id,
+        uuid7(), capture_id, source, s3_key, PIPELINE_VERSION, note_id, hint, forced and hint is not None,
     )
 
 
@@ -145,7 +148,10 @@ async def claim(body: Claim, request: Request, storage=Depends(get_storage)):
     return {"job": {"id": str(job["id"]), "kind": job["source"],
                     "pipeline_version": job["pipeline_version"], "model": MODEL_NAME,
                     "lease_token": token, "lease_expires_at": job["lease_expires_at"],
-                    "source": {"url": url}}}
+                    "source": {"url": url},
+                    # The language to transcribe in (app/note_language.py). A worker
+                    # from before these fields reads only the ones it knows.
+                    "language_hint": job["language_hint"], "language_forced": job["language_forced"]}}
 
 
 @router.post("/{job_id}/heartbeat")

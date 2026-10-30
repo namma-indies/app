@@ -18,6 +18,7 @@ from app.ids import uuid7
 from app.photos import process_photo, thumb_key
 from app.routes.sighting import _read_bounded, read_voice_note
 from app.transcription_jobs import enqueue_transcription
+from app.note_language import check_choice, hint_for
 
 router = APIRouter()
 
@@ -82,6 +83,8 @@ async def create_capture(request: Request, photos: list[UploadFile] | None = Fil
         captured_at: datetime = Form(...), reported_at: datetime | None = Form(None),
         note: str | None = Form(None, max_length=4000),
         share_with_team: bool = Form(False),
+        note_language: str | None = Form(None, max_length=8),
+        usual_language: str | None = Form(None, max_length=8),
         observer_id: UUID = Depends(require_observer), storage=Depends(get_storage)):
     pool = request.app.state.pool
     # A disabled intake must still acknowledge a previously accepted upload.
@@ -106,6 +109,8 @@ async def create_capture(request: Request, photos: list[UploadFile] | None = Fil
     if audio is not None and video is not None:
         raise HTTPException(422,"a clip's own sound is its note; send no separate voice note")
     voice_note = await read_voice_note(audio) if audio is not None else None
+    chosen_language = check_choice(note_language)
+    usual_sent = check_choice(usual_language)
     capture_id = uuid7()
     rows = []
     clip_key = clip_sha = None
@@ -154,10 +159,13 @@ async def create_capture(request: Request, photos: list[UploadFile] | None = Fil
                     $10,$11,$12::jsonb,$13,$14,$15) RETURNING *""",capture_id,observer_id,client_token,
                 "video" if video is not None else "photo",captured_at,reported_at,has_geo,lng,lat,
                 geo_source,geo_accuracy_m,json.dumps(attrs),clip_key,clip_sha,audio_key)
+            # The language to transcribe in (#167): this note's own, else the usual one.
             if audio_key is not None:
-                await enqueue_transcription(conn,capture_id,"note",audio_key)
+                hint,forced = await hint_for(conn,observer_id,chosen_language,usual_sent)
+                await enqueue_transcription(conn,capture_id,"note",audio_key,hint=hint,forced=forced)
             if clip_key is not None:
-                await enqueue_transcription(conn,capture_id,"clip",clip_key)
+                hint,_ = await hint_for(conn,observer_id,None,usual_sent)
+                await enqueue_transcription(conn,capture_id,"clip",clip_key,hint=hint)
             # Sources carry the content hash; the crops and clip frames the
             # worker publishes later do not. The identical-photo rule reaches a
             # capture's sightings through these (app.identical).

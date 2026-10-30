@@ -86,6 +86,15 @@ describe("flush", () => {
     expect(await sent.audio?.text()).toBe("she is asleep");
     expect(await pendingCount()).toBe(0);
   });
+  it("keeps the language picked for a note recorded offline (#167)", async () => {
+    const { enqueue, flush } = await freshQueue();
+    await enqueue({ ...SAMPLE, photos: [new Blob(["photo"])], audio: new Blob(["avalu"], { type: "audio/mp4" }), note_language: "kn", usual_language: "en" });
+    vi.mocked(postSighting).mockResolvedValue({ sighting_id: "s", photo_ids: [] });
+    await flush();
+    const calls = vi.mocked(postSighting).mock.calls;
+    expect(calls[calls.length - 1][0].note_language).toBe("kn");
+    expect(calls[calls.length - 1][0].usual_language).toBe("en");
+  });
   it("deletes an uploaded queued video without waiting for frames or processing", async () => {
     const { enqueue, flush, pendingCount, failedCount } = await freshQueue();
     await enqueue({ ...SAMPLE, photos: undefined, video: new Blob(["clip"], { type: "video/mp4" }) });
