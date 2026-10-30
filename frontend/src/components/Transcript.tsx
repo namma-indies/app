@@ -26,6 +26,30 @@ const NOTE_STATUS: Record<LaterNote["state"], string | null> = {
 
 const addedLater = (when: string) => `ADDED LATER · ${formatDay(when).toUpperCase()}`;
 
+export const DELETE_NOTE_WARNING = "Delete this note? Its recording, its words and any suggestions from it you haven’t answered will be removed. Details you’ve already filled in stay.";
+
+/** "delete note" on a note added later (#158): asks first, and says so if it could not. */
+function DeleteNote({ onDelete }: { onDelete: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  async function remove() {
+    if (!confirm(DELETE_NOTE_WARNING)) return;
+    setBusy(true);
+    setFailed(false);
+    try {
+      await onDelete();
+    } catch {
+      setFailed(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <>
+    <button type="button" className="link-btn transcript-delete" disabled={busy} onClick={remove}>{busy ? "deleting…" : "delete note"}</button>
+    {failed && <p className="hint place-warning" role="alert">Couldn’t delete the note. Try again.</p>}
+  </>;
+}
+
 /** The languages people here speak (app/suggestions.EXPECTED_LANGUAGES), by name. */
 const LANGUAGE_NAMES: Record<string, string> = {
   en: "English", hi: "Hindi", kn: "Kannada", ta: "Tamil", te: "Telugu", ml: "Malayalam",
@@ -91,7 +115,9 @@ export function highlightSpans(text: string, highlights: Highlight[]): { start: 
 
 /** One heard text. Compact: clamped to about three lines with "more", opened up
  * from the start when a highlighted word would otherwise be cut off. */
-function Heard({ t, highlights, compact, state }: { t: HeardText; highlights: Highlight[]; compact: boolean; state?: LaterNote["state"] }) {
+function Heard({ t, highlights, compact, state, onDelete }: {
+  t: HeardText; highlights: Highlight[]; compact: boolean; state?: LaterNote["state"]; onDelete?: () => Promise<void>;
+}) {
   const text = useRef<HTMLQuoteElement>(null);
   const [open, setOpen] = useState(false);
   const [overflows, setOverflows] = useState(false);
@@ -125,6 +151,7 @@ function Heard({ t, highlights, compact, state }: { t: HeardText; highlights: Hi
       <p lang="en">{t.english}</p>
     </div>}
     {state && NOTE_STATUS[state] && <p className="hint transcript-status" role="status">{NOTE_STATUS[state]}</p>}
+    {onDelete && <DeleteNote onDelete={onDelete} />}
     {compact && (overflows || open || !!t.english) && <button type="button" className="link-btn transcript-more" aria-expanded={open} onClick={() => setOpen((v) => !v)}>{open ? "less" : "more"}</button>}
   </figure>;
 }
@@ -134,10 +161,12 @@ function Heard({ t, highlights, compact, state }: { t: HeardText; highlights: Hi
  * suggestion came from marked (#112). It shows the observer what the model
  * worked from, so a wrong suggestion can be traced to a misheard word.
  */
-export default function Transcript({ transcripts, highlights = [], compact = false, notes = [] }: {
+export default function Transcript({ transcripts, highlights = [], compact = false, notes = [], onDeleteNote }: {
   transcripts: HeardText[]; highlights?: Highlight[]; compact?: boolean;
   /** Notes added later (#156): their state, and a block for each with no transcript yet. */
   notes?: LaterNote[];
+  /** Offers "delete note" on each note added later (#158). */
+  onDeleteNote?: (noteId: string) => Promise<void>;
 }) {
   const stateOf = new Map(notes.map((n) => [n.id, n.state]));
   const heard = new Set(transcripts.flatMap((t) => (t.note_id ? [t.note_id] : [])));
@@ -145,11 +174,13 @@ export default function Transcript({ transcripts, highlights = [], compact = fal
   if (!transcripts.length && !waiting.length) return null;
   return <div className="transcript">
     {transcripts.map((t) => <Heard key={t.note_id ?? t.source} t={t} highlights={highlights} compact={compact}
-      state={t.note_id ? stateOf.get(t.note_id) : undefined} />)}
+      state={t.note_id ? stateOf.get(t.note_id) : undefined}
+      onDelete={t.note_id && onDeleteNote ? () => onDeleteNote(t.note_id!) : undefined} />)}
     {waiting.map((n) => <figure key={n.id}>
       <figcaption className="spot-label">{addedLater(n.added_at)}</figcaption>
       <audio className="viewer-audio" src={n.audio_url} controls preload="none" aria-label="voice note added later" />
       <p className="hint transcript-status" role="status">{NOTE_STATUS[n.state]}</p>
+      {onDeleteNote && <DeleteNote onDelete={() => onDeleteNote(n.id)} />}
     </figure>)}
     {!compact && highlights.length > 0 && <p className="hint">
       Highlighted words are where the suggestions came from.{highlights.some((h) => h.used) && " Dotted ones are already filled in."}

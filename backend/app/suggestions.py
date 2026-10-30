@@ -426,12 +426,18 @@ async def _store(pool, row, raw, animals, model: str, english=None):
     logger.info("suggestions for transcript=%s: model gave %d, kept %d; english=%s", row["id"],
                 len(raw) if isinstance(raw, list) else 0, len(suggestions), english is not None)
     async with pool.acquire() as conn, conn.transaction():
+        # Held until these are written: a note being deleted (app/routes/
+        # voice_notes.py) waits for them, so it can clear them too; and once it
+        # is gone there is nothing to write them about.
+        if await conn.fetchval("SELECT id FROM voice_transcripts WHERE id=$1 FOR KEY SHARE", row["id"]) is None:
+            return
         for s in suggestions:
             await conn.execute(
                 """INSERT INTO detail_suggestions (id, capture_id, transcript_id, instance_id,
                                                    field, value, quote, model)
                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-                   ON CONFLICT (transcript_id, instance_id, field) DO NOTHING""",
+                   ON CONFLICT (transcript_id, instance_id, field) WHERE transcript_id IS NOT NULL
+                   DO NOTHING""",
                 uuid7(), row["capture_id"], row["id"], instance_of.get(s["animal"]),
                 s["field"], s["value"], s["quote"], model)
         await conn.execute(

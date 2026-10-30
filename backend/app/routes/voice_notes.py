@@ -14,19 +14,31 @@ A save is safe to retry: the app sends the recording's own `client_token`,
 and a retry whose first answer was lost gets the note already made back
 (202, `duplicate`), before any limit is applied, rather than a second copy.
 
+`DELETE /voice-note/{id}` removes a note added later, for good: its audio,
+its transcript and the suggestions from it still open. Details already
+filled in from it stay, as they are the observer's own now; so does each
+answered suggestion, as the record of how the model did, but without the
+words it quoted, which were the recording's (0025).
+The rows go at once, in one transaction that also records the audio's key in
+`media_purges`; the audio is deleted from the store after the response
+(app/media_purges.py). The observer never waits on the store: if it refuses
+(production's credentials may lack s3:DeleteObject) or does not answer, the
+key stays recorded for scripts/purge_media.py to finish.
+
 Limits: the recorder stops at 60 s (the server never decodes audio, as at
 upload); the upload's byte cap; `later_voice_notes_max` per sighting or
 capture; `rl_voice_note_*` per person.
 """
 from uuid import UUID, uuid5
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 
 from app.auth.deps import require_observer
 from app.config import settings
 from app.deps import get_conn, get_storage
 from app.ids import uuid7
+from app.media_purges import lock_key, purge_later
 from app.ratelimit import check, voice_note_limit
 from app.routes.capture import owned
 from app.routes.sighting import read_voice_note
@@ -78,10 +90,6 @@ async def _add(conn, storage, observer_id: UUID, capture_id: UUID, legacy: bool,
     # Beside the row's other media, as the upload's note is (0019).
     prefix = f"sightings/{capture_id}" if legacy else f"captures/{capture_id}"
     key = f"{prefix}/notes/{note_id}.{ext}"
-    try:
-        await storage.put(key, raw, content_type)
-    except Exception:
-        raise HTTPException(503, "voice note storage unavailable; try again")
     async with conn.transaction():
         # Serialises two notes saved at once, so the limit holds.
         await conn.execute("SELECT 1 FROM captures WHERE id=$1 FOR UPDATE", capture_id)
@@ -90,6 +98,14 @@ async def _add(conn, storage, observer_id: UUID, capture_id: UUID, legacy: bool,
             return done
         if await _count(conn, capture_id, sighting_id) >= settings.later_voice_notes_max:
             raise HTTPException(409, "this sighting already has as many added notes as it can take")
+        # The key may be owed a purge (this recording, saved before, then
+        # deleted): take it back under the purge's own lock before writing it.
+        await lock_key(conn, key)
+        await conn.execute("DELETE FROM media_purges WHERE s3_key=$1", key)
+        try:
+            await storage.put(key, raw, content_type)
+        except Exception:
+            raise HTTPException(503, "voice note storage unavailable; try again")
         await conn.execute(
             """INSERT INTO voice_notes (id, capture_id, sighting_id, observer_id, s3_key, content_type, bytes,
                                         client_token)
@@ -125,3 +141,33 @@ async def add_to_capture(capture_id: UUID, audio: UploadFile = File(...),
     if capture["processing_state"] == "legacy":
         raise HTTPException(404, "no such capture")
     return await _add(conn, storage, observer_id, capture_id, False, None, audio, client_token)
+
+
+@router.delete("/voice-note/{note_id}", status_code=204)
+async def delete_note(note_id: UUID, request: Request, observer_id: UUID = Depends(require_observer),
+                      conn=Depends(get_conn), storage=Depends(get_storage)):
+    async with conn.transaction():
+        # Locks in the order a transcription completing takes them (its job,
+        # then the note its transcript points at), so the two never deadlock.
+        await conn.execute("SELECT 1 FROM transcription_jobs WHERE note_id=$1 FOR UPDATE", note_id)
+        key = await conn.fetchval(
+            "SELECT s3_key FROM voice_notes WHERE id=$1 AND observer_id=$2 FOR UPDATE", note_id, observer_id)
+        if key is None:
+            raise HTTPException(404, "no such voice note")
+        # Fence the model first: suggestions being stored for this note finish
+        # before the cleanup below sees them, and none can be stored after it.
+        await conn.execute("SELECT 1 FROM voice_transcripts WHERE note_id=$1 FOR UPDATE", note_id)
+        heard = "SELECT id FROM voice_transcripts WHERE note_id=$1"
+        await conn.execute(f"DELETE FROM detail_suggestions WHERE status='open' AND transcript_id IN ({heard})", note_id)
+        await conn.execute(f"UPDATE detail_suggestions SET quote='' WHERE transcript_id IN ({heard})", note_id)
+        # Its transcription job and transcript go with it (0024); the answered
+        # suggestions above are let go of their transcript (0025).
+        await conn.execute("DELETE FROM voice_notes WHERE id=$1 AND observer_id=$2", note_id, observer_id)
+        # The audio is owed a delete from here on, with the rows: if the store
+        # refuses, or this process stops before asking, the key is on record.
+        await conn.execute(
+            "INSERT INTO media_purges (s3_key, reason) VALUES ($1, 'voice_note_deleted') ON CONFLICT DO NOTHING", key)
+    # Gone for its observer now. The store is asked after the response, bounded
+    # in time; what it will not delete waits for scripts/purge_media.py.
+    purge_later(request.app.state.pool, storage, key)
+    return Response(status_code=204)

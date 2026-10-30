@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { decideSuggestion, notePending, UnauthorizedError } from "../api";
+import { decideSuggestion, deleteVoiceNote, notePending, UnauthorizedError } from "../api";
 import Transcript from "./Transcript";
 import AddVoiceNote, { type LaterNotesConfig } from "./AddVoiceNote";
 import { haptic } from "../haptics";
@@ -281,7 +281,12 @@ export default function CaptureReview({ captureId, onClose, onSaved, onUnauthori
         {detail && <>
           <p className="hint">Taken {formatWhen(detail.captured_at)}.{!compact && " Every animal from this upload shares this time and place."}</p>
           {detail.note && <p>Your note: {detail.note}</p>}
-          <Transcript compact={compact} transcripts={detail.voice_transcripts ?? []} notes={detail.later_notes ?? []} highlights={[
+          <Transcript compact={compact} transcripts={detail.voice_transcripts ?? []} notes={detail.later_notes ?? []}
+            // Removing your own recording never depends on whether adding one is possible now.
+            onDeleteNote={async (id) => {
+              try { await deleteVoiceNote(id); } catch (err) { if (err instanceof UnauthorizedError) unauthorizedRef.current(); throw err; }
+              await refreshSounds();
+            }} highlights={[
             ...stillOpen.filter((suggestion) => !answers[suggestion.id])
               .map((suggestion) => ({ id: suggestion.id, quote: suggestion.quote, label: `${SUGGESTION_LABELS[suggestion.field]}: ${suggestion.value}`, noteId: suggestion.note_id })),
             // Used, in an earlier visit or just now: still marked, quieter. Turned down ("not this") is wrong, so it isn't.
