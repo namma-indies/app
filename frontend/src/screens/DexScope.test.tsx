@@ -90,8 +90,9 @@ describe("processing sightings", () => {
     await userEvent.click(screen.getByText("JOURNAL"));
     expect(screen.getByRole("img")).toHaveAttribute("src", "http://x/failed_thumb.webp");
     await userEvent.click(screen.getByText("Processing failed · upload saved"));
-    expect(screen.getByAltText("animal sighting 1")).toHaveAttribute("src", "http://x/failed.webp");
-    expect(screen.getByAltText("animal sighting 2")).toHaveAttribute("src", "http://x/second.webp");
+    expect(screen.getByAltText("animal sighting, frame 1 of 2")).toHaveAttribute("src", "http://x/failed.webp");
+    await userEvent.click(screen.getByRole("button", { name: "Show frame 2 of 2" }));
+    expect(screen.getByAltText("animal sighting, frame 2 of 2")).toHaveAttribute("src", "http://x/second.webp");
   });
 
   it("does not turn a failed Journal request into an empty Journal", async () => {
