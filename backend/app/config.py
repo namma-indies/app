@@ -113,6 +113,11 @@ class Settings(BaseSettings):
     suggest_local_model: str = "qwen3.8-27b-ud-q4_k_xl"
     suggest_timeout_s: int = Field(default=60, ge=5, le=600)
     suggest_poll_s: float = Field(default=5.0, ge=0.5, le=600)
+    # The same request also asks for an English translation of a non-English
+    # transcript, but only up to this many characters: the worker caps the
+    # answer at 1024 tokens, and one cut off mid-JSON would cost the note its
+    # suggestions. 2,000 covers a 60 s note in any script; 0 turns it off.
+    suggest_translate_max_chars: int = Field(default=2000, ge=0, le=20_000)
     media_max_audio_bytes: int = Field(default=8 * 1024 * 1024, gt=0, le=50 * 1024 * 1024)
 
     # --- re-identification -------------------------------------------------

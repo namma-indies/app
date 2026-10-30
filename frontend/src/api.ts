@@ -76,7 +76,7 @@ export interface Sighting {
   audio_url?: string | null;
   /** Present on /dex only. What the GPU worker heard in the voice note or the
    * clip's sound, shown with the words behind each suggestion marked (#112). */
-  voice_transcripts?: { source: "note" | "clip"; language: string; text: string }[];
+  voice_transcripts?: { source: "note" | "clip"; language: string; text: string; english?: string | null }[];
   /** Present on /dex only. Details a model read from the voice note, for
    * blank details only. Nothing is saved until the observer picks an option. */
   suggestions?: Suggestion[];
