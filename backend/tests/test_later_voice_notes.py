@@ -361,3 +361,20 @@ async def test_the_sheet_s_suggestions_name_their_note_too(authed_client, enable
             {"field": "known_name", "value": "Kaalu", "quote": "The brown one is Kaalu", "animal": "A"}]})})
     (s,) = (await client.get(f"/capture/{cid}")).json()["suggestions"]
     assert s["note_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_two_saves_of_one_recording_at_once_leave_one_note_and_one_copy_of_the_audio(authed_client, enabled):
+    import asyncio
+    client, _ = authed_client
+    sid = await _photo_sighting(client)
+    path = f"/sighting/{sid}/voice-note"
+    first, second = await asyncio.gather(_add(client, path, token="rec-1"), _add(client, path, token="rec-1"))
+    assert first.status_code == second.status_code == 202
+    assert first.json()["note_id"] == second.json()["note_id"]
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT count(*) FROM voice_notes") == 1
+        assert await c.fetchval("SELECT count(*) FROM transcription_jobs WHERE note_id IS NOT NULL") == 1
+        key = await c.fetchval("SELECT s3_key FROM voice_notes")
+    assert await get_storage().list_keys(f"sightings/{sid}/notes/") == [key]

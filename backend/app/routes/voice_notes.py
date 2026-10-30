@@ -18,7 +18,7 @@ Limits: the recorder stops at 60 s (the server never decodes audio, as at
 upload); the upload's byte cap; `later_voice_notes_max` per sighting or
 capture; `rl_voice_note_*` per person.
 """
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
@@ -33,6 +33,8 @@ from app.routes.sighting import read_voice_note
 from app.transcription_jobs import enqueue_transcription, transcription_enabled
 
 router = APIRouter()
+# Names a note after its recording's client_token (see `_note_id`).
+_NOTE_NAMESPACE = UUID("4f1c2a8e-7d3b-5e9a-b6c4-0a1d2e3f4b5c")
 
 
 def _ready(observer_id: UUID) -> None:
@@ -58,6 +60,13 @@ async def _already(conn, observer_id: UUID, client_token: str | None) -> JSONRes
         {"note_id": str(found), "duplicate": True}, status_code=202)
 
 
+def _note_id(observer_id: UUID, client_token: str | None) -> UUID:
+    """A recording's note id, and so its storage key. Named after its token
+    when it has one, so two saves of it that overlap write the one object
+    and the second finds the first's row, leaving no stray copy of the audio."""
+    return uuid5(_NOTE_NAMESPACE, f"{observer_id}:{client_token}") if client_token else uuid7()
+
+
 async def _add(conn, storage, observer_id: UUID, capture_id: UUID, legacy: bool,
                sighting_id: UUID | None, audio: UploadFile, client_token: str | None) -> JSONResponse:
     raw, ext, content_type = await read_voice_note(audio)
@@ -65,7 +74,7 @@ async def _add(conn, storage, observer_id: UUID, capture_id: UUID, legacy: bool,
         return done
     if await _count(conn, capture_id, sighting_id) >= settings.later_voice_notes_max:
         raise HTTPException(409, "this sighting already has as many added notes as it can take")
-    note_id = uuid7()
+    note_id = _note_id(observer_id, client_token)
     # Beside the row's other media, as the upload's note is (0019).
     prefix = f"sightings/{capture_id}" if legacy else f"captures/{capture_id}"
     key = f"{prefix}/notes/{note_id}.{ext}"
