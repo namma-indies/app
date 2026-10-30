@@ -231,6 +231,63 @@ def test_silence_is_never_transcribed_twice(tools):
     assert requests_made(root) == ["auto"]
 
 
+# ---------------------------------------------------------------------------
+# The language the person speaks their notes in (#171)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("odds,hint,chosen", [
+    ({"hi": 0.62, "en": 0.30}, "en", "en"),     # Indian English heard as Hindi: theirs
+    ({"kn": 0.91, "en": 0.05}, "en", "kn"),     # very sure of Kannada: Kannada
+    ({"kn": 0.79, "en": 0.10}, "en", "en"),     # not quite sure enough
+    ({"kn": 0.80}, "en", "kn"),                 # the threshold itself is sure enough
+    ({"cy": 0.95}, "ta", "ta"),                 # outside the set: theirs
+    ({"ta": 0.40, "en": 0.35}, "ta", "ta"),
+])
+def test_a_hint_gives_way_only_to_a_very_sure_other_language(odds, hint, chosen):
+    assert transcribe.with_hint(whisper_json([(0, 900, " ok")], "hindi", odds), hint) == chosen
+
+
+def test_with_no_probabilities_the_hint_stands():
+    assert transcribe.with_hint(whisper_json([(0, 900, " ok")], "hindi"), "en") == "en"
+
+
+def _run(tools, port, reply, replies=None, **hinted):
+    """`replies` maps a language the worker names to the server's answer for it."""
+    root, ffmpeg, server = tools
+    t = transcribe.Transcriber(server(reply=reply, forced=replies), root / "m", root / "v", ffmpeg=str(ffmpeg), port=port)
+    t.start()
+    try:
+        return t.transcribe(b"note", **hinted), requests_made(root)
+    finally:
+        t.stop()
+
+
+def test_english_heard_as_hindi_is_transcribed_in_english_when_that_is_what_they_speak(tools):
+    hindi = whisper_json([(0, 900, " वह सो रही है")], "hindi", {"hi": 0.62, "en": 0.30})
+    english = whisper_json([(0, 900, " She is asleep.")], "english", {"hi": 0.62, "en": 0.30})
+    heard, made = _run(tools, 18951, hindi, {"en": english}, hint="en")
+    assert (heard.language, heard.text, made) == ("en", "She is asleep.", ["auto", "en"])
+
+
+def test_heard_as_hinted_costs_no_second_pass(tools):
+    english = whisper_json([(0, 900, " She is asleep.")], "english", {"en": 0.7, "hi": 0.2})
+    heard, made = _run(tools, 18952, english, hint="en")
+    assert (heard.language, made) == ("en", ["auto"])
+
+
+def test_a_note_s_own_language_is_one_pass_in_it(tools):
+    kannada = whisper_json([(0, 900, " ನಾಯಿ ಮಲಗಿದೆ")], "kannada", {"kn": 0.3})
+    english = whisper_json([(0, 900, " ignored")], "english", {"en": 0.9})
+    heard, made = _run(tools, 18953, english, {"kn": kannada}, hint="kn", forced=True)
+    assert (heard.language, heard.text, made) == ("kn", "ನಾಯಿ ಮಲಗಿದೆ", ["kn"])
+
+
+def test_a_hint_it_does_not_know_is_no_hint(tools):
+    kannada = whisper_json([(0, 900, " ನಾಯಿ ಮಲಗಿದೆ")], "kannada", {"kn": 0.8})
+    heard, made = _run(tools, 18954, kannada, hint="xx", forced=True)
+    assert (heard.language, made) == ("kn", ["auto"])
+
+
 def test_whisper_server_listens_on_loopback_only(tools):
     root, ffmpeg, server = tools
     command = transcribe.Transcriber(server(), root / "m", root / "v").command
@@ -286,9 +343,11 @@ def test_a_server_that_dies_on_startup_is_reported(tools):
 class FakeTranscriber:
     def __init__(self):
         self.calls = []
+        self.hints = []
 
-    def transcribe(self, raw):
+    def transcribe(self, raw, hint=None, forced=False):
         self.calls.append(raw)
+        self.hints.append((hint, forced))
         return transcribe.Transcript("transcribed", "hi", "यह कुत्ता दोस्ताना है",
                                      [{"start_ms": 0, "end_ms": 1800, "text": "यह कुत्ता दोस्ताना है"}])
 
@@ -342,6 +401,25 @@ async def test_transcribes_only_when_no_image_work_is_waiting():
     assert transcriber.calls == [b"voice-note-bytes"]
     done = server.completions[0]
     assert (done["outcome"], done["language"], done["model"]) == ("transcribed", "hi", WHISPER_MODEL)
+
+
+async def test_a_job_s_language_reaches_whisper_and_an_old_job_s_absence_changes_nothing():
+    server, transcriber = Server(), FakeTranscriber()
+    server.job.update(language_hint="en", language_forced=False)
+    async with server.worker(transcriber) as worker:
+        assert await worker.run_once()
+    assert transcriber.hints == [("en", False)]
+    server, transcriber = Server(), FakeTranscriber()
+    server.job.update(language_hint="kn", language_forced=True)
+    async with server.worker(transcriber) as worker:
+        assert await worker.run_once()
+    assert transcriber.hints == [("kn", True)]
+    server, transcriber = Server(), FakeTranscriber()                        # an API from before #167
+    async with server.worker(transcriber) as worker:
+        assert await worker.run_once()
+    assert transcriber.hints == [(None, False)]
+    assert set(server.completions[0]) == {"lease_token", "pipeline_version", "model", "outcome",
+                                          "language", "text", "segments"}  # nothing new on the wire
 
 
 async def test_a_worker_without_whisper_never_asks_for_transcription():

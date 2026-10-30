@@ -162,7 +162,7 @@ class Adapter(Protocol):
 
 
 class Transcriber(Protocol):
-    def transcribe(self, raw: bytes) -> Any: ...
+    def transcribe(self, raw: bytes, hint: str | None = None, forced: bool = False) -> Any: ...
 
 
 class Model(Protocol):
@@ -414,7 +414,13 @@ class Worker:
             raise ProtocolError()
         maximum = self.config.max_clip_bytes if job["kind"] == "clip" else self.config.max_audio_bytes
         raw = await self._download(job["source"], maximum, lease)
-        heard = await self._thread(self.transcriber.transcribe, raw, lease)
+        # The language the person speaks their notes in, if the API sent one
+        # (#171); absent on older jobs, which are transcribed as before.
+        hint, forced = job.get("language_hint"), job.get("language_forced") is True
+        if hint is None:
+            heard = await self._thread(self.transcriber.transcribe, raw, lease)
+        else:
+            heard = await self._thread(lambda data: self.transcriber.transcribe(data, hint, forced), raw, lease)
         payload = json.dumps(dict(
             lease_token=job["lease_token"], pipeline_version=TRANSCRIBE_PIPELINE_VERSION,
             model=WHISPER_MODEL, outcome=heard.outcome, language=heard.language,
