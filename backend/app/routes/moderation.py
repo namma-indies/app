@@ -56,6 +56,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, HTTPException
 
+from app.aggregates import owner_active
 from app.auth.deps import require_moderator, require_observer
 from app.config import settings
 from app.deps import get_conn, get_storage
@@ -198,7 +199,7 @@ async def moderation_queue(
     depending on what someone recognised in it.
     """
     rows = await conn.fetch(
-        """
+        f"""
         SELECT s.id,
                s.captured_at,
                s.review_status,
@@ -219,6 +220,8 @@ async def moderation_queue(
             ORDER BY created_at, id LIMIT 1
         ) p ON TRUE
         WHERE s.review_status <> 'rejected'
+          -- Going with its account (#179): nothing left to rule on.
+          AND {owner_active('s')}
         GROUP BY s.id, s.captured_at, s.review_status, s.reviewed_at, s.species,
                  o.display_name, p.s3_key
         -- Still open, or reported again since the last ruling. Without the
@@ -325,7 +328,7 @@ async def animal_queue(
     stored, not recomputed.
     """
     rows = await conn.fetch(
-        """
+        f"""
         SELECT s.id,
                s.captured_at,
                s.animal_confidence,
@@ -347,6 +350,7 @@ async def animal_queue(
         ) pd ON TRUE
         WHERE s.animal_confidence IS NOT NULL
           AND s.animal_override IS NULL
+          AND {owner_active('s')}
           -- The ceiling. `::real` for the same reason the map predicate casts:
           -- `animal_confidence` is `real`, and comparing it against an
           -- unsuffixed literal widens both to double precision, where a float4

@@ -10,13 +10,56 @@ SESSION_COOKIE = "session"
 SESSION_MAX_AGE_S = 60 * 60 * 24 * 400  # ~browser max; effectively non-expiring, survives PWA restarts
 
 
-async def require_observer(request: Request) -> UUID:
+PENDING_DELETION = "account_pending_deletion"
+
+
+def _session_observer(request: Request) -> UUID:
     cookie_value = request.cookies.get(SESSION_COOKIE)
     if cookie_value is None:
         raise HTTPException(status_code=401)
     observer_id = read_session(cookie_value)
     if observer_id is None:
         raise HTTPException(status_code=401)
+    return observer_id
+
+
+async def _account_state(request: Request) -> tuple[UUID, bool]:
+    """(observer, deletion pending) for a session whose account still exists.
+
+    A session is a signed cookie that never expires, so signing it proves only
+    that we issued it once. Whether the account behind it still exists is the
+    database's to say, on every request: a deleted account's cookie is a 401
+    from the moment it is deleted (#179), not whenever the phone forgets it.
+
+    The connection is borrowed for this one query and given straight back,
+    never held for the request: an upload streaming a clip for minutes must
+    not keep a pool connection while it does (tests/test_upload_concurrency.py).
+    """
+    observer_id = _session_observer(request)
+    async with request.app.state.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT deleted_at, deletion_requested_at FROM observers WHERE id = $1", observer_id)
+    if row is None or row["deleted_at"] is not None:
+        raise HTTPException(status_code=401)
+    return observer_id, row["deletion_requested_at"] is not None
+
+
+async def require_observer(request: Request) -> UUID:
+    """A signed-in observer whose account is in use.
+
+    One whose account is scheduled for deletion gets 403
+    `account_pending_deletion` everywhere but /account, where they can see
+    when it goes and keep it (`require_account`)."""
+    observer_id, pending = await _account_state(request)
+    if pending:
+        raise HTTPException(status_code=403, detail=PENDING_DELETION)
+    return observer_id
+
+
+async def require_account(request: Request) -> UUID:
+    """A signed-in observer, including one whose account is scheduled for
+    deletion: for the routes that show and cancel that."""
+    observer_id, _ = await _account_state(request)
     return observer_id
 
 

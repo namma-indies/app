@@ -11,6 +11,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
+from app.aggregates import owner_active
 from app.auth.deps import require_moderator, require_observer
 from app.deps import get_conn, get_storage
 from app.ids import uuid7
@@ -90,6 +91,7 @@ async def list_shared(
         JOIN observers o ON o.id = COALESCE(c.observer_id, s.observer_id)
         WHERE s.shared_with_team_at IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM social_picks sp WHERE sp.sighting_id = s.id)
+          AND o.deletion_requested_at IS NULL AND o.deleted_at IS NULL
         ORDER BY s.shared_with_team_at DESC, s.id
         LIMIT $1
         """,
@@ -215,14 +217,14 @@ async def queue(
     owner deleted is different: that is taken down on X automatically
     (app/erasure.py, x_post_purges), and leaves this list with the photo."""
     rows = await conn.fetch(
-        """
+        f"""
         (SELECT sp.*, p.s3_key,
                 (s.review_status <> 'valid' OR s.duplicate_of IS NOT NULL
                  OR s.shared_with_team_at IS NULL) AS gone
          FROM social_picks sp
          JOIN sightings s ON s.id = sp.sighting_id
          JOIN photos p ON p.id = sp.photo_id
-         WHERE sp.status IN ('queued','posting'))
+         WHERE sp.status IN ('queued','posting') AND {owner_active('s')})
         UNION ALL
         (SELECT sp.*, p.s3_key,
                 (s.review_status <> 'valid' OR s.duplicate_of IS NOT NULL
@@ -230,7 +232,7 @@ async def queue(
          FROM social_picks sp
          JOIN sightings s ON s.id = sp.sighting_id
          JOIN photos p ON p.id = sp.photo_id
-         WHERE sp.status = 'posted'
+         WHERE sp.status = 'posted' AND {owner_active('s')}
          ORDER BY sp.posted_at DESC NULLS LAST
          LIMIT $1)
         """,

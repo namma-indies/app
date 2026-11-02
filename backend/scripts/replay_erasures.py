@@ -34,7 +34,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.db import effective_dsn  # noqa: E402
 
 PREFIX = "erasures/"
-_TABLES = {"capture": "captures", "sighting": "sightings"}
+# What "back in the database" means for each kind: the row exists again, or
+# for an account, it is an account in use again rather than a tombstone.
+_PRESENT = {
+    "capture": "SELECT EXISTS(SELECT 1 FROM captures WHERE id=$1)",
+    "sighting": "SELECT EXISTS(SELECT 1 FROM sightings WHERE id=$1)",
+    "account": "SELECT EXISTS(SELECT 1 FROM observers WHERE id=$1 AND deleted_at IS NULL)",
+}
 
 
 async def recorded_since(storage, since: datetime) -> list[dict]:
@@ -49,7 +55,7 @@ async def recorded_since(storage, since: datetime) -> list[dict]:
             continue
         entry = json.loads(await storage.get(key))
         entry["at"] = datetime.fromisoformat(entry["at"])
-        if entry["at"] >= since and entry["kind"] in _TABLES:
+        if entry["at"] >= since and entry["kind"] in _PRESENT:
             entries.append(entry)
     return sorted(entries, key=lambda e: (e["at"], e["id"]))
 
@@ -61,13 +67,17 @@ async def run(pool, storage, *, since: datetime, apply: bool) -> tuple[int, int,
     present = []
     async with pool.acquire() as conn:
         for e in entries:
-            if await conn.fetchval(f"SELECT EXISTS(SELECT 1 FROM {_TABLES[e['kind']]} WHERE id=$1)", UUID(e["id"])):
+            if await conn.fetchval(_PRESENT[e["kind"]], UUID(e["id"])):
                 present.append(e)
     erased = 0
     if apply:
+        from app.accounts import erase_account
         for e in present:
+            if e["kind"] == "account":
+                await erase_account(pool, storage, UUID(e["id"]))
+                erased += 1
             # ledger=False: it is on the ledger already.
-            if await erase(pool, storage, e["kind"], UUID(e["id"]), reason="replayed_after_restore", ledger=False):
+            elif await erase(pool, storage, e["kind"], UUID(e["id"]), reason="replayed_after_restore", ledger=False):
                 erased += 1
     return len(entries), len(present), erased
 

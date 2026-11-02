@@ -12,7 +12,7 @@ from uuid import UUID, uuid5
 import numpy as np
 from fastapi import APIRouter, Depends, Form, HTTPException
 
-from app.aggregates import animal_present
+from app.aggregates import animal_present, owner_active
 from app.auth.deps import require_observer
 from app.config import settings
 from app.deps import get_conn, get_storage
@@ -211,6 +211,9 @@ async def list_proposals(
           -- identity, which no moderator decision afterwards can unpick.
           AND a.review_status = 'valid'
           AND b.review_status = 'valid'
+          -- Nor a pair with someone who has asked to leave (#179).
+          AND {owner_active('a')}
+          AND {owner_active('b')}
           -- animal_present() is written against alias `s`; this query has no
           -- `s`, only `a` and `b`, so re-alias with a plain string replace
           -- rather than a second function. Safe only because every

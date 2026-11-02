@@ -354,6 +354,34 @@ export async function deleteVoiceNote(noteId: string): Promise<void> {
   if (!res.ok && res.status !== 404) throw new HttpError(res.status);   // already gone is gone
 }
 
+/** The signed-in account, and whether it is scheduled for deletion (#179). */
+export interface Account {
+  status: "active" | "pending_deletion";
+  purge_after: string | null;
+  can_cancel: boolean;
+  has_email: boolean;
+  grace_days: number;
+  counts: { uploads: number; sightings: number; voice_notes: number };
+}
+
+/** Reachable while deletion is pending, unlike everything else (403 there). */
+export async function getAccount(): Promise<Account> {
+  return handle(await fetch(`${API_BASE}/account`, { credentials: "include" }));
+}
+
+export async function requestAccountDeletion(): Promise<Account> {
+  return handle(await sendJson("/account/delete", "POST", { confirm: "delete" }));
+}
+
+export async function cancelAccountDeletion(): Promise<Account> {
+  return handle(await sendJson("/account/delete/cancel", "POST", {}));
+}
+
+/** What every other endpoint answers while the account is scheduled for deletion. */
+export function isPendingDeletion(err: unknown): boolean {
+  return err instanceof HttpError && err.status === 403;
+}
+
 /** Delete an upload: the photo or clip, every animal in it, its notes (#54). */
 export async function deleteCapture(captureId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/capture/${encodeURIComponent(captureId)}`, { method: "DELETE", credentials: "include" });

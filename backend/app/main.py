@@ -18,6 +18,7 @@ from app.routes.auth import router as auth_router
 from app.routes.dex import router as dex_router
 from app.routes.dogs import router as dogs_router
 from app.routes.erase import router as erase_router
+from app.routes.account import router as account_router
 from app.routes.join import router as join_router
 from app.routes.sighting import router as sighting_router
 from app.routes.places import router as places_router
@@ -88,10 +89,14 @@ async def lifespan(app: FastAPI):
     suggester = None
     if suggestions_running():
         suggester = asyncio.create_task(suggestion_consumer(app.state.pool, get_storage()))
+    # Accounts whose grace period is over are erased (#179). Always on: a
+    # deletion someone asked for must happen whatever else is switched off.
+    from app.accounts import consumer as account_purger
+    purger = asyncio.create_task(account_purger(app.state.pool, get_storage()))
     try:
         yield
     finally:
-        for task in (consumer, suggester):
+        for task in (consumer, suggester, purger):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -115,6 +120,7 @@ app.include_router(join_router)
 app.include_router(dex_router)
 app.include_router(dogs_router)
 app.include_router(erase_router)
+app.include_router(account_router)
 app.include_router(sighting_router)
 app.include_router(map_router)
 app.include_router(stats_router)

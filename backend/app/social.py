@@ -46,6 +46,8 @@ _POSTABLE_PHOTOS = """
           AND s.shared_with_team_at IS NOT NULL
           AND o.social_consent
           AND o.x_handle IS NOT NULL
+          -- Not while its observer's account is being deleted (#179).
+          AND o.deletion_requested_at IS NULL AND o.deleted_at IS NULL
           AND COALESCE(c.kind, 'photo') <> 'video'
           AND COALESCE(s.attrs->>'source', '') <> 'video'
     )
