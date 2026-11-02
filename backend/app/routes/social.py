@@ -209,8 +209,10 @@ async def queue(
     has looked), and queued rows whose last attempt failed.
 
     `flagged` marks a post whose sighting has since been taken down, hidden as
-    a copy or unshared. The app never deletes from X itself; the flag is the
-    prompt for a person to (design decision)."""
+    a copy or unshared. The app does not delete those from X itself; the flag
+    is the prompt for a person to (design decision). A post whose photo its
+    owner deleted is different: that is taken down on X automatically
+    (app/erasure.py, x_post_purges), and leaves this list with the photo."""
     rows = await conn.fetch(
         """
         (SELECT sp.*, p.s3_key,

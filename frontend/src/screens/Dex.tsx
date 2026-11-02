@@ -12,6 +12,7 @@ import {
   type Sighting,
   type Suggestion,
 } from "../api";
+import DeleteSighting from "../components/DeleteSighting";
 import AddVoiceNote, { laterNotesOffered, type LaterNotesConfig } from "../components/AddVoiceNote";
 import PhotoDescription, { describedAlt } from "../components/PhotoDescription";
 import SuggestedDetails from "../components/SuggestedDetails";
@@ -412,6 +413,17 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
             {laterNotesOffered(laterNotes) && <AddVoiceNote key={selected.id} target={{ sightingId: selected.id }} max={laterNotes.max}
               added={(selected.later_notes ?? []).filter((n) => n.sighting_id === selected.id).length}
               onAdded={ownFeed.refresh} onUnauthorized={onUnauthorized} />}
+            <DeleteSighting key={`delete-${selected.id}`} sightingId={selected.id} captureId={selected.capture_id} species={selected.species}
+              animalsInPhoto={selected.capture_id ? sightings.filter((x) => x.capture_id === selected.capture_id).length : 1}
+              onDeleted={(what) => {
+                const gone = new Set(what === "photo" && selected.capture_id
+                  ? sightings.filter((x) => x.capture_id === selected.capture_id).map((x) => x.id) : [selected.id]);
+                setSelected(null);
+                // Off the loaded cohort map at once; the next /dex says what is left.
+                setEveryone((cur) => (cur ?? []).filter((x) => !gone.has(x.id)));
+                ownFeed.refresh();
+              }}
+              onUnauthorized={onUnauthorized} />
           </div>
         </div>
       )}

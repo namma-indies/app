@@ -354,6 +354,20 @@ export async function deleteVoiceNote(noteId: string): Promise<void> {
   if (!res.ok && res.status !== 404) throw new HttpError(res.status);   // already gone is gone
 }
 
+/** Delete an upload: the photo or clip, every animal in it, its notes (#54). */
+export async function deleteCapture(captureId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/capture/${encodeURIComponent(captureId)}`, { method: "DELETE", credentials: "include" });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok && res.status !== 404) throw new HttpError(res.status);   // already gone is gone
+}
+
+/** Remove one animal from an upload that has others in it (#54). */
+export async function deleteSighting(sightingId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/sighting/${encodeURIComponent(sightingId)}`, { method: "DELETE", credentials: "include" });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok && res.status !== 404) throw new HttpError(res.status);
+}
+
 /** The observer's answer to an AI photo description. */
 export async function decideDescription(
   id: string,
