@@ -354,6 +354,20 @@ export async function deleteVoiceNote(noteId: string): Promise<void> {
   if (!res.ok && res.status !== 404) throw new HttpError(res.status);   // already gone is gone
 }
 
+/** Delete an upload: the photo or clip, every animal in it, its notes (#54). */
+export async function deleteCapture(captureId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/capture/${encodeURIComponent(captureId)}`, { method: "DELETE", credentials: "include" });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok && res.status !== 404) throw new HttpError(res.status);   // already gone is gone
+}
+
+/** Remove one animal from an upload that has others in it (#54). */
+export async function deleteSighting(sightingId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/sighting/${encodeURIComponent(sightingId)}`, { method: "DELETE", credentials: "include" });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok && res.status !== 404) throw new HttpError(res.status);
+}
+
 /** The observer's answer to an AI photo description. */
 export async function decideDescription(
   id: string,
@@ -631,6 +645,19 @@ export interface SocialQueue {
   queued: SocialPick[];
   attention: SocialPick[];
   posted: SocialPick[];
+  /** Posts of photos their owners have since deleted, owed a delete on X (#54). */
+  takedowns?: SocialTakedown[];
+}
+
+export interface SocialTakedown {
+  id: string;
+  /** Null when the post was started and never confirmed: someone checks X. */
+  x_post_id: string | null;
+  caption: string | null;
+  unconfirmed: boolean;
+  attempts: number;
+  last_error: string | null;
+  created_at: string;
 }
 
 /** A refusal the moderator should read (409/422 carry a sentence in
@@ -664,6 +691,11 @@ export async function getSocialShared(): Promise<{ items: SocialShared[] }> {
 
 export async function getSocialQueue(): Promise<SocialQueue> {
   return handle(await fetch(`${API_BASE}/social/queue`, { credentials: "include" }));
+}
+
+/** Settle an unconfirmed takedown: the post found on X, or null if none went out. */
+export async function settleTakedown(id: string, xPostId: string | null): Promise<{ status: "owed" | "cleared" }> {
+  return handleWithDetail(await sendJson(`/social/takedown/${encodeURIComponent(id)}`, "POST", { x_post_id: xPostId }));
 }
 
 export async function pickForSocial(sightingId: string, photoId: string, caption: string): Promise<{ id: string }> {

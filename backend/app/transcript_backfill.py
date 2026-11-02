@@ -147,8 +147,9 @@ async def complete(pool, job_id: UUID, token: str, content: str):
         await _failed(pool, row, "unusable_translation")
         return {"status": "done"}
     # Translate-only: what it suggests is not asked for, and not kept.
-    await _store(pool, dict(t), raw if row["mode"] == "full" else [], animals, settings.suggest_local_model, english)
-    await _finish(pool, job_id, "done")
+    if await _store(pool, dict(t), raw if row["mode"] == "full" else [], animals, settings.suggest_local_model,
+                    english, backfill=(job_id, row["attempts"])):
+        await _finish(pool, job_id, "done")
     return {"status": "done"}
 
 

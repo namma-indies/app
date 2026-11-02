@@ -530,6 +530,8 @@ button { font-family: inherit; }
 .viewer-overlay .frames-thumb img { width: 100%; height: 100%; max-height: none; object-fit: cover; border: 0; }
 .viewer-caption { color: var(--ink); text-align: center; margin-top: 0.55rem; font-family: "Silkscreen", monospace; font-size: 0.6rem; }
 .viewer-note { color: var(--ink); opacity: 0.85; text-align: center; font-size: 0.86rem; margin: 0.35rem 0 0; }
+.viewer-delete { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: center; margin-top: 0.9rem; }
+.viewer-delete .link-btn { color: var(--danger, #b3261e); }
 .viewer-tags { display: flex; flex-wrap: wrap; gap: 0.35rem; justify-content: center; margin-top: 0.5rem; }
 .viewer-tags .tag {
   font-family: "Silkscreen", monospace; font-size: 0.5rem;

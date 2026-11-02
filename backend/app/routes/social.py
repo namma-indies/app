@@ -8,14 +8,15 @@ docs/specs/2026-10-24-x-daily-post-design.md.
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from pydantic import BaseModel, Field
 
 from app.auth.deps import require_moderator, require_observer
 from app.deps import get_conn, get_storage
 from app.ids import uuid7
 from app.photos import thumb_key
 from app.social import (
+    purge_x_later,
     area_name,
     can_share,
     default_caption,
@@ -209,8 +210,10 @@ async def queue(
     has looked), and queued rows whose last attempt failed.
 
     `flagged` marks a post whose sighting has since been taken down, hidden as
-    a copy or unshared. The app never deletes from X itself; the flag is the
-    prompt for a person to (design decision)."""
+    a copy or unshared. The app does not delete those from X itself; the flag
+    is the prompt for a person to (design decision). A post whose photo its
+    owner deleted is different: that is taken down on X automatically
+    (app/erasure.py, x_post_purges), and leaves this list with the photo."""
     rows = await conn.fetch(
         """
         (SELECT sp.*, p.s3_key,
@@ -256,9 +259,57 @@ async def queue(
     queued = sorted((v for v in views if v["status"] == "queued"),
                     key=lambda v: (v["last_attempt_at"] is not None, v["last_attempt_at"] or "",
                                    v["picked_at"], v["id"]))
+    takedowns = await conn.fetch(
+        "SELECT id, x_post_id, caption, reason, attempts, last_error, created_at "
+        "FROM x_post_purges ORDER BY created_at, id")
     return {
         "queued": queued,
         "attention": [v for v in views
                       if v["status"] == "posting" or (v["status"] == "queued" and v["last_error"])],
         "posted": [v for v in views if v["status"] == "posted"],
+        # Posts of photos since deleted, owed a delete on X. One with no
+        # `x_post_id` was started and never confirmed: a person checks the
+        # account and settles it (POST /social/takedown/{id}).
+        "takedowns": [
+            {"id": str(r["id"]), "x_post_id": r["x_post_id"], "caption": r["caption"],
+             "unconfirmed": r["x_post_id"] is None, "attempts": r["attempts"],
+             "last_error": r["last_error"], "created_at": r["created_at"].isoformat()}
+            for r in takedowns
+        ],
     }
+
+
+class TakedownBody(BaseModel):
+    # The post found on the account, to delete; null when nothing went out.
+    x_post_id: str | None = Field(None, pattern=r"^[0-9]{1,30}$")
+
+
+@router.post("/social/takedown/{takedown_id}")
+async def settle_takedown(
+    takedown_id: UUID,
+    body: TakedownBody,
+    request: Request,
+    _: UUID = Depends(require_moderator),
+    conn=Depends(get_conn),
+):
+    """Settle a post whose fate was unknown when its photo was deleted.
+
+    With the post's id, it is owed a delete like any other, and the delete is
+    tried now. Without one, nothing went out and the record goes."""
+    async with conn.transaction():
+        row = await conn.fetchrow(
+            "SELECT x_post_id FROM x_post_purges WHERE id = $1 FOR UPDATE", takedown_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="no such takedown")
+        if row["x_post_id"] is not None:
+            raise HTTPException(status_code=409, detail="already has a post id")
+        if body.x_post_id is None:
+            await conn.execute("DELETE FROM x_post_purges WHERE id = $1", takedown_id)
+            return {"status": "cleared"}
+        if await conn.fetchval("SELECT 1 FROM x_post_purges WHERE x_post_id = $1", body.x_post_id):
+            await conn.execute("DELETE FROM x_post_purges WHERE id = $1", takedown_id)
+            return {"status": "owed"}
+        await conn.execute(
+            "UPDATE x_post_purges SET x_post_id = $2 WHERE id = $1", takedown_id, body.x_post_id)
+    purge_x_later(request.app.state.pool, body.x_post_id)
+    return {"status": "owed"}

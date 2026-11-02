@@ -18,6 +18,7 @@ from uuid import UUID
 
 from app.aggregates import coarse_geog
 from app.config import settings
+from app.ids import uuid7
 from app.x_client import XUncertain, prepare_image
 
 log = logging.getLogger(__name__)
@@ -241,17 +242,99 @@ async def run_daily(pool, storage, client, *, today: date, enabled: bool) -> Run
         post_id = await client.create_post(head["caption"], media_id)
     except Exception as exc:
         uncertain = sent and isinstance(exc, XUncertain)
-        async with pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE social_picks SET status = $2, last_error = $3 WHERE id = $1",
+        async with pool.acquire() as conn, conn.transaction():
+            kept = await conn.fetchval(
+                "UPDATE social_picks SET status = $2, last_error = $3 WHERE id = $1 RETURNING id",
                 pick_id, "posting" if uncertain else "queued", str(exc)[:500])
+            if kept is None and not uncertain:
+                # Its photo was deleted meanwhile (app/erasure.py), and X never
+                # took the post: the takedown recorded for it has nothing to do.
+                await conn.execute(
+                    "DELETE FROM x_post_purges WHERE pick_id = $1 AND x_post_id IS NULL", pick_id)
+            elif kept is None:
+                # Deleted meanwhile, and X may have the post. The takedown the
+                # erasure recorded may already have been cleared by someone who
+                # checked X before the post appeared, so make sure one stands.
+                await conn.execute(
+                    """INSERT INTO x_post_purges (id, pick_id, caption, reason)
+                       SELECT $1, $2, $3, 'erased_while_posting:unconfirmed'
+                       WHERE NOT EXISTS (SELECT 1 FROM x_post_purges WHERE pick_id = $2)""",
+                    uuid7(), pick_id, head["caption"])
         log.warning("daily post failed pick=%s uncertain=%s: %s", pick_id, uncertain, exc)
         return RunResult("failed", pick_id=pick_id, detail=str(exc))
 
-    async with pool.acquire() as conn:
-        await conn.execute(
+    async with pool.acquire() as conn, conn.transaction():
+        updated = await conn.fetchval(
             "UPDATE social_picks SET status = 'posted', x_post_id = $2, posted_at = now(), "
-            "posted_on = $3, last_error = NULL WHERE id = $1",
+            "posted_on = $3, last_error = NULL WHERE id = $1 RETURNING id",
             pick_id, post_id, today)
+        if updated is None:
+            # Its photo was deleted while the post was on its way (app/erasure.py):
+            # the post went out, and is now owed a delete like any other. The
+            # takedown recorded without an id is this one, now with its id.
+            await conn.execute(
+                "DELETE FROM x_post_purges WHERE pick_id = $1 AND x_post_id IS NULL", pick_id)
+            await conn.execute(
+                "INSERT INTO x_post_purges (id, x_post_id, pick_id, reason) "
+                "VALUES ($1, $2, $3, 'erased_while_posting') ON CONFLICT DO NOTHING",
+                uuid7(), post_id, pick_id)
+            log.warning("posted pick=%s x_post_id=%s but its sighting was deleted; owed a delete",
+                        pick_id, post_id)
+            return RunResult("posted", pick_id=pick_id, x_post_id=post_id, detail="erased while posting")
     log.info("posted pick=%s x_post_id=%s", pick_id, post_id)
     return RunResult("posted", pick_id=pick_id, x_post_id=post_id)
+
+
+# --- posts owed a delete on X ----------------------------------------------
+#
+# A post made from a photo that has since been deleted (app/erasure.py) is
+# recorded in `x_post_purges` in the same transaction as the erasure. Deleting
+# it is tried once straight after, when posting is configured, and again by
+# every daily run (scripts/post_daily.py) until X confirms.
+
+_x_running: set[asyncio.Task] = set()
+
+
+async def purge_x_post(pool, client, post_id: str) -> bool:
+    """Delete one owed post and its record. False, with the error kept, if X
+    refused or could not be reached."""
+    try:
+        await client.delete_post(post_id)
+    except Exception as exc:
+        log.warning("post left owed a delete on X: x_post_id=%s (%s)", post_id, type(exc).__name__)
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE x_post_purges SET attempts = attempts + 1, last_error = $2 WHERE x_post_id = $1",
+                post_id, str(exc)[:500])
+        return False
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM x_post_purges WHERE x_post_id = $1", post_id)
+    return True
+
+
+async def purge_x_owed(pool, client) -> tuple[int, int]:
+    """(deleted, still owed) over every post owed a delete."""
+    async with pool.acquire() as conn:
+        owed = [r["x_post_id"] for r in await conn.fetch(
+            "SELECT x_post_id FROM x_post_purges WHERE x_post_id IS NOT NULL ORDER BY created_at, x_post_id")]
+    deleted = 0
+    for post_id in owed:
+        deleted += await purge_x_post(pool, client, post_id)
+    return deleted, len(owed) - deleted
+
+
+def purge_x_later(pool, post_id: str) -> None:
+    """Try the delete after the response, when posting is set up here at all.
+    Otherwise the record waits for the daily run."""
+    if not settings.social_posting_enabled:
+        return
+    from app.x_client import x_client_from_settings
+    task = asyncio.get_running_loop().create_task(purge_x_post(pool, x_client_from_settings(), post_id))
+    _x_running.add(task)
+    task.add_done_callback(_x_running.discard)
+
+
+async def x_settled() -> None:
+    """Wait for X deletes started here to finish (for tests)."""
+    while _x_running:
+        await asyncio.gather(*list(_x_running), return_exceptions=True)

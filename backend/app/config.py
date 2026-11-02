@@ -69,6 +69,11 @@ class Settings(BaseSettings):
     # and logs what it would have posted, and nothing reaches X. The four X
     # values are OAuth 1.0a for the @nammaindies account and live only in the
     # box .env -- this repo is public.
+    # Write an id-only record of every erasure to `erasures/` in the media
+    # bucket (app/erasure.py), so a database restored from a backup taken
+    # before an erasure can have it re-applied (scripts/replay_erasures.py).
+    # Off until ops decides it is wanted; see docs/ops/media-deletion.md.
+    erasure_ledger_enabled: bool = False
     social_posting_enabled: bool = False
     x_api_key: str = ""
     x_api_secret: str = ""
