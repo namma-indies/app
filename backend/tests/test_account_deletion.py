@@ -322,3 +322,78 @@ async def test_a_passcode_account_being_deleted_is_not_carried_into_an_email_one
     await _purge_now(pool, storage, passcode)
     async with pool.acquire() as c:
         assert not await c.fetchval("SELECT EXISTS(SELECT 1 FROM sightings WHERE id=$1)", UUID(mine))
+
+
+
+async def _passcode_and_email_accounts(app_client):
+    from app.security import issue_session
+    pool = await _pool(app_client)
+    passcode, email_account = uuid7(), uuid7()
+    async with pool.acquire() as c:
+        await c.execute("INSERT INTO observers (id, display_name, created_via) VALUES ($1,'t@example.org','passcode')",
+                        passcode)
+        await c.execute("INSERT INTO observers (id, display_name, email, created_via) VALUES ($1,'T','t@example.org','email')",
+                        email_account)
+    app_client.cookies.set("session", issue_session(passcode))
+    mine = await _post(app_client)
+    app_client.cookies.clear()
+    return pool, passcode, email_account, mine
+
+
+@pytest.mark.asyncio
+async def test_a_deletion_asked_for_while_carry_over_waits_is_kept(app_client):
+    """Deletion holds the passcode row; the carry-over waits for it, then sees
+    the account is being deleted and leaves it where the purge will find it."""
+    import asyncio
+    from app.auth.email_login import absorb_passcode_observers
+    pool, passcode, email_account, mine = await _passcode_and_email_accounts(app_client)
+    async with pool.acquire() as deleting, pool.acquire() as signing_in:
+        tx = deleting.transaction()
+        await tx.start()
+        assert await accounts.request(deleting, passcode, "app") is not None
+        carry = asyncio.create_task(
+            absorb_passcode_observers(signing_in, target=email_account, email="t@example.org"))
+        await asyncio.sleep(0.3)
+        assert not carry.done()                                  # waiting on the row
+        await tx.commit()
+        assert await carry == 0
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT observer_id FROM sightings WHERE id=$1", UUID(mine)) == passcode
+
+
+@pytest.mark.asyncio
+async def test_a_deletion_asked_for_after_carry_over_selected_the_account_cannot_be_escaped(app_client):
+    """The carry-over has chosen the passcode account and is about to move its
+    uploads when a deletion is asked for on another connection. Either the
+    deletion waits and finds the account retired, or the uploads stay where
+    the purge will find them -- never a scheduled purge of an emptied account."""
+    import asyncio
+    from app.auth.email_login import absorb_passcode_observers
+    pool, passcode, email_account, mine = await _passcode_and_email_accounts(app_client)
+    asked = {}
+
+    async def ask():
+        async with pool.acquire() as deleting, deleting.transaction():
+            return await accounts.request(deleting, passcode, "app")
+
+    class Interleaving:
+        """The sign-in's connection, pausing at its first ownership move."""
+        def __init__(self, conn):
+            self._conn = conn
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        async def execute(self, sql, *args):
+            if sql.startswith("UPDATE") and "task" not in asked:
+                asked["task"] = asyncio.create_task(ask())
+                await asyncio.sleep(0.3)
+            return await self._conn.execute(sql, *args)
+
+    async with pool.acquire() as signing_in:
+        await absorb_passcode_observers(Interleaving(signing_in), target=email_account, email="t@example.org")
+    scheduled = await asked["task"]
+    async with pool.acquire() as c:
+        owner = await c.fetchval("SELECT observer_id FROM sightings WHERE id=$1", UUID(mine))
+        pending = await c.fetchval("SELECT count(*) FROM account_deletions WHERE status='scheduled'")
+    assert scheduled is None and owner == email_account and pending == 0
