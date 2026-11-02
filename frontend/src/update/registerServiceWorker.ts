@@ -39,6 +39,7 @@ export function startServiceWorker(setPrompt: (visible: boolean) => void): {
     setPrompt,
     isHidden: () => document.visibilityState === "hidden",
   });
+  const watcher = watchForUpdate(navigator.serviceWorker, controller.updateReady);
   const onVisibility = () => controller.visibilityChanged();
   document.addEventListener("visibilitychange", onVisibility);
 
@@ -46,14 +47,15 @@ export function startServiceWorker(setPrompt: (visible: boolean) => void): {
   let stopped = false;
   // Wait for load like the stock register script did: the SW's precache fetch
   // should not compete with the first paint.
-  const register = () =>
-    navigator.serviceWorker
+  const register = () => {
+    if (stopped) return;
+    return navigator.serviceWorker
       // updateViaCache "none": sw.js and anything it imports are always
       // revalidated, whatever Cache-Control a proxy or older server sent.
       .register("/sw.js", { scope: "/", updateViaCache: "none" })
       .then((reg) => {
         if (stopped) return;
-        watchForUpdate(navigator.serviceWorker, reg, controller.updateReady);
+        watcher.observeRegistration(reg);
         stopChecks = scheduleUpdateChecks(reg, {
           now: () => Date.now(),
           setInterval: (cb, ms) => window.setInterval(cb, ms),
@@ -73,6 +75,7 @@ export function startServiceWorker(setPrompt: (visible: boolean) => void): {
         reg.update().catch(() => {});
       })
       .catch(() => {});
+  };
   if (document.readyState === "complete") register();
   else window.addEventListener("load", register, { once: true });
 
@@ -80,6 +83,8 @@ export function startServiceWorker(setPrompt: (visible: boolean) => void): {
     reloadNow: controller.reloadNow,
     stop: () => {
       stopped = true;
+      window.removeEventListener("load", register);
+      watcher.stop();
       stopChecks();
       controller.dispose();
       document.removeEventListener("visibilitychange", onVisibility);

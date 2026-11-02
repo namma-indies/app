@@ -75,7 +75,8 @@ export function createUpdateController(deps: UpdateDeps): UpdateController {
   };
 }
 
-type Registration = Pick<ServiceWorkerRegistration, "update" | "active" | "addEventListener" | "installing">;
+type Registration = Pick<ServiceWorkerRegistration,
+  "update" | "active" | "installing" | "addEventListener" | "removeEventListener">;
 
 export type CheckerEnv = {
   now: () => number;
@@ -117,17 +118,42 @@ export function scheduleUpdateChecks(reg: Pick<Registration, "update">, env: Che
  * is nothing stale to replace.
  */
 export function watchForUpdate(
-  container: Pick<ServiceWorkerContainer, "controller" | "addEventListener">,
-  reg: Pick<Registration, "active" | "addEventListener">,
+  container: Pick<ServiceWorkerContainer, "controller" | "addEventListener" | "removeEventListener">,
   onUpdate: () => void,
-): void {
-  let replacing = !!container.controller;
-  // A hard reload leaves the page uncontrolled even though a worker is active;
-  // an update that installs from there still replaces something stale.
-  reg.addEventListener("updatefound", () => {
-    if (reg.active) replacing = true;
-  });
-  container.addEventListener("controllerchange", () => {
+) {
+  let previous = container.controller;
+  let replacing = !!previous;
+  let stopRegistration = () => {};
+
+  function reconcile() {
+    const current = container.controller;
+    if (current === previous) return;
+    previous = current;
+    if (!current) return;
     if (replacing) onUpdate();
-  });
+    replacing = true;
+  }
+  // Observe immediately, before load or register() can yield to a takeover.
+  container.addEventListener("controllerchange", reconcile);
+
+  return {
+    observeRegistration(reg: Pick<Registration,
+      "active" | "installing" | "addEventListener" | "removeEventListener">) {
+      stopRegistration();
+      const updateFound = () => {
+        // A hard reload can leave the page uncontrolled with an active worker.
+        if (reg.active) replacing = true;
+      };
+      reg.addEventListener("updatefound", updateFound);
+      stopRegistration = () => reg.removeEventListener("updatefound", updateFound);
+      if (reg.installing) updateFound();
+      // The controller may already have changed while registration resolved,
+      // before the browser's queued controllerchange event is dispatched.
+      reconcile();
+    },
+    stop() {
+      container.removeEventListener("controllerchange", reconcile);
+      stopRegistration();
+    },
+  };
 }

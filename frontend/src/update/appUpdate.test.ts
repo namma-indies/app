@@ -175,18 +175,19 @@ describe("scheduleUpdateChecks", () => {
 });
 
 function swFixture(controller: object | null, active: object | null) {
-  const target = (l: Record<string, () => void>) => ({
-    addEventListener: (type: string, cb: () => void) => {
-      l[type] = cb;
-    },
-  });
-  const cl: Record<string, () => void> = {};
-  const rl: Record<string, () => void> = {};
+  const container = Object.assign(new EventTarget(), { controller });
+  const reg = Object.assign(new EventTarget(), { active, installing: null as object | null });
   return {
-    container: { controller, ...target(cl) } as unknown as ServiceWorkerContainer,
-    reg: { active, ...target(rl) } as unknown as ServiceWorkerRegistration,
-    cl,
-    rl,
+    container: container as unknown as ServiceWorkerContainer,
+    reg: reg as unknown as ServiceWorkerRegistration,
+    takeControl(notify = true) {
+      container.controller = {};
+      if (notify) container.dispatchEvent(new Event("controllerchange"));
+    },
+    updateFound() {
+      reg.installing = {};
+      reg.dispatchEvent(new Event("updatefound"));
+    },
   };
 }
 
@@ -194,26 +195,50 @@ describe("watchForUpdate", () => {
   it("fires when a new worker takes over a controlled page", () => {
     const f = swFixture({}, {});
     const onUpdate = vi.fn();
-    watchForUpdate(f.container, f.reg, onUpdate);
-    f.cl.controllerchange();
+    watchForUpdate(f.container, onUpdate).observeRegistration(f.reg);
+    f.takeControl();
     expect(onUpdate).toHaveBeenCalledTimes(1);
   });
 
   it("stays quiet on the first install (nothing stale to replace)", () => {
     const f = swFixture(null, null);
     const onUpdate = vi.fn();
-    watchForUpdate(f.container, f.reg, onUpdate);
-    f.rl.updatefound();
-    f.cl.controllerchange();
+    watchForUpdate(f.container, onUpdate).observeRegistration(f.reg);
+    f.updateFound();
+    f.takeControl();
     expect(onUpdate).not.toHaveBeenCalled();
   });
 
-  it("fires for an update found from an uncontrolled page (hard reload)", () => {
+  it.each(["before", "after"])("notices an update found %s registration observation on a hard reload", (when) => {
     const f = swFixture(null, {});
     const onUpdate = vi.fn();
-    watchForUpdate(f.container, f.reg, onUpdate);
-    f.rl.updatefound();
-    f.cl.controllerchange();
+    const watcher = watchForUpdate(f.container, onUpdate);
+    if (when === "before") f.updateFound();
+    watcher.observeRegistration(f.reg);
+    if (when === "after") f.updateFound();
+    f.takeControl();
     expect(onUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("reconciles a takeover before its queued event without reporting it twice", () => {
+    const f = swFixture({}, {});
+    const onUpdate = vi.fn();
+    const watcher = watchForUpdate(f.container, onUpdate);
+    f.takeControl(false);
+    watcher.observeRegistration(f.reg);
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+    f.container.dispatchEvent(new Event("controllerchange"));
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops observing controller and registration changes", () => {
+    const f = swFixture({}, {});
+    const onUpdate = vi.fn();
+    const watcher = watchForUpdate(f.container, onUpdate);
+    watcher.observeRegistration(f.reg);
+    watcher.stop();
+    f.updateFound();
+    f.takeControl();
+    expect(onUpdate).not.toHaveBeenCalled();
   });
 });
