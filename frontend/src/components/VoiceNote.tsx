@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { haptic } from "../haptics";
+import { useReloadGuard } from "../update/reloadGuard";
 
 /** Longest note we keep. Recording stops itself here (#96). */
 export const MAX_NOTE_SECONDS = 60;
@@ -45,6 +46,7 @@ export default function VoiceNote({
   onChange: (note: Blob | null) => void;
 }) {
   const [recording, setRecording] = useState(false);
+  useReloadGuard(recording);
   const [seconds, setSeconds] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [url, setUrl] = useState<string | null>(null);

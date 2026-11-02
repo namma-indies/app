@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   getSocialQueue,
@@ -14,13 +14,30 @@ import {
   type SocialShared,
 } from "../api";
 import Social from "./Social";
+import { createUpdateController } from "../update/appUpdate";
+import { isBusy, onBusyChange } from "../update/reloadGuard";
 
 vi.mock("../api", async (original) => ({
   ...await original<typeof import("../api")>(),
   getSocialShared: vi.fn(), getSocialQueue: vi.fn(), pickForSocial: vi.fn(),
   passForSocial: vi.fn(), removeSocialPick: vi.fn(), settleTakedown: vi.fn(),
 }));
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+const stopUpdates: (() => void)[] = [];
+afterEach(() => {
+  stopUpdates.splice(0).forEach((stop) => stop());
+  cleanup();
+  vi.clearAllMocks();
+});
+
+function updates() {
+  const reload = vi.fn();
+  const setPrompt = vi.fn();
+  const controller = createUpdateController({
+    isBusy, onBusyChange, reload, setPrompt, isHidden: () => true, defer: (cb) => cb(),
+  });
+  stopUpdates.push(controller.dispose);
+  return { controller, reload, setPrompt };
+}
 
 const shared = (over: Partial<SocialShared> = {}): SocialShared => ({
   sighting_id: "s1", captured_at: "2026-10-24T09:00:00Z", species: "dog", handle: "a_handle",
@@ -123,6 +140,56 @@ describe("the POSTS screen", () => {
     render(<Social onUnauthorized={() => {}} />);
     expect(await screen.findByText(
       "Posting didn't confirm. Check @nammaindies on X before anything else posts.")).toBeInTheDocument();
+  });
+});
+
+describe("updates while preparing a post (#175)", () => {
+  it("keeps an edited caption through an update and a failed save", async () => {
+    vi.mocked(pickForSocial).mockRejectedValue(new Error("Try again."));
+    const u = updates();
+    const view = render(<Social onUnauthorized={() => {}} />);
+    const caption = await screen.findByLabelText("Caption");
+    expect(isBusy()).toBe(false);
+    fireEvent.change(caption, { target: { value: "A caption still being written" } });
+    u.controller.updateReady();
+    expect(u.reload).not.toHaveBeenCalled();
+    expect(u.setPrompt).toHaveBeenCalledWith(true);
+    await userEvent.click(screen.getByRole("button", { name: "Queue for X" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Try again.");
+    expect(caption).toHaveValue("A caption still being written");
+    expect(u.reload).not.toHaveBeenCalled();
+    view.unmount();
+    expect(u.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("holds a changed photo choice until it is restored", async () => {
+    const u = updates();
+    render(<Social onUnauthorized={() => {}} />);
+    await screen.findByLabelText("Caption");
+    await userEvent.click(screen.getByRole("button", { name: "photo 2" }));
+    u.controller.updateReady();
+    expect(u.reload).not.toHaveBeenCalled();
+    expect(u.setPrompt).toHaveBeenCalledWith(true);
+    await userEvent.click(screen.getByRole("button", { name: "photo 1" }));
+    expect(isBusy()).toBe(false);
+    expect(u.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("holds an unchanged card while saving, then releases after success", async () => {
+    let finish!: (pick: { id: string }) => void;
+    vi.mocked(pickForSocial).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const u = updates();
+    render(<Social onUnauthorized={() => {}} />);
+    await screen.findByLabelText("Caption");
+    expect(isBusy()).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "Queue for X" }));
+    u.controller.updateReady();
+    expect(u.reload).not.toHaveBeenCalled();
+    expect(u.setPrompt).toHaveBeenCalledWith(true);
+    await act(async () => finish({ id: "new" }));
+    expect(screen.queryByLabelText("Caption")).not.toBeInTheDocument();
+    expect(isBusy()).toBe(false);
+    expect(u.reload).toHaveBeenCalledTimes(1);
   });
 });
 

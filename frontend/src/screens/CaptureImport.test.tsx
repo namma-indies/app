@@ -24,8 +24,25 @@ vi.mock("../api", async (importOriginal) => {
 import { enqueue, flush } from "../offline/queue";
 import Capture from "./Capture";
 import { chooseFromGalleryIfNative, isNative } from "../capture/takePhoto";
+import { UnauthorizedError, type PhotoMetadata } from "../api";
+import { createUpdateController } from "../update/appUpdate";
+import { isBusy, onBusyChange } from "../update/reloadGuard";
 
-afterEach(cleanup);
+const stopUpdates: (() => void)[] = [];
+afterEach(() => {
+  stopUpdates.splice(0).forEach((stop) => stop());
+  cleanup();
+});
+
+function updates() {
+  const reload = vi.fn();
+  const setPrompt = vi.fn();
+  const controller = createUpdateController({
+    isBusy, onBusyChange, reload, setPrompt, isHidden: () => true, defer: (cb) => cb(),
+  });
+  stopUpdates.push(controller.dispose);
+  return { controller, reload, setPrompt };
+}
 
 const FULL_EXIF = {
   captured_at_local: "2026-08-05T18:42:11",
@@ -75,6 +92,60 @@ async function importFile(file = oldPhoto()) {
   const input = screen.getByLabelText("choose from photos") as HTMLInputElement;
   await userEvent.upload(input, file);
 }
+
+describe("updates during photo metadata preflight (#175)", () => {
+  it.each(["staged photo", "origin prompt"])("holds through the handoff to the %s", async (destination) => {
+    let finish!: (md: PhotoMetadata) => void;
+    readPhotoMetadata.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const u = updates();
+    render(<Capture />);
+    await importFile();
+    u.controller.updateReady();
+    expect(u.setPrompt).toHaveBeenCalledWith(true);
+    expect(u.reload).not.toHaveBeenCalled();
+
+    await act(async () => finish(destination === "staged photo" ? FULL_EXIF : NOTHING));
+    expect(isBusy()).toBe(true);
+    expect(u.reload).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByText(destination === "staged photo" ? "CLEAR ALL" : "Cancel"));
+    expect(isBusy()).toBe(false);
+    expect(u.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases the hold when a failed session abandons the import", async () => {
+    let fail!: (error: Error) => void;
+    readPhotoMetadata.mockReturnValue(new Promise((_resolve, reject) => { fail = reject; }));
+    const u = updates();
+    render(<Capture />);
+    await importFile();
+    u.controller.updateReady();
+    expect(u.reload).not.toHaveBeenCalled();
+    await act(async () => fail(new UnauthorizedError()));
+    expect(screen.getByText("Session expired. Sign in again.")).toBeInTheDocument();
+    expect(isBusy()).toBe(false);
+    expect(u.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let an older preflight release a newer selection's hold", async () => {
+    let finishOld!: (md: PhotoMetadata) => void;
+    let finishNew!: (md: PhotoMetadata) => void;
+    readPhotoMetadata
+      .mockReturnValueOnce(new Promise((resolve) => { finishOld = resolve; }))
+      .mockReturnValueOnce(new Promise((resolve) => { finishNew = resolve; }));
+    const u = updates();
+    render(<Capture />);
+    await importFile(oldPhoto("first.jpg"));
+    await importFile(oldPhoto("second.jpg"));
+    u.controller.updateReady();
+    await act(async () => finishOld(FULL_EXIF));
+    expect(isBusy()).toBe(true);
+    expect(u.reload).not.toHaveBeenCalled();
+    await act(async () => finishNew(NOTHING));
+    expect(u.reload).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByText("Cancel"));
+    expect(u.reload).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("gallery clips", () => {
   function clip(name = "old.mp4", type = "video/mp4") {

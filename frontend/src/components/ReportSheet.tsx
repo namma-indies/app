@@ -7,6 +7,7 @@ import {
   UnauthorizedError,
   type ReportReason,
 } from "../api";
+import { useReloadGuard } from "../update/reloadGuard";
 
 /** Flagging someone else's sighting.
  *
@@ -36,6 +37,8 @@ export default function ReportSheet({
   const [reason, setReason] = useState<ReportReason>("endangers_dog");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  // An open report sheet holds a half-written report.
+  useReloadGuard();
   const [error, setError] = useState<string | null>(null);
 
   async function submit() {

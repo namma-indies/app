@@ -2,7 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 import fs from "node:fs";
-import { SERVER_ROUTES } from "./src/serverRoutes";
+import { workboxOptions } from "./pwaWorkbox";
 
 // Namma IndieDex — lean placeholder PWA. A designer will rebuild this later.
 
@@ -17,12 +17,12 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
+      // The new SW skips waiting and claims open pages itself; the page-side
+      // half (update checks, reload-when-safe) is src/update/. The stock
+      // registerSW.js does neither, so it is not injected.
       registerType: "autoUpdate",
-      workbox: {
-        // Server-owned routes must reach the network, not the cached SPA shell
-        // (src/serverRoutes.ts says which, and why).
-        navigateFallbackDenylist: SERVER_ROUTES,
-      },
+      injectRegister: false,
+      workbox: workboxOptions,
       manifest: {
         name: "indiedex — Namma Indies",
         short_name: "indiedex",
