@@ -83,30 +83,30 @@ async def absorb_passcode_observers(
     # account retired. Signing in again after keeping an account carries it
     # over then.
     async with conn.transaction():
-        if await conn.fetchval(
-                "SELECT deletion_requested_at IS NOT NULL FROM observers WHERE id = $1 FOR UPDATE", target):
+        # The target and every source, locked in one statement in id order:
+        # the order a block takes its two rows in (routes/blocks.py), so the
+        # two never wait on each other in a cycle.
+        rows = await conn.fetch(
+            """
+            SELECT id, deletion_requested_at FROM observers
+            WHERE id = $2
+               OR (created_via = 'passcode'
+                   AND email IS NULL
+                   AND deleted_at IS NULL
+                   AND deletion_requested_at IS NULL
+                   -- A banned account stays where it is, hidden, rather than
+                   -- bringing its uploads back under a new one (#180).
+                   AND banned_at IS NULL
+                   AND lower(btrim(display_name)) = $1)
+            ORDER BY id
+            FOR UPDATE
+            """,
+            email,
+            target,
+        )
+        if any(r["id"] == target and r["deletion_requested_at"] is not None for r in rows):
             return 0
-        ids = [
-            r["id"]
-            for r in await conn.fetch(
-                """
-                SELECT id FROM observers
-                WHERE created_via = 'passcode'
-                  AND email IS NULL
-                  AND deleted_at IS NULL
-                  AND deletion_requested_at IS NULL
-                  -- A banned account stays where it is, hidden, rather than
-                  -- bringing its uploads back under a new one (#180).
-                  AND banned_at IS NULL
-                  AND lower(btrim(display_name)) = $1
-                  AND id <> $2
-                ORDER BY id
-                FOR UPDATE
-                """,
-                email,
-                target,
-            )
-        ]
+        ids = [r["id"] for r in rows if r["id"] != target]
         if not ids:
             return 0
 

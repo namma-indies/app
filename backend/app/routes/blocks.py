@@ -36,16 +36,33 @@ async def block(sighting_id: UUID, observer_id: UUID = Depends(require_observer)
     """Block whoever logged this sighting. 404 for your own, or one you cannot
     see -- which includes one by someone already blocked either way."""
     check(f"block:obs:{observer_id}", block_limit())
-    other = await conn.fetchval(
-        f"""SELECT s.observer_id FROM sightings s
-            WHERE s.id = $1 AND s.observer_id <> $2 AND {countable_sighting()} AND {visible_to('$2')}""",
-        sighting_id, observer_id)
-    if other is None:
-        raise HTTPException(404, "no such sighting")
-    await conn.execute(
-        """INSERT INTO observer_blocks (id, blocker_id, blocked_id, via_sighting_id) VALUES ($1,$2,$3,$4)
-           ON CONFLICT (blocker_id, blocked_id) DO NOTHING""",
-        uuid7(), observer_id, other, sighting_id)
+    async with conn.transaction():
+        for _ in range(3):
+            other = await conn.fetchval(
+                f"""SELECT s.observer_id FROM sightings s
+                    WHERE s.id = $1 AND s.observer_id <> $2 AND {countable_sighting()} AND {visible_to('$2')}""",
+                sighting_id, observer_id)
+            if other is None:
+                raise HTTPException(404, "no such sighting")
+            # Both people's rows, shared-locked in id order -- the order a
+            # sign-in's carry-over takes them in (auth/email_login.py) -- and
+            # only while they are still in use. A carry-over that moved this
+            # sighting to a new account meanwhile has retired the old one: look
+            # again, rather than block an id nobody uses any more.
+            live = {r["id"] for r in await conn.fetch(
+                "SELECT id FROM observers WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL ORDER BY id FOR SHARE",
+                [observer_id, other])}
+            if observer_id not in live:
+                raise HTTPException(401)
+            if other in live and await conn.fetchval(
+                    "SELECT observer_id FROM sightings WHERE id = $1", sighting_id) == other:
+                break
+        else:
+            raise HTTPException(409, "that changed while blocking; try again")
+        await conn.execute(
+            """INSERT INTO observer_blocks (id, blocker_id, blocked_id, via_sighting_id) VALUES ($1,$2,$3,$4)
+               ON CONFLICT (blocker_id, blocked_id) DO NOTHING""",
+            uuid7(), observer_id, other, sighting_id)
     logger.info("observer=%s blocked the observer of sighting=%s", observer_id, sighting_id)
     return {"status": "blocked"}
 

@@ -314,3 +314,54 @@ async def test_a_pair_read_before_a_ban_cannot_be_ruled_on_after(authed_client):
     for who in (actor, bystander):
         _as(client, who)
         assert (await client.post(f"/proposal/{pid}", data={"verdict": "same"})).status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_a_block_racing_a_sign_in_carry_over_blocks_the_account_in_use(app_client):
+    """The block finds the sighting's owner; before it is saved, that owner
+    signs in by email and the passcode account is carried over and retired.
+    The block must land on the account now in use, or it hides nobody."""
+    from app.auth.email_login import absorb_passcode_observers
+    from app.deps import get_conn
+    from app.main import app
+    from app.security import issue_session
+    pool = await _pool(app_client)
+    passcode, email_account, actor = uuid7(), uuid7(), uuid7()
+    async with pool.acquire() as c:
+        await c.execute("INSERT INTO observers (id, display_name, created_via) VALUES ($1,'t@example.org','passcode')",
+                        passcode)
+        await c.execute("INSERT INTO observers (id, display_name, email, created_via) VALUES ($1,'T','t@example.org','email')",
+                        email_account)
+        await c.execute("INSERT INTO observers (id, display_name, created_via) VALUES ($1,'A','test')", actor)
+    app_client.cookies.set("session", issue_session(passcode))
+    theirs = await _post(app_client)
+    carried = []
+
+    class Interleaving:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        async def fetch(self, sql, *args):
+            if "FOR SHARE" in sql and not carried:
+                async with pool.acquire() as signing_in:
+                    carried.append(await absorb_passcode_observers(
+                        signing_in, target=email_account, email="t@example.org"))
+            return await self._conn.fetch(sql, *args)
+
+    async def interleaved_conn():
+        async with pool.acquire() as conn:
+            yield Interleaving(conn)
+    app.dependency_overrides[get_conn] = interleaved_conn
+    try:
+        app_client.cookies.set("session", issue_session(actor))
+        assert (await app_client.post(f"/sighting/{theirs}/block")).status_code == 201
+    finally:
+        app.dependency_overrides.pop(get_conn, None)
+    assert carried == [1]
+    async with pool.acquire() as c:
+        assert [tuple(r) for r in await c.fetch("SELECT blocker_id, blocked_id FROM observer_blocks")] == [
+            (actor, email_account)]
+    assert theirs not in {s["id"] for s in (await app_client.get("/map")).json()["sightings"]}
