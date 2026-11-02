@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import {
+  banObserver,
+  unbanObserver,
   getStats,
   getStatsAreas,
   getStatsObservers,
@@ -47,6 +49,24 @@ export default function Stats({ onUnauthorized }: { onUnauthorized: () => void }
         else setFailed(true);
       });
   }, [onUnauthorized]);
+
+  async function toggleBan(o: StatsObserver) {
+    const who = o.display_name ?? "this person";
+    try {
+      if (o.banned) {
+        if (!confirm(`Lift the ban on ${who}? Everything they logged shows again.`)) return;
+        await unbanObserver(o.id);
+      } else {
+        const reason = prompt(`Ban ${who}? Everything they logged is hidden from everyone, and they can't sign in. Reason (for the record):`);
+        if (reason === null) return;
+        await banObserver(o.id, reason.trim() || undefined);
+      }
+      setObservers((cur) => (cur ?? []).map((x) => (x.id === o.id ? { ...x, banned: !o.banned } : x)));
+    } catch (e) {
+      if (e instanceof UnauthorizedError) onUnauthorized();
+      else alert(e instanceof Error ? e.message : "Couldn't do that just now.");
+    }
+  }
 
   if (failed) return <div className="stats"><p className="stats-note">Couldn't load the numbers.</p></div>;
   if (!stats || !areas || !observers) return <div className="stats"><p className="stats-note">Counting…</p></div>;
@@ -140,7 +160,13 @@ export default function Stats({ onUnauthorized }: { onUnauthorized: () => void }
               <td>
                 {o.display_name ?? "—"}
                 {o.trust_tier === "moderator" && <span className="tag">MOD</span>}
+                {o.banned && <span className="tag">BANNED</span>}
                 <span className="sub">{o.email ?? o.created_via ?? ""}</span>
+                {/* A signal for a person to read, never a trigger (#180). */}
+                {!!o.blocked_by && <span className="sub">blocked by {o.blocked_by}</span>}
+                {o.trust_tier !== "moderator" && (
+                  <button className="link-btn" onClick={() => void toggleBan(o)}>{o.banned ? "Unban" : "Ban"}</button>
+                )}
               </td>
               <td>{o.sightings}</td>
               <td>{o.confirmed_individuals}</td>

@@ -55,6 +55,7 @@ from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, HTTPException
+from pydantic import BaseModel, Field
 
 from app.aggregates import owner_active
 from app.auth.deps import require_moderator, require_observer
@@ -62,6 +63,7 @@ from app.config import settings
 from app.deps import get_conn, get_storage
 from app.detect_reid import DETECTOR_NAME
 from app.photos import thumb_key
+from app.security import email_hash
 from app.storage.s3 import S3Storage
 from app.transcription_jobs import transcription_enabled
 
@@ -205,6 +207,7 @@ async def moderation_queue(
                s.review_status,
                s.species,
                o.display_name AS observer,
+               s.observer_id,
                count(r.*) AS report_count,
                max(r.created_at) AS last_reported,
                array_agg(r.reason ORDER BY r.created_at DESC) AS reasons,
@@ -245,6 +248,8 @@ async def moderation_queue(
                 "review_status": r["review_status"],
                 "species": r["species"],
                 "observer": r["observer"],
+                # Moderators only: what a ban acts on (#180).
+                "observer_id": str(r["observer_id"]) if r["observer_id"] else None,
                 "report_count": r["report_count"],
                 "reasons": list(r["reasons"] or []),
                 # User-written, shown to a moderator. React escapes on render.
@@ -418,3 +423,55 @@ async def rule_on_animal(
         "sighting=%s ruled %s by moderator=%s", sighting_id, verdict, moderator_id
     )
     return {"status": "ok", "animal_override": override}
+
+
+# --- bans (#180) ------------------------------------------------------------------
+#
+# A moderator's ban hides everything someone logged from everyone, ends their
+# sessions and refuses their address at sign-in. Unlike a block, which only
+# one person's view, it is for everyone, and so it is a person's decision:
+# nothing bans automatically, however many people have blocked someone.
+# Reversible. A banned person can still delete their account (/account), and
+# the ban outlives that as a keyed hash of their address (banned_emails).
+
+
+class BanBody(BaseModel):
+    reason: str | None = Field(None, max_length=MAX_NOTE)
+
+
+@router.post("/moderation/observer/{observer_id}/ban")
+async def ban(observer_id: UUID, body: BanBody, moderator_id: UUID = Depends(require_moderator),
+              conn=Depends(get_conn)):
+    async with conn.transaction():
+        target = await conn.fetchrow(
+            "SELECT email, trust_tier, banned_at FROM observers WHERE id=$1 AND deleted_at IS NULL FOR UPDATE",
+            observer_id)
+        if target is None:
+            raise HTTPException(status_code=404, detail="no such observer")
+        if observer_id == moderator_id or target["trust_tier"] == "moderator":
+            # Moderators are made by hand, and unmade the same way.
+            raise HTTPException(status_code=409, detail="a moderator cannot be banned here")
+        await conn.execute(
+            "UPDATE observers SET banned_at = COALESCE(banned_at, now()), banned_by = $2, ban_reason = $3, "
+            "updated_at = now() WHERE id = $1",
+            observer_id, moderator_id, (body.reason or "").strip() or None)
+        if target["email"]:
+            await conn.execute("INSERT INTO banned_emails (email_hmac) VALUES ($1) ON CONFLICT DO NOTHING",
+                               email_hash(target["email"]))
+    logger.info("observer=%s banned by moderator=%s", observer_id, moderator_id)
+    return {"status": "banned"}
+
+
+@router.post("/moderation/observer/{observer_id}/unban")
+async def unban(observer_id: UUID, moderator_id: UUID = Depends(require_moderator), conn=Depends(get_conn)):
+    async with conn.transaction():
+        email = await conn.fetchval(
+            "UPDATE observers SET banned_at = NULL, banned_by = NULL, ban_reason = NULL, updated_at = now() "
+            "WHERE id = $1 AND banned_at IS NOT NULL AND deleted_at IS NULL RETURNING coalesce(email, '')",
+            observer_id)
+        if email is None:
+            raise HTTPException(status_code=404, detail="no such ban")
+        if email:
+            await conn.execute("DELETE FROM banned_emails WHERE email_hmac = $1", email_hash(email))
+    logger.info("observer=%s unbanned by moderator=%s", observer_id, moderator_id)
+    return {"status": "active"}

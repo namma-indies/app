@@ -12,7 +12,7 @@ from uuid import UUID, uuid5
 import numpy as np
 from fastapi import APIRouter, Depends, Form, HTTPException
 
-from app.aggregates import animal_present, owner_active
+from app.aggregates import animal_present, owner_active, visible_to
 from app.auth.deps import require_observer
 from app.config import settings
 from app.deps import get_conn, get_storage
@@ -105,6 +105,13 @@ async def get_match(
         exclude_sighting_id=sighting_id,
         limit=settings.reid_max_candidates,
     )
+    # Not someone this viewer blocked, or who blocked them (#180). Shown, not
+    # searched: which candidates exist for the matcher is the same for all.
+    if candidates:
+        hidden = {r["id"] for r in await conn.fetch(
+            f"SELECT s.id FROM sightings s WHERE s.id = ANY($1::uuid[]) AND NOT {visible_to('$2')}",
+            [c.sighting_id for c in candidates], observer_id)}
+        candidates = [c for c in candidates if c.sighting_id not in hidden]
 
     proposals = await conn.fetch(
         """
@@ -214,6 +221,10 @@ async def list_proposals(
           -- Nor a pair with someone who has asked to leave (#179).
           AND {owner_active('a')}
           AND {owner_active('b')}
+          -- Nor a pair with someone this viewer blocked, or who blocked them:
+          -- they cannot rule on each other's pairs; anyone else still can.
+          AND {visible_to('$1', 'a')}
+          AND {visible_to('$1', 'b')}
           -- animal_present() is written against alias `s`; this query has no
           -- `s`, only `a` and `b`, so re-alias with a plain string replace
           -- rather than a second function. Safe only because every
@@ -360,6 +371,16 @@ async def resolve_proposal(
         # Visibility, not ownership: a sighting reported or taken down since
         # the queue was read must not be folded into an identity.
         if any(r["review_status"] != "valid" for r in locked):
+            raise HTTPException(409, "sighting visibility changed")
+        # Nor one this observer can no longer see: its contributor blocked, or
+        # blocking them, or banned or leaving since the pair was read (#179,
+        # #180). Hidden from the list is not enough while a cached id still
+        # works. Anyone who can still see both sides can still rule.
+        visible = await conn.fetchval(
+            f"""SELECT count(*) FROM sightings s WHERE s.id = ANY($1::uuid[])
+                AND {owner_active('s')} AND {visible_to('$2')}""",
+            [sighting_id, p["candidate_sighting_id"]], observer_id)
+        if visible != len(locked):
             raise HTTPException(409, "sighting visibility changed")
         if verdict == "same":
             from app.matching import ensure_compatible_observations

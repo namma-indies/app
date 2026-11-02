@@ -13,6 +13,8 @@ import {
   type Suggestion,
 } from "../api";
 import DeleteSighting from "../components/DeleteSighting";
+import BlockSheet from "../components/BlockSheet";
+import { onVisibilityChanged } from "../visibility";
 import AddVoiceNote, { laterNotesOffered, type LaterNotesConfig } from "../components/AddVoiceNote";
 import PhotoDescription, { describedAlt } from "../components/PhotoDescription";
 import SuggestedDetails from "../components/SuggestedDetails";
@@ -125,11 +127,15 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
   useEffect(() => {
     if (childSignature) { ownFeed.refresh(); sharedFeed.refresh(); }
   }, [childSignature, ownFeed.refresh, sharedFeed.refresh]);
+  // An unblock elsewhere brings someone's pins back: look again (#180).
+  useEffect(() => onVisibilityChanged(sharedFeed.refresh), [sharedFeed.refresh]);
   const { data: sightings } = ownFeed;
   const { data: everyone, setData: setEveryone, error: everyoneError } = sharedFeed;
   const selected = sightings?.find((s) => s.id === selectedId) ?? null;
   // Set while someone is reporting a sighting from a map popup.
   const [reporting, setReporting] = useState<string | null>(null);
+  // Set while someone is blocking whoever logged a sighting (#180).
+  const [blocking, setBlocking] = useState<string | null>(null);
   // Only someone who may be posted sees the share toggle. The endpoint checks
   // consent itself -- a client-side flag is a suggestion.
   const [canShare, setCanShare] = useState(false);
@@ -228,7 +234,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
     mapBody = (
       <>
         <p className="hint" role="alert">{everyone ? "Couldn't refresh the shared map — showing the last update." : "Couldn't load the shared map — showing yours."} <button onClick={sharedFeed.refresh}>Try again</button></p>
-        <DogMap sightings={everyone ?? sightings} onReport={everyone ? setReporting : undefined} />
+        <DogMap sightings={everyone ?? sightings} onReport={everyone ? setReporting : undefined} onBlock={everyone ? setBlocking : undefined} />
       </>
     );
     showingMap = true;
@@ -237,7 +243,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
   } else if (everyone.length === 0) {
     mapBody = <div className="empty-state">NO SIGHTINGS ANYWHERE YET</div>;
   } else {
-    mapBody = <DogMap sightings={everyone} onReport={setReporting} />;
+    mapBody = <DogMap sightings={everyone} onReport={setReporting} onBlock={setBlocking} />;
     showingMap = true;
   }
 
@@ -350,6 +356,23 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
             </div>
           ))}
         </div>
+      )}
+
+      {blocking && (
+        <BlockSheet
+          sightingId={blocking}
+          name={(everyone ?? []).find((s) => s.id === blocking)?.observer}
+          onClose={() => setBlocking(null)}
+          onBlocked={(report) => {
+            const id = blocking;
+            setBlocking(null);
+            // Gone from the cohort map with everything else of theirs; the
+            // server knows which pins those are, so look again.
+            sharedFeed.refresh();
+            if (report) setReporting(id);
+          }}
+          onUnauthorized={onUnauthorized}
+        />
       )}
 
       {reporting && (

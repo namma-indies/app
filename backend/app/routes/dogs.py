@@ -46,7 +46,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends
 
-from app.aggregates import countable_sighting, owner_active
+from app.aggregates import countable_sighting, owner_active, visible_to
 from app.auth.deps import require_observer
 from app.config import settings
 from app.deps import get_conn, get_storage
@@ -69,7 +69,7 @@ ANN_PROBE = 20
 _TAG_KEYS = ("sex", "ear_notch", "condition")
 
 
-async def _look_alikes(conn, ids: list[UUID]) -> dict[UUID, list[dict]]:
+async def _look_alikes(conn, ids: list[UUID], viewer: UUID) -> dict[UUID, list[dict]]:
     """Nearest visual neighbours for each individual, ranked -- not grouped.
 
     WHY RANKED AND NOT THRESHOLDED
@@ -109,7 +109,7 @@ async def _look_alikes(conn, ids: list[UUID]) -> dict[UUID, list[dict]]:
             JOIN embeddings e ON e.photo_id = p.id
             WHERE s.individual_id = ANY($1::uuid[])
               AND s.review_status = 'valid'
-              AND {owner_active('s')}
+              AND {owner_active('s')} AND {visible_to('$3')}
               AND e.model = $2 AND e.vec_miew IS NOT NULL
         )
         SELECT dv.individual_id AS dog_id,
@@ -126,7 +126,7 @@ async def _look_alikes(conn, ids: list[UUID]) -> dict[UUID, list[dict]]:
               AND s2.individual_id IS NOT NULL
               AND s2.individual_id <> dv.individual_id
               AND s2.review_status = 'valid'
-              AND {owner_active('s2')}
+              AND {owner_active('s2')} AND {visible_to('$3', 's2')}
               AND (dv.species IS NULL OR s2.species IS NULL OR dv.species=s2.species)
               AND s2.capture_id IS DISTINCT FROM dv.capture_id
             -- Identical cast to ix_embeddings_vec_miew_hnsw, or this silently
@@ -142,7 +142,7 @@ async def _look_alikes(conn, ids: list[UUID]) -> dict[UUID, list[dict]]:
     # are all still unmatched can come back empty.
     async with conn.transaction():
         await conn.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
-        rows = await conn.fetch(sql, ids, MODEL_NAME)
+        rows = await conn.fetch(sql, ids, MODEL_NAME, viewer)
 
     out: dict[UUID, list[dict]] = {}
     for r in rows:
@@ -187,6 +187,9 @@ async def get_dogs(
         WHERE i.merged_into IS NULL
           AND i.status IS DISTINCT FROM 'merged'
           AND {countable_sighting()}
+          -- Built only from what this viewer may see: someone they blocked,
+          -- or who blocked them, is not on the card at all (#180).
+          AND {visible_to('$1')}
         GROUP BY i.id, i.name
         ORDER BY max(s.captured_at) DESC
         LIMIT $2
@@ -216,12 +219,13 @@ async def get_dogs(
             FROM sightings s
             JOIN photos p ON p.sighting_id = s.id
             -- The same photo submitted twice is shown once (app.identical).
-            WHERE s.individual_id = ANY($1::uuid[]) AND {countable_sighting()}
+            WHERE s.individual_id = ANY($1::uuid[]) AND {countable_sighting()} AND {visible_to('$3')}
         ) ranked
         WHERE rn <= $2
         """,
         ids,
         PHOTOS_PER_DOG,
+        observer_id,
     )
 
     # Latest located sighting per dog, plus who logged it -- that decides
@@ -235,18 +239,21 @@ async def get_dogs(
                s.observer_id
         FROM sightings s
         WHERE s.individual_id = ANY($1::uuid[]) AND s.geog IS NOT NULL AND {countable_sighting()}
+          AND {visible_to('$2')}
         -- s.id tiebreaks. Two sightings of one dog sharing captured_at would
         -- otherwise leave "latest" to the plan, so the card's location could
         -- change between requests for no reason the reader can see.
         ORDER BY s.individual_id, s.captured_at DESC, s.id DESC
         """,
         ids,
+        observer_id,
     )
 
     attr_rows = await conn.fetch(
         "SELECT s.individual_id, s.attrs FROM sightings s "
-        f"WHERE s.individual_id = ANY($1::uuid[]) AND s.review_status = 'valid' AND {owner_active('s')}",
-        ids,
+        f"WHERE s.individual_id = ANY($1::uuid[]) AND s.review_status = 'valid' AND {owner_active('s')}"
+        f" AND {visible_to('$2')}",
+        ids, observer_id,
     )
 
     # Sign every thumbnail over one client rather than one client per photo.
@@ -257,7 +264,7 @@ async def get_dogs(
         photos.setdefault(row["individual_id"], []).append(url)
 
     locations = {r["individual_id"]: r for r in loc_rows}
-    similar = await _look_alikes(conn, ids)
+    similar = await _look_alikes(conn, ids, observer_id)
 
     # A dog's descriptors come from many sightings that may disagree (one
     # observer says injured, a later one says healthy). Take the most frequent

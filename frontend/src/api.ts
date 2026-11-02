@@ -361,6 +361,8 @@ export interface Account {
   can_cancel: boolean;
   has_email: boolean;
   grace_days: number;
+  /** Banned by a moderator (#180): the app is closed to them, but deleting is not. */
+  suspended?: boolean;
   counts: { uploads: number; sightings: number; voice_notes: number };
 }
 
@@ -377,9 +379,35 @@ export async function cancelAccountDeletion(): Promise<Account> {
   return handle(await sendJson("/account/delete/cancel", "POST", {}));
 }
 
-/** What every other endpoint answers while the account is scheduled for deletion. */
-export function isPendingDeletion(err: unknown): boolean {
+/** What every other endpoint answers while the account is scheduled for deletion or suspended. */
+export function isAccountRestricted(err: unknown): boolean {
   return err instanceof HttpError && err.status === 403;
+}
+
+/** Block whoever logged this sighting (#180). Both ways, silently. */
+export async function blockSighting(sightingId: string): Promise<void> {
+  await handle(await sendJson(`/sighting/${encodeURIComponent(sightingId)}/block`, "POST"));
+}
+
+export interface Block { id: string; name: string; created_at: string }
+
+export async function getBlocks(): Promise<{ blocks: Block[] }> {
+  return handle(await fetch(`${API_BASE}/blocks`, { credentials: "include" }));
+}
+
+export async function unblock(blockId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/blocks/${encodeURIComponent(blockId)}`, { method: "DELETE", credentials: "include" });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok && res.status !== 404) throw new HttpError(res.status);
+}
+
+/** A moderator's ban (#180): hides everything they logged from everyone. */
+export async function banObserver(observerId: string, reason?: string): Promise<void> {
+  await handleWithDetail(await sendJson(`/moderation/observer/${encodeURIComponent(observerId)}/ban`, "POST", { reason: reason || null }));
+}
+
+export async function unbanObserver(observerId: string): Promise<void> {
+  await handleWithDetail(await sendJson(`/moderation/observer/${encodeURIComponent(observerId)}/unban`, "POST"));
 }
 
 /** Delete an upload: the photo or clip, every animal in it, its notes (#54). */
@@ -805,6 +833,8 @@ export interface ModerationItem {
   /** Written by whoever reported it. Untrusted text; React escapes on render. */
   notes: string[];
   thumb_url: string | null;
+  /** Who logged it, for a ban (#180). Moderators only. */
+  observer_id?: string | null;
 }
 
 /** Moderators only. Answers 404 for everyone else, so a non-moderator sees the
@@ -919,6 +949,9 @@ export interface StatsObserver {
   sightings: number;
   confirmed_individuals: number;
   last_sighting_at: string | null;
+  /** How many people have blocked them (#180): something to read, never a trigger. */
+  blocked_by?: number;
+  banned?: boolean;
 }
 
 /** A place a typed search found, for the pick-on-a-map screen (#80). */

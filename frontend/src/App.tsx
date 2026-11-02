@@ -8,8 +8,10 @@ import { failedCount, flush, setOnFlushed, setOnUnauthorized } from "./offline/q
 import Celebration from "./components/Celebration";
 import FailedSightings from "./components/FailedSightings";
 import HapticsCheck, { HAPTICS_CHECK_PARAM, wantsHapticsCheck } from "./components/HapticsCheck";
-import { getAccount, getDex, getMe, isPendingDeletion, UnauthorizedError, type Account } from "./api";
+import { getAccount, getDex, getMe, isAccountRestricted, UnauthorizedError, type Account } from "./api";
 import DeleteAccount from "./components/DeleteAccount";
+import BlockedPeople from "./components/BlockedPeople";
+import { visibilityChanged } from "./visibility";
 import PendingDeletion from "./screens/PendingDeletion";
 import { forgetNoteLanguage } from "./components/NoteLanguagePicker";
 import { API_BASE } from "./apiBase";
@@ -32,6 +34,9 @@ export default function App() {
   // replaced by when it goes and the way to keep it.
   const [pendingDeletion, setPendingDeletion] = useState<Account | null>(null);
   const [deletingAccount, setDeletingAccount] = useState(false);
+  // Set when a moderator has banned this account (#180).
+  const [suspended, setSuspended] = useState(false);
+  const [showingBlocks, setShowingBlocks] = useState(false);
   const [failed, setFailed] = useState(0);
   const [showFailed, setShowFailed] = useState(false);
   const [hapticsCheck, setHapticsCheck] = useState(() => wantsHapticsCheck(window.location.search));
@@ -76,6 +81,7 @@ export default function App() {
       .then(() => {
         setUnauthorized(false);
         setPendingDeletion(null);
+        setSuspended(false);
         setCheckingAuth(false);
         // Piggybacks on the existing probe rather than adding a second
         // round trip on every load. A failure here is not an auth problem --
@@ -86,15 +92,16 @@ export default function App() {
       })
       .catch(async (err) => {
         if (err instanceof UnauthorizedError) setUnauthorized(true);
-        else if (isPendingDeletion(err)) {
-          // Everything but /account answers 403 while deletion is pending.
+        else if (isAccountRestricted(err)) {
+          // Everything but /account answers 403 while deletion is pending, or
+          // while a moderator has suspended the account (#180).
           const account = await getAccount().catch(() => null);
-          if (account?.status === "pending_deletion") {
-            // Signed in after all: /account answered. Lift the sign-in gate,
-            // or a link that just signed them in would land on it again.
-            setUnauthorized(false);
-            setPendingDeletion(account);
-          }
+          // Signed in after all: /account answered. Lift the sign-in gate,
+          // or a link that just signed them in would land on it again.
+          if (account?.status === "pending_deletion" || account?.suspended) setUnauthorized(false);
+          // Asking to be deleted wins over a ban: it is what they last chose.
+          if (account?.status === "pending_deletion") setPendingDeletion(account);
+          else if (account?.suspended) setSuspended(true);
         }
         setCheckingAuth(false);
       });
@@ -119,6 +126,7 @@ export default function App() {
     // Show the gate regardless. If the request failed the cookie may
     // survive, but the next auth probe settles it either way.
     setPendingDeletion(null);
+    setSuspended(false);
     setUnauthorized(true);
   }
 
@@ -142,6 +150,25 @@ export default function App() {
       <div className="app">
         <PendingDeletion account={pendingDeletion} onKept={reprobeAuth} onSignOut={() => void signOut()}
           onUnauthorized={() => { setPendingDeletion(null); setUnauthorized(true); }} />
+      </div>
+    );
+  }
+
+  if (suspended) {
+    return (
+      <div className="app">
+        <div className="empty-state pending-deletion">
+          <h2>Your account has been suspended</h2>
+          <p>A moderator has suspended this account. If you think that’s wrong, write to{" "}
+            <a href="mailto:nammaindies@gmail.com">nammaindies@gmail.com</a>. You can still delete your account.</p>
+          <button className="link-btn" onClick={() => setDeletingAccount(true)}>delete account</button>
+          <button className="link-btn" onClick={() => void signOut()}>sign out</button>
+        </div>
+        {deletingAccount && (
+          <DeleteAccount onClose={() => setDeletingAccount(false)}
+            onScheduled={(account) => { setDeletingAccount(false); setSuspended(false); setPendingDeletion(account); }}
+            onUnauthorized={() => { setDeletingAccount(false); setUnauthorized(true); }} />
+        )}
       </div>
     );
   }
@@ -193,6 +220,9 @@ export default function App() {
         <span aria-hidden="true"> · </span>
         <a href="mailto:nammaindies@gmail.com">contact us</a>
         <span aria-hidden="true"> · </span>
+        {/* Apple 1.2: blocking abusive users, and undoing it (#180). */}
+        <button type="button" className="link-btn legal-link" onClick={() => setShowingBlocks(true)}>blocked people</button>
+        <span aria-hidden="true"> · </span>
         {/* Apple 5.1.1(v): deleting the account has to be in the app, findable. */}
         <button type="button" className="link-btn legal-link" onClick={() => setDeletingAccount(true)}>delete account</button>
       </div>
@@ -200,6 +230,10 @@ export default function App() {
         <DeleteAccount onClose={() => setDeletingAccount(false)}
           onScheduled={(account) => { setDeletingAccount(false); setPendingDeletion(account); }}
           onUnauthorized={() => { setDeletingAccount(false); setUnauthorized(true); }} />
+      )}
+      {showingBlocks && (
+        <BlockedPeople onClose={() => setShowingBlocks(false)} onChanged={visibilityChanged}
+          onUnauthorized={() => { setShowingBlocks(false); setUnauthorized(true); }} />
       )}
       <div className="screen">
         {tab === "capture" ? (

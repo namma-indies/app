@@ -11,6 +11,7 @@ SESSION_MAX_AGE_S = 60 * 60 * 24 * 400  # ~browser max; effectively non-expiring
 
 
 PENDING_DELETION = "account_pending_deletion"
+SUSPENDED = "account_suspended"
 
 
 def _session_observer(request: Request) -> UUID:
@@ -23,8 +24,10 @@ def _session_observer(request: Request) -> UUID:
     return observer_id
 
 
-async def _account_state(request: Request) -> tuple[UUID, bool]:
-    """(observer, deletion pending) for a session whose account still exists.
+async def _account_state(request: Request) -> tuple[UUID, str | None]:
+    """(observer, why it may only reach /account, if it may) for a session
+    whose account still exists: banned by a moderator (#180), or deletion
+    scheduled (#179).
 
     A session is a signed cookie that never expires, so signing it proves only
     that we issued it once. Whether the account behind it still exists is the
@@ -38,10 +41,12 @@ async def _account_state(request: Request) -> tuple[UUID, bool]:
     observer_id = _session_observer(request)
     async with request.app.state.pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT deleted_at, deletion_requested_at FROM observers WHERE id = $1", observer_id)
+            "SELECT deleted_at, deletion_requested_at, banned_at FROM observers WHERE id = $1", observer_id)
     if row is None or row["deleted_at"] is not None:
         raise HTTPException(status_code=401)
-    return observer_id, row["deletion_requested_at"] is not None
+    if row["banned_at"] is not None:
+        return observer_id, SUSPENDED
+    return observer_id, PENDING_DELETION if row["deletion_requested_at"] is not None else None
 
 
 async def require_observer(request: Request) -> UUID:
@@ -49,16 +54,18 @@ async def require_observer(request: Request) -> UUID:
 
     One whose account is scheduled for deletion gets 403
     `account_pending_deletion` everywhere but /account, where they can see
-    when it goes and keep it (`require_account`)."""
-    observer_id, pending = await _account_state(request)
-    if pending:
-        raise HTTPException(status_code=403, detail=PENDING_DELETION)
+    when it goes and keep it (`require_account`). A banned one gets 403
+    `account_suspended`, and may still reach /account to delete it."""
+    observer_id, only_account = await _account_state(request)
+    if only_account:
+        raise HTTPException(status_code=403, detail=only_account)
     return observer_id
 
 
 async def require_account(request: Request) -> UUID:
     """A signed-in observer, including one whose account is scheduled for
-    deletion: for the routes that show and cancel that."""
+    deletion or suspended: for the routes that show, schedule and cancel
+    deletion. Deleting your account is yours to do even when banned."""
     observer_id, _ = await _account_state(request)
     return observer_id
 

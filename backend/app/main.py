@@ -19,6 +19,7 @@ from app.routes.dex import router as dex_router
 from app.routes.dogs import router as dogs_router
 from app.routes.erase import router as erase_router
 from app.routes.account import router as account_router
+from app.routes.blocks import router as blocks_router
 from app.routes.join import router as join_router
 from app.routes.sighting import router as sighting_router
 from app.routes.places import router as places_router
@@ -121,6 +122,7 @@ app.include_router(dex_router)
 app.include_router(dogs_router)
 app.include_router(erase_router)
 app.include_router(account_router)
+app.include_router(blocks_router)
 app.include_router(sighting_router)
 app.include_router(map_router)
 app.include_router(stats_router)

@@ -961,6 +961,10 @@ button { font-family: inherit; }
 .delete-account h2 { margin: 0 0 0.5rem; font-size: 1.05rem; }
 .delete-account ul { padding-left: 1.1rem; font-size: 0.86rem; }
 .delete-account input { width: 100%; margin: 0.35rem 0 0.2rem; }
+.blocked-row { display: flex; justify-content: space-between; align-items: center; padding: 0.35rem 0; border-bottom: 1px dashed var(--line, #d8c4a6); }
+.block-report { display: flex; gap: 0.5rem; align-items: center; font-size: 0.9rem; margin: 0.6rem 0; }
+.popup-actions { display: flex; gap: 0.5rem; }
+.match-block { font-size: 0.75rem; }
 .pending-deletion { display: grid; gap: 0.8rem; justify-items: center; text-align: center; }
 
 /* --- saying where a sighting happened -------------------------------------- */
