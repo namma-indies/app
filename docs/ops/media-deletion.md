@@ -15,6 +15,7 @@ private ops repo, not here: this repo is public.
 | one animal of a photo with several ("Remove this dog") | its crop and thumbnail, and its voice notes | `media_purges`, `kind='key'` |
 | a voice note added later (#159) | its audio | `media_purges`, `kind='key'` |
 | a photo that was posted to X | the post on X | `x_post_purges` |
+| a photo whose post to X was started and never confirmed | possibly a post on X, id unknown | `x_post_purges` with no `x_post_id`: shown to moderators under **To take down from X** in Posts, to check the account and settle |
 
 The record is written in the same transaction as the deletion. The API tries
 the store straight after the response, bounded to 30 s; whatever it cannot

@@ -16,7 +16,9 @@ with it. A `key` row is one object, as before.
 
 `x_post_purges`: posts on X made from a photo that has since been deleted, owed
 a delete there. Written in the same transaction as the erasure, cleared once X
-confirms, retried by the daily post run.
+confirms, retried by the daily post run. A post whose fate is unknown (the
+daily run never heard back from X) is kept without an id, for a person to
+check, rather than forgotten with its pick.
 
 Revision ID: 0031_erasure
 Revises: 0030_transcript_backfill
@@ -49,7 +51,15 @@ def upgrade() -> None:
             ADD COLUMN kind text NOT NULL DEFAULT 'key' CHECK (kind IN ('key', 'prefix'));
 
         CREATE TABLE x_post_purges (
-            x_post_id text PRIMARY KEY,
+            id uuid PRIMARY KEY,
+            -- NULL when the post's fate is unknown: the run that started it
+            -- never heard back from X. A person checks the account and either
+            -- fills this in (and the delete proceeds) or clears the row.
+            x_post_id text UNIQUE,
+            -- The pick it came from, for the daily run to reconcile with; no
+            -- foreign key, as the pick is deleted with its sighting.
+            pick_id uuid,
+            caption text,
             reason text NOT NULL,
             attempts int NOT NULL DEFAULT 0,
             last_error text,

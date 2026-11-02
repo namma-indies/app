@@ -19,6 +19,7 @@ from app.ids import uuid7
 from app.media_purges import settled
 from app.security import issue_session
 from tests.test_dogs_route import _make_individual, _post, _second_observer
+from tests.test_later_voice_notes import enabled  # noqa: F401  (fixture)
 
 
 def _as(client, oid):
@@ -107,7 +108,10 @@ async def test_a_deleted_photo_is_gone_from_every_read_surface_and_every_table(a
     after = await _surfaces(client, w["viewer"], w["moderator"])
     for name, surface in after.items():
         assert not _mentions(surface, mine), f"{name} still shows the deleted sighting"
+    # Gone from what was posted; listed only as owed a takedown on X (Q6).
+    takedowns = after["social"].pop("takedowns")
     assert not _mentions(after["social"], "x-111")
+    assert [t["x_post_id"] for t in takedowns] == ["x-111"]
     # The dog stays, with the viewer's sighting only (Q3), and the owner's
     # name is no longer on it.
     (dog,) = after["dogs"]
@@ -320,7 +324,8 @@ async def test_a_post_on_x_is_owed_until_x_confirms(authed_client):
     client, _ = authed_client
     pool = await _pool(client)
     async with pool.acquire() as c:
-        await c.execute("INSERT INTO x_post_purges (x_post_id, reason) VALUES ('x-1','test'), ('x-2','test')")
+        await c.execute("INSERT INTO x_post_purges (id, x_post_id, reason) VALUES ($1,'x-1','test'), ($2,'x-2','test')",
+                        uuid7(), uuid7())
     assert await purge_x_owed(pool, _FakeX(fail=True)) == (0, 2)
     async with pool.acquire() as c:
         assert await c.fetchval("SELECT sum(attempts) FROM x_post_purges") == 2
@@ -414,3 +419,150 @@ async def test_a_ledger_the_store_refuses_deletes_nothing(authed_client, monkeyp
     monkeypatch.setattr(S3Storage, "put", refuse)
     assert (await client.delete(f"/capture/{mine}")).status_code == 503
     assert mine in {s["id"] for s in (await client.get("/dex")).json()["sightings"]}
+
+
+async def _posting_pick(client, sighting_id, caption="hi"):
+    pool = await _pool(client)
+    async with pool.acquire() as c:
+        photo = await c.fetchval("SELECT id FROM photos WHERE sighting_id=$1", UUID(sighting_id))
+        await c.execute("UPDATE observers SET social_consent=true, x_handle='someone'")
+        await c.execute("UPDATE sightings SET shared_with_team_at=now() WHERE id=$1", UUID(sighting_id))
+        pick = uuid7()
+        await c.execute("INSERT INTO social_picks (id, sighting_id, photo_id, caption, status) VALUES ($1,$2,$3,$4,'queued')",
+                        pick, UUID(sighting_id), photo, caption)
+    return pick
+
+
+@pytest.mark.asyncio
+async def test_an_unconfirmed_post_keeps_a_takedown_for_a_person_to_settle(authed_client):
+    """A run that never heard back from X leaves its pick `posting`. Deleting
+    the photo deletes the pick, but not what it knew: the post may be on X."""
+    client, owner = authed_client
+    mine = await _post(client)
+    pick = await _posting_pick(client, mine, caption="maybe out")
+    pool = await _pool(client)
+    async with pool.acquire() as c:
+        await c.execute("UPDATE social_picks SET status='posting' WHERE id=$1", pick)
+        moderator = await _second_observer(client, "Mod")
+        await c.execute("UPDATE observers SET trust_tier='moderator' WHERE id=$1", moderator)
+    _as(client, owner)
+    assert (await client.delete(f"/capture/{mine}")).status_code == 204
+    _as(client, moderator)
+    (takedown,) = (await client.get("/social/queue")).json()["takedowns"]
+    assert (takedown["unconfirmed"], takedown["caption"], takedown["x_post_id"]) == (True, "maybe out", None)
+    from app.social import purge_x_owed
+    x = _FakeX()
+    assert await purge_x_owed(pool, x) == (0, 0) and x.deleted == []        # nothing to delete without an id
+
+    # The moderator finds it on the account: it is owed like any other.
+    assert (await client.post(f"/social/takedown/{takedown['id']}", json={"x_post_id": "123"})).json() == {"status": "owed"}
+    assert await purge_x_owed(pool, x) == (1, 0) and x.deleted == ["123"]
+    # A second unconfirmed one turns out never to have gone out.
+    async with pool.acquire() as c:
+        await c.execute("INSERT INTO x_post_purges (id, reason) VALUES ($1, 'test:unconfirmed')", tid := uuid7())
+    assert (await client.post(f"/social/takedown/{tid}", json={"x_post_id": None})).json() == {"status": "cleared"}
+    assert (await client.get("/social/queue")).json()["takedowns"] == []
+    _as(client, owner)
+    assert (await client.post(f"/social/takedown/{tid}", json={})).status_code == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["uncertain", "rejected"])
+async def test_a_photo_deleted_while_x_gives_no_clear_answer(authed_client, outcome):
+    """X took the post and the answer was lost (XUncertain): the takedown stays
+    for a person. X refused it outright: there is nothing to take down."""
+    from app.erasure import erase
+    from app.social import run_daily
+    from app.x_client import XRejected, XUncertain
+    client, _ = authed_client
+    mine = await _post(client)
+    await _posting_pick(client, mine)
+    pool, storage = await _pool(client), get_storage()
+
+    class Racing:
+        async def upload_image(self, jpeg):
+            return "m-1"
+
+        async def create_post(self, text, media_id):
+            assert await erase(pool, storage, "capture", UUID(mine), reason="test")
+            raise (XUncertain if outcome == "uncertain" else XRejected)("no clear answer")
+    result = await run_daily(pool, storage, Racing(), today=date.today(), enabled=True)
+    assert result.outcome == "failed"
+    await settled()
+    async with pool.acquire() as c:
+        rows = await c.fetch("SELECT x_post_id FROM x_post_purges")
+    assert [r["x_post_id"] for r in rows] == ([None] if outcome == "uncertain" else [])
+
+
+@pytest.mark.asyncio
+async def test_a_voice_note_saved_as_its_animal_is_deleted_writes_nothing(authed_client, enabled, monkeypatch):
+    """The save checked the sighting before the delete; it must check again
+    under the capture lock, before any bytes reach the store."""
+    from tests.test_later_voice_notes import _add, _photo_sighting
+    from app.erasure import erase
+    from app.routes import voice_notes
+    client, _ = authed_client
+    sid = await _photo_sighting(client)
+    pool, storage = await _pool(client), get_storage()
+    real_count = voice_notes._count
+    erased = []
+
+    async def count_then_delete(conn, capture_id, sighting_id):
+        n = await real_count(conn, capture_id, sighting_id)
+        if not erased:
+            erased.append(await erase(pool, storage, "capture", capture_id, reason="test"))
+        return n
+    monkeypatch.setattr(voice_notes, "_count", count_then_delete)
+    r = await _add(client, f"/sighting/{sid}/voice-note")
+    assert erased[0] is not None and r.status_code == 404
+    await settled()
+    assert await storage.list_keys(f"sightings/{sid}/") == []
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT count(*) FROM voice_notes") == 0
+
+
+@pytest.mark.asyncio
+async def test_an_answer_about_a_removed_animal_is_never_pinned_on_another(authed_client, enabled):
+    """Claim with two animals, remove one, then complete: the worker's letters
+    name animals as they were, so its answer is refused and the note is read
+    again about the animal left."""
+    from tests.test_transcription_jobs import GPU
+    client, owner = authed_client
+    pool = await _pool(client)
+    cid, brown, black, _ = await _published_two_dogs(client, owner)
+    job = (await client.post("/internal/suggestion-jobs/claim", json={"owner": "dgx-1"}, headers=GPU)).json()["job"]
+    assert job is not None
+    assert (await client.delete(f"/sighting/{brown}")).status_code == 204
+    answer = [{"field": "known_name", "value": "Kaalu", "quote": "The brown one is Kaalu", "animal": "A"},
+              {"field": "condition", "value": "injured", "quote": "The black one is limping", "animal": "B"}]
+    r = await client.post(f"/internal/suggestion-jobs/{job['id']}/complete", headers=GPU, json={
+        "lease_token": job["lease_token"], "content": json.dumps({"suggestions": answer})})
+    assert r.status_code == 409
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT count(*) FROM detail_suggestions WHERE capture_id=$1", cid) == 0
+    again = (await client.post("/internal/suggestion-jobs/claim", json={"owner": "dgx-1"}, headers=GPU)).json()["job"]
+    assert again is not None and again["id"] == job["id"]
+
+
+@pytest.mark.asyncio
+async def test_an_in_process_answer_about_a_removed_animal_is_dropped(authed_client, monkeypatch):
+    import httpx
+    from app import suggestions
+    from tests.test_suggestions import configured, model_reply  # noqa: F401
+    for name, value in (("suggest_api_key", "sk-test"), ("suggest_model", "test-model"),
+                        ("suggest_base_url", "https://llm.example/v1")):
+        monkeypatch.setattr(settings, name, value)
+    client, owner = authed_client
+    pool = await _pool(client)
+    cid, brown, black, storage = await _published_two_dogs(client, owner)
+
+    async def handler(request):
+        # The animal is removed while the model is thinking about both.
+        assert (await client.delete(f"/sighting/{brown}")).status_code == 204
+        return httpx.Response(200, json=model_reply([
+            {"field": "known_name", "value": "Kaalu", "quote": "The brown one is Kaalu", "animal": "A"}]))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as llm:
+        assert await suggestions.run_once(pool, storage, llm)
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT count(*) FROM detail_suggestions WHERE capture_id=$1", cid) == 0
+        assert await c.fetchval("SELECT suggest_status FROM voice_transcripts WHERE capture_id=$1", cid) == "pending"

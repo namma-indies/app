@@ -46,6 +46,7 @@ from uuid import UUID
 import asyncpg
 
 from app.config import settings
+from app.ids import uuid7
 from app.photos import thumb_key
 
 logger = logging.getLogger(__name__)
@@ -116,6 +117,8 @@ class Erased:
     id: UUID
     media: list[tuple[str, str]] = field(default_factory=list)   # (key or prefix, kind)
     x_posts: list[str] = field(default_factory=list)
+    # Picks whose post was started and never confirmed: (pick id, caption).
+    unconfirmed_posts: list[tuple[UUID, str | None]] = field(default_factory=list)
 
 
 def _prefixes(capture_id: UUID, sighting_ids) -> list[str]:
@@ -162,12 +165,16 @@ async def _before(conn, sighting_ids: list[UUID], erased: Erased) -> tuple[list[
              AND (sighting_id=ANY($1::uuid[]) OR candidate_sighting_id=ANY($1::uuid[]))""", sighting_ids)
         if r["other"] is not None and r["other"] not in sighting_ids]
     for pick in await conn.fetch(
-            "SELECT id, status, x_post_id FROM social_picks WHERE sighting_id=ANY($1::uuid[])", sighting_ids):
+            "SELECT id, status, x_post_id, caption FROM social_picks WHERE sighting_id=ANY($1::uuid[])",
+            sighting_ids):
         if pick["x_post_id"]:
             erased.x_posts.append(pick["x_post_id"])
         elif pick["status"] == "posting":
-            # A post was started and never confirmed. If it went out, the daily
-            # run that started it records it as owed when it finds the pick gone.
+            # Started and never confirmed: it may be on X. The pick goes with
+            # the sighting, so what it knew is kept as a takedown for a person
+            # to check (app/social.py). A daily run still waiting on X settles
+            # it either way when it hears back.
+            erased.unconfirmed_posts.append((pick["id"], pick["caption"]))
             logger.warning("erased a sighting whose post to X is unconfirmed: pick=%s", pick["id"])
     return individuals, partners
 
@@ -199,8 +206,12 @@ async def _owe(conn, erased: Erased, reason: str) -> None:
             key, reason, kind)
     for post_id in erased.x_posts:
         await conn.execute(
-            "INSERT INTO x_post_purges (x_post_id, reason) VALUES ($1,$2) ON CONFLICT DO NOTHING",
-            post_id, reason)
+            "INSERT INTO x_post_purges (id, x_post_id, reason) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
+            uuid7(), post_id, reason)
+    for pick_id, caption in erased.unconfirmed_posts:
+        await conn.execute(
+            "INSERT INTO x_post_purges (id, pick_id, caption, reason) VALUES ($1,$2,$3,$4)",
+            uuid7(), pick_id, caption, reason + ":unconfirmed")
 
 
 async def _erase_capture_locked(conn, capture, reason: str) -> Erased:
@@ -251,6 +262,20 @@ async def _erase_animal_locked(conn, capture, sighting_id: UUID, reason: str) ->
                (SELECT id FROM voice_transcripts WHERE note_id=ANY($1::uuid[]))""",
         [r["id"] for r in notes])
     await conn.execute("DELETE FROM animal_instances WHERE id=ANY($1::uuid[])", instance_ids)
+    # A model already asked about this upload was shown this animal under a
+    # letter; on its answer, the letters would be read against the animals
+    # left, and this one's details pinned on another. Its claim is reset, so
+    # the answer is refused (409 to a worker, dropped in-process) and the note
+    # is read again about the animals that remain.
+    await conn.execute(
+        """UPDATE voice_transcripts SET suggest_status='pending', suggest_lease_until=NULL,
+               suggest_lease_token_hash=NULL, suggest_run_after=now()
+           WHERE capture_id=$1 AND suggest_status='running'""", capture["id"])
+    await conn.execute(
+        """UPDATE transcript_backfill b SET status='pending', lease_until=NULL, lease_token_hash=NULL,
+               run_after=now()
+           FROM voice_transcripts t
+           WHERE t.id=b.transcript_id AND t.capture_id=$1 AND b.status='running'""", capture["id"])
     await conn.execute("DELETE FROM photos WHERE id=ANY($1::uuid[])", [r["id"] for r in photos])
     await conn.execute("DELETE FROM sightings WHERE id=$1", sighting_id)
     # The saved review must still cover exactly the boxes that exist, or the
