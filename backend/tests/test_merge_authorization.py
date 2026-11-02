@@ -300,7 +300,10 @@ async def test_only_explicit_same_verdict_appends_names(monkeypatch, verdict):
     transaction = MagicMock()
     transaction.return_value.__aenter__ = AsyncMock()
     transaction.return_value.__aexit__ = AsyncMock(return_value=False)
-    conn = SimpleNamespace(transaction=transaction, execute=AsyncMock(), fetchval=AsyncMock(return_value=0),
+    async def fetchval(sql, *args):
+        # Both sides still visible to the one ruling (#180); every other count is 0.
+        return 2 if "FROM sightings s WHERE s.id = ANY" in sql else 0
+    conn = SimpleNamespace(transaction=transaction, execute=AsyncMock(), fetchval=fetchval,
         fetchrow=AsyncMock(side_effect=[{"sighting_id": a, "candidate_sighting_id": b,
             "candidate_individual_id": None, "status": "pending", "sighting_observer": author,
             "candidate_observer": author}, {"status": "pending"}]),

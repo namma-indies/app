@@ -11,6 +11,7 @@ import HapticsCheck, { HAPTICS_CHECK_PARAM, wantsHapticsCheck } from "./componen
 import { getAccount, getDex, getMe, isAccountRestricted, UnauthorizedError, type Account } from "./api";
 import DeleteAccount from "./components/DeleteAccount";
 import BlockedPeople from "./components/BlockedPeople";
+import { visibilityChanged } from "./visibility";
 import PendingDeletion from "./screens/PendingDeletion";
 import { forgetNoteLanguage } from "./components/NoteLanguagePicker";
 import { API_BASE } from "./apiBase";
@@ -231,7 +232,7 @@ export default function App() {
           onUnauthorized={() => { setDeletingAccount(false); setUnauthorized(true); }} />
       )}
       {showingBlocks && (
-        <BlockedPeople onClose={() => setShowingBlocks(false)} onChanged={() => {}}
+        <BlockedPeople onClose={() => setShowingBlocks(false)} onChanged={visibilityChanged}
           onUnauthorized={() => { setShowingBlocks(false); setUnauthorized(true); }} />
       )}
       <div className="screen">

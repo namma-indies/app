@@ -234,3 +234,83 @@ async def test_deleting_an_account_takes_its_blocks_both_ways(authed_client, mon
     assert await accounts.purge_one(pool, get_storage()) == me
     async with pool.acquire() as c:
         assert await c.fetchval("SELECT count(*) FROM observer_blocks") == 0
+
+
+@pytest.mark.asyncio
+async def test_blocks_follow_a_passcode_account_into_its_email_account(app_client):
+    """Through the real sign-in: the absorbed account blocked someone and was
+    blocked by someone, and both blocks hold for the email account after."""
+    from app.auth.logintoken import issue
+    from app.security import issue_session
+    pool = await _pool(app_client)
+    passcode, email_account, x, y = uuid7(), uuid7(), uuid7(), uuid7()
+    async with pool.acquire() as c:
+        await c.execute("INSERT INTO observers (id, display_name, created_via) VALUES ($1,'t@example.org','passcode')",
+                        passcode)
+        await c.execute("INSERT INTO observers (id, display_name, email, created_via) VALUES ($1,'T','t@example.org','email')",
+                        email_account)
+        for oid, name in ((x, "X"), (y, "Y")):
+            await c.execute("INSERT INTO observers (id, display_name, created_via) VALUES ($1,$2,'test')", oid, name)
+    sightings = {}
+    for oid in (passcode, x, y, email_account):
+        app_client.cookies.set("session", issue_session(oid))
+        sightings[oid] = await _post(app_client)
+    app_client.cookies.set("session", issue_session(passcode))
+    assert (await app_client.post(f"/sighting/{sightings[x]}/block")).status_code == 201       # T blocked X
+    assert (await app_client.post(f"/sighting/{sightings[email_account]}/block")).status_code == 201  # itself, in effect
+    app_client.cookies.set("session", issue_session(y))
+    assert (await app_client.post(f"/sighting/{sightings[passcode]}/block")).status_code == 201  # Y blocked T
+
+    async with pool.acquire() as c:
+        token = await issue(c, email_account)
+    app_client.cookies.clear()
+    assert (await app_client.get(f"/auth/email/consume?token={token}")).status_code == 303
+
+    async with pool.acquire() as c:
+        rows = {(r["blocker_id"], r["blocked_id"]) for r in await c.fetch("SELECT * FROM observer_blocks")}
+    assert rows == {(email_account, x), (y, email_account)}
+    app_client.cookies.set("session", issue_session(email_account))
+    assert [b["name"] for b in (await app_client.get("/blocks")).json()["blocks"]] == ["X"]
+    assert sightings[x] not in {s["id"] for s in (await app_client.get("/map")).json()["sightings"]}
+    app_client.cookies.set("session", issue_session(y))
+    seen = {s["id"] for s in (await app_client.get("/map")).json()["sightings"]}
+    assert sightings[passcode] not in seen and sightings[email_account] not in seen
+
+
+async def _pending_pair(client):
+    actor, other, bystander = await _second_observer(client, "Actor"), await _second_observer(client, "Other"), \
+        await _second_observer(client, "Bystander")
+    _as(client, actor)
+    a = await _post(client)
+    _as(client, other)
+    b = await _post(client)
+    pid = uuid7()
+    async with (await _pool(client)).acquire() as c:
+        await c.execute("""INSERT INTO match_proposals (id, sighting_id, candidate_sighting_id, score, method, status)
+                           VALUES ($1,$2,$3,0.8,'test','pending')""", pid, UUID(a), UUID(b))
+    _as(client, actor)
+    assert [p["id"] for p in (await client.get("/proposals")).json()["proposals"]] == [str(pid)]
+    return actor, other, bystander, a, b, pid
+
+
+@pytest.mark.asyncio
+async def test_a_pair_read_before_a_block_cannot_be_ruled_on_after(authed_client):
+    client, _ = authed_client
+    actor, other, bystander, a, b, pid = await _pending_pair(client)
+    assert (await client.post(f"/sighting/{b}/block")).status_code == 201
+    assert (await client.post(f"/proposal/{pid}", data={"verdict": "same"})).status_code == 409
+    # Someone who can see both sides still can.
+    _as(client, bystander)
+    assert (await client.post(f"/proposal/{pid}", data={"verdict": "different"})).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_a_pair_read_before_a_ban_cannot_be_ruled_on_after(authed_client):
+    client, _ = authed_client
+    actor, other, bystander, a, b, pid = await _pending_pair(client)
+    mod = await _moderator(client)
+    _as(client, mod)
+    assert (await client.post(f"/moderation/observer/{other}/ban", json={})).status_code == 200
+    for who in (actor, bystander):
+        _as(client, who)
+        assert (await client.post(f"/proposal/{pid}", data={"verdict": "same"})).status_code == 409

@@ -372,6 +372,16 @@ async def resolve_proposal(
         # the queue was read must not be folded into an identity.
         if any(r["review_status"] != "valid" for r in locked):
             raise HTTPException(409, "sighting visibility changed")
+        # Nor one this observer can no longer see: its contributor blocked, or
+        # blocking them, or banned or leaving since the pair was read (#179,
+        # #180). Hidden from the list is not enough while a cached id still
+        # works. Anyone who can still see both sides can still rule.
+        visible = await conn.fetchval(
+            f"""SELECT count(*) FROM sightings s WHERE s.id = ANY($1::uuid[])
+                AND {owner_active('s')} AND {visible_to('$2')}""",
+            [sighting_id, p["candidate_sighting_id"]], observer_id)
+        if visible != len(locked):
+            raise HTTPException(409, "sighting visibility changed")
         if verdict == "same":
             from app.matching import ensure_compatible_observations
             await ensure_compatible_observations(conn, [sighting_id, p["candidate_sighting_id"]])

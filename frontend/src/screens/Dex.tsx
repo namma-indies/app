@@ -14,6 +14,7 @@ import {
 } from "../api";
 import DeleteSighting from "../components/DeleteSighting";
 import BlockSheet from "../components/BlockSheet";
+import { onVisibilityChanged } from "../visibility";
 import AddVoiceNote, { laterNotesOffered, type LaterNotesConfig } from "../components/AddVoiceNote";
 import PhotoDescription, { describedAlt } from "../components/PhotoDescription";
 import SuggestedDetails from "../components/SuggestedDetails";
@@ -126,6 +127,8 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
   useEffect(() => {
     if (childSignature) { ownFeed.refresh(); sharedFeed.refresh(); }
   }, [childSignature, ownFeed.refresh, sharedFeed.refresh]);
+  // An unblock elsewhere brings someone's pins back: look again (#180).
+  useEffect(() => onVisibilityChanged(sharedFeed.refresh), [sharedFeed.refresh]);
   const { data: sightings } = ownFeed;
   const { data: everyone, setData: setEveryone, error: everyoneError } = sharedFeed;
   const selected = sightings?.find((s) => s.id === selectedId) ?? null;
