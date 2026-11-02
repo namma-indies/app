@@ -14,6 +14,7 @@ import {
 } from "../api";
 import { formatDay, formatWhen } from "../formatWhen";
 import { speciesNoun } from "../species";
+import { useReloadGuard } from "../update/reloadGuard";
 
 /** The moderators' POSTS screen: what people have shared, what goes out next
  * on @nammaindies, and what has gone out.
@@ -39,6 +40,7 @@ function SharedCard({ item, onDone, onUnauthorized }: {
   const [caption, setCaption] = useState(item.default_caption);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useReloadGuard(busy || caption !== item.default_caption || photoId !== item.photos[0]?.photo_id);
   const photo = item.photos.find((p) => p.photo_id === photoId) ?? item.photos[0];
   const needsArea = caption.includes(AREA);
 
