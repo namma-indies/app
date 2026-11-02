@@ -98,8 +98,16 @@ async def _add(conn, storage, observer_id: UUID, capture_id: UUID, legacy: bool,
     prefix = f"sightings/{capture_id}" if legacy else f"captures/{capture_id}"
     key = f"{prefix}/notes/{note_id}.{ext}"
     async with conn.transaction():
-        # Serialises two notes saved at once, so the limit holds.
-        await conn.execute("SELECT 1 FROM captures WHERE id=$1 FOR UPDATE", capture_id)
+        # Serialises two notes saved at once, so the limit holds -- and with a
+        # deletion (app/erasure.py), which takes the same lock: whatever was
+        # checked before it was taken is checked again here, before any bytes
+        # are written, so a note cannot land on an upload or animal just deleted.
+        if not await conn.fetchval(
+                "SELECT 1 FROM captures WHERE id=$1 AND observer_id=$2 FOR UPDATE", capture_id, observer_id):
+            raise HTTPException(404, "no such capture")
+        if sighting_id is not None and not await conn.fetchval(
+                "SELECT 1 FROM sightings WHERE id=$1 AND capture_id=$2", sighting_id, capture_id):
+            raise HTTPException(404, "no such sighting")
         # The same recording saved twice at once: the second finds the first.
         if (done := await _already(conn, observer_id, client_token)) is not None:
             return done

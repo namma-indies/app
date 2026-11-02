@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { commonSpecies, speciesNoun } from "../species";
+import BlockSheet from "../components/BlockSheet";
 import {
   getProposals,
   HttpError,
@@ -48,6 +49,8 @@ export default function Review({
   // One line about the last thing that happened, so a verdict visibly did
   // something even though the result lands on another screen.
   const [note, setNote] = useState<string | null>(null);
+  // Set while blocking whoever logged one side of a pair (#180).
+  const [blocking, setBlocking] = useState<string | null>(null);
 
   useEffect(() => {
     getProposals()
@@ -116,6 +119,16 @@ export default function Review({
 
   return (
     <div className="review">
+      {blocking && (
+        <BlockSheet sightingId={blocking} offerReport={false} onClose={() => setBlocking(null)}
+          onBlocked={() => {
+            setBlocking(null);
+            // Every pair with one of theirs goes; the server knows which.
+            getProposals().then((r) => setItems(r.proposals)).catch(() => {});
+            setNote("Blocked. Their photos won't come up here again.");
+          }}
+          onUnauthorized={onUnauthorized} />
+      )}
       {back}
       <div className="journal-head">
         {items.length} POSSIBLE MATCH{items.length === 1 ? "" : "ES"} · SAME {speciesNoun(commonSpecies(items.flatMap((p) => [p.a.species, p.b.species]))).toUpperCase()} OR NOT?
@@ -135,6 +148,9 @@ export default function Review({
                   {side.date}
                   {side.mine ? " · YOUR PHOTO" : ""}
                 </span>
+                {!side.mine && (
+                  <button className="link-btn match-block" onClick={() => setBlocking(side.sighting_id)}>block</button>
+                )}
               </div>
             ))}
           </div>

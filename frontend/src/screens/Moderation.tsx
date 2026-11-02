@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  banObserver,
   getFlaggedQueue,
   getModerationQueue,
   reviewSighting,
@@ -86,6 +87,24 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queue]);
+
+  /** A ban hides everything this person logged, for everyone (#180). */
+  async function ban(item: ModerationItem) {
+    if (!item.observer_id) return;
+    const reason = prompt(`Ban ${item.observer ?? "this person"}? Everything they logged is hidden from everyone, and they can't sign in. You can lift it under STATS. Reason (for the record):`);
+    if (reason === null) return;
+    setBusy(item.sighting_id);
+    try {
+      await banObserver(item.observer_id, reason.trim() || undefined);
+      // Everything of theirs leaves the queue with them.
+      setItems((cur) => (cur ?? []).filter((x) => x.observer_id !== item.observer_id));
+    } catch (err) {
+      if (err instanceof UnauthorizedError) onUnauthorized();
+      else alert(err instanceof Error ? err.message : "Couldn't ban just now.");
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function decide(item: ModerationItem, verdict: "valid" | "rejected") {
     setBusy(item.sighting_id);
@@ -299,6 +318,11 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
                 HIDE IT
               </button>
             </div>
+            {item.observer_id && (
+              <button className="link-btn" disabled={busy === item.sighting_id} onClick={() => void ban(item)}>
+                Ban {item.observer ?? "this person"}
+              </button>
+            )}
           </div>
         ))}
       </div>

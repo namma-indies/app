@@ -34,7 +34,7 @@ from uuid import UUID
 import asyncpg
 import numpy as np
 
-from app.aggregates import animal_present, coarse_geog
+from app.aggregates import animal_present, coarse_geog, owner_active
 from app.config import settings
 from app.embed import EMBED_DIM, MODEL_NAME
 
@@ -172,6 +172,8 @@ async def find_candidates(
                   -- REID_CONF_THRESHOLD = 0.10 can produce a box, and so an
                   -- embedding, for a frame the map would not show.
                   AND {animal_present()}
+                  -- Nor anything of someone who has asked to delete their account.
+                  AND {owner_active('s')}
                   AND ({p_excl}::uuid IS NULL OR s.id <> {p_excl}::uuid)
                   AND NOT EXISTS (
                       SELECT 1 FROM sightings query WHERE query.id={p_excl}::uuid

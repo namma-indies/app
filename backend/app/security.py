@@ -15,6 +15,14 @@ def phone_hash(e164: str) -> str:
     ).hexdigest()
 
 
+def email_hash(normalized_email: str) -> str:
+    """A keyed hash of an address, for remembering a banned one (#180) without
+    keeping the address. Same key as `phone_hash`, separated by a prefix."""
+    return hmac.new(
+        settings.phone_hash_secret.encode(), b"email:" + normalized_email.encode(), hashlib.sha256
+    ).hexdigest()
+
+
 def _session_serializer() -> URLSafeSerializer:
     return URLSafeSerializer(settings.session_secret, salt="session")
 

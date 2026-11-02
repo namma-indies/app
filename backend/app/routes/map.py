@@ -31,7 +31,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.aggregates import countable_sighting
+from app.aggregates import countable_sighting, visible_to
 from app.auth.deps import require_observer
 from app.config import settings
 from app.deps import get_conn, get_storage
@@ -119,8 +119,10 @@ async def get_map(
           -- that it is off the map while it waits. Defined once, in
           -- app/aggregates.py, so the three read surfaces cannot drift.
           AND {countable_sighting()}
+          -- Nobody this viewer blocked, or who blocked them (#180).
+          AND {visible_to('$1')}
     """
-    args: list = []
+    args: list = [observer_id]
     if envelope is not None:
         # A prefilter only, over a box one cell wider on every side. The real
         # area test is on the coordinate each row is *returned* at, below: for
@@ -135,7 +137,7 @@ async def get_map(
         # is a lat/lng rectangle anyway.
         sql += (
             " AND ST_Intersects(s.geog::geometry,"
-            " ST_MakeEnvelope($1, $2, $3, $4, 4326))"
+            " ST_MakeEnvelope($2, $3, $4, $5, 4326))"
         )
         args += list(cell_cover(*envelope, settings.map_coarsen_cell_m))
 

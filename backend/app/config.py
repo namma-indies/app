@@ -69,6 +69,16 @@ class Settings(BaseSettings):
     # and logs what it would have posted, and nothing reaches X. The four X
     # values are OAuth 1.0a for the @nammaindies account and live only in the
     # box .env -- this repo is public.
+    # Write an id-only record of every erasure to `erasures/` in the media
+    # bucket (app/erasure.py), so a database restored from a backup taken
+    # before an erasure can have it re-applied (scripts/replay_erasures.py).
+    # Off until ops decides it is wanted; see docs/ops/media-deletion.md.
+    erasure_ledger_enabled: bool = False
+    # Deleting an account (#179, app/accounts.py): how long it stays hidden
+    # but recoverable before it is erased (Q1), and how often the API looks
+    # for accounts whose time is up.
+    account_deletion_grace_days: int = 7
+    account_purge_interval_s: float = 300.0
     social_posting_enabled: bool = False
     x_api_key: str = ""
     x_api_secret: str = ""
@@ -350,6 +360,10 @@ class Settings(BaseSettings):
     # pass and a model pass on the shared GPU, so a runaway client must not
     # be able to queue hours of them. Far above anyone talking about dogs.
     rl_voice_note_times: int = 20
+    # Blocking someone (#180): plenty for a person, too few to make blocking
+    # the whole cohort a way to flood moderators' "blocked by" counts.
+    rl_block_times: int = 30
+    rl_block_window_s: int = 86400
     rl_voice_note_window_s: int = 3600
 
     # The reason rate limiting is in this change at all: this path had no

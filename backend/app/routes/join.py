@@ -24,6 +24,7 @@ from app.config import settings
 from app.deps import get_conn
 from app.email.sender import get_sender
 from app.ratelimit import check, client_key, email_addr_limit, email_ip_limit, join_limit
+from app.security import email_hash
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -194,6 +195,14 @@ async def email_submit(request: Request, email: str = Form(...), conn=Depends(ge
         return _fail(
             request,
             error=f"{address} isn't on the pilot list yet — ask Akash to add you.",
+            status=403,
+        )
+    if await conn.fetchval("SELECT 1 FROM banned_emails WHERE email_hmac = $1", email_hash(address)):
+        # Said plainly: this person was banned by a moderator (#180), and a
+        # silent failure would only bring them back to try again.
+        return _fail(
+            request,
+            error="This account has been suspended. If you think that's wrong, write to nammaindies@gmail.com.",
             status=403,
         )
     observer_id = await get_or_create_observer_by_email(conn, email=address)

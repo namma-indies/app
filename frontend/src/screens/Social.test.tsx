@@ -9,6 +9,7 @@ import {
   passForSocial,
   pickForSocial,
   removeSocialPick,
+  settleTakedown,
   type SocialQueue,
   type SocialShared,
 } from "../api";
@@ -17,7 +18,7 @@ import Social from "./Social";
 vi.mock("../api", async (original) => ({
   ...await original<typeof import("../api")>(),
   getSocialShared: vi.fn(), getSocialQueue: vi.fn(), pickForSocial: vi.fn(),
-  passForSocial: vi.fn(), removeSocialPick: vi.fn(),
+  passForSocial: vi.fn(), removeSocialPick: vi.fn(), settleTakedown: vi.fn(),
 }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
@@ -122,5 +123,32 @@ describe("the POSTS screen", () => {
     render(<Social onUnauthorized={() => {}} />);
     expect(await screen.findByText(
       "Posting didn't confirm. Check @nammaindies on X before anything else posts.")).toBeInTheDocument();
+  });
+});
+
+describe("Takedowns of deleted photos (#54)", () => {
+  it("reads a post number from a link or the number itself", async () => {
+    const { postIdFrom } = await import("./Social");
+    expect(postIdFrom("https://x.com/nammaindies/status/1850123456789?s=20")).toBe("1850123456789");
+    expect(postIdFrom(" 1850123456789 ")).toBe("1850123456789");
+    expect(postIdFrom("not a post")).toBeNull();
+  });
+});
+
+describe("an unconfirmed takedown", () => {
+  const takedown = { id: "t1", x_post_id: null, caption: "maybe out", unconfirmed: true, attempts: 0,
+    last_error: null, created_at: "2026-11-02T09:00:00Z" };
+
+  it("takes down the post a moderator finds, or clears it when none went out", async () => {
+    vi.mocked(getSocialQueue).mockResolvedValue({ ...emptyQueue, takedowns: [takedown] });
+    vi.mocked(settleTakedown).mockResolvedValue({ status: "owed" });
+    render(<Social onUnauthorized={() => {}} />);
+    const take = await screen.findByRole("button", { name: "Take this post down" });
+    expect(take).toBeDisabled();
+    await userEvent.type(screen.getByLabelText("link to the post on X"), "https://x.com/nammaindies/status/42");
+    await userEvent.click(take);
+    expect(settleTakedown).toHaveBeenCalledWith("t1", "42");
+    await userEvent.click(screen.getByRole("button", { name: "Nothing went out" }));
+    expect(settleTakedown).toHaveBeenLastCalledWith("t1", null);
   });
 });

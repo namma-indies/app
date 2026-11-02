@@ -415,9 +415,18 @@ async def _failed(pool, transcript_id, attempts, error: str, *, retryable=True):
                   delay_s=min(MAX_RETRY_DELAY_S, 30 * 2 ** attempts))
 
 
-async def _store(pool, row, raw, animals, model: str, english=None):
+async def _store(pool, row, raw, animals, model: str, english=None, *,
+                 claimed_attempts: int | None = None, backfill: tuple | None = None) -> bool:
     """Check the model's answer against the note and keep what survives,
-    with its translation of the note if it gave a usable one."""
+    with its translation of the note if it gave a usable one.
+
+    `animals` is who the answer's letters were about when the model was asked.
+    If that may have changed since -- an animal removed from the upload
+    (app/erasure.py) resets the claim -- the answer is not kept: a letter could
+    now name another animal. `claimed_attempts` fences a suggestion claim (the
+    transcript must still be running on that attempt), `backfill` a backfill
+    job's, as (job id, attempts). False when nothing was kept for that reason,
+    or because the note is gone."""
     # With one animal the model was never asked to pick one (see `solo`).
     only = solo(animals)
     labels = [label for label, _, _ in animals] if animals and not only else None
@@ -427,11 +436,23 @@ async def _store(pool, row, raw, animals, model: str, english=None):
     logger.info("suggestions for transcript=%s: model gave %d, kept %d; english=%s", row["id"],
                 len(raw) if isinstance(raw, list) else 0, len(suggestions), english is not None)
     async with pool.acquire() as conn, conn.transaction():
+        # The backfill job first, then the transcript: the order a deletion
+        # takes them in (app/erasure.py), so neither waits on the other in a cycle.
+        if backfill is not None and not await conn.fetchval(
+                "SELECT 1 FROM transcript_backfill WHERE id=$1 AND status='running' AND attempts=$2 FOR UPDATE",
+                *backfill):
+            return False
         # Held until these are written: a note being deleted (app/routes/
         # voice_notes.py) waits for them, so it can clear them too; and once it
         # is gone there is nothing to write them about.
-        if await conn.fetchval("SELECT id FROM voice_transcripts WHERE id=$1 FOR KEY SHARE", row["id"]) is None:
-            return
+        current = await conn.fetchrow(
+            "SELECT suggest_status, suggest_attempts FROM voice_transcripts WHERE id=$1 FOR KEY SHARE", row["id"])
+        if current is None:
+            return False
+        if claimed_attempts is not None and (
+                current["suggest_status"] != "running" or current["suggest_attempts"] != claimed_attempts):
+            logger.info("suggestions for transcript=%s dropped: its claim was reset", row["id"])
+            return False
         for s in suggestions:
             await conn.execute(
                 """INSERT INTO detail_suggestions (id, capture_id, transcript_id, instance_id,
@@ -446,6 +467,7 @@ async def _store(pool, row, raw, animals, model: str, english=None):
             "suggest_lease_token_hash=NULL,suggest_error=NULL,"
             "english=COALESCE($2,english),english_model=CASE WHEN $2::text IS NULL "
             "THEN english_model ELSE $3 END WHERE id=$1", row["id"], english, model)
+    return True
 
 
 async def run_once(pool, storage, client: httpx.AsyncClient) -> bool:
@@ -471,7 +493,8 @@ async def run_once(pool, storage, client: httpx.AsyncClient) -> bool:
         logger.warning("suggestions failed for transcript=%s: %s", row["id"], reason)
         await _failed(pool, row["id"], row["suggest_attempts"], reason)
         return True
-    await _store(pool, row, raw, animals, settings.suggest_model, english)
+    await _store(pool, row, raw, animals, settings.suggest_model, english,
+                 claimed_attempts=row["suggest_attempts"])
     return True
 
 
@@ -587,7 +610,8 @@ async def worker_complete(transcript_id: UUID, body: Reply, request: Request):
         # agreed shape counts as a failed attempt here, not there.
         await _failed(pool, transcript_id, row["suggest_attempts"], "unparsable_reply")
         return {"status": "done"}
-    await _store(pool, row, raw, animals, settings.suggest_local_model, english)
+    await _store(pool, row, raw, animals, settings.suggest_local_model, english,
+                 claimed_attempts=row["suggest_attempts"])
     return {"status": "done"}
 
 

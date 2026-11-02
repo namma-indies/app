@@ -14,6 +14,7 @@ live note still points at. Neither can undo the other.
 """
 import asyncio
 import logging
+from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
@@ -27,18 +28,44 @@ async def lock_key(conn, key: str) -> None:
     await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", "media:" + key)
 
 
+def _owner_id(prefix: str) -> UUID | None:
+    try:
+        return UUID(prefix.rstrip("/").rsplit("/", 1)[-1])
+    except ValueError:
+        return None
+
+
+async def _in_use(conn, key: str, kind: str) -> bool:
+    if kind == "prefix":
+        owner = _owner_id(key)
+        return owner is not None and await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM captures WHERE id=$1) OR EXISTS(SELECT 1 FROM sightings WHERE id=$1)",
+            owner)
+    return await conn.fetchval("SELECT EXISTS(SELECT 1 FROM voice_notes WHERE s3_key=$1)", key)
+
+
+async def _delete(storage, key: str, kind: str) -> None:
+    if kind == "prefix":
+        for each in await storage.list_keys(key):
+            await storage.delete(each)
+    else:
+        await storage.delete(key)
+
+
 async def purge(pool, storage, key: str, *, timeout: float = PURGE_TIMEOUT_S) -> bool:
-    """Delete one owed object and its record. False if the store refused or
-    did not answer in time; the key then stays recorded, with the error."""
+    """Delete one owed object, or everything under one owed prefix, and its
+    record. False if the store refused or did not answer in time; it then
+    stays recorded, with the error."""
     async with pool.acquire() as conn, conn.transaction():
         await lock_key(conn, key)
-        if not await conn.fetchval("SELECT EXISTS(SELECT 1 FROM media_purges WHERE s3_key=$1)", key):
+        kind = await conn.fetchval("SELECT kind FROM media_purges WHERE s3_key=$1", key)
+        if kind is None:
             return True                                   # done already, or taken back by a save
-        if await conn.fetchval("SELECT EXISTS(SELECT 1 FROM voice_notes WHERE s3_key=$1)", key):
+        if await _in_use(conn, key, kind):
             await conn.execute("DELETE FROM media_purges WHERE s3_key=$1", key)
-            return True                                   # a live note points at it again
+            return True                                   # something live points at it again
         try:
-            await asyncio.wait_for(storage.delete(key), timeout)
+            await asyncio.wait_for(_delete(storage, key, kind), timeout)
         except Exception as error:
             # Logged by key and type, never by content.
             logger.warning("media left for purging: key=%s (%s)", key, type(error).__name__)

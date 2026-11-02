@@ -354,6 +354,76 @@ export async function deleteVoiceNote(noteId: string): Promise<void> {
   if (!res.ok && res.status !== 404) throw new HttpError(res.status);   // already gone is gone
 }
 
+/** The signed-in account, and whether it is scheduled for deletion (#179). */
+export interface Account {
+  status: "active" | "pending_deletion";
+  purge_after: string | null;
+  can_cancel: boolean;
+  has_email: boolean;
+  grace_days: number;
+  /** Banned by a moderator (#180): the app is closed to them, but deleting is not. */
+  suspended?: boolean;
+  counts: { uploads: number; sightings: number; voice_notes: number };
+}
+
+/** Reachable while deletion is pending, unlike everything else (403 there). */
+export async function getAccount(): Promise<Account> {
+  return handle(await fetch(`${API_BASE}/account`, { credentials: "include" }));
+}
+
+export async function requestAccountDeletion(): Promise<Account> {
+  return handle(await sendJson("/account/delete", "POST", { confirm: "delete" }));
+}
+
+export async function cancelAccountDeletion(): Promise<Account> {
+  return handle(await sendJson("/account/delete/cancel", "POST", {}));
+}
+
+/** What every other endpoint answers while the account is scheduled for deletion or suspended. */
+export function isAccountRestricted(err: unknown): boolean {
+  return err instanceof HttpError && err.status === 403;
+}
+
+/** Block whoever logged this sighting (#180). Both ways, silently. */
+export async function blockSighting(sightingId: string): Promise<void> {
+  await handle(await sendJson(`/sighting/${encodeURIComponent(sightingId)}/block`, "POST"));
+}
+
+export interface Block { id: string; name: string; created_at: string }
+
+export async function getBlocks(): Promise<{ blocks: Block[] }> {
+  return handle(await fetch(`${API_BASE}/blocks`, { credentials: "include" }));
+}
+
+export async function unblock(blockId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/blocks/${encodeURIComponent(blockId)}`, { method: "DELETE", credentials: "include" });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok && res.status !== 404) throw new HttpError(res.status);
+}
+
+/** A moderator's ban (#180): hides everything they logged from everyone. */
+export async function banObserver(observerId: string, reason?: string): Promise<void> {
+  await handleWithDetail(await sendJson(`/moderation/observer/${encodeURIComponent(observerId)}/ban`, "POST", { reason: reason || null }));
+}
+
+export async function unbanObserver(observerId: string): Promise<void> {
+  await handleWithDetail(await sendJson(`/moderation/observer/${encodeURIComponent(observerId)}/unban`, "POST"));
+}
+
+/** Delete an upload: the photo or clip, every animal in it, its notes (#54). */
+export async function deleteCapture(captureId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/capture/${encodeURIComponent(captureId)}`, { method: "DELETE", credentials: "include" });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok && res.status !== 404) throw new HttpError(res.status);   // already gone is gone
+}
+
+/** Remove one animal from an upload that has others in it (#54). */
+export async function deleteSighting(sightingId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/sighting/${encodeURIComponent(sightingId)}`, { method: "DELETE", credentials: "include" });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok && res.status !== 404) throw new HttpError(res.status);
+}
+
 /** The observer's answer to an AI photo description. */
 export async function decideDescription(
   id: string,
@@ -631,6 +701,19 @@ export interface SocialQueue {
   queued: SocialPick[];
   attention: SocialPick[];
   posted: SocialPick[];
+  /** Posts of photos their owners have since deleted, owed a delete on X (#54). */
+  takedowns?: SocialTakedown[];
+}
+
+export interface SocialTakedown {
+  id: string;
+  /** Null when the post was started and never confirmed: someone checks X. */
+  x_post_id: string | null;
+  caption: string | null;
+  unconfirmed: boolean;
+  attempts: number;
+  last_error: string | null;
+  created_at: string;
 }
 
 /** A refusal the moderator should read (409/422 carry a sentence in
@@ -664,6 +747,11 @@ export async function getSocialShared(): Promise<{ items: SocialShared[] }> {
 
 export async function getSocialQueue(): Promise<SocialQueue> {
   return handle(await fetch(`${API_BASE}/social/queue`, { credentials: "include" }));
+}
+
+/** Settle an unconfirmed takedown: the post found on X, or null if none went out. */
+export async function settleTakedown(id: string, xPostId: string | null): Promise<{ status: "owed" | "cleared" }> {
+  return handleWithDetail(await sendJson(`/social/takedown/${encodeURIComponent(id)}`, "POST", { x_post_id: xPostId }));
 }
 
 export async function pickForSocial(sightingId: string, photoId: string, caption: string): Promise<{ id: string }> {
@@ -745,6 +833,8 @@ export interface ModerationItem {
   /** Written by whoever reported it. Untrusted text; React escapes on render. */
   notes: string[];
   thumb_url: string | null;
+  /** Who logged it, for a ban (#180). Moderators only. */
+  observer_id?: string | null;
 }
 
 /** Moderators only. Answers 404 for everyone else, so a non-moderator sees the
@@ -859,6 +949,9 @@ export interface StatsObserver {
   sightings: number;
   confirmed_individuals: number;
   last_sighting_at: string | null;
+  /** How many people have blocked them (#180): something to read, never a trigger. */
+  blocked_by?: number;
+  banned?: boolean;
 }
 
 /** A place a typed search found, for the pick-on-a-map screen (#80). */

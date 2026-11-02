@@ -136,6 +136,19 @@ class XClient:
             raise XRejected(f"media upload refused: {_error(r)}")
         return str(r.json()["data"]["id"])
 
+    async def delete_post(self, post_id: str) -> None:
+        """Delete one of the account's posts. A post already gone counts as
+        deleted, so a retried delete finishes rather than fails."""
+        try:
+            async with self._http() as http:
+                r = await http.delete(f"/2/tweets/{post_id}")
+        except httpx.HTTPError as exc:
+            raise XRejected(f"delete did not complete: {exc!r}") from exc
+        if r.status_code == 404:
+            return
+        if r.status_code >= 300:
+            raise XRejected(f"delete refused: {_error(r)}")
+
     async def create_post(self, text: str, media_id: str) -> str:
         try:
             async with self._http() as http:

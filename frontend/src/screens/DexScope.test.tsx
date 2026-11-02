@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { visibilityChanged } from "../visibility";
 import userEvent from "@testing-library/user-event";
 
 const getDex = vi.fn();
@@ -135,6 +136,18 @@ describe("map scope: MINE by default, EVERYONE on request", () => {
     await userEvent.click(screen.getByText("EVERYONE"));
     await waitFor(() => expect(screen.getByText("2 pins")).toBeInTheDocument());
     expect(getMap).toHaveBeenCalledTimes(1);
+  });
+
+  it("looks again when an unblock elsewhere brings someone's pins back (#180)", async () => {
+    getDex.mockResolvedValue({ sightings: [mine("a")] });
+    getMap.mockResolvedValueOnce({ sightings: [theirs("x", "Aswin")] })
+      .mockResolvedValue({ sightings: [theirs("x", "Aswin"), theirs("y", "Akash")] });
+    render(<Dex onUnauthorized={() => {}} />);
+    await waitFor(() => screen.getByTestId("dogmap"));
+    await userEvent.click(screen.getByText("EVERYONE"));
+    await waitFor(() => expect(screen.getByText("1 pins")).toBeInTheDocument());
+    act(() => visibilityChanged());
+    await waitFor(() => expect(screen.getByText("2 pins")).toBeInTheDocument());
   });
 
   it("hands the cohort sightings to the map, not the viewer's own", async () => {
