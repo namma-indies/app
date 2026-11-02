@@ -65,7 +65,22 @@ def countable_sighting() -> str:
     later copy does not count again (app.identical, migration 0016). It still
     exists, and still shows in its contributor's own /dex.
     """
-    return f"s.review_status = 'valid' AND s.duplicate_of IS NULL AND {animal_present()}"
+    return (f"s.review_status = 'valid' AND s.duplicate_of IS NULL AND {animal_present()}"
+            f" AND {owner_active('s')}")
+
+
+def owner_active(alias: str = "s") -> str:
+    """The sighting's observer still stands behind it.
+
+    Someone who has asked to delete their account (#179) is off every shared
+    surface from that moment, not when the purge gets to them: the grace
+    period hides, and the purge erases. A deleted account has nothing left to
+    show, and a passcode account absorbed into an email one (deleted_at, with
+    its sightings moved) has nothing either. Decided by who logged it, never
+    by where, so it cannot reveal anything about a location (#148, #150).
+    """
+    return (f"NOT EXISTS (SELECT 1 FROM observers ox WHERE ox.id = {alias}.observer_id"
+            f" AND (ox.deletion_requested_at IS NOT NULL OR ox.deleted_at IS NOT NULL))")
 
 
 # Bangalore. `captured_at` is timestamptz and date_trunc would otherwise bucket
@@ -249,7 +264,7 @@ async def observer_rows(conn) -> list[dict]:
             MAX(s.captured_at) FILTER (WHERE {countable_sighting()}) AS last_sighting_at
         FROM observers o
         LEFT JOIN sightings s ON s.observer_id = o.id
-        WHERE o.deleted_at IS NULL
+        WHERE o.deleted_at IS NULL AND o.deletion_requested_at IS NULL
         GROUP BY o.id, o.display_name, o.email, o.created_via, o.trust_tier, o.created_at
         ORDER BY sightings DESC, o.created_at ASC
         """

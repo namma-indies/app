@@ -74,6 +74,11 @@ class Settings(BaseSettings):
     # before an erasure can have it re-applied (scripts/replay_erasures.py).
     # Off until ops decides it is wanted; see docs/ops/media-deletion.md.
     erasure_ledger_enabled: bool = False
+    # Deleting an account (#179, app/accounts.py): how long it stays hidden
+    # but recoverable before it is erased (Q1), and how often the API looks
+    # for accounts whose time is up.
+    account_deletion_grace_days: int = 7
+    account_purge_interval_s: float = 300.0
     social_posting_enabled: bool = False
     x_api_key: str = ""
     x_api_secret: str = ""

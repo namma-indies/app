@@ -148,3 +148,31 @@ restore does not touch. The API already has Put; no new permission is needed.
 Without the ledger, a restore must be followed by re-applying deletions by
 hand from logs (`erased capture=… reason=…` lines from `app.erasure`). That's
 only as good as log retention.
+
+## Account deletion (#179)
+
+Someone can delete their account in the app (the **delete account** link under
+the top bar) or on the web at `<public base url>/account/delete`. For Google
+Play's listing, link that page, or a page on nammaindies.org that points to
+it.
+
+- Their content is hidden from everyone the moment they ask. They're emailed
+  a notice, and the account is erased after `ACCOUNT_DELETION_GRACE_DAYS` (7 by
+  default). Until then, signing in shows **Keep my account**.
+- The API erases due accounts itself, every `ACCOUNT_PURGE_INTERVAL_S` (300 s by
+  default). Each upload is erased as "Delete photo" erases it, so the media goes
+  through `media_purges` as above. Nothing needs running by hand unless the
+  store refuses deletes (option A).
+- What's left is an anonymous row: the id, when it was created, and when it was
+  deleted. `account_deletions` records each request and its state:
+
+  ```sql
+  SELECT status, count(*), min(purge_after) FROM account_deletions GROUP BY status;
+  SELECT observer_id, attempts, last_error FROM account_deletions WHERE last_error IS NOT NULL;
+  ```
+
+- With the ledger on, each erased account is also written to `erasures/`, and
+  `replay_erasures.py` erases it again after a restore. A deletion *requested*
+  after the backup, but not yet erased, isn't on the ledger. After a restore,
+  that person's account is back as it was, and they need to ask again. The
+  notice emails in the sending log show who.

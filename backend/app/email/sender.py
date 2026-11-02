@@ -54,6 +54,8 @@ def _bodies(link: str) -> tuple[str, str]:
 class LoginEmail(Protocol):
     async def send(self, to: str, link: str) -> None: ...
 
+    async def send_message(self, to: str, subject: str, text: str, html: str) -> None: ...
+
 
 class ConsoleSender:
     """The default. Prints the link instead of sending, so the whole sign-in
@@ -63,6 +65,9 @@ class ConsoleSender:
     async def send(self, to: str, link: str) -> None:
         print(f"[login-email] to={to} link={link}", flush=True)
 
+    async def send_message(self, to: str, subject: str, text: str, html: str) -> None:
+        print(f"[email] to={to} subject={subject!r}\n{text}", flush=True)
+
 
 class SesSender:
     """Amazon SES v2. Credentials come from the ambient AWS chain (env vars on
@@ -71,6 +76,9 @@ class SesSender:
 
     async def send(self, to: str, link: str) -> None:
         text, html = _bodies(link)
+        await self.send_message(to, SUBJECT, text, html)
+
+    async def send_message(self, to: str, subject: str, text: str, html: str) -> None:
         session = aioboto3.Session()
         async with session.client("sesv2", region_name=settings.ses_region) as client:
             await client.send_email(
@@ -78,7 +86,7 @@ class SesSender:
                 Destination={"ToAddresses": [to]},
                 Content={
                     "Simple": {
-                        "Subject": {"Data": SUBJECT},
+                        "Subject": {"Data": subject},
                         "Body": {
                             "Text": {"Data": text},
                             "Html": {"Data": html},

@@ -8,7 +8,9 @@ import { failedCount, flush, setOnFlushed, setOnUnauthorized } from "./offline/q
 import Celebration from "./components/Celebration";
 import FailedSightings from "./components/FailedSightings";
 import HapticsCheck, { HAPTICS_CHECK_PARAM, wantsHapticsCheck } from "./components/HapticsCheck";
-import { getDex, getMe, UnauthorizedError } from "./api";
+import { getAccount, getDex, getMe, isPendingDeletion, UnauthorizedError, type Account } from "./api";
+import DeleteAccount from "./components/DeleteAccount";
+import PendingDeletion from "./screens/PendingDeletion";
 import { forgetNoteLanguage } from "./components/NoteLanguagePicker";
 import { API_BASE } from "./apiBase";
 import { listenForAuthLinks } from "./deepLink";
@@ -26,6 +28,10 @@ export default function App() {
   const [isModerator, setIsModerator] = useState(false);
   const [unauthorized, setUnauthorized] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
+  // Set while the account is scheduled for deletion (#179): the app is
+  // replaced by when it goes and the way to keep it.
+  const [pendingDeletion, setPendingDeletion] = useState<Account | null>(null);
+  const [deletingAccount, setDeletingAccount] = useState(false);
   const [failed, setFailed] = useState(0);
   const [showFailed, setShowFailed] = useState(false);
   const [hapticsCheck, setHapticsCheck] = useState(() => wantsHapticsCheck(window.location.search));
@@ -69,6 +75,7 @@ export default function App() {
     getDex()
       .then(() => {
         setUnauthorized(false);
+        setPendingDeletion(null);
         setCheckingAuth(false);
         // Piggybacks on the existing probe rather than adding a second
         // round trip on every load. A failure here is not an auth problem --
@@ -77,8 +84,18 @@ export default function App() {
           .then((me) => setIsModerator(me.is_moderator))
           .catch(() => setIsModerator(false));
       })
-      .catch((err) => {
+      .catch(async (err) => {
         if (err instanceof UnauthorizedError) setUnauthorized(true);
+        else if (isPendingDeletion(err)) {
+          // Everything but /account answers 403 while deletion is pending.
+          const account = await getAccount().catch(() => null);
+          if (account?.status === "pending_deletion") {
+            // Signed in after all: /account answered. Lift the sign-in gate,
+            // or a link that just signed them in would land on it again.
+            setUnauthorized(false);
+            setPendingDeletion(account);
+          }
+        }
         setCheckingAuth(false);
       });
   }
@@ -93,6 +110,18 @@ export default function App() {
     listenForAuthLinks(reprobeAuth);
   }, []);
 
+  async function signOut() {
+    forgetNoteLanguage();
+    await fetch(`${API_BASE}/auth/logout`, {
+      method: "POST",
+      headers: { Accept: "application/json" },
+    }).catch(() => {});
+    // Show the gate regardless. If the request failed the cookie may
+    // survive, but the next auth probe settles it either way.
+    setPendingDeletion(null);
+    setUnauthorized(true);
+  }
+
   if (checkingAuth) {
     return <div className="app" />;
   }
@@ -104,6 +133,15 @@ export default function App() {
             session cookie, and getDex() succeeding is the only proof the
             app and server agree about who we are. */}
         <SignIn onSignedIn={reprobeAuth} />
+      </div>
+    );
+  }
+
+  if (pendingDeletion) {
+    return (
+      <div className="app">
+        <PendingDeletion account={pendingDeletion} onKept={reprobeAuth} onSignOut={() => void signOut()}
+          onUnauthorized={() => { setPendingDeletion(null); setUnauthorized(true); }} />
       </div>
     );
   }
@@ -138,14 +176,7 @@ export default function App() {
             // Confirm first: the tabbar is right there and a stray tap costs
             // a round-trip through email to get back in.
             if (!confirm("Sign out of indiedex?")) return;
-            forgetNoteLanguage();
-            await fetch(`${API_BASE}/auth/logout`, {
-              method: "POST",
-              headers: { Accept: "application/json" },
-            }).catch(() => {});
-            // Show the gate regardless. If the request failed the cookie may
-            // survive, but the next auth probe settles it either way.
-            setUnauthorized(true);
+            await signOut();
           }}
         >
           sign out
@@ -161,7 +192,15 @@ export default function App() {
         </a>
         <span aria-hidden="true"> · </span>
         <a href="mailto:nammaindies@gmail.com">contact us</a>
+        <span aria-hidden="true"> · </span>
+        {/* Apple 5.1.1(v): deleting the account has to be in the app, findable. */}
+        <button type="button" className="link-btn legal-link" onClick={() => setDeletingAccount(true)}>delete account</button>
       </div>
+      {deletingAccount && (
+        <DeleteAccount onClose={() => setDeletingAccount(false)}
+          onScheduled={(account) => { setDeletingAccount(false); setPendingDeletion(account); }}
+          onUnauthorized={() => { setDeletingAccount(false); setUnauthorized(true); }} />
+      )}
       <div className="screen">
         {tab === "capture" ? (
           <Capture />

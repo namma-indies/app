@@ -46,7 +46,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends
 
-from app.aggregates import countable_sighting
+from app.aggregates import countable_sighting, owner_active
 from app.auth.deps import require_observer
 from app.config import settings
 from app.deps import get_conn, get_storage
@@ -109,6 +109,7 @@ async def _look_alikes(conn, ids: list[UUID]) -> dict[UUID, list[dict]]:
             JOIN embeddings e ON e.photo_id = p.id
             WHERE s.individual_id = ANY($1::uuid[])
               AND s.review_status = 'valid'
+              AND {owner_active('s')}
               AND e.model = $2 AND e.vec_miew IS NOT NULL
         )
         SELECT dv.individual_id AS dog_id,
@@ -125,6 +126,7 @@ async def _look_alikes(conn, ids: list[UUID]) -> dict[UUID, list[dict]]:
               AND s2.individual_id IS NOT NULL
               AND s2.individual_id <> dv.individual_id
               AND s2.review_status = 'valid'
+              AND {owner_active('s2')}
               AND (dv.species IS NULL OR s2.species IS NULL OR dv.species=s2.species)
               AND s2.capture_id IS DISTINCT FROM dv.capture_id
             -- Identical cast to ix_embeddings_vec_miew_hnsw, or this silently
@@ -199,8 +201,10 @@ async def get_dogs(
 
     # Most recent photos per dog, newest first. row_number rather than a
     # LATERAL per row: one pass over the set beats 500 correlated subqueries.
+    # The card is built from the same sightings it counts (countable_sighting),
+    # so nothing hidden from the count -- a deleted account's, say -- shows here.
     photo_rows = await conn.fetch(
-        """
+        f"""
         SELECT individual_id, s3_key FROM (
             SELECT s.individual_id, p.s3_key,
                    -- p.id tiebreaks: photos of one sighting share created_at
@@ -211,9 +215,8 @@ async def get_dogs(
                                                p.created_at, p.id) AS rn
             FROM sightings s
             JOIN photos p ON p.sighting_id = s.id
-            WHERE s.individual_id = ANY($1::uuid[]) AND s.review_status = 'valid'
-              -- The same photo submitted twice is shown once (app.identical).
-              AND s.duplicate_of IS NULL
+            -- The same photo submitted twice is shown once (app.identical).
+            WHERE s.individual_id = ANY($1::uuid[]) AND {countable_sighting()}
         ) ranked
         WHERE rn <= $2
         """,
@@ -224,15 +227,14 @@ async def get_dogs(
     # Latest located sighting per dog, plus who logged it -- that decides
     # whether this viewer gets the real coordinate or a grid cell.
     loc_rows = await conn.fetch(
-        """
+        f"""
         SELECT DISTINCT ON (s.individual_id)
                s.individual_id,
                ST_Y(s.geog::geometry) AS lat,
                ST_X(s.geog::geometry) AS lng,
                s.observer_id
         FROM sightings s
-        WHERE s.individual_id = ANY($1::uuid[]) AND s.geog IS NOT NULL AND s.review_status = 'valid'
-          AND s.duplicate_of IS NULL
+        WHERE s.individual_id = ANY($1::uuid[]) AND s.geog IS NOT NULL AND {countable_sighting()}
         -- s.id tiebreaks. Two sightings of one dog sharing captured_at would
         -- otherwise leave "latest" to the plan, so the card's location could
         -- change between requests for no reason the reader can see.
@@ -242,8 +244,8 @@ async def get_dogs(
     )
 
     attr_rows = await conn.fetch(
-        "SELECT individual_id, attrs FROM sightings "
-        "WHERE individual_id = ANY($1::uuid[]) AND review_status = 'valid'",
+        "SELECT s.individual_id, s.attrs FROM sightings s "
+        f"WHERE s.individual_id = ANY($1::uuid[]) AND s.review_status = 'valid' AND {owner_active('s')}",
         ids,
     )
 

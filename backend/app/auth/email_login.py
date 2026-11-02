@@ -73,35 +73,51 @@ async def absorb_passcode_observers(
     their sightings attributed to that colleague. Accepted for a closed staff
     pilot; revisit before the passcode door is opened wider.
     """
-    ids = [
-        r["id"]
-        for r in await conn.fetch(
-            """
-            SELECT id FROM observers
-            WHERE created_via = 'passcode'
-              AND email IS NULL
-              AND deleted_at IS NULL
-              AND lower(btrim(display_name)) = $1
-              AND id <> $2
-            """,
-            email,
-            target,
-        )
-    ]
-    if not ids:
-        return 0
+    # One transaction from the checks to the last update, holding the target's
+    # row and every source's: an account scheduled for deletion is never
+    # carried anywhere (#179), or its uploads would leave the purge that was
+    # promised, under an id the purge no longer looks at; and nothing is
+    # carried into one, which would be erased with it. A deletion asked for at
+    # the same moment (accounts.request locks the same row) either lands first,
+    # and the row is skipped, or waits until this is done and finds the
+    # account retired. Signing in again after keeping an account carries it
+    # over then.
+    async with conn.transaction():
+        if await conn.fetchval(
+                "SELECT deletion_requested_at IS NOT NULL FROM observers WHERE id = $1 FOR UPDATE", target):
+            return 0
+        ids = [
+            r["id"]
+            for r in await conn.fetch(
+                """
+                SELECT id FROM observers
+                WHERE created_via = 'passcode'
+                  AND email IS NULL
+                  AND deleted_at IS NULL
+                  AND deletion_requested_at IS NULL
+                  AND lower(btrim(display_name)) = $1
+                  AND id <> $2
+                ORDER BY id
+                FOR UPDATE
+                """,
+                email,
+                target,
+            )
+        ]
+        if not ids:
+            return 0
 
-    for table, column in _OBSERVER_REFS:
+        for table, column in _OBSERVER_REFS:
+            await conn.execute(
+                f"UPDATE {table} SET {column} = $1 WHERE {column} = ANY($2::uuid[])",
+                target,
+                ids,
+            )
+        # Retire rather than delete: the row is evidence of how the data arrived,
+        # and soft-deleting keeps this idempotent on a second sign-in.
         await conn.execute(
-            f"UPDATE {table} SET {column} = $1 WHERE {column} = ANY($2::uuid[])",
-            target,
+            "UPDATE observers SET deleted_at = now(), updated_at = now() "
+            "WHERE id = ANY($1::uuid[])",
             ids,
         )
-    # Retire rather than delete: the row is evidence of how the data arrived,
-    # and soft-deleting keeps this idempotent on a second sign-in.
-    await conn.execute(
-        "UPDATE observers SET deleted_at = now(), updated_at = now() "
-        "WHERE id = ANY($1::uuid[])",
-        ids,
-    )
     return len(ids)

@@ -956,6 +956,12 @@ button { font-family: inherit; }
   color: var(--muted, #6b5844);
 }
 .legal-row a { color: inherit; text-decoration: underline; }
+.legal-row .legal-link { color: inherit; text-decoration: underline; font: inherit; padding: 0; background: none; border: 0; box-shadow: none; }
+.delete-account { text-align: left; color: var(--ink); }
+.delete-account h2 { margin: 0 0 0.5rem; font-size: 1.05rem; }
+.delete-account ul { padding-left: 1.1rem; font-size: 0.86rem; }
+.delete-account input { width: 100%; margin: 0.35rem 0 0.2rem; }
+.pending-deletion { display: grid; gap: 0.8rem; justify-items: center; text-align: center; }
 
 /* --- saying where a sighting happened -------------------------------------- */
 

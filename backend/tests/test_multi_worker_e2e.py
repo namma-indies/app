@@ -142,7 +142,12 @@ async def test_multi_worker_lost_response_then_owner_publication(
                 assert await claim_capture_job(conn, "cpu", cpu=True) is None
         from app.security import issue_session
         original_session = client.cookies.get("session")
-        client.cookies.set("session", issue_session(uuid4()))
+        # Someone else, signed in: a session is only good for an account that exists.
+        stranger = uuid4()
+        async with app.state.pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO observers (id, display_name, created_via) VALUES ($1, 'Stranger', 'test')", stranger)
+        client.cookies.set("session", issue_session(stranger))
         assert (await client.get(f"/capture/{capture_id}")).status_code == 404
         client.cookies.set("session", original_session)
 
@@ -182,7 +187,7 @@ async def test_multi_worker_lost_response_then_owner_publication(
         assert len(pins) == 2
         assert len({(pin["lat"], pin["lng"]) for pin in pins}) == 1
         assert all(pin["lat"] == 12.97 and pin["lng"] == 77.59 for pin in pins)
-        client.cookies.set("session", issue_session(uuid4()))
+        client.cookies.set("session", issue_session(stranger))
         shared_pins = (await client.get("/map")).json()["sightings"]
         assert len(shared_pins) == 2
         assert len({(pin["lat"], pin["lng"]) for pin in shared_pins}) == 1
