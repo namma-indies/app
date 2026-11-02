@@ -89,7 +89,12 @@ export default function App() {
         else if (isPendingDeletion(err)) {
           // Everything but /account answers 403 while deletion is pending.
           const account = await getAccount().catch(() => null);
-          if (account?.status === "pending_deletion") setPendingDeletion(account);
+          if (account?.status === "pending_deletion") {
+            // Signed in after all: /account answered. Lift the sign-in gate,
+            // or a link that just signed them in would land on it again.
+            setUnauthorized(false);
+            setPendingDeletion(account);
+          }
         }
         setCheckingAuth(false);
       });

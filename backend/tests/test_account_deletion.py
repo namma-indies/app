@@ -293,3 +293,32 @@ async def test_a_restored_account_is_erased_again_from_the_ledger(authed_client,
     assert await replay_erasures.run(pool, storage, since=start, apply=True) == (1, 0, 0)
     for key in await storage.list_keys("erasures/"):
         await storage.delete(key)
+
+
+
+@pytest.mark.asyncio
+async def test_a_passcode_account_being_deleted_is_not_carried_into_an_email_one(app_client, mail):
+    """A tester joined with the passcode under their email address, asked to
+    delete that account, then signed in by email: the old uploads must not move
+    out of the purge into the email account."""
+    from app.auth.logintoken import issue
+    from app.security import issue_session
+    pool, storage = await _pool(app_client), get_storage()
+    passcode, email_account = uuid7(), uuid7()
+    async with pool.acquire() as c:
+        await c.execute("INSERT INTO observers (id, display_name, created_via) VALUES ($1,'t@example.org','passcode')",
+                        passcode)
+        await c.execute("INSERT INTO observers (id, display_name, email, created_via) VALUES ($1,'T','t@example.org','email')",
+                        email_account)
+    app_client.cookies.set("session", issue_session(passcode))
+    mine = await _post(app_client)
+    assert (await app_client.post("/account/delete", json={"confirm": "delete"})).status_code == 200
+    async with pool.acquire() as c:
+        token = await issue(c, email_account)
+    app_client.cookies.clear()
+    assert (await app_client.get(f"/auth/email/consume?token={token}")).status_code == 303
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT observer_id FROM sightings WHERE id=$1", UUID(mine)) == passcode
+    await _purge_now(pool, storage, passcode)
+    async with pool.acquire() as c:
+        assert not await c.fetchval("SELECT EXISTS(SELECT 1 FROM sightings WHERE id=$1)", UUID(mine))

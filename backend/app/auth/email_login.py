@@ -73,6 +73,14 @@ async def absorb_passcode_observers(
     their sightings attributed to that colleague. Accepted for a closed staff
     pilot; revisit before the passcode door is opened wider.
     """
+    # An account scheduled for deletion is not carried anywhere (#179): its
+    # uploads would leave the purge that was promised, under an id the purge
+    # no longer looks at. Nor is anything carried into one -- it would be
+    # erased with it. Either way, signing in again after keeping the account
+    # carries it over then.
+    if await conn.fetchval(
+            "SELECT deletion_requested_at IS NOT NULL FROM observers WHERE id = $1", target):
+        return 0
     ids = [
         r["id"]
         for r in await conn.fetch(
@@ -81,8 +89,12 @@ async def absorb_passcode_observers(
             WHERE created_via = 'passcode'
               AND email IS NULL
               AND deleted_at IS NULL
+              AND deletion_requested_at IS NULL
               AND lower(btrim(display_name)) = $1
               AND id <> $2
+            -- Locked, and so re-checked, against a deletion asked for at the
+            -- same moment (accounts.request locks the same row).
+            FOR UPDATE
             """,
             email,
             target,
