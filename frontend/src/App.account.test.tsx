@@ -38,3 +38,14 @@ describe("an account scheduled for deletion signing back in (#179)", () => {
     expect(screen.queryByRole("button", { name: "signed in" })).not.toBeInTheDocument();
   });
 });
+
+describe("a suspended account (#180)", () => {
+  it("is told so, and can still delete itself", async () => {
+    vi.mocked(getDex).mockRejectedValue(new HttpError(403));
+    vi.mocked(getAccount).mockResolvedValue({ status: "active", purge_after: null, can_cancel: false, has_email: true,
+      grace_days: 7, suspended: true, counts: { uploads: 1, sightings: 1, voice_notes: 0 } });
+    render(<App />);
+    expect(await screen.findByText("Your account has been suspended")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "delete account" })).toBeInTheDocument();
+  });
+});

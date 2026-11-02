@@ -131,6 +131,10 @@ def voice_note_limit() -> Limit:
     return Limit(settings.rl_voice_note_times, settings.rl_voice_note_window_s)
 
 
+def block_limit() -> Limit:
+    return Limit(settings.rl_block_times, settings.rl_block_window_s)
+
+
 def email_addr_limit() -> Limit:
     """Anti-mail-bomb: tight, because it protects one person's inbox."""
     return Limit(settings.rl_email_addr_times, settings.rl_email_addr_window_s)

@@ -71,6 +71,7 @@ REFERENCES: dict[tuple[str, str, str], str] = {
     ("social_picks", "sighting_id", "sightings"): "c",      # a posted one is owed a delete on X
     ("voice_notes", "sighting_id", "sightings"): "c",       # its audio is owed by key or prefix
     ("photo_descriptions", "sighting_id", "sightings"): "c",
+    ("observer_blocks", "via_sighting_id", "sightings"): "n",  # the block stays (#180)
     # -> captures
     ("sightings", "capture_id", "captures"): "a",           # sightings are deleted first
     ("photos", "capture_id", "captures"): "c",

@@ -360,6 +360,10 @@ class Settings(BaseSettings):
     # pass and a model pass on the shared GPU, so a runaway client must not
     # be able to queue hours of them. Far above anyone talking about dogs.
     rl_voice_note_times: int = 20
+    # Blocking someone (#180): plenty for a person, too few to make blocking
+    # the whole cohort a way to flood moderators' "blocked by" counts.
+    rl_block_times: int = 30
+    rl_block_window_s: int = 86400
     rl_voice_note_window_s: int = 3600
 
     # The reason rate limiting is in this change at all: this path had no

@@ -67,6 +67,10 @@ OBSERVER_REFERENCES: dict[tuple[str, str], str] = {
     ("social_picks", "picked_by"): "kept",
     ("detail_suggestions", "decided_by"): "kept",
     ("photo_descriptions", "decided_by"): "kept",
+    # Their blocks, both ways, go with them (#180).
+    ("observer_blocks", "blocker_id"): "erased",
+    ("observer_blocks", "blocked_id"): "erased",
+    ("observers", "banned_by"): "kept",              # as a moderator
 }
 
 # Every column of `observers`: what the tombstone keeps, and what it empties.
@@ -88,6 +92,11 @@ OBSERVER_COLUMNS: dict[str, str] = {
     "x_handle": "emptied",
     "note_language": "emptied",
     "social_consent": "false",
+    # A ban is kept on the tombstone; the address it was for lives on only as
+    # a keyed hash in banned_emails (#180).
+    "banned_at": "kept",
+    "banned_by": "kept",
+    "ban_reason": "emptied",
 }
 
 LEASE = timedelta(minutes=15)
@@ -102,7 +111,7 @@ async def state(conn, observer_id: UUID) -> dict:
     """What /account shows: whether deletion is scheduled, when, and how much
     would go."""
     row = await conn.fetchrow(
-        """SELECT o.email IS NOT NULL AS has_email, o.deletion_requested_at,
+        """SELECT o.email IS NOT NULL AS has_email, o.deletion_requested_at, o.banned_at IS NOT NULL AS suspended,
                   d.purge_after, d.status
            FROM observers o LEFT JOIN account_deletions d ON d.observer_id = o.id
            WHERE o.id = $1""", observer_id)
@@ -117,6 +126,7 @@ async def state(conn, observer_id: UUID) -> dict:
         # A purge already under way cannot be stopped; only a scheduled one.
         "can_cancel": pending and row["status"] == "scheduled",
         "has_email": row["has_email"],
+        "suspended": row["suspended"],
         "grace_days": settings.account_deletion_grace_days,
         "counts": dict(counts),
     }
@@ -220,6 +230,7 @@ async def _finish(pool, storage, observer_id: UUID) -> list[str]:
                 "INSERT INTO media_purges (s3_key, reason, kind) VALUES ($1,'account_deleted','key') "
                 "ON CONFLICT DO NOTHING", key)
         await conn.execute("DELETE FROM sighting_reports WHERE reporter_id=$1", observer_id)
+        await conn.execute("DELETE FROM observer_blocks WHERE blocker_id=$1 OR blocked_id=$1", observer_id)
         await conn.execute("DELETE FROM login_tokens WHERE observer_id=$1", observer_id)
         await conn.execute(
             "DELETE FROM individual_names WHERE proposed_by=$1 AND status IN ('proposed','rejected')", observer_id)
