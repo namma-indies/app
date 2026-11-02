@@ -251,6 +251,15 @@ async def run_daily(pool, storage, client, *, today: date, enabled: bool) -> Run
                 # took the post: the takedown recorded for it has nothing to do.
                 await conn.execute(
                     "DELETE FROM x_post_purges WHERE pick_id = $1 AND x_post_id IS NULL", pick_id)
+            elif kept is None:
+                # Deleted meanwhile, and X may have the post. The takedown the
+                # erasure recorded may already have been cleared by someone who
+                # checked X before the post appeared, so make sure one stands.
+                await conn.execute(
+                    """INSERT INTO x_post_purges (id, pick_id, caption, reason)
+                       SELECT $1, $2, $3, 'erased_while_posting:unconfirmed'
+                       WHERE NOT EXISTS (SELECT 1 FROM x_post_purges WHERE pick_id = $2)""",
+                    uuid7(), pick_id, head["caption"])
         log.warning("daily post failed pick=%s uncertain=%s: %s", pick_id, uncertain, exc)
         return RunResult("failed", pick_id=pick_id, detail=str(exc))
 

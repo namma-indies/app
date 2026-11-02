@@ -566,3 +566,32 @@ async def test_an_in_process_answer_about_a_removed_animal_is_dropped(authed_cli
     async with pool.acquire() as c:
         assert await c.fetchval("SELECT count(*) FROM detail_suggestions WHERE capture_id=$1", cid) == 0
         assert await c.fetchval("SELECT suggest_status FROM voice_transcripts WHERE capture_id=$1", cid) == "pending"
+
+
+@pytest.mark.asyncio
+async def test_a_takedown_cleared_too_early_comes_back_when_x_answers_uncertain(authed_client):
+    """A moderator checks X before the post appears and clears the takedown;
+    then X answers with no clear outcome. The post may be there: a takedown
+    must stand again."""
+    from app.erasure import erase
+    from app.social import run_daily
+    from app.x_client import XUncertain
+    client, _ = authed_client
+    mine = await _post(client)
+    await _posting_pick(client, mine, caption="in flight")
+    pool, storage = await _pool(client), get_storage()
+
+    class Racing:
+        async def upload_image(self, jpeg):
+            return "m-1"
+
+        async def create_post(self, text, media_id):
+            assert await erase(pool, storage, "capture", UUID(mine), reason="test")
+            async with pool.acquire() as c:                 # "Nothing went out"
+                assert await c.fetchval("DELETE FROM x_post_purges RETURNING id") is not None
+            raise XUncertain("accepted, answer lost")
+    assert (await run_daily(pool, storage, Racing(), today=date.today(), enabled=True)).outcome == "failed"
+    await settled()
+    async with pool.acquire() as c:
+        row = await c.fetchrow("SELECT x_post_id, caption FROM x_post_purges")
+    assert (row["x_post_id"], row["caption"]) == (None, "in flight")
