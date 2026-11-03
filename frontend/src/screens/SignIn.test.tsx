@@ -3,6 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+
+// Consent UI is covered in SignIn.consent.test; these check auth transport.
+vi.mock("../components/useSignupConsent", () => ({
+  useSignupConsent: () => ({ policy: null, creating: false, setCreating: vi.fn(), ready: true,
+    values: {}, fields: null, refresh: vi.fn() }),
+}));
 import SignIn from "./SignIn";
 
 afterEach(cleanup);
@@ -10,12 +16,10 @@ afterEach(cleanup);
 beforeEach(() => {
   vi.stubGlobal(
     "fetch",
-    vi.fn((path: string) => Promise.resolve({
+    vi.fn().mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve(path.endsWith("/auth/consent") ? {
-        enabled: false, terms_version: "", privacy_version: "", community_guidelines_version: "", minimum_age: null,
-      } : { ok: true }),
-    })),
+      json: () => Promise.resolve({ ok: true }),
+    }),
   );
 });
 
