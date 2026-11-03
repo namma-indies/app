@@ -10,5 +10,5 @@
  */
 export const SERVER_ROUTES: RegExp[] = [
   /^\/auth\//, /^\/join/, /^\/account\/delete/,
-  /^\/policies(?:\/|$)/, /^\/support(?:\/|$)/,
+  /^\/policies(?:[/?]|$)/, /^\/support(?:[/?]|$)/,
 ];

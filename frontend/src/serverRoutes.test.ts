@@ -7,8 +7,10 @@ describe("pages the service worker leaves to the server", () => {
   it("leaves published policy redirects and support to the server", () => {
     for (const path of ["/support", "/support?from=store", "/policies/terms", "/policies/privacy",
       "/policies/community-guidelines", "/policies/grievance"]) {
-      expect(served(path.split("?")[0])).toBe(true);
+      // Workbox matches pathname + search, including store attribution queries.
+      expect(served(path)).toBe(true);
     }
+    expect(served("/supporting")).toBe(false);
   });
   it("includes the account deletion pages (#179)", () => {
     expect(served("/account/delete")).toBe(true);
