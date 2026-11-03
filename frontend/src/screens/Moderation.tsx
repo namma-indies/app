@@ -12,6 +12,7 @@ import {
 } from "../api";
 import { formatWhen } from "../formatWhen";
 import { speciesNoun, speciesWithArticle } from "../species";
+import { ModerationAlerts, ModerationAudit } from "../components/ModerationOperations";
 
 /** The queue of reported sightings, for whoever holds `trust_tier='moderator'`.
  *
@@ -42,13 +43,18 @@ import { speciesNoun, speciesWithArticle } from "../species";
 const REASON_LABELS: Record<ReportReason, (species?: string | null) => string> = {
   endangers_dog: (species) => `PUTS THE ${speciesNoun(species).toUpperCase()} AT RISK`,
   offensive: () => "OFFENSIVE",
+  people_privacy: () => "PEOPLE / PRIVACY",
+  sexual_content: () => "SEXUAL CONTENT",
+  illegal_content: () => "ILLEGAL CONTENT",
   not_a_dog: (species) => `NOT ${speciesWithArticle(species).toUpperCase()}`,
   wrong_place: () => "WRONG PLACE/TIME",
   other: () => "OTHER",
 };
 
 export default function Moderation({ onUnauthorized }: { onUnauthorized: () => void }) {
-  const [queue, setQueue] = useState<"reported" | "flagged">("reported");
+  const [queue, setQueue] = useState<"reported" | "flagged" | "audit">("reported");
+  const [reasons, setReasons] = useState<Record<string, string>>({});
+  const [now, setNow] = useState(Date.now);
   const [items, setItems] = useState<ModerationItem[] | null>(null);
   const [flaggedItems, setFlaggedItems] = useState<FlaggedItem[] | null>(null);
   // Kept separate rather than one shared `failed` flag: the two queues fetch
@@ -58,6 +64,18 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
   const [failedReported, setFailedReported] = useState(false);
   const [failedFlagged, setFailedFlagged] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  function decisionReason(id: string) {
+    return <label className="mod-decision-reason">Decision reason (required)
+      <textarea aria-label="Decision reason" rows={2} maxLength={500}
+        value={reasons[id] ?? ""} onChange={(e) => setReasons((cur) => ({ ...cur, [id]: e.target.value }))} />
+    </label>;
+  }
 
   useEffect(() => {
     getModerationQueue()
@@ -92,10 +110,10 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
   async function ban(item: ModerationItem) {
     if (!item.observer_id) return;
     const reason = prompt(`Ban ${item.observer ?? "this person"}? Everything they logged is hidden from everyone, and they can't sign in. You can lift it under STATS. Reason (for the record):`);
-    if (reason === null) return;
+    if (!reason?.trim()) return;
     setBusy(item.sighting_id);
     try {
-      await banObserver(item.observer_id, reason.trim() || undefined);
+      await banObserver(item.observer_id, reason.trim());
       // Everything of theirs leaves the queue with them.
       setItems((cur) => (cur ?? []).filter((x) => x.observer_id !== item.observer_id));
     } catch (err) {
@@ -109,7 +127,7 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
   async function decide(item: ModerationItem, verdict: "valid" | "rejected") {
     setBusy(item.sighting_id);
     try {
-      await reviewSighting(item.sighting_id, verdict);
+      await reviewSighting(item.sighting_id, verdict, reasons[item.sighting_id].trim());
       // Drop it rather than refetching, so the queue does not reorder under
       // someone working down it.
       setItems((cur) => (cur ?? []).filter((x) => x.sighting_id !== item.sighting_id));
@@ -124,7 +142,7 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
   async function decideAnimal(item: FlaggedItem, verdict: "animal" | "no_animal") {
     setBusy(item.sighting_id);
     try {
-      await ruleOnAnimal(item.sighting_id, verdict);
+      await ruleOnAnimal(item.sighting_id, verdict, reasons[item.sighting_id].trim());
       // Same reasoning as the reported queue: drop locally, don't refetch, so
       // the order someone is walking does not shift under them.
       setFlaggedItems((cur) => (cur ?? []).filter((x) => x.sighting_id !== item.sighting_id));
@@ -137,6 +155,8 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
   }
 
   const toggle = (
+    <>
+    <ModerationAlerts onUnauthorized={onUnauthorized} />
     <div className="scope-toggle">
       <button className={queue === "reported" ? "active" : ""} onClick={() => setQueue("reported")}>
         REPORTED
@@ -144,8 +164,14 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
       <button className={queue === "flagged" ? "active" : ""} onClick={() => setQueue("flagged")}>
         NOT ANIMALS
       </button>
+      <button className={queue === "audit" ? "active" : ""} onClick={() => setQueue("audit")}>
+        AUDIT LOG
+      </button>
     </div>
+    </>
   );
+
+  if (queue === "audit") return <>{toggle}<ModerationAudit onUnauthorized={onUnauthorized} /></>;
 
   if (queue === "flagged") {
     if (failedFlagged) {
@@ -206,17 +232,18 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
                 </div>
               </div>
 
+              {decisionReason(item.sighting_id)}
               <div className="match-actions">
                 <button
                   className="btn-different"
-                  disabled={busy === item.sighting_id}
+                  disabled={busy === item.sighting_id || !reasons[item.sighting_id]?.trim()}
                   onClick={() => decideAnimal(item, "animal")}
                 >
                   THERE IS AN ANIMAL
                 </button>
                 <button
                   className="btn-same"
-                  disabled={busy === item.sighting_id}
+                  disabled={busy === item.sighting_id || !reasons[item.sighting_id]?.trim()}
                   onClick={() => decideAnimal(item, "no_animal")}
                 >
                   NO ANIMAL
@@ -282,8 +309,14 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
                   {item.observer ? `logged by ${item.observer}` : "observer unknown"}
                   <br />
                   {item.report_count} REPORT{item.report_count === 1 ? "" : "S"}
-                  {item.review_status === "valid" && " · REPORTED AGAIN AFTER REVIEW"}
+                  {(item.reported_after_review ?? item.review_status === "valid") && " · REPORTED AGAIN AFTER REVIEW"}
                 </div>
+                {item.response_due_at && <p className="mod-clock" role="status">
+                  {item.severe && <strong>URGENT · </strong>}
+                  {item.first_reported_at && `Reported ${Math.max(0, Math.floor((now - Date.parse(item.first_reported_at)) / 60_000))} min ago · `}
+                  {(now >= Date.parse(item.response_due_at)) ? <strong>OVERDUE · </strong> : "Respond by "}
+                  <time dateTime={item.response_due_at}>{new Date(item.response_due_at).toLocaleString()}</time>
+                </p>}
                 <div className="marks">
                   {[...new Set(item.reasons)].map((r) => (
                     <span key={r} className="mk">
@@ -302,17 +335,18 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
               </ul>
             )}
 
+            {decisionReason(item.sighting_id)}
             <div className="match-actions">
               <button
                 className="btn-different"
-                disabled={busy === item.sighting_id}
+                disabled={busy === item.sighting_id || !reasons[item.sighting_id]?.trim()}
                 onClick={() => decide(item, "valid")}
               >
                 KEEP IT
               </button>
               <button
                 className="btn-same"
-                disabled={busy === item.sighting_id}
+                disabled={busy === item.sighting_id || !reasons[item.sighting_id]?.trim()}
                 onClick={() => decide(item, "rejected")}
               >
                 HIDE IT

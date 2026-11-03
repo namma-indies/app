@@ -72,10 +72,22 @@ describe("Moderation", () => {
     vi.mocked(reviewSighting).mockResolvedValue(undefined);
     render(<Moderation onUnauthorized={() => {}} />);
 
+    await userEvent.type(await screen.findByLabelText("Decision reason"), "Evidence reviewed");
     await userEvent.click(await screen.findByRole("button", { name: "HIDE IT" }));
 
-    expect(reviewSighting).toHaveBeenCalledWith("s1", "rejected");
+    expect(reviewSighting).toHaveBeenCalledWith("s1", "rejected", "Evidence reviewed");
     await waitFor(() => expect(screen.queryByText("HIDE IT")).not.toBeInTheDocument());
+  });
+
+  it("requires a reason before a decision and marks an urgent overdue report", async () => {
+    vi.mocked(getModerationQueue).mockResolvedValue({ items: [item({ severe: true,
+      first_reported_at: "2026-01-01T00:00:00Z", response_due_at: "2026-01-01T02:00:00Z" })] });
+    render(<Moderation onUnauthorized={() => {}} />);
+    expect(await screen.findByRole("button", { name: "HIDE IT" })).toBeDisabled();
+    expect(screen.getByText(/URGENT/)).toBeInTheDocument();
+    expect(screen.getByText(/OVERDUE/)).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("Decision reason"), "Privacy concern confirmed");
+    expect(screen.getByRole("button", { name: "HIDE IT" })).toBeEnabled();
   });
 
   it("keeping it sends the opposite verdict", async () => {
@@ -83,9 +95,10 @@ describe("Moderation", () => {
     vi.mocked(reviewSighting).mockResolvedValue(undefined);
     render(<Moderation onUnauthorized={() => {}} />);
 
+    await userEvent.type(await screen.findByLabelText("Decision reason"), "Evidence reviewed");
     await userEvent.click(await screen.findByRole("button", { name: "KEEP IT" }));
 
-    expect(reviewSighting).toHaveBeenCalledWith("s1", "valid");
+    expect(reviewSighting).toHaveBeenCalledWith("s1", "valid", "Evidence reviewed");
   });
 
   it("a note written by a reporter is rendered as text, never markup", async () => {

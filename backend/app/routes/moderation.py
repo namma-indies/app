@@ -1,53 +1,14 @@
-"""Reporting a sighting, and deciding what happens to it.
+"""Reports and reasoned moderator decisions.
 
-WHY THIS EXISTS
----------------
-`sightings.review_status` has carried `pending`/`valid`/`rejected` since the
-first migration, and `/map` has filtered on it for as long as it has existed.
-Nothing ever wrote anything but `valid`. The filter was unreachable code: no
-path in the app, the API or any script could hide a sighting, so a photo that
-should not be on a shared map stayed on it, permanently, unless someone opened
-psql.
+Ordinary reports need two distinct reporters before shared surfaces hide a
+capture. People/privacy, sexual-content and illegal-content reports hold it
+on the first report and alert immediately (#198). A fresh severe concern can
+hold a previously approved capture again; ordinary reports cannot overturn a
+ruling. All open concerns reach the queue, with an original response clock.
 
-Apple's Guideline 1.2 requires a report mechanism and a way to act on it, and
-Google Play's UGC policy requires reporting. Both are true, and neither is the
-reason this is urgent. The map shows where free-roaming dogs are; if a sighting
-puts an animal at risk, "file an issue on GitHub" is not a takedown path.
-
-THE PRODUCT DECISION IN HERE
-----------------------------
-**Two** people must report a sighting before it hides, pending a moderator.
-
-This started at one and was changed deliberately. Hiding on the first report
-makes the harm from a sighting that endangers a dog stop immediately, which is
-the argument for it -- but it also means any single account can take any photo
-off the shared map on its own say-so, and at pilot scale the people logging
-sightings are the people whose work disappears. Requiring a second, independent
-voice costs a delay measured in however long it takes one more person to agree,
-and buys the property that no one person can blank the map alone.
-
-It is two *distinct* reporters, not two taps: the primary key on
-(sighting_id, reporter_id) means one account reporting twice is one report.
-
-A report is always recorded and always reaches the queue, whether or not it
-crossed the threshold. Hiding is what waits for the second voice; a moderator
-seeing it does not.
-
-Change the number with `HIDE_AT_REPORTS`. The rest of the file does not care --
-set it to 1 to restore hide-on-first-report.
-
-WHO MODERATES
--------------
-`observers.trust_tier = 'moderator'`. That column has been on the table since
-0001 and nothing has ever read or written it; the name already meant this, so
-this adds no schema. Set it by hand, deliberately:
-
-    UPDATE observers SET trust_tier = 'moderator' WHERE email = '...';
-
-Deliberately not self-serve and deliberately not inferred from anything else. A
-moderator can unhide content, which is a decision about someone else's safety
-report, and that should be a thing a person was given rather than a thing they
-accumulated.
+Moderators are deliberately assigned through observers.trust_tier. Decisions
+require a reason and append an audit entry in the same transaction. No action
+here deletes evidence. Naming moderators and a rota remains in #191.
 """
 
 import logging
@@ -62,6 +23,9 @@ from app.auth.deps import require_moderator, require_observer
 from app.config import settings
 from app.deps import get_conn, get_storage
 from app.detect_reid import DETECTOR_NAME
+from app.ids import uuid7
+from app.moderation_ops import SEVERE_REASONS, action_reason, record_action, report_clock
+from app.moderator_alerts import alert_moderators, recipients
 from app.photos import thumb_key
 from app.security import email_hash
 from app.storage.s3 import S3Storage
@@ -81,7 +45,8 @@ MAX_NOTE = 500
 
 MAX_QUEUE = 200
 
-Reason = Literal["endangers_dog", "not_a_dog", "wrong_place", "offensive", "other"]
+Reason = Literal["endangers_dog", "not_a_dog", "wrong_place", "offensive", "other",
+                 "people_privacy", "sexual_content", "illegal_content"]
 
 
 
@@ -133,47 +98,61 @@ async def report_sighting(
     if note is not None and len(note) > MAX_NOTE:
         raise HTTPException(status_code=422, detail=f"note is longer than {MAX_NOTE}")
 
-    exists = await conn.fetchval("SELECT 1 FROM sightings WHERE id = $1", sighting_id)
-    if not exists:
-        raise HTTPException(status_code=404, detail="no such sighting")
-
+    note = (note or "").strip() or None
     async with conn.transaction():
         capture_id = await conn.fetchval("SELECT capture_id FROM sightings WHERE id=$1", sighting_id)
         await conn.execute("SELECT id FROM captures WHERE id=$1 FOR UPDATE", capture_id)
+        sighting = await conn.fetchrow("SELECT review_status FROM sightings WHERE id=$1", sighting_id)
+        if sighting is None:
+            raise HTTPException(status_code=404, detail="no such sighting")
+        previous = await conn.fetchrow(
+            "SELECT reason, note, resolved_at, severe_at FROM sighting_reports WHERE sighting_id=$1 AND reporter_id=$2 FOR UPDATE",
+            sighting_id, observer_id)
+        # A retry is not a new concern and must not reset the response clock
+        # or send another urgent email. A report after a ruling reopens it.
+        changed = previous is None or previous["resolved_at"] is not None or (previous["reason"], previous["note"]) != (reason, note)
+        if not changed:
+            return {"status": "ok", "hidden": sighting["review_status"] != "valid"}
         await conn.execute(
             """
-            INSERT INTO sighting_reports (sighting_id, reporter_id, reason, note)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO sighting_reports (sighting_id, reporter_id, reason, note, severe_at)
+            VALUES ($1, $2, $3, $4, CASE WHEN $5 THEN now() END)
             ON CONFLICT (sighting_id, reporter_id) DO UPDATE
                 SET reason = EXCLUDED.reason,
                     note = EXCLUDED.note,
-                    created_at = now()
+                    created_at = now(),
+                    opened_at = CASE WHEN sighting_reports.resolved_at IS NOT NULL
+                                     THEN now() ELSE sighting_reports.opened_at END,
+                    severe_at = CASE WHEN sighting_reports.resolved_at IS NOT NULL THEN EXCLUDED.severe_at
+                                     ELSE COALESCE(sighting_reports.severe_at, EXCLUDED.severe_at) END,
+                    resolved_at = NULL
             """,
             sighting_id,
             observer_id,
             reason,
-            (note or "").strip() or None,
+            note,
+            reason in SEVERE_REASONS,
         )
-        # `reviewed_at IS NULL` is what makes a moderator's decision stick.
-        # Hiding on `review_status = 'valid'` alone looks equivalent and is
-        # not: once a moderator has looked and restored a sighting, the next
-        # person to tap report takes it straight back down, so the human
-        # decision is advisory and the last tap wins. The report is still
-        # recorded, and the queue surfaces anything reported *since* the
-        # last review, so re-reporting reaches a human -- it just does not
-        # reach past one.
-        #
-        # The count is of rows in sighting_reports, which is one per reporter
-        # by primary key, so this is "two people agree" and not "two taps".
+        # Ordinary reports keep a human ruling sticky. A new severe concern
+        # takes precedence over an earlier approval until reviewed again. The
+        # whole capture is held, since sibling animals share the photograph.
         await conn.execute(
             "UPDATE sightings SET review_status = 'pending', updated_at = now() "
             "WHERE (id = $1 OR capture_id=(SELECT capture_id FROM sightings WHERE id=$1)) "
-            "AND review_status = 'valid' AND reviewed_at IS NULL "
+            "AND review_status <> 'rejected' AND ((reviewed_at IS NULL "
             "AND (SELECT count(DISTINCT r.reporter_id) FROM sighting_reports r JOIN sightings src ON src.id=r.sighting_id "
-            "WHERE src.id=$1 OR src.capture_id=(SELECT capture_id FROM sightings WHERE id=$1)) >= $2",
+            "WHERE (src.id=$1 OR src.capture_id=(SELECT capture_id FROM sightings WHERE id=$1)) "
+            "AND r.resolved_at IS NULL) >= $2) OR $3)",
             sighting_id,
             HIDE_AT_REPORTS,
+            reason in SEVERE_REASONS,
         )
+        # Rejecting is already a stronger hold. Fresh severe concerns about a
+        # previously approved item still hide it until the next human ruling.
+        notify = previous is None or previous["resolved_at"] is not None or previous["reason"] != reason
+        if notify:
+            await alert_moderators(conn, event_key=f"report:{uuid7()}", category=f"report_{reason}",
+                                   subject_id=sighting_id, urgent=reason in SEVERE_REASONS)
 
     logger.info(
         "sighting=%s reported by observer=%s reason=%s", sighting_id, observer_id, reason
@@ -205,11 +184,14 @@ async def moderation_queue(
         SELECT s.id,
                s.captured_at,
                s.review_status,
+               s.reviewed_at,
                s.species,
                o.display_name AS observer,
                s.observer_id,
                count(r.*) AS report_count,
                max(r.created_at) AS last_reported,
+               min(r.opened_at) AS first_reported,
+               min(r.severe_at) AS first_severe,
                array_agg(r.reason ORDER BY r.created_at DESC) AS reasons,
                array_remove(array_agg(r.note ORDER BY r.created_at DESC), NULL) AS notes,
                p.s3_key
@@ -222,17 +204,15 @@ async def moderation_queue(
             SELECT s3_key FROM photos WHERE sighting_id = s.id
             ORDER BY created_at, id LIMIT 1
         ) p ON TRUE
-        WHERE s.review_status <> 'rejected'
+        WHERE r.resolved_at IS NULL
           -- Going with its account (#179): nothing left to rule on.
           AND {owner_active('s')}
         GROUP BY s.id, s.captured_at, s.review_status, s.reviewed_at, s.species,
                  o.display_name, p.s3_key
-        -- Still open, or reported again since the last ruling. Without the
-        -- second half a moderator who restores something watches it sit in
-        -- their queue forever; without the first, a fresh concern about an
-        -- already-reviewed sighting never reaches anyone.
-        HAVING s.reviewed_at IS NULL OR max(r.created_at) > s.reviewed_at
-        ORDER BY count(r.*) DESC, max(r.created_at) DESC
+        -- A ruling resolves the capture's open report rows atomically.
+        -- A later report reopens its row, with a fresh response clock.
+        ORDER BY (min(r.severe_at) IS NOT NULL) DESC,
+                 count(r.*) DESC, min(r.opened_at), s.id
         LIMIT $1
         """,
         MAX_QUEUE,
@@ -246,11 +226,14 @@ async def moderation_queue(
                 "sighting_id": str(r["id"]),
                 "captured_at": r["captured_at"],
                 "review_status": r["review_status"],
+                "reported_after_review": r["reviewed_at"] is not None,
                 "species": r["species"],
                 "observer": r["observer"],
                 # Moderators only: what a ban acts on (#180).
                 "observer_id": str(r["observer_id"]) if r["observer_id"] else None,
                 "report_count": r["report_count"],
+                "last_reported_at": r["last_reported"],
+                **report_clock(r["first_reported"], r["first_severe"]),
                 "reasons": list(r["reasons"] or []),
                 # User-written, shown to a moderator. React escapes on render.
                 "notes": list(r["notes"] or []),
@@ -265,6 +248,8 @@ async def moderation_queue(
 async def review_sighting(
     sighting_id: UUID,
     verdict: Literal["valid", "rejected"] = Form(...),
+    reason: str = Form(..., min_length=1, max_length=MAX_NOTE),
+    action: Literal["hide", "unhide", "approve", "reject", "dismiss"] | None = Form(None),
     moderator_id: UUID = Depends(require_moderator),
     conn=Depends(get_conn),
 ):
@@ -276,16 +261,29 @@ async def review_sighting(
     objects stay, and the row keeps its reports -- deletion is not reversible
     and this decision should be.
     """
+    reason = action_reason(reason)
+    if action is not None and (action in {"hide", "reject"}) != (verdict == "rejected"):
+        raise HTTPException(422, "Action and verdict disagree")
     async with conn.transaction():
         capture_id = await conn.fetchval("SELECT capture_id FROM sightings WHERE id=$1", sighting_id)
         await conn.execute("SELECT id FROM captures WHERE id=$1 FOR UPDATE", capture_id)
-        updated = await conn.fetchval(
+        old_rows = await conn.fetch("SELECT id, review_status FROM sightings WHERE id=$1 OR capture_id=$2 FOR UPDATE", sighting_id, capture_id)
+        old_states = {r["id"]: r["review_status"] for r in old_rows}
+        if sighting_id not in old_states:
+            raise HTTPException(status_code=404, detail="no such sighting")
+        updated = await conn.fetch(
             "UPDATE sightings SET review_status = $2, reviewed_at = now(), "
             "reviewed_by = $3, updated_at = now() WHERE id = $1 OR capture_id=$4 RETURNING id",
             sighting_id, verdict, moderator_id, capture_id,
         )
-    if updated is None:
-        raise HTTPException(status_code=404, detail="no such sighting")
+        await conn.execute(
+            "UPDATE sighting_reports SET resolved_at=now() WHERE sighting_id=ANY($1::uuid[]) AND resolved_at IS NULL",
+            [r["id"] for r in updated])
+        for r in updated:
+            old_state = old_states[r["id"]]
+            audit_action = action or ("hide" if verdict == "rejected" else "unhide" if old_state != "valid" else "dismiss")
+            await record_action(conn, moderator_id=moderator_id, target_kind="sighting", target_id=r["id"],
+                                action=audit_action, reason=reason, previous_state=old_state, new_state=verdict)
     logger.info(
         "sighting=%s reviewed as %s by moderator=%s", sighting_id, verdict, moderator_id
     )
@@ -395,6 +393,7 @@ async def animal_queue(
 async def rule_on_animal(
     sighting_id: UUID,
     verdict: Literal["animal", "no_animal"] = Form(...),
+    reason: str = Form(..., min_length=1, max_length=MAX_NOTE),
     moderator_id: UUID = Depends(require_moderator),
     conn=Depends(get_conn),
 ):
@@ -410,15 +409,17 @@ async def rule_on_animal(
     Reversible by ruling again, and it deletes nothing.
     """
     override = verdict == "animal"
-    updated = await conn.fetchval(
-        "UPDATE sightings SET animal_override = $2, animal_reviewed_at = now(), "
-        "animal_reviewed_by = $3, updated_at = now() WHERE id = $1 RETURNING id",
-        sighting_id,
-        override,
-        moderator_id,
-    )
-    if updated is None:
-        raise HTTPException(status_code=404, detail="no such sighting")
+    reason = action_reason(reason)
+    async with conn.transaction():
+        old = await conn.fetchrow("SELECT animal_override FROM sightings WHERE id=$1 FOR UPDATE", sighting_id)
+        if old is None:
+            raise HTTPException(status_code=404, detail="no such sighting")
+        await conn.execute(
+            "UPDATE sightings SET animal_override = $2, animal_reviewed_at = now(), "
+            "animal_reviewed_by = $3, updated_at = now() WHERE id = $1", sighting_id, override, moderator_id)
+        await record_action(conn, moderator_id=moderator_id, target_kind="sighting", target_id=sighting_id,
+                            action="approve" if override else "reject", reason=reason,
+                            previous_state=f"animal_override={old['animal_override']}", new_state=f"animal_override={override}")
     logger.info(
         "sighting=%s ruled %s by moderator=%s", sighting_id, verdict, moderator_id
     )
@@ -436,12 +437,13 @@ async def rule_on_animal(
 
 
 class BanBody(BaseModel):
-    reason: str | None = Field(None, max_length=MAX_NOTE)
+    reason: str = Field(..., min_length=1, max_length=MAX_NOTE)
 
 
 @router.post("/moderation/observer/{observer_id}/ban")
 async def ban(observer_id: UUID, body: BanBody, moderator_id: UUID = Depends(require_moderator),
               conn=Depends(get_conn)):
+    reason = action_reason(body.reason)
     async with conn.transaction():
         target = await conn.fetchrow(
             "SELECT email, trust_tier, banned_at FROM observers WHERE id=$1 AND deleted_at IS NULL FOR UPDATE",
@@ -454,16 +456,20 @@ async def ban(observer_id: UUID, body: BanBody, moderator_id: UUID = Depends(req
         await conn.execute(
             "UPDATE observers SET banned_at = COALESCE(banned_at, now()), banned_by = $2, ban_reason = $3, "
             "updated_at = now() WHERE id = $1",
-            observer_id, moderator_id, (body.reason or "").strip() or None)
+            observer_id, moderator_id, reason)
         if target["email"]:
             await conn.execute("INSERT INTO banned_emails (email_hmac) VALUES ($1) ON CONFLICT DO NOTHING",
                                email_hash(target["email"]))
+        await record_action(conn, moderator_id=moderator_id, target_kind="observer", target_id=observer_id,
+                            action="ban", reason=reason, previous_state="banned" if target["banned_at"] else "active",
+                            new_state="banned")
     logger.info("observer=%s banned by moderator=%s", observer_id, moderator_id)
     return {"status": "banned"}
 
 
 @router.post("/moderation/observer/{observer_id}/unban")
-async def unban(observer_id: UUID, moderator_id: UUID = Depends(require_moderator), conn=Depends(get_conn)):
+async def unban(observer_id: UUID, body: BanBody, moderator_id: UUID = Depends(require_moderator), conn=Depends(get_conn)):
+    reason = action_reason(body.reason)
     async with conn.transaction():
         email = await conn.fetchval(
             "UPDATE observers SET banned_at = NULL, banned_by = NULL, ban_reason = NULL, updated_at = now() "
@@ -473,5 +479,29 @@ async def unban(observer_id: UUID, moderator_id: UUID = Depends(require_moderato
             raise HTTPException(status_code=404, detail="no such ban")
         if email:
             await conn.execute("DELETE FROM banned_emails WHERE email_hmac = $1", email_hash(email))
+        await record_action(conn, moderator_id=moderator_id, target_kind="observer", target_id=observer_id,
+                            action="unban", reason=reason, previous_state="banned", new_state="active")
     logger.info("observer=%s unbanned by moderator=%s", observer_id, moderator_id)
     return {"status": "active"}
+
+
+@router.get("/moderation/audit")
+async def audit_log(before: UUID | None = None, _mod: UUID = Depends(require_moderator), conn=Depends(get_conn)):
+    rows = await conn.fetch(
+        "SELECT a.*, o.display_name AS moderator FROM moderation_actions a "
+        "LEFT JOIN observers o ON o.id=a.moderator_id "
+        "WHERE ($1::uuid IS NULL OR (a.created_at,a.id) < "
+        "(SELECT created_at,id FROM moderation_actions WHERE id=$1)) "
+        "ORDER BY a.created_at DESC,a.id DESC LIMIT 100", before)
+    return {"items": [dict(r) for r in rows], "next_cursor": str(rows[-1]["id"]) if len(rows) == 100 else None}
+
+
+@router.get("/moderation/alerts/status")
+async def alerts_status(_mod: UUID = Depends(require_moderator), conn=Depends(get_conn)):
+    row = await conn.fetchrow(
+        "SELECT (SELECT count(*) FROM moderator_alerts WHERE queued_at IS NULL) AS pending_events, "
+        "count(*) FILTER (WHERE sent_at IS NULL) AS pending_mail, "
+        "count(*) FILTER (WHERE sent_at IS NULL AND attempts>0 AND last_error IS NOT NULL) AS failed_mail "
+        "FROM moderation_mail")
+    return {**dict(row), "recipient_count": len(recipients()), "email_sender": settings.email_sender,
+            "delivery_configured": bool(recipients()) and settings.email_sender == "ses"}

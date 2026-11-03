@@ -100,8 +100,9 @@ describe("Moderation — the flagged queue", () => {
     vi.mocked(ruleOnAnimal).mockResolvedValue(undefined);
     await openFlagged();
 
+    await userEvent.type(await screen.findByLabelText("Decision reason"), "Evidence reviewed");
     await userEvent.click(await screen.findByRole("button", { name: /THERE IS AN ANIMAL/ }));
-    expect(ruleOnAnimal).toHaveBeenCalledWith("s1", "animal");
+    expect(ruleOnAnimal).toHaveBeenCalledWith("s1", "animal", "Evidence reviewed");
     await waitFor(() => expect(screen.queryByText(/logged by Priya/)).toBeNull());
   });
 
@@ -110,8 +111,9 @@ describe("Moderation — the flagged queue", () => {
     vi.mocked(ruleOnAnimal).mockResolvedValue(undefined);
     await openFlagged();
 
+    await userEvent.type(await screen.findByLabelText("Decision reason"), "Evidence reviewed");
     await userEvent.click(await screen.findByRole("button", { name: /^NO ANIMAL$/ }));
-    expect(ruleOnAnimal).toHaveBeenCalledWith("s1", "no_animal");
+    expect(ruleOnAnimal).toHaveBeenCalledWith("s1", "no_animal", "Evidence reviewed");
     await waitFor(() => expect(screen.queryByText(/logged by Priya/)).toBeNull());
   });
 

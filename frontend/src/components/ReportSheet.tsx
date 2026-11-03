@@ -63,8 +63,9 @@ export default function ReportSheet({
             so promising instant removal would be a promise we break. Wording is
             Akash's call -- the constraint is only that it stay true. */}
         <p className="hint">
-          One of the team looks at it. If someone else reports it too, it comes
-          off the shared map while that happens.
+          People or privacy, sexual content and illegal content reports hide
+          the sighting from shared views while the team reviews it. Other
+          reports hide it when a second person agrees. The team is alerted.
         </p>
 
         <div className="report-reasons" role="radiogroup" aria-label="Reason">
