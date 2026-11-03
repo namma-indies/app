@@ -271,6 +271,27 @@ async def test_mean_only_backfill_does_not_expand_the_resolve_sweep(authed_clien
 
 
 @pytest.mark.asyncio
+async def test_two_limited_cli_runs_advance_past_the_repaired_mean(authed_client, monkeypatch):
+    client, oid = authed_client
+    pool = client._transport.app.state.pool
+    async with pool.acquire() as conn:
+        first, _ = await sighting(conn, oid, unit(50))
+        second, _ = await sighting(conn, oid, unit(51))
+        await cached(conn, first, unit(52), None, None)
+        await cached(conn, second, unit(53), None, None)
+    monkeypatch.setattr(backfill, "effective_dsn", lambda: settings.test_database_url)
+    monkeypatch.setattr(backfill, "embed_photo", lambda _: pytest.fail("all frames already exist"))
+    monkeypatch.setattr("sys.argv", ["backfill_embeddings.py", "--limit", "1"])
+    assert await backfill.main() == 0
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("SELECT vec_miew_recipe FROM sightings WHERE id=$1", first) == ACTIVE_RECIPE
+        assert await conn.fetchval("SELECT vec_miew_recipe FROM sightings WHERE id=$1", second) is None
+    assert await backfill.main() == 0
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("SELECT vec_miew_recipe FROM sightings WHERE id=$1", second) == ACTIVE_RECIPE
+
+
+@pytest.mark.asyncio
 async def test_look_alikes_filter_inactive_recipes_on_both_sides(authed_client):
     from app.routes.dogs import _look_alikes
     client, oid = authed_client

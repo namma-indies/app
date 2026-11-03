@@ -81,7 +81,7 @@ MEANS_SQL = """
         SELECT 1 FROM photos p JOIN embeddings e ON e.photo_id=p.id
         WHERE p.sighting_id=s.id AND e.model=$1 AND e.recipe=$2
           AND e.vec_miew IS NOT NULL)
-    ORDER BY (s.id=ANY($3::uuid[])) DESC,s.created_at,s.id
+    ORDER BY (s.id=ANY($3::uuid[])) DESC,stale DESC,s.created_at,s.id
 """
 
 
