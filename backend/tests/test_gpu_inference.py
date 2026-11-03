@@ -496,3 +496,23 @@ def test_real_timeout_kills_decoder_group_and_cleans_scratch(monkeypatch, tmp_pa
         time.sleep(.01)
     else:
         pytest.fail("decoder process group survived cleanup")
+
+
+@pytest.mark.parametrize("dimensions", [(160, 80), (80, 160)])
+def test_screening_signals_match_the_api_on_both_paths(monkeypatch, dimensions):
+    """The worker reports what the API's own pass would have stored (#181):
+    the same person and indoor numbers from the same detector rows, on the
+    legacy photo path and the per-instance path."""
+    raw = photos.process_photo(image_bytes(*dimensions)).original
+    detections = np.array([[[80, 200, 560, 400, .6, 16],
+                            [0, 0, 640, 640, .9, 0],       # a person over most of the frame
+                            [10, 10, 60, 60, .3, 0],       # an unsure one
+                            [100, 100, 200, 200, .7, 59]]], dtype=np.float32)   # a bed
+    reference_session = FakeSession(detections)
+    reference_session.disable_fallback()
+    monkeypatch.setattr(analyse, "_get_session", lambda: reference_session)
+    expected = analyse.analyse(raw).scene
+    assert expected.person == pytest.approx(.9) and expected.indoor == pytest.approx(.7)
+    assert expected.person_area > .5
+    assert worker(detections=detections).analyse_photo(raw).scene == expected
+    assert worker(detections=detections).analyse_instances(raw).scene == expected

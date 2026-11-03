@@ -444,3 +444,18 @@ async def test_expired_claim_never_downloads_or_completes():
         with pytest.raises(LeaseLost):
             await worker.run_once()
     assert not server.storage_calls and not server.completions
+
+
+def test_a_frame_carries_screening_signals_the_api_accepts():
+    """#181: the three signals ride the completion when measured, are left out
+    when not (an older adapter), and a value outside [0, 1] is refused here."""
+    from app.media_jobs import FrameResult
+    from app.scene import SceneSignals, from_wire
+    metadata = {"width": 20, "height": 10, "phash": "0123456789abcdef"}
+    base = dict(dog_confidence=.8, cat_confidence=.1, bbox=None, vector=None)
+    measured = Worker._frame(metadata, SimpleNamespace(**base, scene=SceneSignals(.9, .4, .1)), str(uuid4()))
+    assert from_wire(FrameResult(**measured)) == SceneSignals(.9, .4, .1)
+    unmeasured = Worker._frame(metadata, SimpleNamespace(**base), str(uuid4()))
+    assert "person" not in unmeasured and from_wire(FrameResult(**unmeasured)) is None
+    with pytest.raises(ProtocolError):
+        Worker._frame(metadata, SimpleNamespace(**base, scene=SceneSignals(1.5, 0, 0)), str(uuid4()))
