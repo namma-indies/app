@@ -132,7 +132,9 @@ export interface Sighting {
   on_map?: boolean;
   /** Why it does not: a person reported it, a moderator hid it, or the
    * detector found no animal in the frame. */
-  off_map_reason?: "reported" | "hidden" | "no_animal" | null;
+  /** `checking`: not screened yet; `held`: screening is waiting for a
+   * moderator (#181). Either way only its owner can see it. */
+  off_map_reason?: "reported" | "hidden" | "no_animal" | "checking" | "held" | null;
 }
 
 export interface DexResponse {
@@ -899,6 +901,41 @@ export async function ruleOnAnimal(
     body: form,
   });
   await handle<unknown>(res);
+}
+
+/** Why screening held an upload (#181). `not_screened`: screening never
+ * finished, so nothing is known about it. */
+export type HoldReason = "person" | "indoor" | "new_account" | "unscreened" | "not_screened";
+
+export interface HeldItem {
+  capture_id: string;
+  created_at: string;
+  kind: "photo" | "video";
+  reasons: HoldReason[];
+  /** Who logged it. User-supplied at /join, so untrusted text. */
+  observer: string | null;
+  /** Who logged it, for a ban (#180). Moderators only. */
+  observer_id: string | null;
+  /** Typed by the uploader and public once approved. Untrusted text. */
+  note: string | null;
+  known_names: string[];
+  /** Whole frames, never the animal crops: the question is what the photo shows. */
+  thumb_urls: string[];
+}
+
+/** Moderators only. Uploads screening held back from everyone but their
+ * owner, oldest first. */
+export async function getHeldQueue(): Promise<{ items: HeldItem[] }> {
+  const res = await fetch(`${API_BASE}/moderation/held`, { credentials: "include" });
+  return handle<{ items: HeldItem[] }>(res);
+}
+
+/** `approve` shows it to everyone; `reject` keeps it to its owner. Either can
+ * be ruled again, and neither deletes anything. */
+export async function ruleOnUpload(captureId: string, verdict: "approve" | "reject"): Promise<void> {
+  await handleWithDetail(
+    await sendJson(`/moderation/capture/${encodeURIComponent(captureId)}/screening`, "POST", { verdict }),
+  );
 }
 
 // --- stats (moderator dashboard) --------------------------------------------

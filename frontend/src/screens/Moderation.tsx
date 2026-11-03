@@ -12,6 +12,7 @@ import {
 } from "../api";
 import { formatWhen } from "../formatWhen";
 import { speciesNoun, speciesWithArticle } from "../species";
+import HeldQueue from "./HeldQueue";
 
 /** The queue of reported sightings, for whoever holds `trust_tier='moderator'`.
  *
@@ -48,7 +49,7 @@ const REASON_LABELS: Record<ReportReason, (species?: string | null) => string> =
 };
 
 export default function Moderation({ onUnauthorized }: { onUnauthorized: () => void }) {
-  const [queue, setQueue] = useState<"reported" | "flagged">("reported");
+  const [queue, setQueue] = useState<"reported" | "flagged" | "held">("reported");
   const [items, setItems] = useState<ModerationItem[] | null>(null);
   const [flaggedItems, setFlaggedItems] = useState<FlaggedItem[] | null>(null);
   // Kept separate rather than one shared `failed` flag: the two queues fetch
@@ -144,8 +145,21 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
       <button className={queue === "flagged" ? "active" : ""} onClick={() => setQueue("flagged")}>
         NOT ANIMALS
       </button>
+      <button className={queue === "held" ? "active" : ""} onClick={() => setQueue("held")}>
+        HELD
+      </button>
     </div>
   );
+
+  // Uploads screening stopped before anyone else saw them (#181).
+  if (queue === "held") {
+    return (
+      <>
+        {toggle}
+        <HeldQueue onUnauthorized={onUnauthorized} />
+      </>
+    );
+  }
 
   if (queue === "flagged") {
     if (failedFlagged) {

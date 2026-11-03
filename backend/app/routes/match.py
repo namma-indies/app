@@ -12,7 +12,7 @@ from uuid import UUID, uuid5
 import numpy as np
 from fastapi import APIRouter, Depends, Form, HTTPException
 
-from app.aggregates import animal_present, owner_active, visible_to
+from app.aggregates import animal_present, owner_active, screened, visible_to
 from app.auth.deps import require_observer
 from app.config import settings
 from app.deps import get_conn, get_storage
@@ -221,6 +221,9 @@ async def list_proposals(
           -- Nor a pair with someone who has asked to leave (#179).
           AND {owner_active('a')}
           AND {owner_active('b')}
+          -- Nor one still held by screening (#181): the same reason as above.
+          AND {screened('a')}
+          AND {screened('b')}
           -- Nor a pair with someone this viewer blocked, or who blocked them:
           -- they cannot rule on each other's pairs; anyone else still can.
           AND {visible_to('$1', 'a')}
@@ -378,7 +381,7 @@ async def resolve_proposal(
         # works. Anyone who can still see both sides can still rule.
         visible = await conn.fetchval(
             f"""SELECT count(*) FROM sightings s WHERE s.id = ANY($1::uuid[])
-                AND {owner_active('s')} AND {visible_to('$2')}""",
+                AND {owner_active('s')} AND {screened('s')} AND {visible_to('$2')}""",
             [sighting_id, p["candidate_sighting_id"]], observer_id)
         if visible != len(locked):
             raise HTTPException(409, "sighting visibility changed")

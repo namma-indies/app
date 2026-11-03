@@ -16,6 +16,7 @@ from app.media_jobs import MAX_PHOTOS, enqueue
 from app.deps import get_storage
 from app.ids import uuid7
 from app.photos import process_photo, ProcessedPhoto, thumb_key
+from app import screening
 from app.scoring import recompute_animal_confidence
 from app.social import mark_shared
 from app.storage.s3 import S3Storage
@@ -86,7 +87,8 @@ async def _analyse_and_save(
         try:
             async with pool.acquire() as conn:
                 await save_detection(
-                    conn, photo_id, found.dog_confidence, found.cat_confidence
+                    conn, photo_id, found.dog_confidence, found.cat_confidence,
+                    scene=getattr(found, "scene", None),
                 )
         except Exception:
             # A lost score costs a label. It must not cost the embedding that
@@ -138,6 +140,9 @@ async def _analyse_and_save(
 
     await _save_animal_confidence(pool, sighting_id)
     await _save_mean_vector(pool, sighting_id, collected)
+    # From the detections just stored (#181). A photo whose analysis failed
+    # above has none, which holds the upload rather than publishing it blind.
+    await screening.screen_sighting(pool, sighting_id)
 
     # Decide the match once, now that the vectors exist. This used to run inside
     # GET /sighting/{id}/match, which meant every read deleted and recreated the
@@ -587,6 +592,11 @@ async def create_sighting(
                         json.dumps(attrs),
                         client_token,
                     )
+
+                # Off every shared surface until screened (#181). The insert
+                # trigger has just made this sighting's capture.
+                await screening.start(conn, await conn.fetchval(
+                    "SELECT capture_id FROM sightings WHERE id = $1", sighting_id))
 
                 if share_with_team:
                     await mark_shared(conn, sighting_id, observer_id)

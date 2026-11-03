@@ -940,6 +940,9 @@ button { font-family: inherit; }
   border-radius: 10px; flex: 0 0 auto;
 }
 .mod-meta { min-width: 0; }
+/* Held uploads (#181): whole frames, larger, as the frame is the question. */
+.held-thumbs { display: flex; gap: 8px; overflow-x: auto; margin-bottom: 10px; }
+.held-thumbs .mod-thumb { width: 140px; height: 140px; }
 .mod-notes {
   margin: 10px 0 0;
   padding-left: 18px;

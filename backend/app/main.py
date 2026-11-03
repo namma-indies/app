@@ -27,6 +27,7 @@ from app.routes.stats import router as stats_router
 from app.routes.map import router as map_router
 from app.routes.match import router as match_router
 from app.routes.moderation import router as moderation_router
+from app.screening import router as screening_router
 from app.routes.photo_metadata import router as photo_metadata_router
 from app.media_jobs import cpu_consumer, router as media_jobs_router
 from app.routes.capture import router as capture_router
@@ -129,6 +130,7 @@ app.include_router(stats_router)
 app.include_router(places_router)
 app.include_router(match_router)
 app.include_router(moderation_router)
+app.include_router(screening_router)
 app.include_router(photo_metadata_router)
 app.include_router(media_jobs_router)
 app.include_router(capture_router)

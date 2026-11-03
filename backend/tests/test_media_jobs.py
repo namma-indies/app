@@ -259,7 +259,8 @@ async def test_photo_completion_publishes_no_animal_terminal_state():
     assert any("completion_digest" in q and args[2] == "no_animal" for q, args in conn.calls if "UPDATE jobs" in q)
     assert not any("INSERT INTO embeddings" in q for q, _ in conn.calls)
     detection = next(args for q, args in conn.calls if "INSERT INTO detections" in q)
-    assert detection == (source.photo_id, "yolo26x", source.dog_confidence, source.cat_confidence)
+    # A worker that reports no screening signals stores them as not measured (#181).
+    assert detection == (source.photo_id, "yolo26x", source.dog_confidence, source.cat_confidence, None, None, None)
     assert any("SET animal_confidence" in q for q, _ in conn.calls)
     wrong = completion([source.model_copy(update={"photo_id": uuid4()})])
     with pytest.raises(HTTPException) as exc:

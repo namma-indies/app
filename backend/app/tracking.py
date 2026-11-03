@@ -20,6 +20,7 @@ import math
 import numpy as np
 
 from app.detect_reid import AnimalDetection
+from app.scene import SceneSignals
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,9 @@ class FrameAnalysis:
     dog_confidence: float
     cat_confidence: float
     instances: tuple[AnimalInstance, ...]
+    # People and indoor furniture, for screening (#181, app/scene.py). None
+    # when the analyser did not measure them.
+    scene: "SceneSignals | None" = None
 
 
 @dataclass(frozen=True)
@@ -94,7 +98,8 @@ class CaptureAnalysis:
 
 def make_frame(source_id: str, frame_index: int, timestamp_seconds: float | None,
                width: int, height: int, dog: float, cat: float,
-               evidence: list[tuple[AnimalDetection, np.ndarray | None, str | None]]) -> FrameAnalysis:
+               evidence: list[tuple[AnimalDetection, np.ndarray | None, str | None]],
+               scene: "SceneSignals | None" = None) -> FrameAnalysis:
     if not source_id or frame_index < 0 or width <= 0 or height <= 0:
         raise ValueError("invalid frame identity or dimensions")
     if timestamp_seconds is not None and (not math.isfinite(timestamp_seconds) or timestamp_seconds < 0):
@@ -103,7 +108,7 @@ def make_frame(source_id: str, frame_index: int, timestamp_seconds: float | None
         f"{source_id}:{detection.detection_index}", source_id, frame_index,
         timestamp_seconds, detection, vector, error,
     ) for detection, vector, error in evidence)
-    return FrameAnalysis(source_id, frame_index, timestamp_seconds, width, height, dog, cat, instances)
+    return FrameAnalysis(source_id, frame_index, timestamp_seconds, width, height, dog, cat, instances, scene)
 
 
 def _centre(instance: AnimalInstance, frame: FrameAnalysis) -> np.ndarray:

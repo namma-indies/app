@@ -335,7 +335,11 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
                       ? "REPORTED · UNDER REVIEW"
                       : s.off_map_reason === "hidden"
                         ? "HIDDEN BY A MODERATOR"
-                        : "NOT ON THE SHARED MAP · NO ANIMAL DETECTED"}
+                        : s.off_map_reason === "held"
+                          ? "WAITING FOR A MODERATOR · ONLY YOU CAN SEE IT"
+                          : s.off_map_reason === "checking"
+                            ? "BEING CHECKED · ONLY YOU CAN SEE IT FOR NOW"
+                            : "NOT ON THE SHARED MAP · NO ANIMAL DETECTED"}
                   </div>
                 )}
                 <div className="line">

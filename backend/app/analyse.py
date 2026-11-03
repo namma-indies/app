@@ -49,6 +49,7 @@ from app.detect_reid import (
     AnimalDetection,
     animal_detections,
 )
+from app.scene import SceneSignals, scene_signals
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,8 @@ class Analysis:
     # the JPEG a second time.
     image: Image.Image
     instances: tuple[AnimalDetection, ...] = ()
+    # People and indoor furniture in the frame, for screening (app/scene.py).
+    scene: SceneSignals = SceneSignals()
 
     @property
     def has_animal(self) -> bool:
@@ -126,7 +129,8 @@ def analyse(image_bytes: bytes) -> Analysis:
             box = (x1i, y1i, x2i, y2i)
 
     return Analysis(dog_confidence=dog, cat_confidence=cat, box=box, image=img,
-                    instances=animal_detections(dets, img.size, scale, pad_x, pad_y))
+                    instances=animal_detections(dets, img.size, scale, pad_x, pad_y),
+                    scene=scene_signals(dets, img.size, scale, pad_x, pad_y))
 
 
 def embed_analysis(a: Analysis) -> np.ndarray | None:
@@ -172,7 +176,7 @@ def analyse_instances(image_bytes: bytes, *, source_id: str = "photo:0",
             logger.warning("instance embedding failed", exc_info=True)
             evidence.append((detection, None, "embedding_failed"))
     return make_frame(source_id, frame_index, timestamp_seconds, *result.image.size,
-                      result.dog_confidence, result.cat_confidence, evidence)
+                      result.dog_confidence, result.cat_confidence, evidence, result.scene)
 
 
 def analyse_photos(stored_photos: list[bytes]) -> "CaptureAnalysis":

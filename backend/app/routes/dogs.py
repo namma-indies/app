@@ -46,7 +46,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends
 
-from app.aggregates import countable_sighting, owner_active, visible_to
+from app.aggregates import countable_sighting, owner_active, screened, visible_to
 from app.auth.deps import require_observer
 from app.config import settings
 from app.deps import get_conn, get_storage
@@ -109,7 +109,7 @@ async def _look_alikes(conn, ids: list[UUID], viewer: UUID) -> dict[UUID, list[d
             JOIN embeddings e ON e.photo_id = p.id
             WHERE s.individual_id = ANY($1::uuid[])
               AND s.review_status = 'valid'
-              AND {owner_active('s')} AND {visible_to('$3')}
+              AND {owner_active('s')} AND {screened('s')} AND {visible_to('$3')}
               AND e.model = $2 AND e.vec_miew IS NOT NULL
         )
         SELECT dv.individual_id AS dog_id,
@@ -126,7 +126,7 @@ async def _look_alikes(conn, ids: list[UUID], viewer: UUID) -> dict[UUID, list[d
               AND s2.individual_id IS NOT NULL
               AND s2.individual_id <> dv.individual_id
               AND s2.review_status = 'valid'
-              AND {owner_active('s2')} AND {visible_to('$3', 's2')}
+              AND {owner_active('s2')} AND {screened('s2')} AND {visible_to('$3', 's2')}
               AND (dv.species IS NULL OR s2.species IS NULL OR dv.species=s2.species)
               AND s2.capture_id IS DISTINCT FROM dv.capture_id
             -- Identical cast to ix_embeddings_vec_miew_hnsw, or this silently
@@ -251,7 +251,7 @@ async def get_dogs(
 
     attr_rows = await conn.fetch(
         "SELECT s.individual_id, s.attrs FROM sightings s "
-        f"WHERE s.individual_id = ANY($1::uuid[]) AND s.review_status = 'valid' AND {owner_active('s')}"
+        f"WHERE s.individual_id = ANY($1::uuid[]) AND s.review_status = 'valid' AND {owner_active('s')} AND {screened('s')}"
         f" AND {visible_to('$2')}",
         ids, observer_id,
     )
