@@ -46,6 +46,9 @@ async def test_officer_settings_are_read_and_escaped(app_client, monkeypatch):
     page = (await app_client.get("/grievances")).text
     assert "&lt;script&gt;Officer&lt;/script&gt;" in page and "<script>Officer" not in page
     assert "officer@example.invalid" in page and "Contact through the form" in page
+    monkeypatch.setattr(settings, "grievance_officer_email", "")
+    page = (await app_client.get("/grievances")).text
+    assert "Contact through the form" in page and "Contact details pending" not in page
 
 
 @pytest.mark.parametrize(("kind", "hours"), [("takedown", 36), ("privacy", 36),
@@ -193,6 +196,8 @@ async def test_grievance_action_and_sighting_hold_are_atomic(authed_client, monk
     await _make_moderator(client, oid)
     await client.post("/grievances", data=form(target=sid))
     row = await latest(client)
+    preview = (await client.get("/moderation/grievances")).json()["items"][0]["photos"]
+    assert len(preview) == 1 and preview[0]["thumb_url"] != preview[0]["photo_url"]
     monkeypatch.setattr("app.routes.grievances.record_action", AsyncMock(side_effect=RuntimeError("ledger unavailable")))
     with pytest.raises(RuntimeError):
         await client.post(f"/moderation/grievances/{row['id']}/action", json={"action": "hide", "reason": "Private details visible"})

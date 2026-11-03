@@ -44,8 +44,8 @@ def _contact() -> str:
     name = escape(settings.grievance_officer_name.strip() or "Not yet appointed")
     email = settings.grievance_officer_email.strip()
     contact = escape(settings.grievance_officer_contact.strip())
-    address = f'<a href="mailto:{quote(email, safe="@.")}">{escape(email)}</a>' if email else "Contact details pending"
-    return f'<h2>Grievance Officer</h2><dl><dt>Name</dt><dd>{name}</dd><dt>Contact</dt><dd>{address}</dd>{f"<dd>{contact}</dd>" if contact else ""}</dl>'
+    address = f'<a href="mailto:{quote(email, safe="@.")}">{escape(email)}</a>' if email else (contact or "Contact details pending")
+    return f'<h2>Grievance Officer</h2><dl><dt>Name</dt><dd>{name}</dd><dt>Contact</dt><dd>{address}</dd>{f"<dd>{contact}</dd>" if contact and email else ""}</dl>'
 
 
 def _form(*, values=None, error=None, status=200):

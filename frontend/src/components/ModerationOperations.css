@@ -13,3 +13,4 @@
 .mod-grievance-details { white-space: pre-wrap; }
 .mod-grievance-photos { display: flex; gap: .5rem; overflow-x: auto; margin-top: .75rem; }
 .mod-grievance-photos img { width: 120px; height: 120px; object-fit: contain; }
+.admin .scope-toggle { flex-wrap: wrap; }
