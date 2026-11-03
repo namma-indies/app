@@ -18,6 +18,18 @@ beforeEach(() => {
 });
 
 describe("SignIn", () => {
+  it("keeps policies and support available after sending a sign-in link", async () => {
+    vi.mocked(fetch).mockResolvedValue({ ok: true, json: async () => ({ ok: true, message: "Check your inbox." }) } as Response);
+    render(<SignIn onSignedIn={vi.fn()} />);
+    expect(screen.getByRole("link", { name: "Terms of Service" })).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("Email"), "tester@example.invalid");
+    await userEvent.click(screen.getByRole("button", { name: "Email me a link" }));
+    expect(await screen.findByText("Check your inbox.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Privacy Policy" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Community Guidelines" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Grievances" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Support" })).toBeInTheDocument();
+  });
   it("sends credentials on the passcode submit -- otherwise the cross-origin session cookie is never even considered", async () => {
     render(<SignIn onSignedIn={vi.fn()} />);
     await userEvent.click(screen.getByText("Use a passcode"));

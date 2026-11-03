@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { API_BASE } from "../apiBase";
+import LegalLinks from "../components/LegalLinks";
 
 /** The gate an unauthenticated visitor lands on.
  *
@@ -92,6 +93,7 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
         <button className="btn btn-secondary" onClick={() => { setSent(null); setEmail(""); }}>
           Use a different address
         </button>
+        <LegalLinks />
       </div>
     );
   }
@@ -171,13 +173,7 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
 
       {/* The gate is where an app reviewer lands before they have credentials,
           so the policy and a way to reach us have to be readable from here. */}
-      <div className="legal-row">
-        <a href="https://nammaindies.org/privacy" target="_blank" rel="noreferrer">
-          privacy
-        </a>
-        <span aria-hidden="true"> · </span>
-        <a href="mailto:nammaindies@gmail.com">contact us</a>
-      </div>
+      <LegalLinks />
     </div>
   );
 }
