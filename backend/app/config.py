@@ -309,6 +309,23 @@ class Settings(BaseSettings):
     # expected.
     animal_review_max: float = 0.60
 
+    # --- upload screening (#181, app/screening.py) ----------------------------
+    # Off: uploads go public as soon as they are saved, as before #181.
+    screening_enabled: bool = True
+    # Hold when a confident person box covers at least this share of a frame.
+    # A guess until a pass over real uploads sets it: lower holds feeders'
+    # photos, higher lets close-up selfies through.
+    screening_person_area_min: float = 0.20
+    # Hold when indoor-only furniture (app/scene.py) scores at least this.
+    screening_indoor_min: float = 0.50
+    # Hold a new account's uploads until this many of them have gone public
+    # (screened clear or approved by a moderator). 0 turns the rule off.
+    screening_trusted_after: int = 2
+    # An upload still unscreened after this long (worker down, process
+    # restarted) is put in front of a moderator as "not screened". It stays
+    # hidden either way.
+    screening_stale_s: int = 1800
+
     # --- aggregates --------------------------------------------------------
     # Which boundary scheme a public count is labelled with when the caller
     # does not say. A data question, not a code one: falling back from wards

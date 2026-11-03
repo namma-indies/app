@@ -128,3 +128,30 @@ def _reset_rate_limits():
     reset()
     yield
     reset()
+
+
+@pytest.fixture(autouse=True)
+def _screening_off():
+    """Uploads go public on save in the suite, as they did before #181.
+
+    Every test observer is a brand-new account and the ONNX weights are not
+    in the repo, so with screening on every upload would be held (new account,
+    and unscreened), and every test about the map, dogs or matching would be
+    a test of screening. Only the decision is off: the `screened()` predicate
+    is in every shared query regardless, and tests/test_screening.py turns
+    the decision on with the `screening_on` fixture.
+    """
+    from app.config import settings
+
+    before = settings.screening_enabled
+    settings.screening_enabled = False
+    yield
+    settings.screening_enabled = before
+
+
+@pytest.fixture
+def screening_on():
+    from app.config import settings
+
+    settings.screening_enabled = True
+    yield settings

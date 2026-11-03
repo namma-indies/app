@@ -5,6 +5,7 @@ import math
 from starlette.concurrency import run_in_threadpool
 
 from app.capture_contracts import MULTI_PIPELINE_VERSION, MultiCompletion, MultiURLRequest
+from app.scene import as_wire
 from app.capture_jobs import capture_sources, complete_capture_job, multi_lease, upload_urls
 from app.media_jobs import MODEL_NAME, payload_of
 from app.photos import process_photo, thumb_key
@@ -38,7 +39,8 @@ async def cpu_process_capture(pool,storage,job,token):
     for ordinal,frame in enumerate(analysis.frames):
         source = sources[ordinal]
         frames.append(dict(photo_id=source["photo_id"],width=source["width"],height=source["height"],
-            phash=source["phash"],dog_confidence=frame.dog_confidence,cat_confidence=frame.cat_confidence))
+            phash=source["phash"],dog_confidence=frame.dog_confidence,cat_confidence=frame.cat_confidence,
+            **as_wire(getattr(frame, "scene", None))))
         for instance in frame.instances:
             det = instance.detection
             photo = await run_in_threadpool(evidence_photo,raw[ordinal],det.crop_box)

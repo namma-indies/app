@@ -66,7 +66,7 @@ def countable_sighting() -> str:
     exists, and still shows in its contributor's own /dex.
     """
     return (f"s.review_status = 'valid' AND s.duplicate_of IS NULL AND {animal_present()}"
-            f" AND {owner_active('s')}")
+            f" AND {owner_active('s')} AND {screened('s')}")
 
 
 def owner_active(alias: str = "s") -> str:
@@ -83,6 +83,32 @@ def owner_active(alias: str = "s") -> str:
     return (f"NOT EXISTS (SELECT 1 FROM observers ox WHERE ox.id = {alias}.observer_id"
             f" AND (ox.deletion_requested_at IS NOT NULL OR ox.deleted_at IS NOT NULL"
             f" OR ox.banned_at IS NOT NULL))")
+
+
+def screened(alias: str = "s") -> str:
+    """The upload this sighting came from has passed screening (#181).
+
+    Unscreened, held or rejected uploads are off every shared surface: only
+    their owner (`/dex`) and moderators see them. Written so that anything
+    not positively cleared stays hidden: a capture that is missing, or in a
+    state added later, does not show. Next to `owner_active` wherever a
+    surface shows someone else's sightings.
+    """
+    return (f"EXISTS (SELECT 1 FROM captures cs WHERE cs.id = {alias}.capture_id"
+            f" AND cs.screening IN ('clear','approved'))")
+
+
+def not_rejected_upload(alias: str = "s") -> str:
+    """For matching only: anything a moderator has not kept off (#181).
+
+    Re-ID searches over uploads still being screened, so two photos of the
+    same new dog that arrive while both are held or being checked still meet,
+    and their pair shows up by itself once both are public -- every place a
+    candidate or a pair is *shown* checks `screened`. A rejected upload is
+    out: rejected content must not seed identities.
+    """
+    return (f"NOT EXISTS (SELECT 1 FROM captures cr WHERE cr.id = {alias}.capture_id"
+            f" AND cr.screening = 'rejected')")
 
 
 def visible_to(viewer: str, alias: str = "s") -> str:

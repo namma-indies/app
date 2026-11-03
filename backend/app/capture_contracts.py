@@ -195,6 +195,11 @@ class SourceFrame(WireModel):
     phash: str = Field(pattern=r"^[0-9a-f]{16}$")
     dog_confidence: float = Field(ge=0, le=1)
     cat_confidence: float = Field(ge=0, le=1)
+    # Screening signals (#181, app/scene.py). Optional: a worker that does not
+    # report them yet sends none, and they are stored as "not measured".
+    person: float | None = Field(default=None, ge=0, le=1)
+    person_area: float | None = Field(default=None, ge=0, le=1)
+    indoor: float | None = Field(default=None, ge=0, le=1)
 
 
 class AnimalResult(WireModel):

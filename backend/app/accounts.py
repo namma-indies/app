@@ -71,6 +71,7 @@ OBSERVER_REFERENCES: dict[tuple[str, str], str] = {
     ("observer_blocks", "blocker_id"): "erased",
     ("observer_blocks", "blocked_id"): "erased",
     ("observers", "banned_by"): "kept",              # as a moderator
+    ("captures", "screening_reviewed_by"): "kept",   # as a moderator (#181)
 }
 
 # Every column of `observers`: what the tombstone keeps, and what it empties.

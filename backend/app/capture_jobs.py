@@ -18,6 +18,8 @@ from app.capture_contracts import (AnimalGroup, MAX_INSTANCES, MAX_SOURCE_FRAMES
     MULTI_PIPELINE_VERSION, MultiCompletion, MultiURLRequest)
 from app.captures import publish_groups
 from app.config import settings
+from app import screening
+from app.scene import digest_frames, from_wire
 from app.deps import get_storage
 from app.ids import uuid7
 from app.media_jobs import (Claim, EMBED_DIM, Failure, Lease, MODEL_NAME, heartbeat_job,
@@ -158,6 +160,7 @@ async def publish_slot(conn,storage,job,slot,width,height,phash):
 
 async def complete_capture_job(conn,storage,job_id,body: MultiCompletion,*,cpu=False):
     content = body.model_dump(mode="json",exclude={"lease_token"})
+    digest_frames(content["frames"])
     content["frames"].sort(key=lambda f:str(f["photo_id"]))
     content["instances"].sort(key=lambda i:i["index"])
     digest = hashlib.sha256(json.dumps(content,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
@@ -194,7 +197,7 @@ async def complete_capture_job(conn,storage,job_id,body: MultiCompletion,*,cpu=F
                 await publish_slot(conn,storage,job,slot,frame.width,frame.height,frame.phash)
         frames = {f.photo_id:f for f in body.frames}
         for frame in body.frames:
-            await save_detection(conn,frame.photo_id,frame.dog_confidence,frame.cat_confidence)
+            await save_detection(conn,frame.photo_id,frame.dog_confidence,frame.cat_confidence,scene=from_wire(frame))
         groups = {}
         for item in body.instances:
             slot = slots.get(f"evidence:{item.index}")
@@ -214,6 +217,8 @@ async def complete_capture_job(conn,storage,job_id,body: MultiCompletion,*,cpu=F
                     VALUES($1,$2,$3,$4,$5,$6::vector,$7::jsonb)""",uuid7(),pid,iid,MODEL_NAME,EMBED_DIM,
                     vector_text(item.vector),json.dumps(dict(zip(("x1","y1","x2","y2"),item.crop_bbox))))
             groups.setdefault(item.track_id,[]).append(iid)
+        # From the whole frames just stored (#181); crops tell it nothing more.
+        await screening.screen(conn,capture["id"])
         outcome = "no_animal" if not body.instances else "needs_review" if body.needs_review else "ready"
         if outcome == "ready":
             await publish_groups(conn,capture,[AnimalGroup(instance_ids=ids) for ids in groups.values()])
@@ -238,6 +243,9 @@ async def fail_capture_job(conn,job_id,body: Failure,*,cpu=False):
             lease_token_hash=NULL,lease_expires_at=NULL,terminal_outcome=$5,updated_at=now() WHERE id=$1""",
             job_id,"pending" if retry else "failed",body.error,min(300,2**min(job["attempts"],8)),None if retry else "failed")
         await conn.execute("UPDATE captures SET processing_state=$2,updated_at=now() WHERE id=$1",job["capture_id"],"queued" if retry else "failed")
+        if not retry:
+            # Nothing was measured, so screening holds it for a person (#181).
+            await screening.screen(conn,job["capture_id"])
         return {"status":"queued" if retry else "failed"}
 
 
