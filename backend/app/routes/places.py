@@ -32,6 +32,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth.deps import require_observer
 from app.config import settings
+from app.deps import get_conn
 from app.ratelimit import Limit, check
 
 router = APIRouter()
@@ -97,9 +98,10 @@ async def search_places(
     lat: float | None = Query(None, ge=-90, le=90),
     lng: float | None = Query(None, ge=-180, le=180),
     observer_id: UUID = Depends(require_observer),
+    conn=Depends(get_conn),
 ):
     global _last_request
-    check(f"obs:{observer_id}:places", search_limit())
+    await check(conn, f"obs:{observer_id}:places", search_limit())
     query = " ".join(q.split())
     near = (lat, lng) if lat is not None and lng is not None else None
     # Rounded so that nudging the map a little still hits the cache.

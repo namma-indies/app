@@ -154,8 +154,8 @@ async def web_request(request: Request, email: str = Form(...), conn=Depends(get
     if not address:
         return _html('<p class="err">That doesn\'t look like an email address.</p>'
                      '<p><a href="/account/delete">Try again</a></p>', status=400)
-    check(f"delete:ip:{client_key(request)}", email_ip_limit())
-    check(f"delete:addr:{address}", email_addr_limit())
+    await check(conn, f"delete:ip:{client_key(request)}", email_ip_limit())
+    await check(conn, f"delete:addr:{address}", email_addr_limit())
     observer_id = await conn.fetchval(
         "SELECT id FROM observers WHERE email=$1 AND deleted_at IS NULL", address)
     if observer_id is not None:

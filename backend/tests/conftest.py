@@ -60,7 +60,8 @@ async def migrated_db(_migrated):
         await conn.execute(
             "TRUNCATE observers, sightings, photos, embeddings, individuals, "
             "match_proposals, confirmations, clinical_records, login_tokens, "
-            "areas, individual_names, social_picks, media_purges, x_post_purges, account_deletions RESTART IDENTITY CASCADE"
+            "areas, individual_names, social_picks, media_purges, x_post_purges, account_deletions, "
+            "rate_limit_buckets, auth_failures, join_pow_uses RESTART IDENTITY CASCADE"
         )
         yield conn
     finally:
@@ -84,7 +85,8 @@ async def app_client(_migrated):
         await c.execute(
             "TRUNCATE observers, sightings, photos, embeddings, individuals, "
             "match_proposals, confirmations, clinical_records, login_tokens, "
-            "areas, individual_names, social_picks, media_purges, x_post_purges, account_deletions RESTART IDENTITY CASCADE"
+            "areas, individual_names, social_picks, media_purges, x_post_purges, account_deletions, "
+            "rate_limit_buckets, auth_failures, join_pow_uses RESTART IDENTITY CASCADE"
         )
 
     import httpx
@@ -115,16 +117,24 @@ async def authed_client(app_client):
 
 
 @pytest.fixture(autouse=True)
-def _reset_rate_limits():
-    """Every test starts with a full budget.
+def _test_proof_cost(monkeypatch):
+    # Exercise real signed work and replay protection without spending the
+    # production proof cost on every auth integration test.
+    monkeypatch.setattr(settings, "join_pow_bits", 8)
 
-    The limiter stays *enabled* in the suite rather than switched off, so the
-    dependencies are exercised on every request the tests make. No existing
-    test makes more than two calls to any limited endpoint, so a per-test
-    reset is enough to keep them green while keeping the limiter real.
-    """
-    from app.ratelimit import reset
 
-    reset()
-    yield
-    reset()
+@pytest.fixture
+def passcode_form():
+    import hashlib
+    import itertools
+
+    async def make(client, **fields):
+        response = await client.get("/auth/join/challenge")
+        assert response.status_code == 200, response.text
+        work = response.json()
+        for n in itertools.count():
+            digest = hashlib.sha256(f"{work['challenge']}:{n}".encode()).digest()
+            if not int.from_bytes(digest, "big") >> (256 - work["difficulty"]):
+                return {**fields, "challenge": work["challenge"], "solution": str(n)}
+
+    return make
