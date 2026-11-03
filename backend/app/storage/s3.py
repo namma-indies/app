@@ -57,6 +57,48 @@ class S3Storage:
                     return
                 raise
 
+    async def check_health(self) -> None:
+        """Exercise list/write/read permissions without touching user media.
+
+        The fixed key and payload contain no user data. No delete permission is
+        needed. Bucket lifecycle rules bound noncurrent versions of the probe.
+        The caller bounds the entire operation, including client construction.
+        """
+        async with self._client() as client:
+            await client.head_bucket(Bucket=self.bucket)
+            key = "monitoring/storage-probe"
+            await client.put_object(Bucket=self.bucket, Key=key, Body=b"ok", ContentType="text/plain")
+            result = await client.get_object(Bucket=self.bucket, Key=key)
+            body = result["Body"]
+            async with body:
+                if await body.read(3) != b"ok":
+                    raise RuntimeError("storage_probe_mismatch")
+
+    async def backup_health(self) -> dict | None:
+        """Newest nightly archive's age and header only, without exposing its key."""
+        from datetime import datetime, timezone
+        import re
+
+        pattern = re.compile(r"backups/indiedex-(\d{8}T\d{6}Z)\.dump\Z")
+        latest = None
+        async with self._client() as client:
+            paginator = client.get_paginator("list_objects_v2")
+            async for page in paginator.paginate(Bucket=self.bucket, Prefix="backups/"):
+                for obj in page.get("Contents", []):
+                    if pattern.fullmatch(obj["Key"]) and (latest is None or obj["Key"] > latest["Key"]):
+                        latest = obj
+            if latest is None:
+                return None
+            stamp = datetime.strptime(pattern.fullmatch(latest["Key"])[1], "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+            age = int((datetime.now(timezone.utc) - stamp).total_seconds())
+            valid = latest["Size"] >= 1024 and age >= -300
+            if valid:
+                result = await client.get_object(Bucket=self.bucket, Key=latest["Key"], Range="bytes=0-4")
+                body = result["Body"]
+                async with body:
+                    valid = await body.read(6) == b"PGDMP"
+            return {"age_s": max(0, age), "valid": valid}
+
     async def put(self, key: str, data: bytes, content_type: str) -> None:
         async with self._client() as client:
             await client.put_object(

@@ -68,6 +68,8 @@ class FakeServer:
         assert request.headers["authorization"] == "Bearer " + TOKEN
         body = json.loads(request.content)
         route = request.url.path.rsplit("/", 1)[-1]
+        if route == "worker-health":
+            return httpx.Response(200, json={"status": "ok"})
         self.api_calls.append((route, body))
         if route == "claim":
             result = None if self.claimed else self.job

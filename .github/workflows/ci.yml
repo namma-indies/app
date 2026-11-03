@@ -96,6 +96,19 @@ jobs:
         # from implying the models were exercised.
         run: uv run pytest -q -rs
 
+      - name: Exercise isolated restore drill with synthetic data
+        env:
+          ALEMBIC_DB_URL: postgresql+psycopg://postgres:dev@localhost:5432/restore_fixture
+        run: |
+          set -euo pipefail
+          docker exec test-db psql -U postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE restore_fixture'
+          (cd backend && uv run alembic upgrade head)
+          docker exec -i test-db psql -U postgres -d restore_fixture -v ON_ERROR_STOP=1 < backend/tests/fixtures/restore-drill.sql
+          dump_file="$RUNNER_TEMP/restore-fixture.dump"
+          trap 'rm -f "$dump_file"' EXIT
+          docker exec test-db pg_dump -U postgres -Fc restore_fixture > "$dump_file"
+          python backend/scripts/restore_db_drill.py --archive "$dump_file" --image indiedex-test-db
+
   frontend:
     runs-on: ubuntu-latest
     defaults:

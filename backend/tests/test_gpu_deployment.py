@@ -9,6 +9,7 @@ import sys
 import time
 
 import pytest
+import httpx
 
 from gpu_worker import supervise
 from gpu_worker.client import Config, ProtocolError, Worker
@@ -253,7 +254,8 @@ async def test_claim_loop_writes_progress(monkeypatch, tmp_path):
     progress = tmp_path / "progress"
     monkeypatch.setenv("MEDIA_GPU_PROGRESS_FILE", str(progress))
     config = Config(api_url="https://api.example.test", token="synthetic", storage_origins=("https://objects.example.test",))
-    async with Worker(config, object()) as worker:
+    async with Worker(config, object(), api_transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"status": "ok"}))) as worker:
         async def iteration():
             worker.stop.set()
             return True

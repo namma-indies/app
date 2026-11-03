@@ -30,18 +30,10 @@ cd ~/app
 # Refuse rather than write nothing. Without the models the embedder raises for
 # every photo, the script dutifully reports "no animal detected" on all of them,
 # and you get a clean-looking run that accomplished nothing.
-# urllib, not curl: the runtime image is python:3.12-slim, which ships no curl.
-# The previous version failed here on every invocation with "sh: 1: curl: not
-# found", so the backfill could never run at all.
-health=$(sudo docker compose -f "$COMPOSE" exec -T app \
-  python -c 'import urllib.request,sys; sys.stdout.write(urllib.request.urlopen("http://localhost:8000/health", timeout=10).read().decode())' \
-  < /dev/null || true)
-case "$health" in
-  *'"reid":"ready"'*) ;;
-  *) echo "!! /health does not report reid: ready -- models are not loaded" >&2
-     echo "   $health" >&2
-     exit 1 ;;
-esac
+# Public liveness carries no model details. This local CLI needs no health
+# token and checks the same files as the protected diagnostics.
+sudo docker compose -f "$COMPOSE" exec -T app \
+  sh -c 'cd /app/backend && uv run python -m app.model_health' < /dev/null
 
 ARGS="--dry-run"
 [ "${DRY_RUN:-true}" = "false" ] && ARGS="--resolve ${EXTRA_ARGS:-}"
