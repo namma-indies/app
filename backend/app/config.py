@@ -420,7 +420,9 @@ class Settings(BaseSettings):
     db_pool_max: int = 30
 
     # How coarse another observer's sightings look on the map and on a dog
-    # card. Full precision is reserved for animals you photographed yourself.
+    # card. Also used for place-search bias, on the client and before a query
+    # leaves the server (#208). Full precision is reserved for sightings you
+    # photographed yourself.
     #
     # 1 km is a neighbourhood in Bangalore: enough to show where dogs are and
     # how varied they are, not enough to find one. The number is a product

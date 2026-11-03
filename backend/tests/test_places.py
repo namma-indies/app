@@ -3,6 +3,7 @@ import httpx
 import pytest
 
 from app.config import settings
+from app.precision import coarsen
 from app.routes import places
 
 NOMINATIM_REPLY = [
@@ -51,12 +52,67 @@ async def test_search_returns_short_names_and_skips_unusable_results(authed_clie
 
 
 @pytest.mark.asyncio
-async def test_prefers_places_near_where_the_map_is(authed_client, geocoder):
+@pytest.mark.parametrize("cell_m", [1000, 2500])
+async def test_prefers_places_near_the_shared_map_cell(authed_client, geocoder, monkeypatch, cell_m):
     client, _ = authed_client
-    await client.get("/places", params={"q": "MG Road", "lat": 12.97, "lng": 77.59})
+    monkeypatch.setattr(settings, "map_coarsen_cell_m", cell_m)
+    r = await client.get("/places", params={"q": "Example road", "lat": 12.345678, "lng": 67.891234})
+    assert r.status_code == 200
+    lat, lng = coarsen(12.345678, 67.891234, cell_m)
     params = geocoder[0].url.params
-    assert params["viewbox"] == "77.09,13.47,78.09,12.47"
+    assert [float(v) for v in params["viewbox"].split(",")] == pytest.approx(
+        [lng - 0.5, lat + 0.5, lng + 0.5, lat - 0.5]
+    )
     assert params["bounded"] == "0"  # nearby first, elsewhere still found
+    assert list(places._cache) == [("example road", (lat, lng))]
+
+
+@pytest.mark.asyncio
+async def test_same_cell_centres_share_the_provider_bias(authed_client, geocoder):
+    client, _ = authed_client
+    for q, lat, lng in (("Example road", 12.345678, 67.891234),
+                        ("Example park", 12.345679, 67.891235)):
+        assert (await client.get("/places", params={"q": q, "lat": lat, "lng": lng})).status_code == 200
+    assert len(geocoder) == 2
+    assert geocoder[0].url.params["viewbox"] == geocoder[1].url.params["viewbox"]
+
+
+@pytest.mark.asyncio
+async def test_same_cell_centres_share_the_cached_answer(authed_client, geocoder):
+    client, _ = authed_client
+    for lat, lng in ((12.345678, 67.891234), (12.345679, 67.891235)):
+        assert (await client.get("/places", params={"q": "Example road", "lat": lat, "lng": lng})).status_code == 200
+    assert len(geocoder) == 1
+
+
+@pytest.mark.asyncio
+async def test_clients_can_read_the_configured_grid(authed_client, geocoder, monkeypatch):
+    client, _ = authed_client
+    monkeypatch.setattr(settings, "map_coarsen_cell_m", 2500)
+    r = await client.get("/places/config")
+    assert r.status_code == 200
+    assert r.json() == {"cell_m": 2500}
+    assert not geocoder
+
+
+@pytest.mark.asyncio
+async def test_disabling_map_coarsening_omits_search_bias(authed_client, geocoder, monkeypatch):
+    client, _ = authed_client
+    monkeypatch.setattr(settings, "map_coarsen_cell_m", 0)
+    r = await client.get("/places", params={"q": "Example road", "lat": 12.345678, "lng": 67.891234})
+    assert r.status_code == 200
+    assert "viewbox" not in geocoder[0].url.params
+    assert list(places._cache) == [("example road", None)]
+
+
+@pytest.mark.asyncio
+async def test_bias_at_a_world_edge_stays_in_range(authed_client, geocoder):
+    client, _ = authed_client
+    r = await client.get("/places", params={"q": "Example road", "lat": 90, "lng": 180})
+    assert r.status_code == 200
+    west, north, east, south = map(float, geocoder[0].url.params["viewbox"].split(","))
+    assert -180 <= west <= east <= 180
+    assert -90 <= south <= north <= 90
 
 
 @pytest.mark.asyncio
@@ -95,6 +151,7 @@ async def test_a_geocoder_outage_is_a_503_not_a_crash(authed_client, monkeypatch
 async def test_search_needs_a_signed_in_observer(app_client):
     r = await app_client.get("/places", params={"q": "Kodaikanal"})
     assert r.status_code == 401
+    assert (await app_client.get("/places/config")).status_code == 401
 
 
 @pytest.mark.asyncio
