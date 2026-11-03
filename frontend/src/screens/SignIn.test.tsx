@@ -5,6 +5,8 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import SignIn from "./SignIn";
 
+vi.mock("../authProof", () => ({ passcodeProof: vi.fn().mockResolvedValue({ challenge: "signed-work", solution: "42" }) }));
+
 afterEach(cleanup);
 
 beforeEach(() => {
@@ -29,6 +31,9 @@ describe("SignIn", () => {
       expect.stringContaining("/auth/join"),
       expect.objectContaining({ credentials: "include" }),
     );
+    const body = vi.mocked(fetch).mock.calls[0][1]?.body as URLSearchParams;
+    expect(body.get("challenge")).toBe("signed-work");
+    expect(body.get("solution")).toBe("42");
   });
 
   it("sends credentials on the email submit too", async () => {
@@ -63,5 +68,24 @@ describe("SignIn", () => {
     // The sign-in screen is the app's face before anyone is signed in.
     render(<SignIn onSignedIn={vi.fn()} />);
     expect(screen.getByRole("img", { name: "Namma Indies" })).toBeInTheDocument();
+  });
+
+  it("shows the server's wait time when sign-in is throttled", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: false, json: async () => ({ detail: "Too many requests. Try again in 60 seconds." }) } as Response);
+    render(<SignIn onSignedIn={vi.fn()} />);
+    await userEvent.type(screen.getByLabelText("Email"), "person@example.test");
+    await userEvent.click(screen.getByText("Email me a link"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Try again in 60 seconds");
+  });
+
+  it("keeps the form usable when a 422 contains structured validation details", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: false, status: 422,
+      json: async () => ({ detail: [{ loc: ["body", "email"], msg: "too long", type: "string_too_long" }] }),
+    } as Response);
+    render(<SignIn onSignedIn={vi.fn()} />);
+    await userEvent.type(screen.getByLabelText("Email"), "person@example.test");
+    await userEvent.click(screen.getByText("Email me a link"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Please check the fields");
+    expect(screen.getByText("Email me a link")).toBeEnabled();
   });
 });

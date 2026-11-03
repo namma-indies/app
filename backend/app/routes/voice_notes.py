@@ -53,11 +53,11 @@ router = APIRouter()
 _NOTE_NAMESPACE = UUID("4f1c2a8e-7d3b-5e9a-b6c4-0a1d2e3f4b5c")
 
 
-def _ready(observer_id: UUID) -> None:
+async def _ready(conn, observer_id: UUID) -> None:
     # Without a worker transcribing, a note would only ever say "transcribing".
     if not transcription_enabled():
         raise HTTPException(503, "voice notes cannot be added right now")
-    check(f"voice-note:obs:{observer_id}", voice_note_limit())
+    await check(conn, f"voice-note:obs:{observer_id}", voice_note_limit())
 
 
 async def _count(conn, capture_id: UUID, sighting_id: UUID | None) -> int:
@@ -138,7 +138,7 @@ async def add_to_sighting(sighting_id: UUID, audio: UploadFile = File(...),
                           usual_language: str | None = Form(None, max_length=8),
                           observer_id: UUID = Depends(require_observer), conn=Depends(get_conn),
                           storage=Depends(get_storage)):
-    _ready(observer_id)
+    await _ready(conn, observer_id)
     row = await conn.fetchrow(
         """SELECT s.capture_id, c.processing_state FROM sightings s JOIN captures c ON c.id = s.capture_id
            WHERE s.id=$1 AND s.observer_id=$2""", sighting_id, observer_id)
@@ -155,7 +155,7 @@ async def add_to_capture(capture_id: UUID, audio: UploadFile = File(...),
                          usual_language: str | None = Form(None, max_length=8),
                          observer_id: UUID = Depends(require_observer), conn=Depends(get_conn),
                          storage=Depends(get_storage)):
-    _ready(observer_id)
+    await _ready(conn, observer_id)
     capture = await owned(conn, capture_id, observer_id)
     # A /sighting upload's stand-in capture has no sheet; its note goes on the sighting.
     if capture["processing_state"] == "legacy":
@@ -212,7 +212,7 @@ async def redo_transcript(transcript_id: UUID, body: Redo, observer_id: UUID = D
     """
     if not redo_allowed():
         raise HTTPException(503, "transcribing again in another language is not available yet")
-    check(f"voice-note:obs:{observer_id}", voice_note_limit())
+    await check(conn, f"voice-note:obs:{observer_id}", voice_note_limit())
     async with conn.transaction():
         # Its job first, then the transcript: the order a completing
         # transcription takes them in.

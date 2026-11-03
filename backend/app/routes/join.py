@@ -2,7 +2,7 @@ import hmac
 import logging
 from html import escape
 
-from fastapi import APIRouter, Depends, Form
+from fastapi import APIRouter, Depends, Form, HTTPException, Query
 from starlette.requests import Request
 from starlette.responses import (
     HTMLResponse,
@@ -20,10 +20,12 @@ from app.auth.email_login import (
 from app.auth.logintoken import consume as consume_login_token
 from app.auth.logintoken import issue as issue_login_token
 from app.auth.magiclink import create_observer
+from app.auth import proof
 from app.config import settings
 from app.deps import get_conn
 from app.email.sender import get_sender
-from app.ratelimit import check, client_key, email_addr_limit, email_ip_limit, join_limit
+from app.ratelimit import (Limit, check, check_backoff, clear_failures, client_key,
+                          cooldown, email_addr_limit, email_ip_limit, join_limit, record_failure)
 from app.security import email_hash
 
 logger = logging.getLogger(__name__)
@@ -104,6 +106,7 @@ def _page(*, error: str | None = None, name: str = "", notice: str | None = None
       <button type="submit" class="alt">Join with passcode</button>
     </form>
   </div>
+{proof.FORM_SCRIPT}
 </body>
 </html>"""
 
@@ -114,10 +117,14 @@ def _wants_json(request: Request) -> bool:
     return "application/json" in request.headers.get("accept", "")
 
 
-def _fail(request: Request, *, error: str, status: int, name: str = "") -> Response:
+def _fail(request: Request, *, error: str, status: int, name: str = "", headers=None) -> Response:
     if _wants_json(request):
-        return JSONResponse({"ok": False, "error": error}, status_code=status)
-    return HTMLResponse(_page(error=error, name=name), status_code=status)
+        return JSONResponse({"ok": False, "error": error}, status_code=status, headers=headers)
+    return HTMLResponse(_page(error=error, name=name), status_code=status, headers=headers)
+
+
+def _limited(request: Request, exc: HTTPException, name: str = "") -> Response:
+    return _fail(request, error=str(exc.detail), status=exc.status_code, name=name, headers=exc.headers)
 
 
 @router.get("/join", response_class=HTMLResponse)
@@ -125,21 +132,46 @@ async def join_page() -> HTMLResponse:
     return HTMLResponse(_page())
 
 
+@router.get("/auth/join/challenge")
+async def join_challenge(request: Request, conn=Depends(get_conn)):
+    client = client_key(request)
+    await check(conn, f"challenge:ip:{client}", Limit(settings.rl_join_challenge_times, 60))
+    await check_backoff(conn, f"join:ip:{client}")
+    return JSONResponse(proof.issue(client), headers={"Cache-Control": "no-store"})
+
+
 @router.post("/auth/join")
 async def join_submit(
     request: Request,
-    name: str = Form(...),
-    passcode: str = Form(...),
+    name: str = Form(..., max_length=200),
+    passcode: str = Form(..., max_length=512),
+    challenge: str = Form("", max_length=1024),
+    solution: str = Form("", max_length=12),
     conn=Depends(get_conn),
 ):
     display_name = name.strip()
-    if not hmac.compare_digest(passcode, settings.join_passcode):
+    failure_key = f"join:ip:{client_key(request)}"
+    try:
+        await check_backoff(conn, failure_key)
+        try:
+            await proof.consume(conn, client_key(request), challenge, solution)
+        except HTTPException:
+            await check(conn, failure_key, join_limit())
+            await record_failure(conn, failure_key)
+            raise
+    except HTTPException as exc:
+        return _limited(request, exc, display_name)
+    if not hmac.compare_digest(passcode.encode(), settings.join_passcode.encode()):
         # Counted here rather than at the top of the handler so the budget is
         # spent by *wrong* guesses only. The threat is someone walking a
         # keyspace against a shared code; a dozen field testers joining from
         # one carrier NAT during an onboarding push is the opposite of that,
         # and a limiter that cannot tell them apart blocks the wrong one.
-        check(f"join:ip:{client_key(request)}", join_limit())
+        try:
+            await check(conn, failure_key, join_limit())
+            await record_failure(conn, failure_key)
+        except HTTPException as exc:
+            return _limited(request, exc, display_name)
         return _fail(
             request,
             error="Wrong passcode — check with whoever invited you.",
@@ -149,6 +181,7 @@ async def join_submit(
     if not display_name:
         return _fail(request, error="Please enter your name.", status=400)
 
+    await clear_failures(conn, failure_key)
     observer_id = await create_observer(conn, display_name=display_name, created_via="passcode")
     # The app can't follow a 303 into an HTML page -- it wants a verdict and
     # will re-probe its own session. The browser still gets the redirect.
@@ -179,17 +212,34 @@ async def logout(request: Request):
 
 
 @router.post("/auth/email")
-async def email_submit(request: Request, email: str = Form(...), conn=Depends(get_conn)):
+async def email_submit(request: Request, email: str = Form(..., max_length=320), conn=Depends(get_conn)):
+    failure_key = f"email:ip:{client_key(request)}"
+    try:
+        await check(conn, failure_key, email_ip_limit())
+        await check_backoff(conn, failure_key)
+    except HTTPException as exc:
+        return _limited(request, exc)
     address = normalize_email(email)
     if not address:
+        try:
+            await record_failure(conn, failure_key)
+        except HTTPException as exc:
+            return _limited(request, exc)
         return _fail(request, error="That doesn't look like an email address.", status=400)
     # Two keys, not one. IP alone lets a rotating attacker hammer a single
     # inbox, and lets one office NAT lock out everyone behind it; address
     # alone does nothing against a script walking a list. Both are fixed
     # windows -- this is dampening, not a lockout.
-    check(f"email:ip:{client_key(request)}", email_ip_limit())
-    check(f"email:addr:{address}", email_addr_limit())
+    try:
+        await check(conn, f"email:addr:{address}", email_addr_limit())
+        await cooldown(conn, f"email:addr:{address}", settings.auth_email_cooldown_s)
+    except HTTPException as exc:
+        return _limited(request, exc)
     if not is_allowed(address):
+        try:
+            await record_failure(conn, failure_key)
+        except HTTPException as exc:
+            return _limited(request, exc)
         # Told plainly, not silently swallowed: the allowlist is a domain, not
         # a secret, and silent failure just generates "did it send?" pings.
         return _fail(
@@ -233,13 +283,23 @@ async def email_submit(request: Request, email: str = Form(...), conn=Depends(ge
 
 
 @router.get("/auth/email/consume")
-async def email_consume(token: str, conn=Depends(get_conn)):
+async def email_consume(request: Request, token: str = Query(max_length=512), conn=Depends(get_conn)):
+    failure_key = f"consume:ip:{client_key(request)}"
+    try:
+        await check_backoff(conn, failure_key)
+    except HTTPException as exc:
+        return _limited(request, exc)
     observer_id = await consume_login_token(conn, token)
     if observer_id is None:
+        try:
+            await record_failure(conn, failure_key)
+        except HTTPException as exc:
+            return _limited(request, exc)
         return HTMLResponse(
             _page(error="That link has expired or was already used. Request a new one."),
             status_code=401,
         )
+    await clear_failures(conn, failure_key)
     # Carry-over happens *here*, not at submit: consuming the link is the first
     # moment we know this person actually controls the address. Testers were
     # told to use their work email as their passcode-door name, so anything

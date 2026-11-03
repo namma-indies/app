@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { API_BASE } from "../apiBase";
+import { passcodeProof } from "../authProof";
 
 /** The gate an unauthenticated visitor lands on.
  *
@@ -53,7 +54,11 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
       // a proxy error page). Say so rather than throwing a parse error.
       const data = await res.json().catch(() => null);
       if (!res.ok || !data?.ok) {
-        setError(data?.error ?? "Something went wrong. Try again in a moment.");
+        const message = typeof data?.error === "string" ? data.error
+          : typeof data?.detail === "string" ? data.detail
+          : res.status === 422 ? "Please check the fields and try again."
+          : "Something went wrong. Try again in a moment.";
+        setError(message);
         return null;
       }
       return data;
@@ -73,10 +78,17 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
 
   async function submitPasscode(e: React.FormEvent) {
     e.preventDefault();
-    const data = await post("/auth/join", { name, passcode });
-    // The session cookie is already set on that response; re-probe rather
-    // than assuming, so the app and the server agree on who we are.
-    if (data) onSignedIn();
+    setBusy(true);
+    setError(null);
+    try {
+      const proof = await passcodeProof();
+      const data = await post("/auth/join", { name, passcode, ...proof });
+      if (data) onSignedIn();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "The sign-in check failed. Please try again.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   if (sent) {
@@ -114,6 +126,7 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
             <input
               id="signin-email"
               type="email"
+              maxLength={320}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@example.com"
@@ -136,6 +149,7 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
             <label htmlFor="signin-name">Your name</label>
             <input
               id="signin-name"
+              maxLength={200}
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="your email works best"
@@ -147,6 +161,7 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
             <input
               id="signin-passcode"
               type="password"
+              maxLength={512}
               value={passcode}
               onChange={(e) => setPasscode(e.target.value)}
               placeholder="shared code"
@@ -155,7 +170,7 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
               disabled={busy}
             />
             <button className="btn btn-primary" type="submit" disabled={busy}>
-              {busy ? "Joining…" : "Join with passcode"}
+              {busy ? "Checking…" : "Join with passcode"}
             </button>
           </form>
           <p className="hint">

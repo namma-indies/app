@@ -94,10 +94,12 @@ async def lifespan(app: FastAPI):
     # deletion someone asked for must happen whatever else is switched off.
     from app.accounts import consumer as account_purger
     purger = asyncio.create_task(account_purger(app.state.pool, get_storage()))
+    from app.ratelimit import sweeper as limiter_sweeper
+    limiter_cleanup = asyncio.create_task(limiter_sweeper(app.state.pool))
     try:
         yield
     finally:
-        for task in (consumer, suggester, purger):
+        for task in (consumer, suggester, purger, limiter_cleanup):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
