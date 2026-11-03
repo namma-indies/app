@@ -2,6 +2,7 @@
 // httpOnly session cookie set by /auth/magic-link/consume is included.
 
 import { API_BASE } from "./apiBase";
+import { requestConsent } from "./consentEvents";
 import { speciesNoun, speciesWithArticle } from "./species";
 
 // "exif" is a camera-roll import: coordinates read out of the file rather than
@@ -238,6 +239,7 @@ export async function readPhotoMetadata(file: Blob): Promise<PhotoMetadata> {
     return NO_METADATA;
   }
   if (res.status === 401) throw new UnauthorizedError();
+  if (res.status === 428) throw responseError(res);
   if (!res.ok) return NO_METADATA;
   try {
     return (await res.json()) as PhotoMetadata;
@@ -303,9 +305,15 @@ export class HttpError extends Error {
   }
 }
 
+/** Shared by both upload contracts and ordinary API calls. */
+export function responseError(res: Response): HttpError {
+  if (res.status === 428) requestConsent();
+  return new HttpError(res.status);
+}
+
 async function handle<T>(res: Response): Promise<T> {
   if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok) throw new HttpError(res.status);
+  if (!res.ok) throw responseError(res);
   return (await res.json()) as T;
 }
 
@@ -351,7 +359,7 @@ export async function addVoiceNote(
 export async function deleteVoiceNote(noteId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/voice-note/${encodeURIComponent(noteId)}`, { method: "DELETE", credentials: "include" });
   if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok && res.status !== 404) throw new HttpError(res.status);   // already gone is gone
+  if (!res.ok && res.status !== 404) throw responseError(res);   // already gone is gone
 }
 
 /** The signed-in account, and whether it is scheduled for deletion (#179). */
@@ -398,7 +406,7 @@ export async function getBlocks(): Promise<{ blocks: Block[] }> {
 export async function unblock(blockId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/blocks/${encodeURIComponent(blockId)}`, { method: "DELETE", credentials: "include" });
   if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok && res.status !== 404) throw new HttpError(res.status);
+  if (!res.ok && res.status !== 404) throw responseError(res);
 }
 
 /** A moderator's ban (#180): hides everything they logged from everyone. */
@@ -414,14 +422,14 @@ export async function unbanObserver(observerId: string): Promise<void> {
 export async function deleteCapture(captureId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/capture/${encodeURIComponent(captureId)}`, { method: "DELETE", credentials: "include" });
   if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok && res.status !== 404) throw new HttpError(res.status);   // already gone is gone
+  if (!res.ok && res.status !== 404) throw responseError(res);   // already gone is gone
 }
 
 /** Remove one animal from an upload that has others in it (#54). */
 export async function deleteSighting(sightingId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/sighting/${encodeURIComponent(sightingId)}`, { method: "DELETE", credentials: "include" });
   if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok && res.status !== 404) throw new HttpError(res.status);
+  if (!res.ok && res.status !== 404) throw responseError(res);
 }
 
 /** The observer's answer to an AI photo description. */
@@ -448,7 +456,7 @@ export async function redoTranscript(id: string, language: string): Promise<void
     body: JSON.stringify({ language }),
   });
   if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok) throw new HttpError(res.status);
+  if (!res.ok) throw responseError(res);
 }
 
 /** The observer's answer to a suggestion: the option they tapped, or no. */
@@ -720,6 +728,7 @@ export interface SocialTakedown {
  * `detail`), surfaced as the error's message. */
 async function handleWithDetail<T>(res: Response): Promise<T> {
   if (res.status === 401) throw new UnauthorizedError();
+  if (res.status === 428) throw responseError(res);
   if (!res.ok) {
     let detail: unknown;
     try {

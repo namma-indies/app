@@ -117,6 +117,8 @@ async def absorb_passcode_observers(
                 ids,
             )
         await _carry_blocks(conn, target, ids)
+        # A typed name is not proof of consent by the verified account owner.
+        await conn.execute("DELETE FROM account_consents WHERE observer_id = ANY($1::uuid[])", ids)
         # Retire rather than delete: the row is evidence of how the data arrived,
         # and soft-deleting keeps this idempotent on a second sign-in.
         await conn.execute(

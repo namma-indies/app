@@ -10,10 +10,12 @@ afterEach(cleanup);
 beforeEach(() => {
   vi.stubGlobal(
     "fetch",
-    vi.fn().mockResolvedValue({
+    vi.fn((path: string) => Promise.resolve({
       ok: true,
-      json: () => Promise.resolve({ ok: true }),
-    }),
+      json: () => Promise.resolve(path.endsWith("/auth/consent") ? {
+        enabled: false, terms_version: "", privacy_version: "", community_guidelines_version: "", minimum_age: null,
+      } : { ok: true }),
+    })),
   );
 });
 

@@ -13,14 +13,12 @@ from starlette.responses import (
 
 from app.auth.allowlist import is_allowed, normalize_email
 from app.auth.deps import clear_session_cookie, set_session_cookie
-from app.auth.email_login import (
-    absorb_passcode_observers,
-    get_or_create_observer_by_email,
-)
-from app.auth.logintoken import consume as consume_login_token
+from app.auth.email_login import absorb_passcode_observers
 from app.auth.logintoken import issue as issue_login_token
-from app.auth.magiclink import create_observer
 from app.config import settings
+from app.consent import (ConsentRequired, ConsentSubmission, consent_form, consume_email_token,
+                         current_policy, email_account, passcode_account)
+from app.consent_html import CONSENT_STYLE, consent_fields, email_signup_fields
 from app.deps import get_conn
 from app.email.sender import get_sender
 from app.ratelimit import check, client_key, email_addr_limit, email_ip_limit, join_limit
@@ -56,7 +54,8 @@ _STYLE = """
 """
 
 
-def _page(*, error: str | None = None, name: str = "", notice: str | None = None) -> str:
+def _page(*, error: str | None = None, name: str = "", notice: str | None = None,
+          email: str = "", signup: bool = False) -> str:
     """Server-rendered gate with two doors. Email is the identified path for the
     internal team; the passcode below it is the anonymous path for field testers
     recruited over WhatsApp, who have no company address.
@@ -83,6 +82,7 @@ def _page(*, error: str | None = None, name: str = "", notice: str | None = None
 <title>Join IndieDex</title>
 <style>
 {_STYLE}
+{CONSENT_STYLE}
 </style>
 </head>
 <body>
@@ -92,7 +92,8 @@ def _page(*, error: str | None = None, name: str = "", notice: str | None = None
     {banner}
     <form method="post" action="/auth/email">
       <label for="email">Work email</label>
-      <input id="email" name="email" type="email" placeholder="you@dognosis.tech" required autocomplete="email">
+      <input id="email" name="email" type="email" value="{escape(email)}" placeholder="you@example.invalid" required autocomplete="email">
+      {email_signup_fields(signup)}
       <button type="submit">Email me a link</button>
     </form>
     <div class="divider">or</div>
@@ -101,6 +102,7 @@ def _page(*, error: str | None = None, name: str = "", notice: str | None = None
       <input id="name" name="name" value="{escape(name)}" placeholder="e.g. Priya" required autocomplete="name">
       <label for="passcode">Passcode</label>
       <input id="passcode" name="passcode" type="password" placeholder="shared code" required autocomplete="off">
+      {consent_fields("passcode")}
       <button type="submit" class="alt">Join with passcode</button>
     </form>
   </div>
@@ -114,15 +116,24 @@ def _wants_json(request: Request) -> bool:
     return "application/json" in request.headers.get("accept", "")
 
 
-def _fail(request: Request, *, error: str, status: int, name: str = "") -> Response:
+def _fail(request: Request, *, error: str, status: int, name: str = "", email: str = "",
+          signup: bool = False, consent_required: bool = False, headers=None) -> Response:
+    headers = {"Cache-Control": "no-store", **(headers or {})}
     if _wants_json(request):
-        return JSONResponse({"ok": False, "error": error}, status_code=status)
-    return HTMLResponse(_page(error=error, name=name), status_code=status)
+        extra = {"consent_required": True, "consent": current_policy()} if consent_required else {}
+        return JSONResponse({"ok": False, "error": error, **extra}, status_code=status, headers=headers)
+    return HTMLResponse(_page(error=error, name=name, email=email, signup=signup), status_code=status, headers=headers)
+
+
+def _email_sent(request: Request, message: str) -> Response:
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "message": message}, headers={"Cache-Control": "no-store"})
+    return HTMLResponse(_page(notice=message), headers={"Cache-Control": "no-store"})
 
 
 @router.get("/join", response_class=HTMLResponse)
-async def join_page() -> HTMLResponse:
-    return HTMLResponse(_page())
+async def join_page(signup: bool = False) -> HTMLResponse:
+    return HTMLResponse(_page(signup=signup), headers={"Cache-Control": "no-store"})
 
 
 @router.post("/auth/join")
@@ -130,6 +141,7 @@ async def join_submit(
     request: Request,
     name: str = Form(...),
     passcode: str = Form(...),
+    consent: ConsentSubmission = Depends(consent_form),
     conn=Depends(get_conn),
 ):
     display_name = name.strip()
@@ -149,7 +161,10 @@ async def join_submit(
     if not display_name:
         return _fail(request, error="Please enter your name.", status=400)
 
-    observer_id = await create_observer(conn, display_name=display_name, created_via="passcode")
+    try:
+        observer_id = await passcode_account(conn, display_name, consent)
+    except ConsentRequired as exc:
+        return _fail(request, error=exc.detail, status=428, name=display_name, consent_required=True)
     # The app can't follow a 303 into an HTML page -- it wants a verdict and
     # will re-probe its own session. The browser still gets the redirect.
     resp: Response = (
@@ -179,7 +194,8 @@ async def logout(request: Request):
 
 
 @router.post("/auth/email")
-async def email_submit(request: Request, email: str = Form(...), conn=Depends(get_conn)):
+async def email_submit(request: Request, email: str = Form(...), create_account: bool = Form(False),
+                       consent: ConsentSubmission = Depends(consent_form), conn=Depends(get_conn)):
     address = normalize_email(email)
     if not address:
         return _fail(request, error="That doesn't look like an email address.", status=400)
@@ -205,8 +221,17 @@ async def email_submit(request: Request, email: str = Form(...), conn=Depends(ge
             error="This account has been suspended. If you think that's wrong, write to nammaindies@gmail.com.",
             status=403,
         )
-    observer_id = await get_or_create_observer_by_email(conn, email=address)
-    token = await issue_login_token(conn, observer_id)
+    try:
+        async with conn.transaction():
+            observer_id, pending = await email_account(conn, address, consent, creating=create_account)
+            token = (await issue_login_token(conn, observer_id,
+                     signup_consent=pending.model_dump_json() if pending else None)) if observer_id else None
+    except ConsentRequired as exc:
+        return _fail(request, error=exc.detail, status=428, email=address, signup=True, consent_required=True)
+    message = ("Check your email. If an account uses that address, a sign-in link is on its way."
+               if settings.consent_enabled else f"Check your email — a sign-in link is on its way to {address}.")
+    if observer_id is None:
+        return _email_sent(request, message)
     link = f"{settings.public_base_url}/auth/email/consume?token={token}"
     try:
         await get_sender().send(address, link)
@@ -226,15 +251,12 @@ async def email_submit(request: Request, email: str = Form(...), conn=Depends(ge
         )
     # The unused token simply expires in 30 minutes, so a failed send leaves
     # nothing to clean up.
-    message = f"Check your email — a sign-in link is on its way to {address}."
-    if _wants_json(request):
-        return JSONResponse({"ok": True, "message": message})
-    return HTMLResponse(_page(notice=message))
+    return _email_sent(request, message)
 
 
 @router.get("/auth/email/consume")
 async def email_consume(token: str, conn=Depends(get_conn)):
-    observer_id = await consume_login_token(conn, token)
+    observer_id = await consume_email_token(conn, token)
     if observer_id is None:
         return HTMLResponse(
             _page(error="That link has expired or was already used. Request a new one."),

@@ -11,6 +11,9 @@ import HapticsCheck, { HAPTICS_CHECK_PARAM, wantsHapticsCheck } from "./componen
 import { getAccount, getDex, getMe, isAccountRestricted, UnauthorizedError, type Account } from "./api";
 import DeleteAccount from "./components/DeleteAccount";
 import BlockedPeople from "./components/BlockedPeople";
+import ConsentReview from "./components/ConsentReview";
+import { getAccountConsent, isConsentRequired } from "./consentApi";
+import { CONSENT_REQUIRED_EVENT } from "./consentEvents";
 import { visibilityChanged } from "./visibility";
 import PendingDeletion from "./screens/PendingDeletion";
 import { forgetNoteLanguage } from "./components/NoteLanguagePicker";
@@ -30,6 +33,7 @@ export default function App() {
   const [isModerator, setIsModerator] = useState(false);
   const [unauthorized, setUnauthorized] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
+  const [needsConsent, setNeedsConsent] = useState(false);
   // Set while the account is scheduled for deletion (#179): the app is
   // replaced by when it goes and the way to keep it.
   const [pendingDeletion, setPendingDeletion] = useState<Account | null>(null);
@@ -75,11 +79,12 @@ export default function App() {
 
   // One-time auth probe so the invite-needed state shows immediately on
   // load, rather than only after the user tries to submit or view the dex.
-  function reprobeAuth() {
-    setCheckingAuth(true);
+  function reprobeAuth(showLoading = true) {
+    if (showLoading) setCheckingAuth(true);
     getDex()
       .then(() => {
         setUnauthorized(false);
+        setNeedsConsent(false);
         setPendingDeletion(null);
         setSuspended(false);
         setCheckingAuth(false);
@@ -91,7 +96,13 @@ export default function App() {
           .catch(() => setIsModerator(false));
       })
       .catch(async (err) => {
-        if (err instanceof UnauthorizedError) setUnauthorized(true);
+        if (err instanceof UnauthorizedError) { setNeedsConsent(false); setUnauthorized(true); }
+        else if (isConsentRequired(err)) {
+          setUnauthorized(false);
+          setPendingDeletion(null);
+          setSuspended(false);
+          setNeedsConsent(true);
+        }
         else if (isAccountRestricted(err)) {
           // Everything but /account answers 403 while deletion is pending, or
           // while a moderator has suspended the account (#180).
@@ -111,6 +122,20 @@ export default function App() {
     reprobeAuth();
   }, []);
 
+  useEffect(() => {
+    const required = () => setNeedsConsent(true);
+    function resumed() {
+      if (document.visibilityState !== "visible") return;
+      getAccountConsent().then((status) => { if (status.required) required(); }).catch(() => {});
+    }
+    window.addEventListener(CONSENT_REQUIRED_EVENT, required);
+    document.addEventListener("visibilitychange", resumed);
+    return () => {
+      window.removeEventListener(CONSENT_REQUIRED_EVENT, required);
+      document.removeEventListener("visibilitychange", resumed);
+    };
+  }, []);
+
   // A magic-link email opens directly in the app (Universal Links) instead
   // of Safari -- the OS hands us the URL with nothing consumed yet.
   useEffect(() => {
@@ -127,6 +152,7 @@ export default function App() {
     // survive, but the next auth probe settles it either way.
     setPendingDeletion(null);
     setSuspended(false);
+    setNeedsConsent(false);
     setUnauthorized(true);
   }
 
@@ -284,6 +310,11 @@ export default function App() {
           finishes its uploads while the person is on the map or the dex, and
           that success deserves the same acknowledgement as one they watched. */}
       <Celebration />
+      {needsConsent && !deletingAccount && (
+        <ConsentReview onAccepted={() => { setNeedsConsent(false); reprobeAuth(false); void flush(); }}
+          onSignOut={() => void signOut()} onDeleteAccount={() => setDeletingAccount(true)}
+          onUnauthorized={() => { setNeedsConsent(false); setUnauthorized(true); }} />
+      )}
     </div>
   );
 }
