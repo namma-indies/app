@@ -58,6 +58,26 @@ async def test_retention_is_configurable_without_deleting_unexpired_links(migrat
         assert await logintoken.consume(conn, active) == oid
 
 
+@pytest.mark.asyncio
+async def test_restricted_application_role_can_manage_token_history(migrated_db, monkeypatch):
+    conn = migrated_db
+    monkeypatch.setattr(settings, "login_token_retention_days", 7)
+    oid = await create_observer(conn, display_name="Test", created_via="test")
+    async with conn.transaction():
+        await conn.execute("SET LOCAL ROLE app_rw")
+        active = await logintoken.issue(conn, oid)
+        deleted = await logintoken.issue(conn, oid, purpose="delete")
+        await logintoken.issue(conn, oid, ttl_s=-8 * 86400)
+        assert await logintoken.consume(conn, deleted, purpose="delete") == oid
+        await conn.execute(
+            "UPDATE login_tokens SET expires_at=now() - interval '8 days' WHERE token_hash=$1",
+            logintoken._hash(deleted))
+        assert await logintoken.purge_expired(conn) == 2
+        assert await logintoken.peek(conn, active, purpose="login") == oid
+        assert await logintoken.consume(conn, active) == oid
+        assert await conn.fetchval("SELECT count(*) FROM login_tokens") == 1
+
+
 def test_housekeeping_defaults():
     config = Settings(_env_file=None)
     assert config.login_token_retention_days == 7
