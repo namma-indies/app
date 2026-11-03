@@ -32,6 +32,7 @@ import type { NoteLanguage } from "../api";
 import { CONDITION_OPTIONS, EAR_NOTCH_OPTIONS, SEX_OPTIONS } from "../detailOptions";
 import { formatWhen } from "../formatWhen";
 import { useReloadGuard } from "../update/reloadGuard";
+import { CONSENT_ACCEPTED_EVENT } from "../consentEvents";
 
 const MAX_PHOTOS = 5;
 
@@ -71,23 +72,31 @@ function isVideoFile(file: File): boolean {
 
 export default function Capture() {
   const [multiAnimal, setMultiAnimal] = useState(false);
-  useEffect(() => {
-    const controller = new AbortController();
-    void multiAnimalIntakeAvailable(controller.signal).then((enabled) => {
-      if (!controller.signal.aborted) setMultiAnimal(enabled);
-    });
-    return () => controller.abort();
-  }, []);
   // Offered only to someone who has agreed to be posted on @nammaindies; for
   // everyone else the option does not exist (design: 2026-10-24 x daily post).
   const [canShare, setCanShare] = useState(false);
   const [shareWithTeam, setShareWithTeam] = useState(false);
   useEffect(() => {
-    const controller = new AbortController();
-    void canShareSocially(controller.signal).then((ok) => {
-      if (!controller.signal.aborted) setCanShare(ok);
-    });
-    return () => controller.abort();
+    let controller: AbortController | undefined;
+    function refresh() {
+      controller?.abort();
+      const request = new AbortController();
+      controller = request;
+      void multiAnimalIntakeAvailable(request.signal).then((enabled) => {
+        if (!request.signal.aborted) setMultiAnimal(enabled);
+      });
+      void canShareSocially(request.signal).then((ok) => {
+        if (!request.signal.aborted) setCanShare(ok);
+      });
+    }
+    refresh();
+    // A fresh mount under the policy dialog gets 428 from /me. Retry after
+    // agreement without remounting this screen or losing its draft.
+    window.addEventListener(CONSENT_ACCEPTED_EVENT, refresh);
+    return () => {
+      controller?.abort();
+      window.removeEventListener(CONSENT_ACCEPTED_EVENT, refresh);
+    };
   }, []);
   const fileRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLInputElement>(null);

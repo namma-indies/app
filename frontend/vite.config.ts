@@ -76,6 +76,7 @@ export default defineConfig({
       "/dogs": { target: API, changeOrigin: true },
       "/proposal": { target: API, changeOrigin: true },
       "/auth": { target: API, changeOrigin: true },
+      "/account/consent": { target: API, changeOrigin: true },
       // Server-rendered sign-in gate. Without this the SPA shell answers it and
       // the passcode form is unreachable in dev.
       "/join": { target: API, changeOrigin: true },
