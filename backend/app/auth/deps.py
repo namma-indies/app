@@ -5,6 +5,7 @@ from starlette.requests import Request
 
 from app.deps import get_conn as _get_conn
 from app.security import issue_session, read_session
+from app.auth import store_review
 
 SESSION_COOKIE = "session"
 SESSION_MAX_AGE_S = 60 * 60 * 24 * 400  # ~browser max; effectively non-expiring, survives PWA restarts
@@ -41,8 +42,10 @@ async def _account_state(request: Request) -> tuple[UUID, str | None]:
     observer_id = _session_observer(request)
     async with request.app.state.pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT deleted_at, deletion_requested_at, banned_at FROM observers WHERE id = $1", observer_id)
+            "SELECT deleted_at, deletion_requested_at, banned_at, store_reviewer FROM observers WHERE id = $1", observer_id)
     if row is None or row["deleted_at"] is not None:
+        raise HTTPException(status_code=401)
+    if row["store_reviewer"] and not store_review.valid_cookie(request.cookies.get(store_review.COOKIE), observer_id):
         raise HTTPException(status_code=401)
     if row["banned_at"] is not None:
         return observer_id, SUSPENDED
@@ -87,7 +90,7 @@ async def require_moderator(
         UPDATE observers SET trust_tier = 'moderator' WHERE email = '...';
     """
     tier = await conn.fetchval(
-        "SELECT trust_tier FROM observers WHERE id = $1 AND deleted_at IS NULL",
+        "SELECT trust_tier FROM observers WHERE id = $1 AND deleted_at IS NULL AND NOT store_reviewer",
         observer_id,
     )
     if tier != "moderator":
@@ -95,11 +98,11 @@ async def require_moderator(
     return observer_id
 
 
-def set_session_cookie(response, observer_id: UUID) -> None:
+def set_session_cookie(response, observer_id: UUID, *, max_age_s: int = SESSION_MAX_AGE_S) -> None:
     response.set_cookie(
         SESSION_COOKIE,
         issue_session(observer_id),
-        max_age=SESSION_MAX_AGE_S,
+        max_age=max_age_s,
         httponly=True,
         # "none" (not "lax"): the native iOS app's webview is a genuinely
         # different origin from the API, and Lax withholds the cookie on
@@ -122,3 +125,4 @@ def clear_session_cookie(response) -> None:
         samesite="none",
         secure=True,
     )
+    store_review.clear_cookie(response)

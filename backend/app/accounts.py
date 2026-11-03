@@ -97,6 +97,8 @@ OBSERVER_COLUMNS: dict[str, str] = {
     "banned_at": "kept",
     "banned_by": "kept",
     "ban_reason": "emptied",
+    # The demo marker enforces one identity, even on an erased tombstone.
+    "store_reviewer": "kept",
 }
 
 LEASE = timedelta(minutes=15)

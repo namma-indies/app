@@ -1,7 +1,7 @@
 import math
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,7 +22,7 @@ def pair_slack_m(cell_m: float) -> float:
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
 
     database_url: str = "postgresql://postgres:dev@localhost:5432/indiedex"
     database_url_sync: str = "postgresql+psycopg://postgres:dev@localhost:5432/indiedex"
@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     # door should take a deliberate act. Requires SES production access and
     # confirmation of the live regional sending quotas; comments are not quotas.
     email_open_signup: bool = False
+
+    # A separate store-review door. No inbox, one non-moderator account.
+    store_review_enabled: bool = False
+    store_review_secret: SecretStr = SecretStr("")
+    rl_store_review_times: int = Field(default=5, ge=1, le=100)
+    rl_store_review_window_s: int = Field(default=900, ge=60, le=3600)
 
     # "console" (default) prints the link to the log; "ses" actually sends.
     # Fails safe: any other value means console.
@@ -474,6 +480,13 @@ class Settings(BaseSettings):
         if self.reid_cell_slack_m is None:
             return pair_slack_m(self.map_coarsen_cell_m)
         return self.reid_cell_slack_m
+
+    @model_validator(mode="after")
+    def _store_review_has_secret(self):
+        secret = self.store_review_secret.get_secret_value()
+        if self.store_review_enabled and (not secret.isascii() or not 32 <= len(secret) <= 512):
+            raise ValueError("STORE_REVIEW_ENABLED requires a random ASCII STORE_REVIEW_SECRET of 32 to 512 characters")
+        return self
 
     @model_validator(mode="after")
     def _slack_covers_the_cell(self):

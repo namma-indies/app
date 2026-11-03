@@ -71,7 +71,8 @@ async def snapshot(conn, hours: int = 24) -> dict:
             coalesce(sum(a.count) FILTER (WHERE a.event='uploads'),0)::bigint AS uploads,
             coalesce(sum(a.count) FILTER (WHERE a.event='upload_throttled'),0)::bigint AS upload_throttled,
             coalesce(sum(a.count) FILTER (WHERE a.event='email_throttled'),0)::bigint AS email_throttled,
-            coalesce(sum(a.count) FILTER (WHERE a.event='email_failed'),0)::bigint AS email_failed
+            coalesce(sum(a.count) FILTER (WHERE a.event='email_failed'),0)::bigint AS email_failed,
+            coalesce(sum(a.count) FILTER (WHERE a.event='reviewer_signins'),0)::bigint AS reviewer_signins
         FROM generate_series(
             greatest(date_trunc('hour', now(), 'UTC') - make_interval(hours => $1 - 1),
                      date_trunc('hour', $2::timestamptz, 'UTC')),

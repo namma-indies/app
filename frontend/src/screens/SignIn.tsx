@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { API_BASE } from "../apiBase";
 import { passcodeProof } from "../authProof";
 
@@ -32,13 +32,24 @@ function Mark() {
 }
 
 export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
-  const [mode, setMode] = useState<"email" | "passcode">("email");
+  const [mode, setMode] = useState<"email" | "passcode" | "reviewer">("email");
+  const [reviewerAvailable, setReviewerAvailable] = useState(false);
+  const [reviewerCode, setReviewerCode] = useState("");
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [passcode, setPasscode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    fetch(`${API_BASE}/auth/options`, { credentials: "include", cache: "no-store" })
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => { if (active) setReviewerAvailable(data?.store_reviewer_enabled === true); })
+      .catch(() => { /* The optional door stays hidden if unavailable. */ });
+    return () => { active = false; };
+  }, []);
 
   async function post(path: string, body: Record<string, string>) {
     setBusy(true);
@@ -89,6 +100,12 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function submitReviewer(e: React.FormEvent) {
+    e.preventDefault();
+    const data = await post("/auth/reviewer", { secret: reviewerCode });
+    if (data) { setReviewerCode(""); onSignedIn(); }
   }
 
   if (sent) {
@@ -143,7 +160,7 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
             Use a passcode
           </button>
         </>
-      ) : (
+      ) : mode === "passcode" ? (
         <>
           <form className="signin-form" onSubmit={submitPasscode}>
             <label htmlFor="signin-name">Your name</label>
@@ -182,7 +199,25 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
             Email me a link instead
           </button>
         </>
+      ) : (
+        <>
+          <form className="signin-form" onSubmit={submitReviewer}>
+            <label htmlFor="reviewer-code">Reviewer code</label>
+            <input id="reviewer-code" type="password" autoComplete="off" maxLength={512}
+              value={reviewerCode} onChange={(e) => setReviewerCode(e.target.value)} required disabled={busy} />
+            <p className="hint">Use the code supplied in the store review notes.</p>
+            <button className="btn btn-primary" type="submit" disabled={busy}>
+              {busy ? "Signing in…" : "Sign in as reviewer"}
+            </button>
+          </form>
+          <button className="btn btn-secondary" onClick={() => { setMode("email"); setReviewerCode(""); setError(null); }}>
+            Back to email sign-in
+          </button>
+        </>
       )}
+
+      {reviewerAvailable && mode !== "reviewer" && <button className="link-btn"
+        onClick={() => { setMode("reviewer"); setError(null); }}>Store reviewer</button>}
 
       {/* The gate is where an app reviewer lands before they have credentials,
           so the policy and a way to reach us have to be readable from here. */}

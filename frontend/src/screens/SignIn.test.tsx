@@ -31,14 +31,14 @@ describe("SignIn", () => {
       expect.stringContaining("/auth/join"),
       expect.objectContaining({ credentials: "include" }),
     );
-    const body = vi.mocked(fetch).mock.calls[0][1]?.body as URLSearchParams;
+    const body = vi.mocked(fetch).mock.calls.find(([path]) => String(path).endsWith("/auth/join"))?.[1]?.body as URLSearchParams;
     expect(body.get("challenge")).toBe("signed-work");
     expect(body.get("solution")).toBe("42");
   });
 
   it("sends credentials on the email submit too", async () => {
     render(<SignIn onSignedIn={vi.fn()} />);
-    await userEvent.type(screen.getByLabelText("Email"), "a@b.com");
+    await userEvent.type(screen.getByLabelText("Email"), "person@example.test");
     await userEvent.click(screen.getByText("Email me a link"));
 
     expect(fetch).toHaveBeenCalledWith(
@@ -48,9 +48,7 @@ describe("SignIn", () => {
   });
 
   it("does not tell a curious stranger the pilot is invite-only", async () => {
-    // EMAIL_OPEN_SIGNUP is on in production -- any address is accepted. The
-    // copy said "invite-only" for weeks after that flipped, which turns the
-    // one link we hand to everyone into a door that reads as shut.
+    // Enrollment is enforced by the server's switch and allowlist.
     render(<SignIn onSignedIn={vi.fn()} />);
     expect(screen.queryByText(/invite-only/i)).not.toBeInTheDocument();
   });
@@ -71,6 +69,7 @@ describe("SignIn", () => {
   });
 
   it("shows the server's wait time when sign-in is throttled", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ store_reviewer_enabled: false }) } as Response);
     vi.mocked(fetch).mockResolvedValueOnce({ ok: false, json: async () => ({ detail: "Too many requests. Try again in 60 seconds." }) } as Response);
     render(<SignIn onSignedIn={vi.fn()} />);
     await userEvent.type(screen.getByLabelText("Email"), "person@example.test");
@@ -79,6 +78,7 @@ describe("SignIn", () => {
   });
 
   it("keeps the form usable when a 422 contains structured validation details", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ store_reviewer_enabled: false }) } as Response);
     vi.mocked(fetch).mockResolvedValueOnce({ ok: false, status: 422,
       json: async () => ({ detail: [{ loc: ["body", "email"], msg: "too long", type: "string_too_long" }] }),
     } as Response);
@@ -87,5 +87,25 @@ describe("SignIn", () => {
     await userEvent.click(screen.getByText("Email me a link"));
     expect(await screen.findByRole("alert")).toHaveTextContent("Please check the fields");
     expect(screen.getByText("Email me a link")).toBeEnabled();
+  });
+
+  it("hides reviewer access unless the server explicitly enables it", async () => {
+    render(<SignIn onSignedIn={vi.fn()} />);
+    expect(screen.queryByText("Store reviewer")).not.toBeInTheDocument();
+  });
+
+  it("signs the store reviewer into the demo account with a code and no email", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ store_reviewer_enabled: true }) } as Response);
+    const signedIn = vi.fn();
+    render(<SignIn onSignedIn={signedIn} />);
+    await userEvent.click(await screen.findByText("Store reviewer"));
+    await userEvent.type(screen.getByLabelText("Reviewer code"), "a-review-code-for-tests");
+    await userEvent.click(screen.getByText("Sign in as reviewer"));
+    const call = vi.mocked(fetch).mock.calls.find(([path]) => String(path).endsWith("/auth/reviewer"));
+    expect(call?.[1]).toMatchObject({ credentials: "include", method: "POST" });
+    const form = call?.[1]?.body as URLSearchParams;
+    expect(form.get("secret")).toBe("a-review-code-for-tests");
+    expect(form.has("email")).toBe(false);
+    expect(signedIn).toHaveBeenCalledOnce();
   });
 });
