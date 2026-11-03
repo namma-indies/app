@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getAccount, requestAccountDeletion, UnauthorizedError, type Account } from "../api";
+import LegalLinks from "./LegalLinks";
 
 /**
  * Delete my account (#179). Says what goes and what stays, asks for "delete"
@@ -57,6 +58,7 @@ export default function DeleteAccount({ onClose, onScheduled, onUnauthorized }: 
             Delete my account
           </button>
         </div>
+        <LegalLinks />
       </div>
     </div>
   );

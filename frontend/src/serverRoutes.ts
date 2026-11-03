@@ -8,4 +8,7 @@
  * account deletion (#179), the web request page and the emailed confirmation
  * link would show the app instead of the form and the button.
  */
-export const SERVER_ROUTES: RegExp[] = [/^\/auth\//, /^\/join/, /^\/account\/delete/];
+export const SERVER_ROUTES: RegExp[] = [
+  /^\/auth\//, /^\/join/, /^\/account\/delete/,
+  /^\/policies(?:\/|$)/, /^\/support(?:\/|$)/,
+];

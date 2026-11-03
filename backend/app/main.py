@@ -21,6 +21,7 @@ from app.routes.erase import router as erase_router
 from app.routes.account import router as account_router
 from app.routes.blocks import router as blocks_router
 from app.routes.join import router as join_router
+from app.routes.support import router as support_router
 from app.routes.sighting import router as sighting_router
 from app.routes.places import router as places_router
 from app.routes.stats import router as stats_router
@@ -118,6 +119,7 @@ app.add_middleware(
 )
 app.include_router(auth_router)
 app.include_router(join_router)
+app.include_router(support_router)
 app.include_router(dex_router)
 app.include_router(dogs_router)
 app.include_router(erase_router)
