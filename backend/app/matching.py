@@ -51,6 +51,7 @@ class Candidate:
     individual_id: UUID | None
     similarity: float  # cosine in [-1, 1]; exact, full precision
     distance_m: float | None
+    instance_id: UUID | None = None
 
 
 def _to_pgvector(vec: np.ndarray) -> str:
@@ -148,10 +149,10 @@ async def find_candidates(
             SELECT unnest({p_vecs}::text[])::vector({EMBED_DIM}) AS v
         ),
         shortlist AS (
-            SELECT DISTINCT hits.photo_id, hits.vec_miew, hits.sighting_id
+            SELECT DISTINCT hits.photo_id, hits.instance_id, hits.vec_miew, hits.sighting_id
             FROM q
             CROSS JOIN LATERAL (
-                SELECT e.photo_id, e.vec_miew, p.sighting_id
+                SELECT e.photo_id, e.instance_id, e.vec_miew, p.sighting_id
                 FROM embeddings e
                 JOIN photos p ON p.id = e.photo_id
                 JOIN sightings s ON s.id = p.sighting_id
@@ -191,19 +192,21 @@ async def find_candidates(
         scored AS (
             SELECT sl.sighting_id,
                    sl.photo_id,
+                   sl.instance_id,
                    MAX(1 - (sl.vec_miew <=> q.v)) AS similarity
             FROM shortlist sl CROSS JOIN q
-            GROUP BY sl.sighting_id, sl.photo_id
+            GROUP BY sl.sighting_id, sl.photo_id, sl.instance_id
         )
         SELECT DISTINCT ON (sc.sighting_id)
                sc.sighting_id,
                sc.photo_id,
+               sc.instance_id,
                s.individual_id,
                sc.similarity,
                {distance} AS distance_m
         FROM scored sc
         JOIN sightings s ON s.id = sc.sighting_id
-        ORDER BY sc.sighting_id, sc.similarity DESC
+        ORDER BY sc.sighting_id, sc.similarity DESC, sc.photo_id
     """
     # One row per candidate sighting (its best-matching photo); re-sort by score
     # and cut, which DISTINCT ON cannot do in the same pass.
@@ -229,6 +232,7 @@ async def find_candidates(
             individual_id=r["individual_id"],
             similarity=float(r["similarity"]),
             distance_m=float(r["distance_m"]) if r["distance_m"] is not None else None,
+            instance_id=r["instance_id"],
         )
         for r in rows
     ]
@@ -332,15 +336,18 @@ async def _resolve_sighting(
         """,
         sighting_id,
     )
-    frame_count = await conn.fetchval(
+    frames = await conn.fetch(
         """
-        SELECT count(*) FROM photos p
+        SELECT p.id FROM photos p
         JOIN embeddings e ON e.photo_id = p.id AND e.model = $2
         WHERE p.sighting_id = $1 AND e.vec_miew IS NOT NULL
+        ORDER BY p.created_at, p.id
         """,
         sighting_id,
         MODEL_NAME,
     )
+    query_photo_ids = [r["id"] for r in frames]
+    frame_count = len(query_photo_ids)
     if mean is not None:
         rows = [mean]
     else:
@@ -466,8 +473,9 @@ async def _resolve_sighting(
             """
             INSERT INTO match_proposals
                 (id, sighting_id, candidate_individual_id, candidate_sighting_id,
-                 score, method, status)
-            VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+                 score, method, status, matched_photo_id, matched_instance_id,
+                 query_photo_ids)
+            VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9)
             """,
             pid,
             sighting_id,
@@ -475,6 +483,9 @@ async def _resolve_sighting(
             c.sighting_id,
             c.similarity,
             MODEL_NAME,
+            c.photo_id,
+            c.instance_id,
+            query_photo_ids,
         )
         proposal_ids.append(pid)
 

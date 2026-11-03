@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 vi.mock("../api", async (importOriginal) => ({
@@ -37,6 +37,48 @@ function resp(proposals: Proposal[]): ProposalsResponse {
 }
 
 describe("Review", () => {
+  it("shows the matched gallery photo and every supporting query view with original-photo zoom", async () => {
+    const views = [1, 2, 3].map((n) => ({ photo_id: `q${n}`, instance_id: null,
+      thumb_url: `/query-${n}-thumb.webp`, photo_url: `/query-${n}.webp` }));
+    const p = proposal();
+    p.a = { ...p.a, ...views[0], photos: views };
+    p.b = { ...p.b, photo_id: "best", instance_id: "animal", matched: true,
+      thumb_url: "/gallery-best-thumb.webp", photo_url: "/gallery-best.webp" };
+    vi.mocked(getProposals).mockResolvedValue(resp([p]));
+    const user = userEvent.setup();
+    render(<Review onUnauthorized={() => {}} />);
+    expect(await screen.findByText("MATCHED PHOTO")).toBeInTheDocument();
+    expect(screen.getByText("3 VIEWS")).toBeInTheDocument();
+    const matched = screen.getByRole("button", { name: "Enlarge matching sighting photo 1" });
+    expect(within(matched).getByRole("img")).toHaveAttribute("src", "/gallery-best-thumb.webp");
+    await user.click(matched);
+    let dialog = screen.getByRole("dialog", { name: "Matching sighting photo 1" });
+    expect(within(dialog).getByRole("img")).toHaveAttribute("src", "/gallery-best.webp");
+    expect(within(dialog).getByRole("button", { name: "Close photo" })).toHaveFocus();
+    await user.tab();
+    expect(within(dialog).getByRole("region")).toHaveFocus();
+    await user.click(within(dialog).getByRole("button", { name: "Zoom in" }));
+    expect(within(dialog).getByRole("img")).toHaveClass("is-zoomed");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(matched).toHaveFocus();
+    await user.click(screen.getByRole("button", { name: "Enlarge new sighting photo 3" }));
+    dialog = screen.getByRole("dialog", { name: "New sighting photo 3" });
+    expect(within(dialog).getByRole("img")).toHaveAttribute("src", "/query-3.webp");
+    await user.click(within(dialog).getByRole("button", { name: "Close photo" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(resolveProposal).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /not sure/i })).not.toBeInTheDocument();
+  });
+
+  it("can enlarge a historical thumbnail without new evidence fields", async () => {
+    vi.mocked(getProposals).mockResolvedValue(resp([proposal()]));
+    render(<Review onUnauthorized={() => {}} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Enlarge new sighting photo 1" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByRole("img")).toHaveAttribute("src", proposal().a.thumb_url);
+  });
+
   it("shows both photos, because that is the whole question", async () => {
     vi.mocked(getProposals).mockResolvedValue(resp([proposal()]));
     render(<Review onUnauthorized={() => {}} />);
