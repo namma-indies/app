@@ -6,6 +6,7 @@ export default function AbuseSignals({ data }: { data: Signals }) {
     <h3>RECENT ACTIVITY</h3>
     {latest && <p className="stats-note">This hour: {latest.signups} accounts created, {latest.failed_signins} failed sign-ins,
       and {latest.uploads} uploads accepted. {latest.upload_throttled} upload requests and {latest.email_throttled} email attempts hit limits.</p>}
+    {!!latest?.reviewer_signins && <p className="stats-note">{latest.reviewer_signins} store reviewer sign-ins this hour.</p>}
     {latest?.signup_spike && <p role="status">Account creation is above the alert threshold.</p>}
     {latest?.signin_spike && <p role="status">Failed sign-ins are above the alert threshold.</p>}
     <p className="stats-note">Account creation includes addresses awaiting email verification. Failed sign-ins include throttled attempts.

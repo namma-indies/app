@@ -187,3 +187,53 @@ configuration, consistently across workers, and deploy the migrations:
    allowlist; it does not sign out existing accounts.
 
 #184 remains open for provider capacity confirmation and moderator readiness.
+
+## Store reviewer access (#203, separate from open sign-up)
+
+This door is **off by default** and does not need `EMAIL_OPEN_SIGNUP=true`, an
+allowlisted address, a real inbox or the pilot passcode. It is for both Apple
+and Google reviewers. Ship a native build containing the new sign-in option;
+enabling the server flag cannot add it to an older installed bundle.
+
+Aswin sets only these additional values, privately and consistently on all API
+workers, when a store review needs access:
+
+- `STORE_REVIEW_SECRET`: an independently generated random ASCII secret, 32–512
+  characters (for example, generate one with `openssl rand -hex 32`). Do not
+  reuse the pilot passcode or session/signing keys. It is a backend setting,
+  never a `VITE_*` value or a credential committed to this repository.
+- `STORE_REVIEW_ENABLED=true`. Startup refuses an enabled door without a usable
+  secret. Keep false for deployments that do not need reviewer access.
+
+Supply the code only through the stores' private app-access/review notes:
+“On the sign-in screen choose **Store reviewer**, paste the supplied reviewer
+code, and choose **Sign in as reviewer**. No email address is needed.” If a
+console requires an account label, use “Store reviewer”; authentication uses
+the code. Do not put the live credential in an issue, PR, screenshot or build.
+
+The first valid login creates one `Store reviewer` account; later logins reuse
+it across stores, workers, deployments and secret rotations. A partial unique
+index enforces one marked account. It has no email. The account marker blocks
+moderation server-side, even if its trust tier is accidentally promoted, and
+`/me` never advertises it as a moderator.
+
+The account has the normal capture experience and the normal upload budgets.
+Review uploads therefore join the same cohort; decide what demonstration data
+and reset policy the stores should see before supplying access. This code does
+not seed or touch production data. A banned or erased review account is refused,
+never replaced to bypass the ban or deletion. A pending deletion can still be
+kept from the account screen within its grace period.
+
+Reviewer sessions require a separate signed, seven-day, HTTP-only credential
+in addition to the normal session. **Disabling the flag or rotating the reviewer
+secret revokes them on the next request**, including already-issued sessions.
+Logout clears both credentials. Failed attempts use persisted rate limits and
+progressive backoff; defaults are `RL_STORE_REVIEW_TIMES=5` per
+`RL_STORE_REVIEW_WINDOW_S=900` per source IP. Success/failure outcomes are logged
+without code/cookie values; successful reviewer logins also appear in the private
+hourly abuse signals.
+
+Before submission, verify a fresh install can sign in, cannot moderate, and can
+use the intended demo content. Disable the door after review; rotate its secret
+before the next review round. #185 stays open for labels, support, ratings,
+screenshots, review notes, release builds and the rest of store submission work.

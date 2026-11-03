@@ -16,6 +16,7 @@ from app.db import effective_dsn
 from app.deps import get_storage
 from app.static import FrontendStaticFiles
 from app.routes.auth import router as auth_router
+from app.routes.store_review import router as store_review_router
 from app.routes.dex import router as dex_router
 from app.routes.dogs import router as dogs_router
 from app.routes.erase import router as erase_router
@@ -126,6 +127,7 @@ app.add_middleware(
     expose_headers=["Retry-After"],
 )
 app.include_router(auth_router)
+app.include_router(store_review_router)
 app.include_router(join_router)
 app.include_router(dex_router)
 app.include_router(dogs_router)

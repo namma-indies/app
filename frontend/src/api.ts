@@ -1009,7 +1009,7 @@ export interface AbuseSignals {
   collection_started_at: string;
   hours: { hour: string; signups: number; failed_signins: number; auth_throttled: number;
     uploads: number; upload_throttled: number; email_throttled: number; email_failed: number;
-    signup_spike: boolean; signin_spike: boolean }[];
+    signup_spike: boolean; signin_spike: boolean; reviewer_signins?: number }[];
   upload_spikes: { id: string; display_name: string | null; recent: number; previous: number }[];
   email_capacity: { daily_budget: number; reserved_last_24h: number; accepted_last_24h: number;
     send_interval_s: number; retry_at: string | null };

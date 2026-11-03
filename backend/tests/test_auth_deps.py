@@ -40,7 +40,12 @@ def _req(cookie: str | None, row=None):
     return Request({"type": "http", "headers": headers, "app": _App()})
 
 
-ACTIVE = {"deleted_at": None, "deletion_requested_at": None, "banned_at": None}
+ACTIVE = {
+    "deleted_at": None,
+    "deletion_requested_at": None,
+    "banned_at": None,
+    "store_reviewer": False,
+}
 NOW = datetime.now(timezone.utc)
 
 
@@ -61,7 +66,7 @@ async def test_require_observer_rejects_missing_and_bad():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("row", ["missing", {"deleted_at": NOW, "deletion_requested_at": None, "banned_at": None}])
+@pytest.mark.parametrize("row", ["missing", {**ACTIVE, "deleted_at": NOW}])
 async def test_a_validly_signed_session_for_a_deleted_account_is_401(row):
     """The cookie never expires; the account behind it can (#179)."""
     class _Missing(_Pool):
@@ -78,7 +83,7 @@ async def test_a_validly_signed_session_for_a_deleted_account_is_401(row):
 
 @pytest.mark.asyncio
 async def test_an_account_pending_deletion_reaches_only_the_account_routes():
-    oid, pending = uuid7(), {"deleted_at": None, "deletion_requested_at": NOW, "banned_at": None}
+    oid, pending = uuid7(), {**ACTIVE, "deletion_requested_at": NOW}
     with pytest.raises(HTTPException) as e:
         await require_observer(_req(issue_session(oid), pending))
     assert (e.value.status_code, e.value.detail) == (403, "account_pending_deletion")
@@ -100,7 +105,7 @@ def test_session_cookie_is_cross_origin_capable():
 
 @pytest.mark.asyncio
 async def test_a_banned_account_is_suspended_but_can_still_delete_itself():
-    oid, banned = uuid7(), {"deleted_at": None, "deletion_requested_at": None, "banned_at": NOW}
+    oid, banned = uuid7(), {**ACTIVE, "banned_at": NOW}
     with pytest.raises(HTTPException) as e:
         await require_observer(_req(issue_session(oid), banned))
     assert (e.value.status_code, e.value.detail) == (403, "account_suspended")
