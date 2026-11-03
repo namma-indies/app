@@ -6,3 +6,11 @@
 .mod-audit-card { padding: 1rem; }
 .mod-audit-card p { margin: .5rem 0; overflow-wrap: anywhere; }
 .mod-target-id { font-size: .75rem; }
+.mod-grievance-search { display: flex; gap: .5rem; padding: 1rem; align-items: end; }
+.mod-grievance-search label { flex: 1; font-size: .8rem; }
+.mod-grievance-search input, .mod-decision-reason input { display: block; width: 100%; box-sizing: border-box; font: inherit; }
+.mod-grievance-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
+.mod-grievance-details { white-space: pre-wrap; }
+.mod-grievance-photos { display: flex; gap: .5rem; overflow-x: auto; margin-top: .75rem; }
+.mod-grievance-photos img { width: 120px; height: 120px; object-fit: contain; }
+.admin .scope-toggle { flex-wrap: wrap; }

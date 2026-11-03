@@ -36,6 +36,7 @@ describe("an account scheduled for deletion signing back in (#179)", () => {
     await userEvent.click(await screen.findByRole("button", { name: "signed in" }));
     expect(await screen.findByRole("button", { name: "Keep my account" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "signed in" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Grievances" }).getAttribute("href")).toMatch(/\/grievances$/);
   });
 });
 
@@ -47,5 +48,6 @@ describe("a suspended account (#180)", () => {
     render(<App />);
     expect(await screen.findByText("Your account has been suspended")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "delete account" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Grievances and officer contact" }).getAttribute("href")).toMatch(/\/grievances$/);
   });
 });

@@ -151,6 +151,7 @@ export default function App() {
       <div className="app">
         <PendingDeletion account={pendingDeletion} onKept={reprobeAuth} onSignOut={() => void signOut()}
           onUnauthorized={() => { setPendingDeletion(null); setUnauthorized(true); }} />
+        <div className="legal-row"><a href={`${API_BASE}/grievances`}>Grievances</a></div>
       </div>
     );
   }
@@ -160,8 +161,8 @@ export default function App() {
       <div className="app">
         <div className="empty-state pending-deletion">
           <h2>Your account has been suspended</h2>
-          <p>A moderator has suspended this account. If you think that’s wrong, write to{" "}
-            <a href="mailto:nammaindies@gmail.com">nammaindies@gmail.com</a>. You can still delete your account.</p>
+          <p>A moderator has suspended this account. You can still delete your account.</p>
+          <a href={`${API_BASE}/grievances`}>Grievances and officer contact</a>
           <button className="link-btn" onClick={() => setDeletingAccount(true)}>delete account</button>
           <button className="link-btn" onClick={() => void signOut()}>sign out</button>
         </div>
@@ -245,6 +246,7 @@ export default function App() {
           <Dex onUnauthorized={() => setUnauthorized(true)} />
         )}
       </div>
+      <div className="legal-row"><a href={`${API_BASE}/grievances`}>Grievances</a></div>
       <div className="tabbar">
         <button className={tab === "capture" ? "active" : ""} onClick={() => setTab("capture")}>
           <span className="icon">📷</span>

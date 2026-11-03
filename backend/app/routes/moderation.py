@@ -24,7 +24,7 @@ from app.config import settings
 from app.deps import get_conn, get_storage
 from app.detect_reid import DETECTOR_NAME
 from app.ids import uuid7
-from app.moderation_ops import SEVERE_REASONS, action_reason, record_action, report_clock
+from app.moderation_ops import SEVERE_REASONS, action_reason, apply_sighting_action, record_action, report_clock
 from app.moderator_alerts import alert_moderators, recipients
 from app.photos import thumb_key
 from app.security import email_hash
@@ -266,25 +266,8 @@ async def review_sighting(
     if action is not None and (action in {"hide", "reject"}) != (verdict == "rejected"):
         raise HTTPException(422, "Action and verdict disagree")
     async with conn.transaction():
-        capture_id = await conn.fetchval("SELECT capture_id FROM sightings WHERE id=$1", sighting_id)
-        await conn.execute("SELECT id FROM captures WHERE id=$1 FOR UPDATE", capture_id)
-        old_rows = await conn.fetch("SELECT id, review_status FROM sightings WHERE id=$1 OR capture_id=$2 FOR UPDATE", sighting_id, capture_id)
-        old_states = {r["id"]: r["review_status"] for r in old_rows}
-        if sighting_id not in old_states:
-            raise HTTPException(status_code=404, detail="no such sighting")
-        updated = await conn.fetch(
-            "UPDATE sightings SET review_status = $2, reviewed_at = now(), "
-            "reviewed_by = $3, updated_at = now() WHERE id = $1 OR capture_id=$4 RETURNING id",
-            sighting_id, verdict, moderator_id, capture_id,
-        )
-        await conn.execute(
-            "UPDATE sighting_reports SET resolved_at=now() WHERE sighting_id=ANY($1::uuid[]) AND resolved_at IS NULL",
-            [r["id"] for r in updated])
-        for r in updated:
-            old_state = old_states[r["id"]]
-            audit_action = action or ("hide" if verdict == "rejected" else "unhide" if old_state != "valid" else "dismiss")
-            await record_action(conn, moderator_id=moderator_id, target_kind="sighting", target_id=r["id"],
-                                action=audit_action, reason=reason, previous_state=old_state, new_state=verdict)
+        await apply_sighting_action(conn, sighting_id=sighting_id, verdict=verdict,
+                                    moderator_id=moderator_id, reason=reason, action=action)
     logger.info(
         "sighting=%s reviewed as %s by moderator=%s", sighting_id, verdict, moderator_id
     )

@@ -13,6 +13,7 @@ import {
 import { formatWhen } from "../formatWhen";
 import { speciesNoun, speciesWithArticle } from "../species";
 import { ModerationAlerts, ModerationAudit } from "../components/ModerationOperations";
+import Grievances from "../components/Grievances";
 import { useReloadGuard } from "../update/reloadGuard";
 
 /** The queue of reported sightings, for whoever holds `trust_tier='moderator'`.
@@ -53,7 +54,8 @@ const REASON_LABELS: Record<ReportReason, (species?: string | null) => string> =
 };
 
 export default function Moderation({ onUnauthorized }: { onUnauthorized: () => void }) {
-  const [queue, setQueue] = useState<"reported" | "flagged" | "audit">("reported");
+  const [queue, setQueue] = useState<"reported" | "flagged" | "audit" | "grievances">(() =>
+    new URLSearchParams(window.location.search).get("queue") === "grievances" ? "grievances" : "reported");
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const [now, setNow] = useState(Date.now);
   const [items, setItems] = useState<ModerationItem[] | null>(null);
@@ -174,11 +176,15 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
       <button className={queue === "audit" ? "active" : ""} onClick={() => setQueue("audit")}>
         AUDIT LOG
       </button>
+      <button className={queue === "grievances" ? "active" : ""} onClick={() => setQueue("grievances")}>
+        GRIEVANCES
+      </button>
     </div>
     </>
   );
 
   if (queue === "audit") return <>{toggle}<ModerationAudit onUnauthorized={onUnauthorized} /></>;
+  if (queue === "grievances") return <>{toggle}<Grievances onUnauthorized={onUnauthorized} /></>;
 
   if (queue === "flagged") {
     if (failedFlagged) {

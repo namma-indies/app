@@ -66,12 +66,19 @@ async def prepare_alerts(conn) -> int:
             if not batch:
                 continue
             subject = "IndieDex: urgent moderation review" if urgent else "IndieDex: moderation digest"
-            link = settings.public_base_url.rstrip("/") + "/?tab=moderation"
+            root = settings.public_base_url.rstrip("/") + "/?tab=moderation"
+            grievances = any(r["category"].startswith("grievance_") for r in batch)
+            only_grievances = all(r["category"].startswith("grievance_") for r in batch)
+            link = root + "&queue=grievances" if only_grievances else root
             # Counts, machine labels and opaque IDs only: never forward reports,
             # images, precise locations or complainant addresses by email.
             lines = [f"{r['category']}: {r['subject_id']} ({r['created_at'].isoformat()})" for r in batch]
             text = f"{len(batch)} item(s) need moderator review.\n\n" + "\n".join(lines) + f"\n\nOpen the moderator queue (sign-in required):\n{link}\n"
             html = f"<p>{len(batch)} item(s) need moderator review.</p><ul>" + "".join(f"<li>{escape(line)}</li>" for line in lines) + f'</ul><p><a href="{escape(link, quote=True)}">Open the moderator queue (sign-in required)</a></p>'
+            if grievances and not only_grievances:
+                complaint_link = root + "&queue=grievances"
+                text += f"\nGrievance queue (sign-in required):\n{complaint_link}\n"
+                html += f'<p><a href="{escape(complaint_link, quote=True)}">Open the grievance queue (sign-in required)</a></p>'
             for address in addresses:
                 await queue_message(conn, dedupe_key=f"alerts:{batch[0]['id']}:{address}",
                                     recipient=address, subject=subject, text=text, html=html, urgent=urgent)

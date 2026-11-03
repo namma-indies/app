@@ -172,6 +172,8 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
       {/* The gate is where an app reviewer lands before they have credentials,
           so the policy and a way to reach us have to be readable from here. */}
       <div className="legal-row">
+        <a href={`${API_BASE}/grievances`}>grievances</a>
+        <span aria-hidden="true"> · </span>
         <a href="https://nammaindies.org/privacy" target="_blank" rel="noreferrer">
           privacy
         </a>

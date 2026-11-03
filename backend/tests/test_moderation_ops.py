@@ -114,7 +114,7 @@ async def test_audit_failure_rolls_back_the_moderator_decision(authed_client, mo
     client, oid = authed_client
     sid = await _post(client)
     await _make_moderator(client, oid)
-    monkeypatch.setattr("app.routes.moderation.record_action", AsyncMock(side_effect=RuntimeError("audit failed")))
+    monkeypatch.setattr("app.moderation_ops.record_action", AsyncMock(side_effect=RuntimeError("audit failed")))
     with pytest.raises(RuntimeError):
         await client.post(f"/sighting/{sid}/review", data={"verdict": "rejected", "reason": "Evidence reviewed"})
     assert await _status(client, sid) == "valid"
