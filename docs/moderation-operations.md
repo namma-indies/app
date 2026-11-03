@@ -61,6 +61,7 @@ timeout and bounded retry delay. Successful recipients are recorded separately;
 one failed mailbox does not resend mail to everybody else. A crash between
 provider acceptance and recording success can duplicate that one message
 (at-least-once delivery). Urgent mail takes priority over digest backlog.
+Console mode keeps mail pending; a log message never counts as delivery.
 
 The moderator view reports unconfigured delivery, pending counts and failed
 messages retrying. Report clocks start at the first unanswered report; editing
@@ -72,3 +73,94 @@ Fresh reports open a new clock. Severe reports sort ahead of ordinary ones.
 moderators. The application role has insert/select access to the ledger and
 cannot update or delete entries. Existing sign-in and deletion mail flows use
 their existing sender; moderation adds no mail vendor or credentials.
+
+## Public grievances (#190, code scope #199)
+
+The public `/grievances` page works without an account. It reads the officer's
+name, email and other contact details from settings, with honest placeholders
+until a person is appointed. Links from sign-in and the app make it reachable;
+the service worker leaves it to the server, including on installed PWAs.
+
+Intake accepts a type, link or sighting ID, details and contact email. Request
+size and field lengths are bounded. Separate per-IP and per-email budgets
+dampen spam without requiring an account. The form's submission key makes a
+network/browser retry return the original reference and queue no extra email.
+Complaint details/contact information are moderator-only and are never copied
+into acknowledgement or moderator-alert emails. Linked sighting frames can be
+opened at full size from the moderator queue; URLs are signed together in one
+batch. No complaint status lookup is exposed to anonymous callers.
+
+Each accepted complaint gets a random reference and a durable acknowledgement
+email. The public receipt says that email is queued, not already delivered.
+The acknowledgement clock stops only when the real sender accepts the email;
+console mode does not drain the outbox. Closed complaints with an unsent
+acknowledgement stay in the active queue. Failed delivery and overdue clocks
+remain visible.
+
+### Deadline defaults — all require lawyer confirmation
+
+| Complaint | Acknowledge | Resolve | Removal/action review |
+| --- | --- | --- | --- |
+| Takedown | 24 hours | 7 days | 36 hours |
+| Privacy | 24 hours | 7 days | 36 hours |
+| Non-consensual intimate imagery | 24 hours | 7 days | 2 hours |
+| Government or court order | 24 hours | 7 days | 3 hours |
+| Other | 24 hours | 7 days | — |
+
+These are provisional tracking targets from the task, not a legal conclusion.
+Every deadline and its applicability is labelled for lawyer confirmation on the
+public page and moderator queue. In particular, applying the 36-hour clock to
+all privacy requests is a conservative provisional classification. A lawyer
+must confirm the scope, start events, exceptions and what counts as completion.
+Deadlines are snapshotted on intake; configuration changes do not rewrite them.
+
+Intimate-imagery and government/order cases sort first. All categories except
+`other` alert immediately; `other` uses the ordinary digest. Filing an
+unauthenticated complaint does not itself hide content: a moderator verifies
+the concern/order and acts, preventing a claimed order from being a public
+take-down switch. Hiding linked content affects the shared capture and records
+both content and complaint actions in one transaction. It stops the removal
+clock but leaves resolution open. Resolving or dismissing requires a reason;
+closed-without-removal is shown explicitly. Moderators reply using the contact
+email; marking resolved records the decision, and does not send a resolution
+email automatically. Reference lookup includes closed complaints.
+
+### Grievance settings Aswin must fill in
+
+| Setting | Purpose | Default |
+| --- | --- | --- |
+| `GRIEVANCE_OFFICER_NAME` | The appointed person's published name | empty placeholder |
+| `GRIEVANCE_OFFICER_EMAIL` | Published officer email | empty placeholder |
+| `GRIEVANCE_OFFICER_CONTACT` | Other published contact instructions/details | empty placeholder |
+| `GRIEVANCE_ACKNOWLEDGE_HOURS` | All acknowledgement clocks | `24` |
+| `GRIEVANCE_RESOLVE_HOURS` | All resolution clocks | `168` |
+| `GRIEVANCE_REMOVAL_HOURS` | Takedown/privacy removal review | `36` |
+| `GRIEVANCE_INTIMATE_HOURS` | Intimate-imagery urgent review | `2` |
+| `GRIEVANCE_GOVERNMENT_HOURS` | Government/court-order urgent review | `3` |
+
+The moderator-recipient, real sender and public-base settings above are also
+required. Optional intake controls are `RL_GRIEVANCE_IP_TIMES` (20),
+`RL_GRIEVANCE_EMAIL_TIMES` (5) and `RL_GRIEVANCE_WINDOW_S` (3600). These are
+per-window abuse budgets, not people/complaint quotas.
+
+### Product and people decisions for Akash
+
+- Confirm severe-report categories, one-report holding (including after a
+  previous approval), response targets and the 60-minute ordinary digest.
+- Confirm the grievance category-to-clock mapping with a lawyer, including
+  whether every privacy complaint needs the 36-hour clock.
+- Name the officer, rota, escalation contacts and coverage for 2/3-hour cases.
+- Decide complaint/audit/mail retention, access after a moderator leaves, and
+  the privacy-policy wording for retaining anonymous grievance contact data.
+- Confirm the manual final-reply workflow, or commission a reply composer if
+  automatic resolution emails are wanted. The current automatic email is the
+  acknowledgement requested in this task.
+
+Complaints retain an opaque sighting reference after photo erasure and can also
+refer to content already gone at intake. This link deliberately has no foreign
+key: erasure must not be held up by a complaint, or introduce a reverse lock
+order with moderator actions. Photo erasure removes the media/rows; a grievance
+does not preserve a copy of that evidence. Legal retention/hold requirements
+remain a question for counsel.
+
+Parents #190 and #191 remain open for those people, legal and operations tasks.

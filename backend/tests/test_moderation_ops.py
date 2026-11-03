@@ -114,7 +114,7 @@ async def test_audit_failure_rolls_back_the_moderator_decision(authed_client, mo
     client, oid = authed_client
     sid = await _post(client)
     await _make_moderator(client, oid)
-    monkeypatch.setattr("app.routes.moderation.record_action", AsyncMock(side_effect=RuntimeError("audit failed")))
+    monkeypatch.setattr("app.moderation_ops.record_action", AsyncMock(side_effect=RuntimeError("audit failed")))
     with pytest.raises(RuntimeError):
         await client.post(f"/sighting/{sid}/review", data={"verdict": "rejected", "reason": "Evidence reviewed"})
     assert await _status(client, sid) == "valid"
@@ -166,6 +166,7 @@ async def test_missing_recipients_preserves_events_and_reports_unconfigured(auth
 async def test_failed_mail_retries_without_resending_successful_recipient(authed_client, monkeypatch):
     client, _ = authed_client
     pool = await _pool(client)
+    monkeypatch.setattr(settings, "email_sender", "ses")
     monkeypatch.setattr(settings, "moderator_alert_emails", "a@example.invalid,b@example.invalid")
     sender = AsyncMock()
     sender.send_message.side_effect = [None, ValueError("sensitive provider details"), None]
@@ -187,6 +188,7 @@ async def test_failed_mail_retries_without_resending_successful_recipient(authed
 async def test_expired_delivery_lease_is_recovered_and_urgent_precedes_digest(authed_client, monkeypatch):
     client, _ = authed_client
     pool = await _pool(client)
+    monkeypatch.setattr(settings, "email_sender", "ses")
     sender = AsyncMock()
     monkeypatch.setattr(alerts, "get_sender", lambda: sender)
     async with pool.acquire() as conn:
@@ -197,3 +199,35 @@ async def test_expired_delivery_lease_is_recovered_and_urgent_precedes_digest(au
     assert sender.send_message.await_args.args[1] == "urgent"
     assert await alerts.deliver_one(pool)
     assert sender.send_message.await_args.args[1] == "digest"
+
+
+async def test_console_mode_keeps_mail_pending_until_real_delivery_is_configured(authed_client, monkeypatch):
+    client, _ = authed_client
+    pool = await _pool(client)
+    monkeypatch.setattr(settings, "email_sender", "console")
+    sender = AsyncMock()
+    monkeypatch.setattr(alerts, "get_sender", lambda: sender)
+    async with pool.acquire() as conn:
+        await alerts.queue_message(conn, dedupe_key="pending", recipient="mod@example.invalid", subject="Pending", text="Pending", html="<p>Pending</p>")
+    assert not await alerts.deliver_one(pool)
+    sender.send_message.assert_not_awaited()
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("SELECT sent_at FROM moderation_mail") is None
+        assert await conn.fetchval("SELECT attempts FROM moderation_mail") == 0
+
+
+async def test_severe_reason_edits_emit_one_urgent_alert_per_open_episode(authed_client):
+    client, oid = authed_client
+    sid = await _post(client)
+    await _report(client, sid, reason="other")
+    for reason in ("people_privacy", "sexual_content", "illegal_content") * 3:
+        await _report(client, sid, reason=reason)
+    async with (await _pool(client)).acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM moderator_alerts WHERE urgent") == 1
+        assert await conn.fetchval("SELECT count(*) FROM moderator_alerts WHERE NOT urgent") == 1
+    await _make_moderator(client, oid)
+    await client.post(f"/sighting/{sid}/review", data={"verdict": "valid", "reason": "Concern assessed"})
+    for reason in ("sexual_content", "people_privacy", "illegal_content") * 2:
+        await _report(client, sid, reason=reason)
+    async with (await _pool(client)).acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM moderator_alerts WHERE urgent") == 2

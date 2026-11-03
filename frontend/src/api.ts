@@ -839,6 +839,47 @@ export interface ModerationAlertStatus {
   delivery_configured: boolean;
 }
 
+export type GrievanceKind = "takedown" | "privacy" | "intimate_imagery" | "government_order" | "other";
+export interface Grievance {
+  id: string;
+  reference: string;
+  kind: GrievanceKind;
+  target: string;
+  sighting_id: string | null;
+  details: string;
+  contact_email: string;
+  status: "open" | "in_review" | "resolved" | "dismissed";
+  received_at: string;
+  acknowledge_due_at: string;
+  resolve_due_at: string;
+  removal_due_at: string | null;
+  acknowledged_at: string | null;
+  acknowledgement_error: string | null;
+  removed_at: string | null;
+  resolved_at: string | null;
+  resolution_reason: string | null;
+  age_seconds: number;
+  acknowledgement_overdue: boolean;
+  resolution_overdue: boolean;
+  removal_overdue: boolean;
+  next_due_at: string | null;
+  legal_confirmation_required: boolean;
+  photos?: { thumb_url: string; photo_url: string }[];
+}
+
+export async function getGrievances(options: { includeClosed?: boolean; reference?: string } = {}): Promise<{ items: Grievance[]; legal_note: string }> {
+  const query = new URLSearchParams();
+  if (options.includeClosed) query.set("include_closed", "true");
+  if (options.reference) query.set("reference", options.reference);
+  return handle(await fetch(`${API_BASE}/moderation/grievances?${query}`, { credentials: "include" }));
+}
+
+export async function decideGrievance(id: string, action: "hide" | "resolve" | "dismiss", reason: string, sightingId?: string): Promise<void> {
+  await handleWithDetail(await sendJson(`/moderation/grievances/${encodeURIComponent(id)}/action`, "POST", {
+    action, reason, sighting_id: sightingId || null,
+  }));
+}
+
 export interface ModerationAction {
   id: string;
   moderator_id: string;

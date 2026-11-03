@@ -261,6 +261,7 @@ export default function App() {
           </button>
         )}
       </div>
+      <div className="legal-row"><a href={`${API_BASE}/grievances`}>Grievances</a></div>
       {hapticsCheck && (
         <HapticsCheck
           onClose={() => {
