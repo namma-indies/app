@@ -942,7 +942,12 @@ button { font-family: inherit; }
 .mod-meta { min-width: 0; }
 /* Held uploads (#181): whole frames, larger, as the frame is the question. */
 .held-thumbs { display: flex; gap: 8px; overflow-x: auto; margin-bottom: 10px; }
-.held-thumbs .mod-thumb { width: 140px; height: 140px; }
+/* `contain`, not the queue's usual `cover`: the whole frame is the question,
+ * and a crop could cut off the very person or room that held it. */
+.held-thumbs .mod-thumb { width: 140px; height: 140px; object-fit: contain; background: #111; }
+.held-thumbs a { flex: 0 0 auto; line-height: 0; }
+/* A frame that would have held the upload on its own. */
+.held-thumbs .mod-thumb.flagged { outline: 3px solid #d94f30; outline-offset: -3px; }
 .mod-notes {
   margin: 10px 0 0;
   padding-left: 18px;

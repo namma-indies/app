@@ -126,12 +126,12 @@ async def _claim(conn, lease_s: float, token: str):
 async def _plan(conn, capture_id: UUID):
     """(thumb keys, typed text) to look at, or None when there is nothing to
     decide: a moderator ruled first, or the upload went."""
-    from app.screening import FRAME_KEYS
+    from app.screening import frames_sql
     row = await conn.fetchrow(
         f"""SELECT c.screening, c.attrs->>'note' AS note,
                    (SELECT string_agg(DISTINCT s.attrs->>'known_name', ', ')
                     FROM sightings s WHERE s.capture_id = c.id) AS names,
-                   {FRAME_KEYS.format(capture="c.id", limit="$2")} AS keys
+                   ARRAY(SELECT f.s3_key FROM ({frames_sql("c.id")}) f LIMIT $2) AS keys
             FROM captures c WHERE c.id = $1""", capture_id, MAX_IMAGES)
     if row is None or row["screening"] != "checking" or not row["keys"]:
         return None
