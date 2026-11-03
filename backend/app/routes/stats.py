@@ -33,7 +33,7 @@ async def get_stats(
     _observer: UUID = Depends(require_observer),
     conn=Depends(get_conn),
 ):
-    check(f"obs:{_observer}", stats_limit())
+    await check(conn, f"obs:{_observer}", stats_limit())
     kind = kind or settings.area_default_kind
     rows = await aggregates.area_rows(conn, kind)
     kept, suppressed = aggregates.suppress(rows, kind)
@@ -53,7 +53,7 @@ async def get_stats_areas(
     _observer: UUID = Depends(require_observer),
     conn=Depends(get_conn),
 ):
-    check(f"obs:{_observer}", stats_limit())
+    await check(conn, f"obs:{_observer}", stats_limit())
     kind = kind or settings.area_default_kind
     rows = await aggregates.area_rows(conn, kind)
     kept, suppressed = aggregates.suppress(rows, kind)
@@ -71,7 +71,7 @@ async def get_stats_area(
     _observer: UUID = Depends(require_observer),
     conn=Depends(get_conn),
 ):
-    check(f"obs:{_observer}", stats_limit())
+    await check(conn, f"obs:{_observer}", stats_limit())
     kind = await conn.fetchval("SELECT kind FROM areas WHERE id = $1", area_id)
     if kind is None:
         raise HTTPException(status_code=404)
@@ -113,7 +113,7 @@ async def get_stats_observers(
 
     404 rather than 403 for a non-moderator -- see require_moderator.
     """
-    check(f"obs:{_moderator}", stats_limit())
+    await check(conn, f"obs:{_moderator}", stats_limit())
     rows = await aggregates.observer_rows(conn)
     return {
         "observers": [

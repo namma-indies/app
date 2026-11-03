@@ -41,8 +41,8 @@ class Settings(BaseSettings):
     # no allowlist. A flag of its own rather than "empty allowlist means
     # everyone", because `is_allowed` fails closed on purpose -- inverting that
     # would make deleting a line in `.env` a silent public launch. Opening the
-    # door should take a deliberate act. Requires SES production access, granted
-    # 2026-08-01 (50k/day, any recipient).
+    # door should take a deliberate act. Requires SES production access and
+    # confirmation of the live regional sending quotas; comments are not quotas.
     email_open_signup: bool = False
 
     # "console" (default) prints the link to the log; "ses" actually sends.
@@ -339,11 +339,22 @@ class Settings(BaseSettings):
     geocode_timeout_s: float = Field(default=8.0, gt=0, le=60)
 
     # --- rate limiting -----------------------------------------------------
-    # In-process fixed windows. The container runs a single uvicorn with no
-    # --workers, so the counts are exact. Two consequences, neither a bug but
-    # both worth knowing: limits reset on deploy, and adding --workers would
-    # silently multiply every limit below by the worker count.
+    # Postgres-backed: shared across processes and retained across deploys.
     rate_limit_enabled: bool = True
+
+    # A separate rolling cooldown, even when the fixed address window has room.
+    auth_email_cooldown_s: int = Field(default=60, ge=1, le=3600)
+    # Third failure starts at 5 seconds, doubling to 15 minutes. A blocked
+    # request does not extend the block; an hour without failure resets it.
+    auth_backoff_after: int = Field(default=3, ge=1, le=20)
+    auth_backoff_base_s: int = Field(default=5, ge=1, le=60)
+    auth_backoff_max_s: int = Field(default=900, ge=60, le=3600)
+    auth_failure_window_s: int = Field(default=3600, ge=3600, le=86400)
+    # First-party SHA-256 proof-of-work, required on every passcode join.
+    # No third-party script, cookie, service or transfer of visitor data.
+    join_pow_bits: int = Field(default=16, ge=8, le=22)
+    join_pow_ttl_s: int = Field(default=300, ge=30, le=600)
+    rl_join_challenge_times: int = Field(default=60, ge=1, le=1000)
 
     # Generous. Exists so a runaway client cannot spin the database, not to
     # ration anything.
