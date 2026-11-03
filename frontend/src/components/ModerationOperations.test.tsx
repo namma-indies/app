@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ModerationAlerts, ModerationAudit } from "./ModerationOperations";
-import { getModerationAlertStatus, getModerationAudit } from "../api";
+import { getModerationAlertStatus, getModerationAudit, reviewSighting } from "../api";
+import { isBusy } from "../update/reloadGuard";
 
 vi.mock("../api", async (original) => ({ ...(await original<typeof import("../api")>()),
-  getModerationAlertStatus: vi.fn(), getModerationAudit: vi.fn() }));
-afterEach(cleanup);
+  getModerationAlertStatus: vi.fn(), getModerationAudit: vi.fn(), reviewSighting: vi.fn() }));
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 it("shows unconfigured delivery and failed mail retrying", async () => {
   vi.mocked(getModerationAlertStatus).mockResolvedValue({ delivery_configured: false, recipient_count: 0,
@@ -30,4 +31,21 @@ it("renders reasons as text and loads older audit decisions", async () => {
   await userEvent.click(screen.getByRole("button", { name: "OLDER DECISIONS" }));
   expect(await screen.findByText("Older decision")).toBeInTheDocument();
   expect(getModerationAudit).toHaveBeenLastCalledWith("one");
+});
+
+it("holds an automatic reload while a reasoned restoration is saving", async () => {
+  const entry = { id: "one", moderator_id: "moderator-id", moderator: "Moderator", target_kind: "sighting" as const,
+    target_id: "subject-id", action: "hide" as const, reason: "Earlier concern",
+    previous_state: "pending", new_state: "rejected", created_at: "2026-01-01T00:00:00Z" };
+  vi.mocked(getModerationAudit).mockResolvedValueOnce({ items: [entry], next_cursor: null })
+    .mockResolvedValueOnce({ items: [], next_cursor: null });
+  vi.spyOn(window, "prompt").mockReturnValue("Appeal reviewed");
+  let finish!: () => void;
+  vi.mocked(reviewSighting).mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+  render(<ModerationAudit onUnauthorized={() => {}} />);
+  await userEvent.click(await screen.findByRole("button", { name: "RESTORE SIGHTING" }));
+  expect(isBusy()).toBe(true);
+  await act(async () => { finish(); });
+  await waitFor(() => expect(isBusy()).toBe(false));
+  expect(reviewSighting).toHaveBeenCalledWith("subject-id", "valid", "Appeal reviewed", "unhide");
 });

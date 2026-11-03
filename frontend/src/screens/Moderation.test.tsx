@@ -12,6 +12,7 @@ vi.mock("../api", async (importOriginal) => ({
 
 import { getModerationQueue, reviewSighting, type ModerationItem } from "../api";
 import Moderation from "./Moderation";
+import { isBusy } from "../update/reloadGuard";
 
 afterEach(cleanup);
 
@@ -73,10 +74,26 @@ describe("Moderation", () => {
     render(<Moderation onUnauthorized={() => {}} />);
 
     await userEvent.type(await screen.findByLabelText("Decision reason"), "Evidence reviewed");
+    expect(isBusy()).toBe(true);
     await userEvent.click(await screen.findByRole("button", { name: "HIDE IT" }));
 
     expect(reviewSighting).toHaveBeenCalledWith("s1", "rejected", "Evidence reviewed");
     await waitFor(() => expect(screen.queryByText("HIDE IT")).not.toBeInTheDocument());
+    await waitFor(() => expect(isBusy()).toBe(false));
+  });
+
+  it("keeps a failed decision's reason visible and protects it until retry succeeds", async () => {
+    vi.mocked(getModerationQueue).mockResolvedValue({ items: [item()] });
+    vi.mocked(reviewSighting).mockRejectedValueOnce(new Error("temporary failure")).mockResolvedValue(undefined);
+    render(<Moderation onUnauthorized={() => {}} />);
+    await userEvent.type(await screen.findByLabelText("Decision reason"), "Keep this reason");
+    await userEvent.click(screen.getByRole("button", { name: "HIDE IT" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Your reason is kept");
+    expect(screen.getByLabelText("Decision reason")).toHaveValue("Keep this reason");
+    expect(isBusy()).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: "HIDE IT" }));
+    await waitFor(() => expect(screen.queryByText("HIDE IT")).not.toBeInTheDocument());
+    await waitFor(() => expect(isBusy()).toBe(false));
   });
 
   it("requires a reason before a decision and marks an urgent overdue report", async () => {

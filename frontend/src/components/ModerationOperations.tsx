@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { getModerationAlertStatus, getModerationAudit, reviewSighting, UnauthorizedError,
   type ModerationAction, type ModerationAlertStatus } from "../api";
 import "./ModerationOperations.css";
+import { useReloadGuard } from "../update/reloadGuard";
 
 export function ModerationAlerts({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [status, setStatus] = useState<ModerationAlertStatus | null>(null);
@@ -33,6 +34,7 @@ export function ModerationAudit({ onUnauthorized }: { onUnauthorized: () => void
   const [cursor, setCursor] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState(false);
+  useReloadGuard(busy);
   async function load(before?: string) {
     setBusy(true);
     setFailed(false);
