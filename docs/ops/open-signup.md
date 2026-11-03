@@ -84,6 +84,14 @@ recover that reservation and send past the budget. Tokens remain hashed in
 `login_tokens`; no raw token, address or link is saved in the capacity ledger.
 Account-deletion mail uses the same capacity.
 
+The public deletion-link form reserves capacity before account lookup, including
+requests for unknown addresses, so a shared pause cannot reveal membership.
+Those reservations count conservatively against the app budget even when no
+mail is sent. A known capacity pause returns an HTML wait with `Retry-After` for
+every address. An admitted request gets a neutral inbox/retry message; it never
+claims a message was sent, and a recipient-specific failure cannot reveal who
+has an account.
+
 Transient provider failures back off across workers/restarts. A request retries
 at most three times, with short waits only. A daily-quota refusal immediately
 sets a shared one-hour pause. Permanent refusals do not retry. When admission

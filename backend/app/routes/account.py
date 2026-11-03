@@ -35,14 +35,15 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
 from app import accounts
+from app.abuse import record
 from app.auth.allowlist import normalize_email
 from app.auth.deps import require_account
 from app.auth.logintoken import consume, issue, peek
 from app.config import settings
 from app.deps import get_conn
 from app.email.account_mail import deletion_link, deletion_scheduled, send
-from app.email.delivery import deliver
-from app.ratelimit import check, client_key, email_addr_limit, email_ip_limit
+from app.email.delivery import deliver, reserve
+from app.ratelimit import check, client_key, cooldown, email_addr_limit, email_ip_limit
 from app.routes.join import _STYLE
 
 logger = logging.getLogger(__name__)
@@ -99,7 +100,7 @@ async def cancel_deletion(observer_id: UUID = Depends(require_account), conn=Dep
 
 # --- on the web ---------------------------------------------------------------
 
-def _html(body: str, *, status: int = 200) -> HTMLResponse:
+def _html(body: str, *, status: int = 200, headers=None) -> HTMLResponse:
     return HTMLResponse(f"""<!doctype html>
 <html lang="en">
 <head>
@@ -121,7 +122,7 @@ def _html(body: str, *, status: int = 200) -> HTMLResponse:
     {body}
   </div>
 </body>
-</html>""", status_code=status)
+</html>""", status_code=status, headers=headers)
 
 
 def _what_goes() -> str:
@@ -155,21 +156,35 @@ async def web_request(request: Request, email: str = Form(...), conn=Depends(get
     if not address:
         return _html('<p class="err">That doesn\'t look like an email address.</p>'
                      '<p><a href="/account/delete">Try again</a></p>', status=400)
-    await check(conn, f"delete:ip:{client_key(request)}", email_ip_limit())
-    await check(conn, f"delete:addr:{address}", email_addr_limit())
+    try:
+        await check(conn, f"delete:ip:{client_key(request)}", email_ip_limit())
+        async with conn.transaction():
+            await cooldown(conn, f"delete:addr:{address}", settings.auth_email_cooldown_s)
+            await check(conn, f"delete:addr:{address}", email_addr_limit())
+            # Reserve before lookup, including unknown addresses: responses
+            # about shared capacity must not reveal account membership.
+            slot = await reserve(conn)
+    except HTTPException as exc:
+        await record(conn, "email_throttled")
+        return _html(f'<p class="err">{escape(str(exc.detail))}</p>'
+                     '<p><a href="/account/delete">Try again</a></p>',
+                     status=exc.status_code, headers=exc.headers)
     observer_id = await conn.fetchval(
         "SELECT id FROM observers WHERE email=$1 AND deleted_at IS NULL", address)
     if observer_id is not None:
         token = await issue(conn, observer_id, purpose="delete")
         try:
-            await deliver(conn, lambda: send(address, deletion_link(f"{settings.public_base_url}/account/delete/confirm?token={token}")))
+            await deliver(conn, lambda: send(address, deletion_link(f"{settings.public_base_url}/account/delete/confirm?token={token}")), reserved=slot)
         except Exception:
             # The same page either way: an error here, and only here, would say
             # that an account uses this address.
             logger.warning("deletion link not sent")
-    return _html(f"""<p class="ok">If an IndieDex account uses {escape(address, quote=False)}, we've emailed
-      it a link to confirm deleting it. The link works once, for 30 minutes.</p>
-      <p class="small">Nothing is deleted until you open the link and confirm.</p>""")
+    wait = settings.auth_email_cooldown_s
+    return _html(f"""<p class="ok">We've processed the request. If an IndieDex account uses
+      {escape(address, quote=False)}, check its inbox for a link to confirm deleting it.</p>
+      <p>If no link arrives, wait {wait} seconds and request another one.</p>
+      <p class="small">The link works once, for 30 minutes. Nothing is deleted until you open it and confirm.</p>""",
+      headers={"Retry-After": str(wait)})
 
 
 async def _counts(conn, observer_id: UUID) -> dict:
