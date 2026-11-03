@@ -94,10 +94,14 @@ async def lifespan(app: FastAPI):
     # deletion someone asked for must happen whatever else is switched off.
     from app.accounts import consumer as account_purger
     purger = asyncio.create_task(account_purger(app.state.pool, get_storage()))
+    # Token history has its own expiry window (#209), independent of whether
+    # anybody requests account deletion. It must run with optional workers off.
+    from app.auth.logintoken import consumer as token_housekeeping
+    token_cleaner = asyncio.create_task(token_housekeeping(app.state.pool))
     try:
         yield
     finally:
-        for task in (consumer, suggester, purger):
+        for task in (consumer, suggester, purger, token_cleaner):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
