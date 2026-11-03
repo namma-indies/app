@@ -177,7 +177,9 @@ async def list_proposals(
     away. Without a list they are unreachable, which is why `individuals` is
     empty in production despite the pipeline running end to end.
 
-    Returns both sides with a thumbnail and a date each, because the question
+    Returns the matched gallery photo and the query's supporting views, with
+    thumbnails and originals for zoom. Old proposals use the earliest photo.
+    Each side carries a date, because the question
     is "are these the same dog" and it cannot be answered from ids and a
     score. Nothing about where either sighting was taken: issue #45 keeps exact
     location to animals you photographed, and a pair card is the wrong place
@@ -192,24 +194,24 @@ async def list_proposals(
     """
     rows = await conn.fetch(
         f"""
-        SELECT mp.id, mp.score,
-               a.id AS a_id, a.species AS a_species, a.captured_at AS a_when, pa.s3_key AS a_key,
+        SELECT mp.id, mp.score, mp.query_photo_ids, mp.matched_photo_id,
+               a.id AS a_id, a.species AS a_species, a.captured_at AS a_when, pa.id AS a_photo_id,
                a.observer_id = $1 AS a_mine,
-               b.id AS b_id, b.species AS b_species, b.captured_at AS b_when, pb.s3_key AS b_key,
+               b.id AS b_id, b.species AS b_species, b.captured_at AS b_when, pb.id AS b_photo_id,
                b.observer_id = $1 AS b_mine
         FROM match_proposals mp
         JOIN sightings a ON a.id = mp.sighting_id
         JOIN sightings b ON b.id = mp.candidate_sighting_id
-        -- One representative photo per side. DISTINCT ON inside a lateral
-        -- rather than a join, or a sighting with several frames multiplies the
-        -- proposal into several rows.
+        -- Keep one row per proposal. New proposals show their recorded
+        -- evidence; historical ones fall back to the earliest photo.
         LEFT JOIN LATERAL (
-            SELECT s3_key FROM photos WHERE sighting_id = a.id
+            SELECT id FROM photos WHERE sighting_id = a.id
+              AND (mp.query_photo_ids IS NULL OR id = ANY(mp.query_photo_ids))
             ORDER BY created_at, id LIMIT 1
         ) pa ON TRUE
         LEFT JOIN LATERAL (
-            SELECT s3_key FROM photos WHERE sighting_id = b.id
-            ORDER BY created_at, id LIMIT 1
+            SELECT id FROM photos WHERE sighting_id = b.id
+            ORDER BY (id = mp.matched_photo_id) DESC NULLS LAST, created_at, id LIMIT 1
         ) pb ON TRUE
         WHERE mp.status = 'pending'
           -- Both sides must be showing. A pair where one photo is hidden
@@ -244,17 +246,52 @@ async def list_proposals(
     if not rows:
         return {"proposals": [], "propose_min": settings.reid_propose_min}
 
-    keys, index = [], {}
-    for i, r in enumerate(rows):
-        for side in ("a", "b"):
-            if r[f"{side}_key"]:
-                index[(i, side)] = len(keys)
-                keys.append(thumb_key(r[f"{side}_key"]))
-    urls = await storage.urls(keys)
+    photo_ids = {pid for r in rows for pid in (
+        r["a_photo_id"], r["b_photo_id"], *(r["query_photo_ids"] or [])) if pid}
+    photos = await conn.fetch("""
+        SELECT p.id, p.sighting_id, p.s3_key, ai.id AS instance_id
+        FROM photos p
+        LEFT JOIN animal_instances ai ON ai.evidence_photo_id = p.id
+            AND ai.sighting_id = p.sighting_id
+        WHERE p.id = ANY($1::uuid[])
+        ORDER BY p.created_at, p.id
+    """, list(photo_ids))
+    # Only sign evidence belonging to the expected side, including when an old
+    # proposal has lost its original photo. Array IDs never grant photo access.
+    allowed = {(r["a_id"], pid) for r in rows
+               for pid in (r["query_photo_ids"] or [r["a_photo_id"]])}
+    allowed.update((r["b_id"], r["b_photo_id"]) for r in rows)
+    photos = [p for p in photos if (p["sighting_id"], p["id"]) in allowed]
+    keys = list(dict.fromkeys(key for p in photos
+                             for key in (p["s3_key"], thumb_key(p["s3_key"]))))
+    urls = dict(zip(keys, await storage.urls(keys)))
+    by_id = {p["id"]: p for p in photos}
 
-    def thumb(i, side):
-        j = index.get((i, side))
-        return urls[j] if j is not None else None
+    def evidence(pid, sighting_id):
+        p = by_id.get(pid)
+        if p is None or p["sighting_id"] != sighting_id:
+            return None
+        return {"photo_id": str(p["id"]),
+                "instance_id": str(p["instance_id"]) if p["instance_id"] else None,
+                "photo_url": urls[p["s3_key"]],
+                "thumb_url": urls[thumb_key(p["s3_key"])]}
+
+    def side(r, name):
+        primary = evidence(r[f"{name}_photo_id"], r[f"{name}_id"])
+        ids = r["query_photo_ids"] if name == "a" else None
+        views = [view for pid in (ids or [r[f"{name}_photo_id"]])
+                 if (view := evidence(pid, r[f"{name}_id"])) is not None]
+        return {"sighting_id": str(r[f"{name}_id"]),
+                "species": r[f"{name}_species"],
+                "date": r[f"{name}_when"].date().isoformat(),
+                "thumb_url": primary["thumb_url"] if primary else None,
+                "photo_url": primary["photo_url"] if primary else None,
+                "photo_id": primary["photo_id"] if primary else None,
+                "instance_id": primary["instance_id"] if primary else None,
+                "matched": name == "b" and r["matched_photo_id"] is not None
+                           and r["matched_photo_id"] == r["b_photo_id"],
+                "photos": views,
+                "mine": r[f"{name}_mine"]}
 
     return {
         "propose_min": settings.reid_propose_min,
@@ -262,18 +299,10 @@ async def list_proposals(
             {
                 "id": str(r["id"]),
                 "score": round(float(r["score"]), 4),
-                "a": {"sighting_id": str(r["a_id"]),
-                      "species": r["a_species"],
-                      "date": r["a_when"].date().isoformat(),
-                      "thumb_url": thumb(i, "a"),
-                      "mine": r["a_mine"]},
-                "b": {"sighting_id": str(r["b_id"]),
-                      "species": r["b_species"],
-                      "date": r["b_when"].date().isoformat(),
-                      "thumb_url": thumb(i, "b"),
-                      "mine": r["b_mine"]},
+                "a": side(r, "a"),
+                "b": side(r, "b"),
             }
-            for i, r in enumerate(rows)
+            for r in rows
         ],
     }
 

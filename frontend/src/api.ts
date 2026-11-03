@@ -555,11 +555,26 @@ export async function getDogs(): Promise<DogsResponse> {
   return handle<DogsResponse>(res);
 }
 
+/** A photo supporting a proposed match. */
+export interface MatchPhoto {
+  photo_id: string;
+  instance_id: string | null;
+  thumb_url: string;
+  photo_url: string;
+}
+
 /** One side of a proposed match. */
 export interface MatchSide {
   sighting_id: string;
   date: string;
   thumb_url: string | null;
+  photo_url?: string | null;
+  photo_id?: string | null;
+  instance_id?: string | null;
+  /** True only when this is the gallery photo recorded with the score. */
+  matched?: boolean;
+  /** All contributing query views; one matched photo on the gallery side. */
+  photos?: MatchPhoto[];
   species?: "dog" | "cat" | null;
   /** The viewer logged this side. Nothing about where it was taken is sent
    * for either side (issue #45). */
