@@ -13,7 +13,7 @@ import DeleteAccount from "./components/DeleteAccount";
 import BlockedPeople from "./components/BlockedPeople";
 import ConsentReview from "./components/ConsentReview";
 import { getAccountConsent, isConsentRequired } from "./consentApi";
-import { CONSENT_REQUIRED_EVENT } from "./consentEvents";
+import { CONSENT_ACCEPTED_EVENT, CONSENT_REQUIRED_EVENT } from "./consentEvents";
 import { visibilityChanged } from "./visibility";
 import PendingDeletion from "./screens/PendingDeletion";
 import { forgetNoteLanguage } from "./components/NoteLanguagePicker";
@@ -311,7 +311,12 @@ export default function App() {
           that success deserves the same acknowledgement as one they watched. */}
       <Celebration />
       {needsConsent && !deletingAccount && (
-        <ConsentReview onAccepted={() => { setNeedsConsent(false); reprobeAuth(false); void flush(); }}
+        <ConsentReview onAccepted={() => {
+          setNeedsConsent(false);
+          window.dispatchEvent(new Event(CONSENT_ACCEPTED_EVENT));
+          reprobeAuth(false);
+          void flush();
+        }}
           onSignOut={() => void signOut()} onDeleteAccount={() => setDeletingAccount(true)}
           onUnauthorized={() => { setNeedsConsent(false); setUnauthorized(true); }} />
       )}

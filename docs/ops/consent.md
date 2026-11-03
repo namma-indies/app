@@ -44,7 +44,9 @@ Normal authenticated use returns 428 until the account has a current receipt.
 The app prompts on initial load or foreground resume, using a modal that
 preserves the draft underneath. Account management/deletion, sign-out, public
 support and document links remain available. Queued uploads retain bytes,
-endpoint and retry token as pending; accepting resumes the queue. An older
+endpoint and retry token as pending; accepting resumes the queue. Capability
+and language lookups blocked during initial load refresh after acceptance
+while the capture draft stays in place. An older
 client that does not implement the consent flow needs updating before
 enforcement is enabled.
 

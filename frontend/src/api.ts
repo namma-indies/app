@@ -646,8 +646,8 @@ export async function setNoteLanguage(language: NoteLanguage): Promise<{ note_la
 
 /** Used only to decide whether to render the moderation tab. Every moderation
  * endpoint checks the tier itself -- a client-side flag is a suggestion. */
-export async function getMe(): Promise<Me> {
-  const res = await fetch(`${API_BASE}/me`, { credentials: "include" });
+export async function getMe(signal?: AbortSignal): Promise<Me> {
+  const res = await fetch(`${API_BASE}/me`, { credentials: "include", ...(signal ? { signal } : {}) });
   return handle<Me>(res);
 }
 
