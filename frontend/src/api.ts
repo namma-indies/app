@@ -905,7 +905,10 @@ export async function ruleOnAnimal(
 
 /** Why screening held an upload (#181). `not_screened`: screening never
  * finished, so nothing is known about it. */
-export type HoldReason = "person" | "indoor" | "new_account" | "unscreened" | "not_screened";
+export type HoldReason =
+  | "person" | "indoor" | "new_account" | "unscreened" | "not_screened"
+  // The local model's second look, when it is on.
+  | "model_person" | "model_home" | "model_sexual" | "model_graphic" | "model_text";
 
 export interface HeldItem {
   capture_id: string;

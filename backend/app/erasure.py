@@ -31,7 +31,7 @@ the sighting. Erasure takes every one of those in that order, before it
 deletes anything, so it waits for them rather than deadlocking with them:
 
     transcription_jobs, jobs, transcript_backfill, photo_descriptions,
-    voice_transcripts, detail_suggestions, matching, social_picks,
+    upload_screens, voice_transcripts, detail_suggestions, matching, social_picks,
     captures, sightings
 
 A job finishing after its capture is gone finds no job row and gets 409.
@@ -82,6 +82,7 @@ REFERENCES: dict[tuple[str, str, str], str] = {
     ("detail_suggestions", "capture_id", "captures"): "c",
     ("voice_notes", "capture_id", "captures"): "c",
     ("photo_descriptions", "capture_id", "captures"): "c",
+    ("upload_screens", "capture_id", "captures"): "c",
     # -> photos
     ("embeddings", "photo_id", "photos"): "c",
     ("detections", "photo_id", "photos"): "c",
@@ -141,6 +142,7 @@ async def _lock(conn, capture_id: UUID) -> asyncpg.Record | None:
     await conn.execute("""SELECT 1 FROM transcript_backfill b JOIN voice_transcripts t ON t.id=b.transcript_id
         WHERE t.capture_id=$1 ORDER BY b.id FOR UPDATE OF b""", capture_id)
     await conn.execute("SELECT 1 FROM photo_descriptions WHERE capture_id=$1 ORDER BY id FOR UPDATE", capture_id)
+    await conn.execute("SELECT 1 FROM upload_screens WHERE capture_id=$1 ORDER BY id FOR UPDATE", capture_id)
     await conn.execute("SELECT 1 FROM voice_transcripts WHERE capture_id=$1 ORDER BY id FOR UPDATE", capture_id)
     await conn.execute("SELECT 1 FROM detail_suggestions WHERE capture_id=$1 ORDER BY id FOR UPDATE", capture_id)
     await lock_matching(conn)

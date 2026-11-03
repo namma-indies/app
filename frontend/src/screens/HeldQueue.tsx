@@ -28,6 +28,11 @@ const REASON_LABELS: Record<HoldReason, string> = {
   new_account: "NEW ACCOUNT",
   unscreened: "COULDN'T BE CHECKED",
   not_screened: "NOT CHECKED YET",
+  model_person: "AI: A PERSON OR A FACE",
+  model_home: "AI: INSIDE A HOME",
+  model_sexual: "AI: SEXUAL CONTENT",
+  model_graphic: "AI: GRAPHIC",
+  model_text: "AI: ABUSIVE TEXT",
 };
 
 export default function HeldQueue({ onUnauthorized }: { onUnauthorized: () => void }) {
