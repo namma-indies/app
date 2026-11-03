@@ -61,6 +61,7 @@ timeout and bounded retry delay. Successful recipients are recorded separately;
 one failed mailbox does not resend mail to everybody else. A crash between
 provider acceptance and recording success can duplicate that one message
 (at-least-once delivery). Urgent mail takes priority over digest backlog.
+Console mode keeps mail pending; a log message never counts as delivery.
 
 The moderator view reports unconfigured delivery, pending counts and failed
 messages retrying. Report clocks start at the first unanswered report; editing

@@ -149,7 +149,8 @@ async def report_sighting(
         )
         # Rejecting is already a stronger hold. Fresh severe concerns about a
         # previously approved item still hide it until the next human ruling.
-        notify = previous is None or previous["resolved_at"] is not None or previous["reason"] != reason
+        notify = (previous is None or previous["resolved_at"] is not None
+                  or (reason in SEVERE_REASONS and previous["severe_at"] is None))
         if notify:
             await alert_moderators(conn, event_key=f"report:{uuid7()}", category=f"report_{reason}",
                                    subject_id=sighting_id, urgent=reason in SEVERE_REASONS)

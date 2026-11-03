@@ -314,7 +314,7 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
                 {item.response_due_at && <p className="mod-clock" role="status">
                   {item.severe && <strong>URGENT · </strong>}
                   {item.first_reported_at && `Reported ${Math.max(0, Math.floor((now - Date.parse(item.first_reported_at)) / 60_000))} min ago · `}
-                  {(now >= Date.parse(item.response_due_at)) ? <strong>OVERDUE · </strong> : "Respond by "}
+                  {(item.overdue || now >= Date.parse(item.response_due_at)) ? <strong>OVERDUE · </strong> : "Respond by "}
                   <time dateTime={item.response_due_at}>{new Date(item.response_due_at).toLocaleString()}</time>
                 </p>}
                 <div className="marks">

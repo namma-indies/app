@@ -81,6 +81,10 @@ async def prepare_alerts(conn) -> int:
 
 
 async def deliver_one(pool) -> bool:
+    # Console is a development logger, not delivery. Keep mail pending until
+    # the real sender is selected, including acknowledgement deadline clocks.
+    if settings.email_sender != "ses":
+        return False
     token = uuid7()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
