@@ -357,8 +357,15 @@ class Worker:
         dog, cat = float(analysis.dog_confidence), float(analysis.cat_confidence)
         if not 0 <= dog <= 1 or not 0 <= cat <= 1:
             raise ProtocolError()
+        # Screening signals for the API (#181); omitted when not measured.
+        scene = getattr(analysis, "scene", None)
+        signals = {} if scene is None else {
+            k: float(getattr(scene, k)) for k in ("person", "person_area", "indoor")}
+        if not all(0 <= v <= 1 for v in signals.values()):
+            raise ProtocolError()
         return dict(photo_id=str(UUID(photo_id)), index=index, width=width, height=height,
-                    phash=phash, dog_confidence=dog, cat_confidence=cat, bbox=bbox, vector=vector)
+                    phash=phash, dog_confidence=dog, cat_confidence=cat, bbox=bbox, vector=vector,
+                    **signals)
 
     async def _process_multi(self, lease):
         from gpu_worker.multi import prepare_capture

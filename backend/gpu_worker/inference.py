@@ -26,6 +26,7 @@ from PIL import Image
 
 from app import analyse as reference_analysis
 from app import detect, detect_reid, embed, photos, video
+from app import scene as scene_mod
 
 CUDA = "CUDAExecutionProvider"
 
@@ -92,6 +93,8 @@ class PhotoInference:
     bbox: tuple[int, int, int, int] | None
     vector: np.ndarray | None
     identity: Identity
+    # People and indoor furniture, for the API's upload screening (#181).
+    scene: scene_mod.SceneSignals | None = None
 
 
 def preprocessing_identity() -> str:
@@ -212,6 +215,8 @@ class GpuInference:
                 raise ValueError("invalid or excessive detector output")
             dog = cat = 0.0
             best, best_area = None, 0.0
+            # Kept: `output` is reused below for the embedder's result.
+            output_rows = output[0]
             for x1, y1, x2, y2, conf, cls in output[0]:
                 confidence, species = float(conf), int(cls)
                 if not 0 <= confidence <= 1 or species != cls or not 0 <= species < 80:
@@ -252,7 +257,8 @@ class GpuInference:
                     vector = vector / (norm + 1e-8)
                     if not np.isfinite(vector).all() or not np.isclose(np.linalg.norm(vector), 1, atol=1e-5):
                         raise ValueError("embedding failed normalization")
-            return PhotoInference(dog, cat, box, vector, self.identity)
+            return PhotoInference(dog, cat, box, vector, self.identity,
+                                  scene_mod.scene_signals(output_rows, image.size, scale, pad_x, pad_y))
         finally:
             self._lock.release()
 
@@ -276,6 +282,7 @@ class GpuInference:
             if int(species) == detect_reid.COCO_CAT:
                 cat = max(cat, float(confidence))
         detections = detect_reid.animal_detections(output[0], image.size, scale, pad_x, pad_y)
+        scene = scene_mod.scene_signals(output[0], image.size, scale, pad_x, pad_y)
         evidence = []
         for detection in detections:
             try:
@@ -301,7 +308,7 @@ class GpuInference:
                 # Preserve the detection at its own index. Never reuse a prior
                 # animal's vector or silently drop the failed animal's crop.
                 evidence.append((detection, None, "embedding_failed"))
-        return make_frame(source_id, frame_index, timestamp_seconds, *image.size, dog, cat, evidence)
+        return make_frame(source_id, frame_index, timestamp_seconds, *image.size, dog, cat, evidence, scene)
 
     def analyse_instances(self, stored_photo: bytes, *, source_id: str = "photo:0",
                           frame_index: int = 0, timestamp_seconds: float | None = None) -> FrameAnalysis:
