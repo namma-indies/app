@@ -34,7 +34,7 @@ from uuid import UUID
 import asyncpg
 import numpy as np
 
-from app.aggregates import animal_present, coarse_geog, owner_active, screened
+from app.aggregates import animal_present, coarse_geog, not_rejected_upload, owner_active
 from app.config import settings
 from app.embed import EMBED_DIM, MODEL_NAME
 
@@ -174,9 +174,10 @@ async def find_candidates(
                   AND {animal_present()}
                   -- Nor anything of someone who has asked to delete their account.
                   AND {owner_active('s')}
-                  -- Nor an upload still held by screening (#181): a candidate
-                  -- is shown to whoever logged the other sighting.
-                  AND {screened('s')}
+                  -- Nor one a moderator rejected at screening (#181). One still
+                  -- being screened is searched, and hidden where shown: a pair
+                  -- made with it now appears by itself once it is public.
+                  AND {not_rejected_upload('s')}
                   AND ({p_excl}::uuid IS NULL OR s.id <> {p_excl}::uuid)
                   AND NOT EXISTS (
                       SELECT 1 FROM sightings query WHERE query.id={p_excl}::uuid

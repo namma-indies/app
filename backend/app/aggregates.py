@@ -104,6 +104,19 @@ def screened(alias: str = "s") -> str:
             f" AND cs.screened_at <= now() - {wait!r}::float8 * interval '1 second')))")
 
 
+def not_rejected_upload(alias: str = "s") -> str:
+    """For matching only: anything a moderator has not kept off (#181).
+
+    Re-ID searches over uploads still being screened, so two photos of the
+    same new dog that arrive while both are held or being checked still meet,
+    and their pair shows up by itself once both are public -- every place a
+    candidate or a pair is *shown* checks `screened`. A rejected upload is
+    out: rejected content must not seed identities.
+    """
+    return (f"NOT EXISTS (SELECT 1 FROM captures cr WHERE cr.id = {alias}.capture_id"
+            f" AND cr.screening = 'rejected')")
+
+
 def visible_to(viewer: str, alias: str = "s") -> str:
     """Neither the viewer nor the sighting's observer has blocked the other (#180).
 
