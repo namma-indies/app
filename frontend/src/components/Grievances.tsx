@@ -47,14 +47,22 @@ export default function Grievances({ onUnauthorized }: { onUnauthorized: () => v
   }
 
   async function act(item: Grievance, action: "hide" | "resolve" | "dismiss") {
-    const reason = reasons[item.id]?.trim();
+    const submittedReason = reasons[item.id];
+    const submittedTarget = targets[item.id];
+    const reason = submittedReason?.trim();
     if (!reason) return;
     setBusy(item.id); setActionError(null);
     try {
-      await decideGrievance(item.id, action, reason, action === "hide" ? targets[item.id]?.trim() || item.sighting_id || undefined : undefined);
+      await decideGrievance(item.id, action, reason, action === "hide" ? submittedTarget?.trim() || item.sighting_id || undefined : undefined);
       await load();
-      setReasons((cur) => { const next = { ...cur }; delete next[item.id]; return next; });
-      setTargets((cur) => { const next = { ...cur }; delete next[item.id]; return next; });
+      setReasons((cur) => {
+        if (cur[item.id] !== submittedReason) return cur;
+        const next = { ...cur }; delete next[item.id]; return next;
+      });
+      setTargets((cur) => {
+        if (cur[item.id] !== submittedTarget) return cur;
+        const next = { ...cur }; delete next[item.id]; return next;
+      });
     } catch (e) {
       if (e instanceof UnauthorizedError) onUnauthorized();
       else setActionError(e instanceof Error ? e.message : "Couldn't record that decision.");

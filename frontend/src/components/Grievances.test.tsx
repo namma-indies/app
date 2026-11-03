@@ -48,6 +48,33 @@ it("requires a reason and records the hide before keeping a complaint open", asy
   expect(screen.getByRole("button", { name: "MARK RESOLVED" })).toBeInTheDocument();
 });
 
+it("preserves newer decision drafts during a pending hide and queue refresh", async () => {
+  let finishHide!: () => void;
+  let finishRefresh!: (result: Awaited<ReturnType<typeof getGrievances>>) => void;
+  vi.mocked(decideGrievance).mockReturnValue(new Promise((resolve) => { finishHide = resolve; }));
+  vi.mocked(getGrievances).mockResolvedValueOnce({ items: [complaint()], legal_note: legalNote })
+    .mockReturnValueOnce(new Promise((resolve) => { finishRefresh = resolve; }));
+  render(<Grievances onUnauthorized={() => {}} />);
+  await screen.findByRole("button", { name: "HIDE LINKED CONTENT" });
+  await userEvent.type(screen.getByLabelText("Decision reason"), "Verified concern");
+  await userEvent.click(screen.getByRole("button", { name: "HIDE LINKED CONTENT" }));
+  expect(decideGrievance).toHaveBeenCalledWith("complaint-id", "hide", "Verified concern", "sighting-id");
+
+  await userEvent.clear(screen.getByLabelText("Decision reason"));
+  await userEvent.type(screen.getByLabelText("Decision reason"), "Follow-up reply");
+  await userEvent.clear(screen.getByLabelText("Sighting ID to hide"));
+  await userEvent.type(screen.getByLabelText("Sighting ID to hide"), "another-sighting");
+  finishHide();
+  await waitFor(() => expect(getGrievances).toHaveBeenCalledTimes(2));
+  await userEvent.type(screen.getByLabelText("Decision reason"), " after review");
+  finishRefresh({ items: [complaint({ status: "in_review", removed_at: "2026-01-01T01:00:00Z" })], legal_note: legalNote });
+
+  await waitFor(() => expect(screen.getByRole("button", { name: "MARK RESOLVED" })).toBeEnabled());
+  expect(screen.getByLabelText("Decision reason")).toHaveValue("Follow-up reply after review");
+  expect(screen.getByLabelText("Sighting ID to hide")).toHaveValue("another-sighting");
+  expect(isBusy()).toBe(true);
+});
+
 it("shows closed complaints still waiting for acknowledgement without more decisions", async () => {
   vi.mocked(getGrievances).mockResolvedValue({ items: [complaint({ status: "resolved", resolved_at: "2026-01-03T00:00:00Z",
     resolution_reason: "Reply sent" })], legal_note: legalNote });
