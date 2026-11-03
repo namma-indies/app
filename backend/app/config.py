@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     # Fails safe: any other value means console.
     email_sender: str = "console"
     ses_region: str = "ap-south-1"
+    ses_configuration_set: str = ""
+    # Conservative defaults, not a claim about this account's live quota.
+    # Reserve headroom for every other sender using the same SES region.
+    email_daily_budget: int = Field(default=200, ge=1, le=1_000_000)
+    email_send_interval_s: float = Field(default=1.0, ge=0.05, le=60)
+    email_send_attempts: int = Field(default=3, ge=1, le=5)
+    email_backoff_max_s: int = Field(default=60, ge=1, le=300)
+    email_quota_backoff_s: int = Field(default=3600, ge=60, le=86400)
     email_from: str = "IndieDex <hello@nammaindies.org>"
     public_base_url: str = "http://localhost:8000"
 
@@ -355,6 +363,14 @@ class Settings(BaseSettings):
     join_pow_bits: int = Field(default=16, ge=8, le=22)
     join_pow_ttl_s: int = Field(default=300, ge=30, le=600)
     rl_join_challenge_times: int = Field(default=60, ge=1, le=1000)
+
+    # Admission happens before multipart parsing, keyed by account, shared by
+    # /sighting and /capture. Counts requests, including retries and bad forms.
+    rl_upload_hour_times: int = Field(default=60, ge=1, le=10000)
+    rl_upload_day_times: int = Field(default=200, ge=1, le=100000)
+    abuse_signup_warn_hour: int = Field(default=20, ge=1)
+    abuse_signin_warn_hour: int = Field(default=50, ge=1)
+    abuse_upload_spike_hour: int = Field(default=20, ge=1)
 
     # Generous. Exists so a runaway client cannot spin the database, not to
     # ration anything.

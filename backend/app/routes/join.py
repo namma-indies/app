@@ -21,9 +21,12 @@ from app.auth.logintoken import consume as consume_login_token
 from app.auth.logintoken import issue as issue_login_token
 from app.auth.magiclink import create_observer
 from app.auth import proof
+from app.auth.audit import audit_failures
 from app.config import settings
 from app.deps import get_conn
 from app.email.sender import get_sender
+from app.email.delivery import deliver, reserve
+from app.abuse import record
 from app.ratelimit import (Limit, check, check_backoff, clear_failures, client_key,
                           cooldown, email_addr_limit, email_ip_limit, join_limit, record_failure)
 from app.security import email_hash
@@ -75,7 +78,9 @@ def _page(*, error: str | None = None, name: str = "", notice: str | None = None
     elif error:
         banner = f'<p class="err">{escape(error, quote=False)}</p>'
     else:
-        banner = '<p class="sub">Closed pilot — sign in with your work email, or use the shared passcode.</p>'
+        intro = ("Sign in with your email, or use the shared passcode." if settings.email_open_signup
+                 else "Closed pilot — sign in with an invited email, or use the shared passcode.")
+        banner = f'<p class="sub">{intro}</p>'
 
     return f"""<!doctype html>
 <html lang="en">
@@ -93,8 +98,8 @@ def _page(*, error: str | None = None, name: str = "", notice: str | None = None
     <h1>IndieDex</h1>
     {banner}
     <form method="post" action="/auth/email">
-      <label for="email">Work email</label>
-      <input id="email" name="email" type="email" placeholder="you@dognosis.tech" required autocomplete="email">
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" placeholder="you@example.org" required autocomplete="email">
       <button type="submit">Email me a link</button>
     </form>
     <div class="divider">or</div>
@@ -141,6 +146,7 @@ async def join_challenge(request: Request, conn=Depends(get_conn)):
 
 
 @router.post("/auth/join")
+@audit_failures
 async def join_submit(
     request: Request,
     name: str = Form(..., max_length=200),
@@ -212,6 +218,7 @@ async def logout(request: Request):
 
 
 @router.post("/auth/email")
+@audit_failures
 async def email_submit(request: Request, email: str = Form(..., max_length=320), conn=Depends(get_conn)):
     failure_key = f"email:ip:{client_key(request)}"
     try:
@@ -226,15 +233,8 @@ async def email_submit(request: Request, email: str = Form(..., max_length=320),
         except HTTPException as exc:
             return _limited(request, exc)
         return _fail(request, error="That doesn't look like an email address.", status=400)
-    # Two keys, not one. IP alone lets a rotating attacker hammer a single
-    # inbox, and lets one office NAT lock out everyone behind it; address
-    # alone does nothing against a script walking a list. Both are fixed
-    # windows -- this is dampening, not a lockout.
-    try:
-        await check(conn, f"email:addr:{address}", email_addr_limit())
-        await cooldown(conn, f"email:addr:{address}", settings.auth_email_cooldown_s)
-    except HTTPException as exc:
-        return _limited(request, exc)
+    # IP admission is above; address cooldown/window and provider capacity
+    # reserve together below, so a busy provider cannot consume inbox credit.
     if not is_allowed(address):
         try:
             await record_failure(conn, failure_key)
@@ -255,11 +255,26 @@ async def email_submit(request: Request, email: str = Form(..., max_length=320),
             error="This account has been suspended. If you think that's wrong, write to nammaindies@gmail.com.",
             status=403,
         )
-    observer_id = await get_or_create_observer_by_email(conn, email=address)
-    token = await issue_login_token(conn, observer_id)
+    try:
+        async with conn.transaction():
+            await cooldown(conn, f"email:addr:{address}", settings.auth_email_cooldown_s)
+            await check(conn, f"email:addr:{address}", email_addr_limit())
+            slot = await reserve(conn)
+            observer_id = await get_or_create_observer_by_email(conn, email=address)
+            token = await issue_login_token(conn, observer_id)
+    except HTTPException as exc:
+        await record(conn, "email_throttled")
+        return _limited(request, exc)
     link = f"{settings.public_base_url}/auth/email/consume?token={token}"
     try:
-        await get_sender().send(address, link)
+        await deliver(conn, lambda: get_sender().send(address, link), reserved=slot)
+    except HTTPException as exc:
+        # The address cooldown has committed. Never promise a provider retry
+        # sooner than this inbox is allowed to request another link.
+        wait = max(settings.auth_email_cooldown_s, int((exc.headers or {}).get("Retry-After", "60")))
+        message = ("The email provider is busy." if exc.status_code == 429 else "We couldn't send that email.")
+        return _fail(request, error=f"{message} Try again in {wait} seconds.", status=exc.status_code,
+                     headers={"Retry-After": str(wait)})
     except Exception:
         # Never let a sender failure surface as a bare 500. SES refusing a
         # message (suppressed recipient, throttling, misconfiguration) is an
@@ -267,7 +282,7 @@ async def email_submit(request: Request, email: str = Form(..., max_length=320),
         # the button is broken -- which is exactly what happened once, for two
         # days, when sandbox rejected an unverified recipient. The detail goes
         # to the log; the reader gets something actionable.
-        logger.exception("login email send failed for %s", address)
+        logger.error("login email sender failed")
         return _fail(
             request,
             error="We couldn't send that email just now. Try again in a moment — "
@@ -283,6 +298,7 @@ async def email_submit(request: Request, email: str = Form(..., max_length=320),
 
 
 @router.get("/auth/email/consume")
+@audit_failures
 async def email_consume(request: Request, token: str = Query(max_length=512), conn=Depends(get_conn)):
     failure_key = f"consume:ip:{client_key(request)}"
     try:

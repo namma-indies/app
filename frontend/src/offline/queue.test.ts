@@ -7,9 +7,11 @@ vi.mock("../api", () => ({
   UnauthorizedError: class UnauthorizedError extends Error {},
   HttpError: class HttpError extends Error {
     status: number;
-    constructor(status: number) {
+    retryAfterS: number | null;
+    constructor(status: number, retryAfterS: number | null = null) {
       super(`request failed: ${status}`);
       this.status = status;
+      this.retryAfterS = retryAfterS;
     }
   },
 }));

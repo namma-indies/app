@@ -4,7 +4,7 @@ import Capture from "./screens/Capture";
 import Dex from "./screens/Dex";
 import Admin from "./screens/Admin";
 import SignIn from "./screens/SignIn";
-import { failedCount, flush, setOnFlushed, setOnUnauthorized } from "./offline/queue";
+import { failedCount, flush, nextRetryAt, setOnFlushed, setOnUnauthorized } from "./offline/queue";
 import Celebration from "./components/Celebration";
 import FailedSightings from "./components/FailedSightings";
 import HapticsCheck, { HAPTICS_CHECK_PARAM, wantsHapticsCheck } from "./components/HapticsCheck";
@@ -38,6 +38,7 @@ export default function App() {
   const [suspended, setSuspended] = useState(false);
   const [showingBlocks, setShowingBlocks] = useState(false);
   const [failed, setFailed] = useState(0);
+  const [retryAt, setRetryAt] = useState<number | null>(null);
   const [showFailed, setShowFailed] = useState(false);
   const [hapticsCheck, setHapticsCheck] = useState(() => wantsHapticsCheck(window.location.search));
   const brandHold = useRef<number>();
@@ -46,6 +47,7 @@ export default function App() {
     async function run() {
       await flush();
       setFailed(await failedCount());
+      setRetryAt(await nextRetryAt());
     }
     run();
     window.addEventListener("online", run);
@@ -60,6 +62,7 @@ export default function App() {
     // badge count stays current mid-session, not just on mount/online.
     setOnFlushed(() => {
       failedCount().then(setFailed);
+      nextRetryAt().then(setRetryAt);
     });
     // A 401 during a background flush means the session is dead -- reuse the
     // same invite/login gate the initial getDex() auth probe shows, rather
@@ -209,6 +212,9 @@ export default function App() {
           sign out
         </button>
       </div>
+      {retryAt && retryAt > Date.now() && <p className="sync-delay" role="status">
+        Upload limit reached. Your photos are saved on this device. Sync resumes after {new Date(retryAt).toLocaleString()}.
+      </p>}
       {/* Apple 5.1.1 wants the privacy policy reachable *inside* the app, not
           only in the store listing, and 1.2 wants published contact details for
           a UGC app. Both live on one line rather than behind a settings screen
