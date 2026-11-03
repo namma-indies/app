@@ -140,12 +140,16 @@ async def _plan(conn, capture_id: UUID):
     return [thumb_key(k) for k in row["keys"]], text or None
 
 
-async def _finish(pool, screen_id, status, *, error=None, delay_s=0, refund=False):
+async def _set(conn, screen_id, status, *, error=None, delay_s=0, refund=False):
+    await conn.execute(
+        """UPDATE upload_screens SET status=$2, error=$3, lease_until=NULL, lease_token_hash=NULL,
+           run_after=now()+$4*interval '1 second', attempts=attempts-$5 WHERE id=$1""",
+        screen_id, status, error, delay_s, 1 if refund else 0)
+
+
+async def _finish(pool, screen_id, status, **kwargs):
     async with pool.acquire() as conn:
-        await conn.execute(
-            """UPDATE upload_screens SET status=$2, error=$3, lease_until=NULL, lease_token_hash=NULL,
-               run_after=now()+$4*interval '1 second', attempts=attempts-$5 WHERE id=$1""",
-            screen_id, status, error, delay_s, 1 if refund else 0)
+        await _set(conn, screen_id, status, **kwargs)
 
 
 async def worker_job(pool, storage) -> dict | None:
@@ -207,16 +211,17 @@ async def _settle(conn, capture_id: UUID, reasons: list[str]) -> None:
 
 
 async def complete(pool, job_id: UUID, token: str, content: str):
+    """The model's answer. One transaction from the lease check to the last
+    write, holding the job row: nobody can reclaim the job in between, so an
+    answer that arrives on a lease that has since passed to another worker is
+    refused whole rather than written over that worker's."""
     async with pool.acquire() as conn, conn.transaction():
         row = await _leased(conn, job_id, token)
-        # Fence the lease first: a second completion of it now finds it stale.
-        await conn.execute("UPDATE upload_screens SET lease_until=now() WHERE id=$1", job_id)
-    try:
-        reasons = check_answer(content)
-    except (ValueError, KeyError, TypeError):
-        await _failed(pool, row, "unparsable_reply")
-        return {"status": "done"}
-    async with pool.acquire() as conn, conn.transaction():
+        try:
+            reasons = check_answer(content)
+        except (ValueError, KeyError, TypeError):
+            await _failed(conn, row, "unparsable_reply")
+            return {"status": "done"}
         await _settle(conn, row["capture_id"], reasons)
         await conn.execute(
             """UPDATE upload_screens SET status='done', lease_until=NULL, lease_token_hash=NULL, error=NULL,
@@ -224,18 +229,18 @@ async def complete(pool, job_id: UUID, token: str, content: str):
     return {"status": "done"}
 
 
-async def _failed(pool, row, error: str, *, retryable=True):
+async def _failed(conn, row, error: str, *, retryable=True):
+    """A failed look, under the lease the caller has just checked and locked."""
     give_up = not retryable or row["attempts"] >= MAX_ATTEMPTS
-    await _finish(pool, row["id"], "failed" if give_up else "pending", error=error,
-                  delay_s=min(3600, 30 * 2 ** row["attempts"]))
+    await _set(conn, row["id"], "failed" if give_up else "pending", error=error,
+               delay_s=min(3600, 30 * 2 ** row["attempts"]))
     if give_up:
         # Fail open (module docstring): the detector's verdict stands.
-        async with pool.acquire() as conn, conn.transaction():
-            await _settle(conn, row["capture_id"], [])
+        await _settle(conn, row["capture_id"], [])
 
 
 async def fail(pool, job_id: UUID, token: str, error: str, retryable: bool):
     async with pool.acquire() as conn, conn.transaction():
         row = await _leased(conn, job_id, token)
-    await _failed(pool, row, error, retryable=retryable)
+        await _failed(conn, row, error, retryable=retryable)
     return {"status": "failed"}

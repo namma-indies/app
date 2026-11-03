@@ -163,3 +163,81 @@ def test_an_answer_outside_the_agreed_shape_is_refused(content):
 def test_the_prompt_names_every_flag():
     for flag in model_screening.FLAGS:
         assert f"- {flag}:" in model_screening.PROMPT
+
+
+@pytest.mark.asyncio
+async def test_nobody_can_reclaim_a_job_while_its_answer_is_being_written(authed_client, model_on, monkeypatch):
+    """The lease is checked and the answer written in one transaction on the
+    job's row: a second worker asking for work in between, even with the
+    first lease run out, gets nothing."""
+    client, _ = authed_client
+    sid = await _upload(client, monkeypatch)
+    job = await _claim(client)
+    pool = await _pool(client)
+    settle, reclaimed = model_screening._settle, []
+
+    async with pool.acquire() as c:          # the first worker's lease is about to run out
+        await c.execute("UPDATE upload_screens SET lease_until = clock_timestamp() + interval '1 second'")
+
+    async def settle_after_a_reclaim(conn, capture_id, reasons):
+        import asyncio
+        await asyncio.sleep(1.3)             # the lease has now run out, mid-completion
+        async with pool.acquire() as other:
+            reclaimed.append(await model_screening._claim(other, 60, "second-worker-" + "x" * 30))
+        await settle(conn, capture_id, reasons)
+    monkeypatch.setattr(model_screening, "_settle", settle_after_a_reclaim)
+    await _answer(client, job, ["person"])
+    assert reclaimed == [None], "another worker took the job while its answer was being written"
+    assert (await _state(pool, sid))["screening"] == "held"
+
+
+@pytest.mark.asyncio
+async def test_an_answer_on_a_lease_since_passed_to_another_worker_is_refused(authed_client, model_on, monkeypatch):
+    client, _ = authed_client
+    sid = await _upload(client, monkeypatch)
+    first = await _claim(client)
+    pool = await _pool(client)
+    async with pool.acquire() as c:
+        await c.execute("UPDATE upload_screens SET lease_until = now() - interval '1 second'")
+    second = await _claim(client)
+    assert second["id"] == first["id"] and second["lease_token"] != first["lease_token"]
+    for path, body in (("complete", {"content": json.dumps({"flags": ["sexual"]})}),
+                       ("fail", {"error": "late", "retryable": False})):
+        r = await client.post(f"/internal/suggestion-jobs/{first['id']}/{path}", headers=GPU,
+                              json={"lease_token": first["lease_token"], **body})
+        assert r.status_code == 409, path
+    assert (await _state(pool, sid))["screening"] == "checking"
+    await _answer(client, second, [])
+    assert (await _state(pool, sid))["screening"] == "clear"
+
+
+@pytest.mark.asyncio
+async def test_two_uploads_waiting_on_the_model_still_pair_and_show_once_both_clear(authed_client, model_on,
+                                                                                      monkeypatch):
+    from app.embed import EMBED_DIM, MODEL_NAME
+    from app.ids import uuid7
+    from app.matching import resolve_sighting
+    from tests.test_screening import _capture_of
+    client, owner = authed_client
+    other, viewer = await _second_observer(client, "Other"), await _second_observer(client, "Viewer")
+    first = await _upload(client, monkeypatch)
+    _as(client, other)
+    second = await _upload(client, monkeypatch)
+    pool = await _pool(client)
+    async with pool.acquire() as c:
+        await c.execute("UPDATE photos SET content_sha256 = NULL")       # two photos, not one file twice
+        for sid in (first, second):
+            assert await c.fetchval("SELECT screening FROM captures WHERE id=$1",
+                                    await _capture_of(pool, sid)) == "checking"
+            await c.execute(f"""INSERT INTO embeddings (id, photo_id, model, dim, vec_miew)
+                                SELECT $1, id, $2, {EMBED_DIM}, array_fill(0.1::real, ARRAY[{EMBED_DIM}])::vector
+                                FROM photos WHERE sighting_id=$3""", uuid7(), MODEL_NAME, UUID(sid))
+        outcome = await resolve_sighting(c, UUID(second), auto_merge_min=1.01, propose_min=0.5, radius_m=1000.0,
+                                         max_candidates=5, new_uuid=uuid7)
+    assert outcome.status == "proposed"
+    _as(client, viewer)
+    assert not _mentions((await client.get("/proposals")).json()["proposals"], first)
+    await _answer(client, await _claim(client), [])
+    await _answer(client, await _claim(client), [])
+    _as(client, viewer)
+    assert _mentions((await client.get("/proposals")).json()["proposals"], first)
