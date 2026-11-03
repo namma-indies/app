@@ -142,6 +142,30 @@ def test_unknown_prompts_are_never_negative_labels():
     assert got["policy"]["wrong_per_correct"]["value"] == 1
 
 
+@pytest.mark.parametrize("cap", [3, 10])
+def test_workload_uses_the_configured_cap_while_coverage_stays_at_five(cap):
+    true, q = observation(1), observation(20)
+    others = [observation(n, verified=False) for n in range(2, 7)]
+    labels = [label(true["id"], q["id"]), label(others[0]["id"], q["id"], "different")]
+    edges = {(q["id"], true["id"]): scored(.5)}
+    edges.update({(q["id"], row["id"]): scored(.95) for row in others})
+    data = world([true, *others, q], labels, edges)
+    data["meta"]["cap"] = cap
+    got = report(data)
+    includes_true = int(cap >= 6)
+    assert got["policy"]["prompts"] == min(cap, 6)
+    assert got["policy"]["labelled_same"] == includes_true
+    assert got["policy"]["labelled_different"] == 1
+    assert got["policy"]["unknown_prompts"] == min(cap, 6)-includes_true-1
+    assert got["policy"]["precision_on_labelled_prompts"]["value"] == includes_true/(includes_true+1)
+    assert got["policy"]["coverage_at_5"]["value"] == got["policy"]["exact_coverage_at_5"]["value"] == 0
+    assert got["funnel"]["proposed" if includes_true else "cap"] == 1
+    if includes_true:
+        assert got["policy"]["wrong_per_correct"]["value"] == 1
+    else:
+        assert got["policy"]["wrong_per_correct"]["status"] == "undefined"
+
+
 def test_contradictions_quarantine_the_whole_positive_component():
     a, b, q = observation(1), observation(2), observation(20)
     data = world([a, b, q], [label(a["id"], b["id"]), label(b["id"], q["id"]), label(a["id"], q["id"], "different")])

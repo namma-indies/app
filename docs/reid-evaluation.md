@@ -74,6 +74,9 @@ expression and shortlist size, then pgvector's exact cosine re-ranking. Exact
 and ANN coverage are both reported. Vicinity and its reverse ordering are
 computed only between `coarse_point` cell centres in SQL. Neither coordinates
 nor distances enter the snapshot.
+Prompt workload, labelled/unknown counts and precision use the full configured
+candidate cap. The two coverage-at-five metrics separately use the first five
+visible proposals, even when that configured cap is larger.
 
 The positive-pair funnel records the first loss: unscored, detector miss,
 embedding missing, missing gallery vector, eligibility, species, capture

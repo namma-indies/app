@@ -209,9 +209,12 @@ def evaluate(data, *, split="development", decision_id=None):
         exact = ranked(query_pairs, observations, "policy_score", policy=True)
         ann_ranks = {p["candidate"]: rank for rank, p in enumerate(ann, 1)}
         def offered(rows, field):
-            return [p for p in rows[:min(5, int(meta["cap"]))]
-                    if query["eligible"] and query["review"] == "valid"
-                    and observations[p["candidate"]]["review"] == "valid" and p[field] >= meta["threshold"]]
+            capped = rows[:int(meta["cap"])]
+            return [
+                p for p in capped
+                if query["eligible"] and query["review"] == "valid"
+                and observations[p["candidate"]]["review"] == "valid" and p[field] >= meta["threshold"]
+            ]
         proposed, exact_proposed = offered(ann, "ann_score"), offered(exact, "policy_score")
         tp = fp = 0
         for pair in proposed:
@@ -227,8 +230,8 @@ def evaluate(data, *, split="development", decision_id=None):
         negatives += fp
         precision.append((group, tp, tp + fp))
         exchange.append((group, fp, tp))
-        covered = bool({p["candidate"] for p in proposed} & relevant)
-        exact_covered = bool({p["candidate"] for p in exact_proposed} & relevant)
+        covered = bool({p["candidate"] for p in proposed[:5]} & relevant)
+        exact_covered = bool({p["candidate"] for p in exact_proposed[:5]} & relevant)
         metrics = (0, 0, 0.0)
         embedded_relevant = relevant & {p["candidate"] for p in model}
         if relevant:
