@@ -63,6 +63,9 @@ provider acceptance and recording success can duplicate that one message
 (at-least-once delivery). Urgent mail takes priority over digest backlog.
 Console mode keeps mail pending; a log message never counts as delivery.
 
+Decision drafts hold automatic service-worker reloads until they are submitted
+or the view is closed. A failed request keeps its reason visible for retry.
+
 The moderator view reports unconfigured delivery, pending counts and failed
 messages retrying. Report clocks start at the first unanswered report; editing
 or repeating an open report cannot extend its deadline. A ruling closes the

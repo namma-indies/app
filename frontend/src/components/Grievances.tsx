@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { decideGrievance, getGrievances, UnauthorizedError, type Grievance, type GrievanceKind } from "../api";
+import { useReloadGuard } from "../update/reloadGuard";
 
 const LABELS: Record<GrievanceKind, string> = { takedown: "TAKEDOWN", privacy: "PRIVACY",
   intimate_imagery: "NON-CONSENSUAL INTIMATE IMAGERY", government_order: "GOVERNMENT / COURT ORDER", other: "OTHER" };
@@ -16,6 +17,8 @@ export default function Grievances({ onUnauthorized }: { onUnauthorized: () => v
   const [reference, setReference] = useState("");
   const [search, setSearch] = useState("");
   const [now, setNow] = useState(Date.now);
+  useReloadGuard(busy !== null || Object.values(reasons).some((value) => !!value.trim())
+    || Object.keys(targets).length > 0 || reference.trim().toUpperCase() !== search);
 
   async function load() {
     try {
@@ -50,6 +53,8 @@ export default function Grievances({ onUnauthorized }: { onUnauthorized: () => v
     try {
       await decideGrievance(item.id, action, reason, action === "hide" ? targets[item.id]?.trim() || item.sighting_id || undefined : undefined);
       await load();
+      setReasons((cur) => { const next = { ...cur }; delete next[item.id]; return next; });
+      setTargets((cur) => { const next = { ...cur }; delete next[item.id]; return next; });
     } catch (e) {
       if (e instanceof UnauthorizedError) onUnauthorized();
       else setActionError(e instanceof Error ? e.message : "Couldn't record that decision.");

@@ -5,6 +5,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Grievances from "./Grievances";
 import { decideGrievance, getGrievances, type Grievance } from "../api";
+import { isBusy } from "../update/reloadGuard";
 
 vi.mock("../api", async (original) => ({ ...(await original<typeof import("../api")>()),
   getGrievances: vi.fn(), decideGrievance: vi.fn() }));
@@ -39,9 +40,11 @@ it("requires a reason and records the hide before keeping a complaint open", asy
   render(<Grievances onUnauthorized={() => {}} />);
   expect(await screen.findByRole("button", { name: "HIDE LINKED CONTENT" })).toBeDisabled();
   await userEvent.type(screen.getByLabelText("Decision reason"), "Verified concern");
+  expect(isBusy()).toBe(true);
   await userEvent.click(screen.getByRole("button", { name: "HIDE LINKED CONTENT" }));
   expect(decideGrievance).toHaveBeenCalledWith("complaint-id", "hide", "Verified concern", "sighting-id");
   expect(await screen.findByText(/IN_REVIEW/)).toBeInTheDocument();
+  await waitFor(() => expect(isBusy()).toBe(false));
   expect(screen.getByRole("button", { name: "MARK RESOLVED" })).toBeInTheDocument();
 });
 

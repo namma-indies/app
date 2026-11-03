@@ -14,6 +14,7 @@ import { formatWhen } from "../formatWhen";
 import { speciesNoun, speciesWithArticle } from "../species";
 import { ModerationAlerts, ModerationAudit } from "../components/ModerationOperations";
 import Grievances from "../components/Grievances";
+import { useReloadGuard } from "../update/reloadGuard";
 
 /** The queue of reported sightings, for whoever holds `trust_tier='moderator'`.
  *
@@ -66,6 +67,9 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
   const [failedReported, setFailedReported] = useState(false);
   const [failedFlagged, setFailedFlagged] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  useReloadGuard(busy !== null || [...(items ?? []), ...(flaggedItems ?? [])]
+    .some((item) => !!reasons[item.sighting_id]?.trim()));
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 60_000);
@@ -127,6 +131,7 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
   }
 
   async function decide(item: ModerationItem, verdict: "valid" | "rejected") {
+    setActionError(null);
     setBusy(item.sighting_id);
     try {
       await reviewSighting(item.sighting_id, verdict, reasons[item.sighting_id].trim());
@@ -135,13 +140,14 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
       setItems((cur) => (cur ?? []).filter((x) => x.sighting_id !== item.sighting_id));
     } catch (err) {
       if (err instanceof UnauthorizedError) onUnauthorized();
-      else setFailedReported(true);
+      else setActionError("Couldn't record the decision. Your reason is kept; try again.");
     } finally {
       setBusy(null);
     }
   }
 
   async function decideAnimal(item: FlaggedItem, verdict: "animal" | "no_animal") {
+    setActionError(null);
     setBusy(item.sighting_id);
     try {
       await ruleOnAnimal(item.sighting_id, verdict, reasons[item.sighting_id].trim());
@@ -150,7 +156,7 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
       setFlaggedItems((cur) => (cur ?? []).filter((x) => x.sighting_id !== item.sighting_id));
     } catch (err) {
       if (err instanceof UnauthorizedError) onUnauthorized();
-      else setFailedFlagged(true);
+      else setActionError("Couldn't record the decision. Your reason is kept; try again.");
     } finally {
       setBusy(null);
     }
@@ -159,6 +165,7 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
   const toggle = (
     <>
     <ModerationAlerts onUnauthorized={onUnauthorized} />
+    {actionError && <p className="mod-ops-notice" role="alert">{actionError}</p>}
     <div className="scope-toggle">
       <button className={queue === "reported" ? "active" : ""} onClick={() => setQueue("reported")}>
         REPORTED
