@@ -88,9 +88,11 @@ REFERENCES: dict[tuple[str, str, str], str] = {
     ("animal_instances", "source_photo_id", "photos"): "c",
     ("animal_instances", "evidence_photo_id", "photos"): "c",
     ("social_picks", "photo_id", "photos"): "c",
+    ("match_proposals", "matched_photo_id", "photos"): "n",  # evidence can go; the verdict stays (#220)
     # -> animal_instances
     ("embeddings", "instance_id", "animal_instances"): "c",
     ("detail_suggestions", "instance_id", "animal_instances"): "c",
+    ("match_proposals", "matched_instance_id", "animal_instances"): "n",
     # -> voice_notes, voice_transcripts, photo_descriptions
     ("transcription_jobs", "note_id", "voice_notes"): "c",
     ("voice_transcripts", "note_id", "voice_notes"): "c",
