@@ -190,9 +190,48 @@ async def test_people_filling_the_frame_or_an_indoor_scene_are_held(authed_clien
     _as(client, mod)
     (item,) = (await client.get("/moderation/held")).json()["items"]
     assert item["reasons"] == reasons and item["observer"] == "Tester"
-    assert len(item["thumb_urls"]) == 1
+    assert [f["flagged"] for f in item["frames"]] == [True] and item["frame_count"] == 1
+    assert item["frames"][0]["url"] != item["frames"][0]["thumb_url"]
     _as(client, owner)
     assert (await client.get("/dex")).json()["sightings"][0]["off_map_reason"] == "held"
+
+
+@pytest.mark.asyncio
+async def test_every_frame_is_open_to_the_moderator_and_the_one_that_held_it_comes_first(
+        authed_client, trusted, monkeypatch):
+    """Approval shows every frame, so a moderator must be able to see every
+    frame -- above all the one that held it, wherever it is in the upload."""
+    from app import analyse as analyse_mod
+    from tests.test_dogs_route import _jpeg
+    seen = []
+
+    def analyse(raw):
+        seen.append(raw)
+        person = SceneSignals(person=.95, person_area=.5) if len(seen) == 6 else SceneSignals()
+        return SimpleNamespace(dog_confidence=.9, cat_confidence=0, box=None, image=None,
+                               has_animal=False, scene=person)
+    monkeypatch.setattr(analyse_mod, "analyse", analyse)
+    client, _ = authed_client
+    mod = await _moderator(client)
+    r = await client.post("/sighting", files=[("photos", (f"{i}.jpg", _jpeg(), "image/jpeg")) for i in range(6)],
+                          data={"geo_source": "none", "captured_at": "2026-07-19T09:00:00Z"})
+    sid = r.json()["sighting_id"]
+    sixth = UUID(r.json()["photo_ids"][5])
+    pool = await _pool(client)
+    assert list((await _state(pool, sid))["hold_reasons"]) == ["person"]
+    _as(client, mod)
+    (item,) = (await client.get("/moderation/held")).json()["items"]
+    assert item["frame_count"] == 6
+    assert [f["flagged"] for f in item["frames"]] == [True, False, False, False]
+    async with pool.acquire() as c:
+        sixth_key = await c.fetchval("SELECT s3_key FROM photos WHERE id=$1", sixth)
+    assert sixth_key.rsplit(".", 1)[0] in item["frames"][0]["thumb_url"]
+    frames = (await client.get(f"/moderation/capture/{item['capture_id']}/frames")).json()["frames"]
+    assert len(frames) == 6 and [f["flagged"] for f in frames].count(True) == 1
+    assert all(f["url"] and f["thumb_url"] for f in frames)
+    # Moderators only, and only for an upload screening stopped.
+    _as(client, await _second_observer(client, "Viewer"))
+    assert (await client.get(f"/moderation/capture/{item['capture_id']}/frames")).status_code == 404
 
 
 @pytest.mark.asyncio

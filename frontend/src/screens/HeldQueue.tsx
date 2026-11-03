@@ -1,5 +1,13 @@
 import { useEffect, useState } from "react";
-import { banObserver, getHeldQueue, ruleOnUpload, UnauthorizedError, type HeldItem, type HoldReason } from "../api";
+import {
+  banObserver,
+  getHeldFrames,
+  getHeldQueue,
+  ruleOnUpload,
+  UnauthorizedError,
+  type HeldItem,
+  type HoldReason,
+} from "../api";
 import { formatWhen } from "../formatWhen";
 
 /** Uploads screening held back from everyone but their owner (#181).
@@ -8,6 +16,10 @@ import { formatWhen } from "../formatWhen";
  * moderator shows it. `SHOW IT` puts it everywhere at once; `KEEP IT HIDDEN`
  * leaves it with its owner. Either can be ruled again later, and neither
  * deletes anything. Oldest first, so nobody's upload waits behind newer ones.
+ *
+ * `SHOW IT` shows every frame of the upload, so it waits until the moderator
+ * has every frame in front of them: a longer upload lists the frames that
+ * could have held it first, and the rest load on `SEE ALL`.
  */
 
 const REASON_LABELS: Record<HoldReason, string> = {
@@ -32,6 +44,22 @@ export default function HeldQueue({ onUnauthorized }: { onUnauthorized: () => vo
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /** Every frame of a longer upload, in place of the first few. */
+  async function seeAll(item: HeldItem) {
+    setBusy(item.capture_id);
+    try {
+      const { frames } = await getHeldFrames(item.capture_id);
+      setItems((cur) =>
+        (cur ?? []).map((x) => (x.capture_id === item.capture_id ? { ...x, frames, frame_count: frames.length } : x)),
+      );
+    } catch (err) {
+      if (err instanceof UnauthorizedError) onUnauthorized();
+      else alert(err instanceof Error ? err.message : "Couldn't load the photos just now.");
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function decide(item: HeldItem, verdict: "approve" | "reject") {
     setBusy(item.capture_id);
@@ -81,15 +109,31 @@ export default function HeldQueue({ onUnauthorized }: { onUnauthorized: () => vo
       <div className="journal-head">
         {items.length} HELD UPLOAD{items.length === 1 ? "" : "S"} · ONLY THEIR OWNERS CAN SEE THEM
       </div>
-      {items.map((item) => (
+      {items.map((item) => {
+        const unseen = item.frame_count - item.frames.length;
+        return (
         <div key={item.capture_id} className="match-card">
           <div className="held-thumbs">
-            {item.thumb_urls.length > 0 ? (
-              item.thumb_urls.map((url, i) => <img key={i} className="mod-thumb" src={url} alt={`held upload, photo ${i + 1}`} />)
+            {item.frames.length > 0 ? (
+              item.frames.map((frame, i) => (
+                // The full-size frame, for whatever the preview is too small to show.
+                <a key={i} href={frame.url} target="_blank" rel="noreferrer">
+                  <img
+                    className={frame.flagged ? "mod-thumb flagged" : "mod-thumb"}
+                    src={frame.thumb_url}
+                    alt={`held upload, photo ${i + 1}${frame.flagged ? ", flagged" : ""}`}
+                  />
+                </a>
+              ))
             ) : (
               <div className="match-blank">🐾</div>
             )}
           </div>
+          {unseen > 0 && (
+            <button className="link-btn" disabled={busy === item.capture_id} onClick={() => void seeAll(item)}>
+              SEE ALL {item.frame_count} PHOTOS · {unseen} NOT SHOWN YET
+            </button>
+          )}
           <div className="mod-meta">
             <div className="line">
               {formatWhen(item.created_at)}
@@ -114,7 +158,12 @@ export default function HeldQueue({ onUnauthorized }: { onUnauthorized: () => vo
             </ul>
           )}
           <div className="match-actions">
-            <button className="btn-different" disabled={busy === item.capture_id} onClick={() => void decide(item, "approve")}>
+            <button
+              className="btn-different"
+              disabled={busy === item.capture_id || unseen > 0}
+              title={unseen > 0 ? "See every photo before showing it" : undefined}
+              onClick={() => void decide(item, "approve")}
+            >
               SHOW IT
             </button>
             <button className="btn-same" disabled={busy === item.capture_id} onClick={() => void decide(item, "reject")}>
@@ -127,7 +176,8 @@ export default function HeldQueue({ onUnauthorized }: { onUnauthorized: () => vo
             </button>
           )}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
