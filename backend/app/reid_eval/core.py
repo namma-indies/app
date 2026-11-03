@@ -279,6 +279,8 @@ def evaluate(data, *, split="development", decision_id=None):
     }
     result = {
         "schema": 1, "snapshot_id": meta["snapshot_id"], "recipe_id": meta["recipe_id"],
+        "policy_id": meta["policy_id"],
+        "protocol": {key: meta[key] for key in ("threshold", "cap", "ann_shortlist", "phash_distance", "holdout_fraction", "seed", "folds", "versioning")},
         "status": "inconclusive" if len(coverage) < 20 or len({r[0] for r in coverage}) < 2 or meta["truncated"] else "observational",
         "split": split, "replay": meta["replay"], "label_scope": "existing_verdicts",
         "inventory": inventory,

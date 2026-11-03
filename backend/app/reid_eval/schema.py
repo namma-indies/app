@@ -59,10 +59,10 @@ def score(value):
 def validate_snapshot(data):
     keys(data, {"meta", "observations", "pairs", "labels"})
     meta = data["meta"]
-    keys(meta, {"schema", "snapshot_id", "recipe_id", "as_of_ms", "threshold", "cap",
+    keys(meta, {"schema", "snapshot_id", "recipe_id", "policy_id", "as_of_ms", "threshold", "cap",
                 "ann_shortlist", "phash_distance", "holdout_fraction", "seed", "folds",
                 "versioning", "replay", "orphan_labels", "truncated"})
-    for field in ("snapshot_id", "recipe_id"):
+    for field in ("snapshot_id", "recipe_id", "policy_id"):
         uuid(meta[field])
     for field in ("schema", "as_of_ms", "threshold", "cap", "ann_shortlist", "phash_distance",
                   "holdout_fraction", "seed", "folds", "orphan_labels"):
@@ -126,13 +126,20 @@ def validate_snapshot(data):
 
 
 def validate_metrics(data):
-    keys(data, {"schema", "snapshot_id", "recipe_id", "status", "split", "replay", "label_scope",
+    keys(data, {"schema", "snapshot_id", "recipe_id", "policy_id", "protocol", "status", "split", "replay", "label_scope",
                 "inventory", "populations", "model", "policy", "funnel", "slices", "failures",
                 "split_inventory"}, {"decision_id"})
     if data["schema"] != 1:
         raise ValueError("unsupported metrics schema")
     uuid(data["snapshot_id"])
     uuid(data["recipe_id"])
+    uuid(data["policy_id"])
+    keys(data["protocol"], {"threshold", "cap", "ann_shortlist", "phash_distance", "holdout_fraction", "seed", "folds", "versioning"})
+    for field, value in data["protocol"].items():
+        if field == "versioning":
+            enum(value, {"versioned", "baseline_unversioned"})
+        else:
+            number(value)
     if "decision_id" in data:
         uuid(data["decision_id"])
     enum(data["status"], {"inconclusive", "observational"})

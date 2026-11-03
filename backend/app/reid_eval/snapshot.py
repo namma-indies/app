@@ -5,6 +5,8 @@ UUIDs enter the snapshot. Geometry becomes cell-to-cell booleans in SQL.
 """
 
 import asyncio
+import inspect
+import json
 from collections import defaultdict
 from uuid import NAMESPACE_OID, uuid5
 from zoneinfo import ZoneInfo
@@ -12,6 +14,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 
 from app.aggregates import animal_present, coarse_geog, owner_active
+from app import aggregates, matching
 from app.capture_contracts import MULTI_PIPELINE_VERSION
 from app.config import settings
 from app.detect_reid import DETECTOR_NAME, REID_CONF_THRESHOLD
@@ -44,13 +47,16 @@ def vector(raw):
     return value if value.shape == (EMBED_DIM,) and np.isfinite(norm) and norm > 1e-8 else None
 
 
-def cosine_max(left, right):
-    if not left or not right:
-        return None
-    a, b = np.asarray(left, dtype=np.float64), np.asarray(right, dtype=np.float64)
-    a /= np.linalg.norm(a, axis=1, keepdims=True)
-    b /= np.linalg.norm(b, axis=1, keepdims=True)
-    return float(np.clip(np.max(a @ b.T), -1, 1))
+async def score_frames(conn, probes, frames):
+    """Use pgvector's exact cosine, including its production fp32 arithmetic."""
+    if not probes or not frames:
+        return {}
+    rows = await conn.fetch(f"""WITH q AS (
+            SELECT unnest($2::text[])::vector({EMBED_DIM}) AS v)
+        SELECT e.id,MAX(1-(e.vec_miew <=> q.v)) AS score
+        FROM embeddings e CROSS JOIN q WHERE e.id=ANY($1::uuid[]) GROUP BY e.id""",
+        [r["embedding_id"] for r in frames], [_to_pgvector(p) for p in probes])
+    return {r["id"]: float(r["score"]) for r in rows}
 
 
 async def ann_frames(conn, probes, frames, *, located):
@@ -170,27 +176,31 @@ async def take_snapshot(conn, *, limit=0, phash_distance=4, seed=189, folds=5, h
         pairs_by_query = defaultdict(list)
         by_id = {r["id"]: r for r in observations}
         available = {}
-        last_query = None
         for flag in flags:
             qid, cid = str(flag["query"]), str(flag["candidate"])
-            if sleep and qid != last_query:
-                await asyncio.sleep(sleep)
-            last_query = qid
             earlier = [f for f in frames[cid] if f["available_ms"] <= by_id[qid]["available_ms"]]
             available[qid, cid] = earlier
             pairs_by_query[qid].append({"query": qid, "candidate": cid,
-                "model_score": cosine_max([f["vector"] for f in frames[qid]], [f["vector"] for f in earlier]),
-                "policy_score": cosine_max(probes[qid], [f["vector"] for f in earlier]), "ann_score": None,
+                "model_score": None, "policy_score": None, "ann_score": None,
                 **{key: flag[key] for key in ("within_reach", "reverse_within_reach", "species_ok", "capture_ok", "observer_relation")}})
         for qid, pairs in pairs_by_query.items():
             if sleep:
                 await asyncio.sleep(sleep)
+            gallery_frames = [f for p in pairs for f in available[qid, p["candidate"]]]
+            model_scores = await score_frames(conn, [f["vector"] for f in frames[qid]], gallery_frames)
+            policy_scores = (await score_frames(conn, probes[qid], gallery_frames)
+                             if by_id[qid]["probe"] == "mean" else model_scores)
             eligible = [f for p in pairs if by_id[p["candidate"]]["eligible"] and p["within_reach"]
                         and p["species_ok"] and p["capture_ok"] for f in available[qid, p["candidate"]]]
             hits = await ann_frames(conn, probes[qid], eligible, located=by_id[qid]["geo"] == "located")
             for pair in pairs:
-                chosen = [f["vector"] for f in available[qid, pair["candidate"]] if f["embedding_id"] in hits]
-                pair["ann_score"] = cosine_max(probes[qid], chosen)
+                earlier = available[qid, pair["candidate"]]
+                pair["model_score"] = max((model_scores[f["embedding_id"]] for f in earlier
+                                           if f["embedding_id"] in model_scores), default=None)
+                pair["policy_score"] = max((policy_scores[f["embedding_id"]] for f in earlier
+                                            if f["embedding_id"] in policy_scores), default=None)
+                pair["ann_score"] = max((policy_scores[f["embedding_id"]] for f in earlier
+                                         if f["embedding_id"] in hits and f["embedding_id"] in policy_scores), default=None)
         labels = await conn.fetch("""SELECT cf.sighting_id AS a,mp.candidate_sighting_id AS b,cf.verdict,
                 CASE WHEN cf.observer_id IS NULL THEN 'unknown'
                     WHEN reviewer.trust_tier='moderator' THEN 'moderator'
@@ -204,8 +214,14 @@ async def take_snapshot(conn, *, limit=0, phash_distance=4, seed=189, folds=5, h
             LEFT JOIN match_proposals mp ON mp.id=cf.proposal_id
             WHERE mp.id IS NULL OR mp.candidate_sighting_id IS NULL""")
         from gpu_worker.inference import preprocessing_identity
+        policy_source = inspect.getsource(matching) + inspect.getsource(aggregates) + json.dumps({
+            "radius": settings.reid_radius_m, "cell": settings.map_coarsen_cell_m,
+            "slack": settings.reid_slack_m(), "animal_min": settings.animal_confidence_min,
+            "threshold": settings.reid_propose_min, "cap": settings.reid_max_candidates,
+            "ann_shortlist": ANN_SHORTLIST}, sort_keys=True)
         data = {"meta": {"schema": 1, "snapshot_id": str(uuid7()),
                     "recipe_id": str(uuid5(NAMESPACE_OID, MODEL_NAME + "|" + str(recipe) + "|" + preprocessing_identity())),
+                    "policy_id": str(uuid5(NAMESPACE_OID, policy_source)),
                     "as_of_ms": float(clock["ms"]), "threshold": settings.reid_propose_min, "cap": settings.reid_max_candidates,
                     "ann_shortlist": ANN_SHORTLIST, "phash_distance": phash_distance, "holdout_fraction": holdout_fraction,
                     "seed": seed, "folds": folds, "versioning": "versioned" if versioned else "baseline_unversioned",

@@ -1,16 +1,22 @@
 """Known answers and private-output invariants; no production data or models."""
 
 import copy
+import asyncio
 import json
 import math
+import os
 import socket
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from uuid import UUID
 
 import numpy as np
 import pytest
 
 from app.embed import EMBED_DIM, MODEL_NAME
+from app.config import settings
 from app.ids import uuid7
 from app.matching import _to_pgvector
 from app.reid_eval.core import copy_families, evaluate, label_graph, ranking_metrics, ratio, split_plan
@@ -51,7 +57,7 @@ def world(rows, labels=(), overrides=None):
                     "observer_relation": "same"}
             pair.update(overrides.get((q["id"], c["id"]), {}))
             pairs.append(pair)
-    return {"meta": {"schema": 1, "snapshot_id": uid(9000), "recipe_id": uid(9001),
+    return {"meta": {"schema": 1, "snapshot_id": uid(9000), "recipe_id": uid(9001), "policy_id": uid(9003),
                      "as_of_ms": 100000000000, "threshold": .4, "cap": 5, "ann_shortlist": 50,
                      "phash_distance": 4, "holdout_fraction": .3, "seed": 189, "folds": 3,
                      "versioning": "baseline_unversioned", "replay": "counterfactual_current_state",
@@ -307,7 +313,8 @@ async def test_snapshot_inactive_recipe_filter_and_stale_mean_after_versioning(m
     conn, oid = migrated_db, uuid7()
     await conn.execute("INSERT INTO observers(id) VALUES($1)", oid)
     a, _ = await db_encounter(conn, oid, 1)
-    q, _ = await db_encounter(conn, oid, 2)
+    b, _ = await db_encounter(conn, oid, 1.5, cosine=0)
+    q, qphoto = await db_encounter(conn, oid, 2)
     columns = await conn.fetchval("SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='embeddings' AND column_name='recipe'")
     if not columns:
         await conn.execute("ALTER TABLE embeddings ADD COLUMN recipe text; ALTER TABLE sightings ADD COLUMN vec_miew_model text, ADD COLUMN vec_miew_recipe text")
@@ -315,6 +322,12 @@ async def test_snapshot_inactive_recipe_filter_and_stale_mean_after_versioning(m
         await conn.execute("UPDATE embeddings SET recipe='fixture-active'")
         old = np.zeros(EMBED_DIM, dtype=np.float32)
         old[1] = 1
+        pid = uuid7()
+        await conn.execute("INSERT INTO photos(id,sighting_id,s3_key) VALUES($1,$2,'synthetic-old')", pid,q)
+        await conn.execute("""INSERT INTO embeddings(id,photo_id,model,recipe,dim,vec_miew)
+            VALUES($1,$2,$3,'old-recipe',$4,$5::vector)""", uuid7(),pid,MODEL_NAME,EMBED_DIM,_to_pgvector(old))
+        await conn.execute("""INSERT INTO embeddings(id,photo_id,model,recipe,dim,vec_miew)
+            VALUES($1,$2,'other-model','fixture-active',$3,$4::vector)""", uuid7(),qphoto,EMBED_DIM,_to_pgvector(old))
         await conn.execute("""UPDATE sightings SET vec_miew=$2::vector,vec_miew_model='other-model',
             vec_miew_recipe='fixture-active' WHERE id=$1""", q,_to_pgvector(old))
         monkeypatch.setattr(module, "active_recipe", lambda: "fixture-active")
@@ -322,7 +335,10 @@ async def test_snapshot_inactive_recipe_filter_and_stale_mean_after_versioning(m
         query = next(r for r in data["observations"] if r["id"] == str(q))
         assert query["mean_state"] == "inactive" and query["probe"] == "frames"
         assert data["meta"]["versioning"] == "versioned"
-        assert data["pairs"][0]["policy_score"] == pytest.approx(1)
+        pair = next(p for p in data["pairs"] if p["query"] == str(q) and p["candidate"] == str(b))
+        assert pair["model_score"] == pair["policy_score"] == pytest.approx(0)
+        pair = next(p for p in data["pairs"] if p["query"] == str(q) and p["candidate"] == str(a))
+        assert pair["policy_score"] == pytest.approx(1)
     finally:
         if not columns:
             await conn.execute("ALTER TABLE embeddings DROP COLUMN recipe; ALTER TABLE sightings DROP COLUMN vec_miew_model, DROP COLUMN vec_miew_recipe")
@@ -335,3 +351,76 @@ async def test_snapshot_refuses_code_schema_disagreement(migrated_db, monkeypatc
     monkeypatch.setattr(module, "active_recipe", lambda: None if columns else "missing-migration")
     with pytest.raises(ValueError, match="must agree"):
         await take_snapshot(migrated_db)
+
+
+@pytest.mark.asyncio
+async def test_snapshot_cosines_match_the_live_pgvector_rerank(migrated_db):
+    from app.matching import find_candidates
+    conn, oid = migrated_db, uuid7()
+    await conn.execute("INSERT INTO observers(id) VALUES($1)", oid)
+    await db_encounter(conn, oid, 1, cosine=.39)
+    await db_encounter(conn, oid, 2, cosine=.4)
+    query, _ = await db_encounter(conn, oid, 3)
+    v = np.zeros(EMBED_DIM, dtype=np.float32)
+    v[0] = 1
+    live = await find_candidates(conn, v, lat=None, lng=None, radius_m=1000,
+                                 exclude_sighting_id=query, limit=5)
+    data = await take_snapshot(conn)
+    pairs = {p["candidate"]: p for p in data["pairs"] if p["query"] == str(query)}
+    for candidate in live:
+        pair = pairs[str(candidate.sighting_id)]
+        assert pair["policy_score"] == pytest.approx(candidate.similarity, abs=1e-12)
+        assert pair["ann_score"] == pytest.approx(candidate.similarity, abs=1e-12)
+
+
+@pytest.mark.asyncio
+async def test_snapshot_cli_runs_against_fixture_db_and_score_needs_no_dsn(migrated_db, tmp_path):
+    conn, oid = migrated_db, uuid7()
+    await conn.execute("INSERT INTO observers(id) VALUES($1)", oid)
+    a, _ = await db_encounter(conn, oid, 1)
+    q, _ = await db_encounter(conn, oid, 2)
+    await human_label(conn, oid, q, a)
+    env = os.environ.copy()
+    env["REID_EVAL_DATABASE_URL"] = settings.test_database_url
+    backend = Path(__file__).resolve().parents[1]
+    snapshot_path, metrics_path = tmp_path/"cli-snapshot.json", tmp_path/"cli-metrics.json"
+    command = [sys.executable, str(backend/"scripts"/"reid_eval.py")]
+    snap = await asyncio.to_thread(subprocess.run, [*command, "snapshot", "--out", str(snapshot_path)],
+                                   env=env, capture_output=True, text=True, timeout=30)
+    assert snap.returncode == 0, snap.stderr
+    validate_snapshot(json.loads(snapshot_path.read_text()))
+    env.pop("REID_EVAL_DATABASE_URL")
+    result = await asyncio.to_thread(subprocess.run,
+        [*command, "score", "--snap", str(snapshot_path), "--out", str(metrics_path)],
+        env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    validate_metrics(json.loads(metrics_path.read_text()))
+
+
+@pytest.mark.asyncio
+async def test_empty_corpus_is_inconclusive_without_inventing_zero_accuracy(migrated_db):
+    data = await take_snapshot(migrated_db)
+    metrics = evaluate(data)
+    assert metrics["inventory"]["encounters"] == 0
+    assert metrics["status"] == "inconclusive"
+    assert metrics["policy"]["coverage_at_5"]["status"] == "undefined"
+    assert "value" not in metrics["model"]["top1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pipeline,expected", [(None, "legacy"), ("v1", "media_v1"), ("v2", "capture_v2")])
+async def test_inventory_preserves_the_video_pipeline_path(migrated_db, pipeline, expected):
+    from app.capture_contracts import MULTI_PIPELINE_VERSION
+    from app.media_jobs import PIPELINE_VERSION
+    conn, oid = migrated_db, uuid7()
+    await conn.execute("INSERT INTO observers(id) VALUES($1)", oid)
+    sid, _ = await db_encounter(conn, oid, 1, cosine=None)
+    await conn.execute("UPDATE captures SET kind='video' WHERE id=$1", sid)
+    if pipeline:
+        await conn.execute("""INSERT INTO jobs(id,kind,sighting_id,capture_id,pipeline_version)
+            VALUES($1,'video',$2,$3,$4)""", uuid7(),sid if pipeline == "v1" else None,
+            sid if pipeline == "v2" else None, PIPELINE_VERSION if pipeline == "v1" else MULTI_PIPELINE_VERSION)
+    data = await take_snapshot(conn)
+    (row,) = data["observations"]
+    assert row["pipeline"] == expected and row["media"] == "video"
+    assert row["video_recipe"] == expected+"_frames"

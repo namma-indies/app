@@ -70,7 +70,7 @@ untagged and recipe provenance is explicitly unversioned.
 
 Gallery uploads precede the query, and gallery vectors must be available by
 the query's last recorded vector time. Halfvec ANN uses the production cast
-expression and shortlist size, then full-precision cosine re-ranking. Exact
+expression and shortlist size, then pgvector's exact cosine re-ranking. Exact
 and ANN coverage are both reported. Vicinity and its reverse ordering are
 computed only between `coarse_point` cell centres in SQL. Neither coordinates
 nor distances enter the snapshot.
@@ -87,6 +87,9 @@ are the availability proxy; commit times, earlier vector versions, historical
 eligibility, identity membership and queue contents were not fully recorded.
 The source fingerprint identifies current code/configuration, not the weights
 that generated historical vectors. V0 cannot reconstruct those missing facts.
+Metrics retain the numeric evaluation settings and an opaque policy fingerprint
+of matching code/settings; no location-derived distance is exported. Exact
+score ties are ordered by candidate UUID for reproducibility.
 
 ## Leakage, uncertainty and decisions
 
@@ -120,6 +123,6 @@ conflicts, unknown labels, split invariants, actual snapshot SQL/ANN, asymmetric
 no-GPS orderings, no database mutation, and positive output schemas. Snapshots
 allow only their declared IDs, scores, flags, times and enum slices. Metrics
 allow only aggregate counts/rates, enum values and snapshot/recipe/decision
-identifiers. Coordinates, distances, observer IDs, media references, vectors,
+identifiers, with an opaque policy identifier. Coordinates, distances, observer IDs, media references, vectors,
 hashes and free text have no output field. These checks establish mechanics
 and output safety; they do not measure street-dog identification accuracy.
