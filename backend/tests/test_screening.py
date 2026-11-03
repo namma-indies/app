@@ -115,7 +115,50 @@ async def test_an_unscreened_upload_is_hidden_too(authed_client):
 
 
 @pytest.mark.asyncio
-async def test_match_candidates_leave_out_held_uploads(authed_client):
+async def test_two_uploads_held_at_once_still_pair_and_the_pair_shows_once_both_are_public(authed_client):
+    """Matching searches uploads still being screened, and hides them where
+    shown: so two photos of a new dog held together still meet, the pair is
+    nobody's to see while held, and appears by itself when both are approved."""
+    from app.embed import EMBED_DIM, MODEL_NAME
+    from app.matching import resolve_sighting
+    client, owner = authed_client
+    other, viewer, mod = await _second_observer(client, "Other"), await _second_observer(client, "Viewer"), \
+        await _moderator(client)
+    first = await _post(client)
+    _as(client, other)
+    second = await _post(client)
+    pool = await _pool(client)
+    async with pool.acquire() as c:
+        # Two different photos of one dog: the same vector, not the same file.
+        await c.execute("UPDATE photos SET content_sha256 = NULL")
+        for sid in (first, second):
+            await c.execute(f"""INSERT INTO embeddings (id, photo_id, model, dim, vec_miew)
+                                SELECT $1, id, $2, {EMBED_DIM}, array_fill(0.1::real, ARRAY[{EMBED_DIM}])::vector
+                                FROM photos WHERE sighting_id=$3""", uuid7(), MODEL_NAME, UUID(sid))
+            await c.execute("UPDATE captures SET screening='held' WHERE id=$1", await _capture_of(pool, sid))
+        outcome = await resolve_sighting(c, UUID(second), auto_merge_min=1.01, propose_min=0.5, radius_m=1000.0,
+                                         max_candidates=5, new_uuid=uuid7)
+    assert outcome.status == "proposed", "the held earlier upload was not searched"
+
+    # Nobody sees the pair, or the other upload as a candidate, while held.
+    _as(client, viewer)
+    assert not _mentions((await client.get("/proposals")).json()["proposals"], first)
+    _as(client, other)
+    seen = (await client.get(f"/sighting/{second}/match")).json()
+    assert seen["candidates"] == [] and seen["proposals"] == []
+
+    _as(client, mod)
+    for sid in (first, second):
+        await client.post(f"/moderation/capture/{await _capture_of(pool, sid)}/screening", json={"verdict": "approve"})
+    _as(client, viewer)
+    assert _mentions((await client.get("/proposals")).json()["proposals"], first)
+    _as(client, other)
+    seen = (await client.get(f"/sighting/{second}/match")).json()
+    assert [c["sighting_id"] for c in seen["candidates"]] == [first] and len(seen["proposals"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_upload_is_never_searched(authed_client):
     from app.embed import EMBED_DIM, MODEL_NAME
     from app.matching import find_candidates
     client, owner = authed_client
@@ -133,8 +176,9 @@ async def test_match_candidates_leave_out_held_uploads(authed_client):
             return [x.sighting_id for x in await find_candidates(
                 c, query, lat=lat, lng=lng, radius_m=500, exclude_sighting_id=None, limit=5)]
 
-        assert await candidates() == [UUID(mine)]
         await c.execute("UPDATE captures SET screening='held' WHERE id=$1", await _capture_of(pool, mine))
+        assert await candidates() == [UUID(mine)]          # searched while held, hidden where shown
+        await c.execute("UPDATE captures SET screening='rejected' WHERE id=$1", await _capture_of(pool, mine))
         assert await candidates() == []
 
 
