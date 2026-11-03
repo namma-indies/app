@@ -11,6 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.abuse import router as abuse_router, sweep as abuse_sweep, upload_guard
 from app.db import effective_dsn
 from app.deps import get_storage
 from app.static import FrontendStaticFiles
@@ -62,6 +63,8 @@ configure_logging()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if settings.email_open_signup and (settings.email_sender != "ses" or not settings.rate_limit_enabled):
+        raise RuntimeError("Open sign-up requires EMAIL_SENDER=ses and RATE_LIMIT_ENABLED=true")
     # asyncpg defaults to max_size=10, and this pool is shared by two very
     # different consumers: request handlers (which hold a connection for the
     # whole request via the get_conn dependency) and the background tasks that
@@ -96,10 +99,11 @@ async def lifespan(app: FastAPI):
     purger = asyncio.create_task(account_purger(app.state.pool, get_storage()))
     from app.ratelimit import sweeper as limiter_sweeper
     limiter_cleanup = asyncio.create_task(limiter_sweeper(app.state.pool))
+    abuse_cleanup = asyncio.create_task(abuse_sweep(app.state.pool))
     try:
         yield
     finally:
-        for task in (consumer, suggester, purger, limiter_cleanup):
+        for task in (consumer, suggester, purger, limiter_cleanup, abuse_cleanup):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -108,6 +112,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+app.middleware("http")(upload_guard)
+app.include_router(abuse_router)
 # The native iOS app's webview loads from capacitor://localhost -- a real
 # cross-origin request the web PWA (same-origin) never had to make. Only
 # that scheme is allowed; the web app doesn't need CORS at all.
@@ -117,6 +123,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Retry-After"],
 )
 app.include_router(auth_router)
 app.include_router(join_router)

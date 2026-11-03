@@ -13,7 +13,7 @@ vi.mock("./screens/Admin", () => ({ default: () => null }));
 vi.mock("./screens/SignIn", () => ({ default: () => null }));
 vi.mock("./components/Celebration", () => ({ default: () => null }));
 vi.mock("./offline/queue", () => ({
-  failedCount: async () => 0, flush: async () => {}, setOnFlushed: () => {}, setOnUnauthorized: () => {},
+  nextRetryAt: async () => null, failedCount: async () => 0, flush: async () => {}, setOnFlushed: () => {}, setOnUnauthorized: () => {},
 }));
 vi.mock("./api", () => ({
   getDex: async () => ({}), getMe: async () => ({ tier: "member" }), UnauthorizedError: class extends Error {},

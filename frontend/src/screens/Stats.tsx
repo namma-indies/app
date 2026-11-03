@@ -5,12 +5,15 @@ import {
   getStats,
   getStatsAreas,
   getStatsObservers,
+  getAbuseSignals,
   UnauthorizedError,
   type Stats as StatsPayload,
   type StatsAreas,
   type StatsObserver,
+  type AbuseSignals as Signals,
 } from "../api";
 import { formatDay } from "../formatWhen";
+import AbuseSignals from "../components/AbuseSignals";
 
 /** The operator's view of the corpus: how many people have seen how many dogs.
  *
@@ -36,13 +39,15 @@ export default function Stats({ onUnauthorized }: { onUnauthorized: () => void }
   const [areas, setAreas] = useState<StatsAreas | null>(null);
   const [observers, setObservers] = useState<StatsObserver[] | null>(null);
   const [failed, setFailed] = useState(false);
+  const [activity, setActivity] = useState<Signals | null>(null);
 
   useEffect(() => {
-    Promise.all([getStats(), getStatsAreas(), getStatsObservers()])
-      .then(([s, a, o]) => {
+    Promise.all([getStats(), getStatsAreas(), getStatsObservers(), getAbuseSignals()])
+      .then(([s, a, o, activity]) => {
         setStats(s);
         setAreas(a);
         setObservers(o.observers);
+        setActivity(activity);
       })
       .catch((e) => {
         if (e instanceof UnauthorizedError) onUnauthorized();
@@ -97,6 +102,7 @@ export default function Stats({ onUnauthorized }: { onUnauthorized: () => void }
         number of animals is somewhere between.
       </p>
 
+      {activity && <AbuseSignals data={activity} />}
       <h3>BY MONTH</h3>
       <div className="months">
         {stats.months.map((m) => (

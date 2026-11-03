@@ -41,6 +41,7 @@ from app.auth.logintoken import consume, issue, peek
 from app.config import settings
 from app.deps import get_conn
 from app.email.account_mail import deletion_link, deletion_scheduled, send
+from app.email.delivery import deliver
 from app.ratelimit import check, client_key, email_addr_limit, email_ip_limit
 from app.routes.join import _STYLE
 
@@ -68,7 +69,7 @@ async def _notify(conn, observer_id: UUID, when: datetime) -> None:
     if not email:
         return
     try:
-        await send(email, deletion_scheduled(when))
+        await deliver(conn, lambda: send(email, deletion_scheduled(when)))
     except Exception:
         logger.warning("deletion notice not sent for observer=%s", observer_id)
 
@@ -161,11 +162,11 @@ async def web_request(request: Request, email: str = Form(...), conn=Depends(get
     if observer_id is not None:
         token = await issue(conn, observer_id, purpose="delete")
         try:
-            await send(address, deletion_link(f"{settings.public_base_url}/account/delete/confirm?token={token}"))
+            await deliver(conn, lambda: send(address, deletion_link(f"{settings.public_base_url}/account/delete/confirm?token={token}")))
         except Exception:
             # The same page either way: an error here, and only here, would say
             # that an account uses this address.
-            logger.exception("deletion link not sent")
+            logger.warning("deletion link not sent")
     return _html(f"""<p class="ok">If an IndieDex account uses {escape(address, quote=False)}, we've emailed
       it a link to confirm deleting it. The link works once, for 30 minutes.</p>
       <p class="small">Nothing is deleted until you open the link and confirm.</p>""")

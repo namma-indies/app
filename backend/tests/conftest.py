@@ -61,7 +61,8 @@ async def migrated_db(_migrated):
             "TRUNCATE observers, sightings, photos, embeddings, individuals, "
             "match_proposals, confirmations, clinical_records, login_tokens, "
             "areas, individual_names, social_picks, media_purges, x_post_purges, account_deletions, "
-            "rate_limit_buckets, auth_failures, join_pow_uses RESTART IDENTITY CASCADE"
+            "rate_limit_buckets, auth_failures, join_pow_uses, email_delivery_state, "
+            "email_send_attempts, abuse_hourly RESTART IDENTITY CASCADE"
         )
         yield conn
     finally:
@@ -86,7 +87,8 @@ async def app_client(_migrated):
             "TRUNCATE observers, sightings, photos, embeddings, individuals, "
             "match_proposals, confirmations, clinical_records, login_tokens, "
             "areas, individual_names, social_picks, media_purges, x_post_purges, account_deletions, "
-            "rate_limit_buckets, auth_failures, join_pow_uses RESTART IDENTITY CASCADE"
+            "rate_limit_buckets, auth_failures, join_pow_uses, email_delivery_state, "
+            "email_send_attempts, abuse_hourly RESTART IDENTITY CASCADE"
         )
 
     import httpx

@@ -298,14 +298,21 @@ export class UnauthorizedError extends Error {
 // message string, so callers (queue.ts's failure classification) don't have
 // to regex-parse prose that could change independently of this file.
 export class HttpError extends Error {
-  constructor(public status: number) {
+  constructor(public status: number, public retryAfterS: number | null = null) {
     super(`request failed: ${status}`);
   }
 }
 
+export function retryAfterSeconds(res: Response): number | null {
+  const raw = res.headers?.get("Retry-After");
+  if (!raw) return null;
+  const seconds = /^\d+$/.test(raw) ? Number(raw) : (Date.parse(raw) - Date.now()) / 1000;
+  return Number.isFinite(seconds) ? Math.min(86400, Math.max(1, Math.ceil(seconds))) : null;
+}
+
 async function handle<T>(res: Response): Promise<T> {
   if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok) throw new HttpError(res.status);
+  if (!res.ok) throw new HttpError(res.status, retryAfterSeconds(res));
   return (await res.json()) as T;
 }
 
@@ -996,4 +1003,19 @@ export async function getStatsAreas(kind?: string): Promise<StatsAreas> {
 export async function getStatsObservers(): Promise<{ observers: StatsObserver[] }> {
   const res = await fetch(`${API_BASE}/stats/observers`, { credentials: "include" });
   return handle<{ observers: StatsObserver[] }>(res);
+}
+
+export interface AbuseSignals {
+  collection_started_at: string;
+  hours: { hour: string; signups: number; failed_signins: number; auth_throttled: number;
+    uploads: number; upload_throttled: number; email_throttled: number; email_failed: number;
+    signup_spike: boolean; signin_spike: boolean }[];
+  upload_spikes: { id: string; display_name: string | null; recent: number; previous: number }[];
+  email_capacity: { daily_budget: number; reserved_last_24h: number; accepted_last_24h: number;
+    send_interval_s: number; retry_at: string | null };
+  thresholds: { signups_per_hour: number; failed_signins_per_hour: number; upload_spike_hour: number };
+}
+
+export async function getAbuseSignals(): Promise<AbuseSignals> {
+  return handle(await fetch(`${API_BASE}/moderation/abuse`, { credentials: "include" }));
 }

@@ -1,6 +1,7 @@
 from typing import Protocol
 
 import aioboto3
+from botocore.config import Config
 
 from app.config import settings
 
@@ -80,7 +81,11 @@ class SesSender:
 
     async def send_message(self, to: str, subject: str, text: str, html: str) -> None:
         session = aioboto3.Session()
-        async with session.client("sesv2", region_name=settings.ses_region) as client:
+        # Application retries reserve capacity in Postgres on each attempt.
+        # Hidden SDK retries would evade that accounting across workers.
+        async with session.client("sesv2", region_name=settings.ses_region,
+                                  config=Config(connect_timeout=3, read_timeout=10,
+                                                retries={"max_attempts": 0})) as client:
             await client.send_email(
                 FromEmailAddress=settings.email_from,
                 Destination={"ToAddresses": [to]},
@@ -93,6 +98,7 @@ class SesSender:
                         },
                     }
                 },
+                **({"ConfigurationSetName": settings.ses_configuration_set} if settings.ses_configuration_set else {}),
             )
 
 
