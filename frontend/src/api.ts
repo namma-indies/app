@@ -2,6 +2,7 @@
 // httpOnly session cookie set by /auth/magic-link/consume is included.
 
 import { API_BASE } from "./apiBase";
+import { coarsenPlaceBias } from "./precision";
 import { speciesNoun, speciesWithArticle } from "./species";
 
 // "exif" is a camera-roll import: coordinates read out of the file rather than
@@ -966,15 +967,21 @@ export interface FoundPlace {
 
 /** Search for a place by name. `near` (where the map is now) ranks nearby
  * results first without hiding the rest. Goes through our server, which
- * caches and paces requests to the geocoder for everyone. */
+ * caches and paces requests to the geocoder for everyone. Only a shared-map
+ * cell centre leaves the client; the server enforces coarsening again. */
 export async function searchPlaces(
   q: string,
   near?: { lat: number; lng: number },
 ): Promise<FoundPlace[]> {
   const params = new URLSearchParams({ q });
   if (near) {
-    params.set("lat", near.lat.toFixed(4));
-    params.set("lng", near.lng.toFixed(4));
+    const config = await fetch(`${API_BASE}/places/config`, { credentials: "include", cache: "no-store" });
+    const { cell_m } = await handle<{ cell_m: number }>(config);
+    const coarse = coarsenPlaceBias(near, cell_m);
+    if (coarse) {
+      params.set("lat", String(coarse.lat));
+      params.set("lng", String(coarse.lng));
+    }
   }
   const res = await fetch(`${API_BASE}/places?${params}`, { credentials: "include" });
   return (await handle<{ places: FoundPlace[] }>(res)).places;

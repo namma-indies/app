@@ -15,8 +15,8 @@ terms are met for every client at once:
 
 - one place sends requests, so the 1/s ceiling holds across all testers;
 - answers are cached, so the same street looked up twice is one request;
-- testers' IP addresses, and what they search for from where, never reach a
-  third party; only this server's address does.
+- the provider sees this server's address, the typed query and a coarse
+  geographic bias, rather than the person's address or exact map centre.
 
 The app searches when someone presses search, never per keystroke.
 `geocode_url` can point at a self-hosted Nominatim or Photon later without
@@ -32,6 +32,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth.deps import require_observer
 from app.config import settings
+from app.precision import coarsen
 from app.ratelimit import Limit, check
 
 router = APIRouter()
@@ -78,8 +79,10 @@ async def _ask(q: str, near: tuple[float, float] | None) -> list[dict]:
     params = {"q": q, "format": "jsonv2", "limit": str(MAX_RESULTS), "accept-language": "en"}
     if near is not None:
         lat, lng = near
-        params["viewbox"] = (f"{lng - BIAS_DEGREES},{lat + BIAS_DEGREES},"
-                             f"{lng + BIAS_DEGREES},{lat - BIAS_DEGREES}")
+        params["viewbox"] = (
+            f"{max(-180, lng - BIAS_DEGREES)},{min(90, lat + BIAS_DEGREES)},"
+            f"{min(180, lng + BIAS_DEGREES)},{max(-90, lat - BIAS_DEGREES)}"
+        )
         params["bounded"] = "0"  # prefer nearby, don't exclude elsewhere
     async with httpx.AsyncClient(trust_env=False, timeout=settings.geocode_timeout_s) as client:
         response = await client.get(settings.geocode_url, params=params,
@@ -89,6 +92,13 @@ async def _ask(q: str, near: tuple[float, float] | None) -> list[dict]:
     if not isinstance(found, list):
         raise ValueError("unexpected geocoder reply")
     return [p for p in (_place(item) for item in found if isinstance(item, dict)) if p]
+
+
+@router.get("/places/config")
+async def search_config(observer_id: UUID = Depends(require_observer)):
+    # The client must use the configured grid too, before its request can
+    # enter access logs. This is local configuration, not a provider request.
+    return {"cell_m": settings.map_coarsen_cell_m}
 
 
 @router.get("/places")
@@ -101,9 +111,14 @@ async def search_places(
     global _last_request
     check(f"obs:{observer_id}:places", search_limit())
     query = " ".join(q.split())
-    near = (lat, lng) if lat is not None and lng is not None else None
-    # Rounded so that nudging the map a little still hits the cache.
-    key = (query.casefold(), None if near is None else (round(near[0], 1), round(near[1], 1)))
+    near = None
+    if lat is not None and lng is not None and settings.map_coarsen_cell_m > 0:
+        clat, clng = coarsen(lat, lng, settings.map_coarsen_cell_m)
+        near = (max(-90, min(90, clat)), max(-180, min(180, clng)))
+    # Cache and provider see the identical cell centre, including for old
+    # clients that still send finer coordinates. With coarsening disabled,
+    # omit the bias rather than disclose an exact centre to the provider.
+    key = (query.casefold(), near)
     now = time.monotonic()
     hit = _cache.get(key)
     if hit is not None and now - hit[0] < CACHE_TTL_S:

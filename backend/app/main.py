@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.db import effective_dsn
 from app.deps import get_storage
+from app.logprivacy import PlaceSearchAccessFilter
 from app.static import FrontendStaticFiles
 from app.routes.auth import router as auth_router
 from app.routes.dex import router as dex_router
@@ -55,6 +56,9 @@ def configure_logging() -> None:
         handler.setFormatter(logging.Formatter("%(levelname)s:     %(name)s: %(message)s"))
         app_logger.addHandler(handler)
     app_logger.setLevel(logging.INFO)
+    access_logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, PlaceSearchAccessFilter) for f in access_logger.filters):
+        access_logger.addFilter(PlaceSearchAccessFilter())
 
 
 configure_logging()
