@@ -1,135 +1,139 @@
-# Database backups
+# Database backups and restore drills
 
-## What is and is not at risk
+Media bytes cannot reconstruct sightings, identities, confirmations or vectors.
+The existing `backup-db.timer` runs nightly at **01:00 Asia/Kolkata** through
+`remote-backup-db.sh`; **Back up the database** is the manual workflow for the
+same path. It creates `pg_dump -Fc`, verifies its table of contents, then uploads
+to `backups/`. Detailed health now checks the newest archive's size/header and
+36-hour freshness. A successful restore still needs the drill below.
 
-Photos are in S3, and the app's IAM user has List, Get and Put but **no
-DeleteObject** — a compromised app cannot erase the photo corpus.
+Real hosts, directories, bucket names, credentials, inventories and drill
+evidence belong in private ops. Use placeholders here.
 
-The database is not like that. Sightings, individuals, embeddings and
-`confirmations` live in one Docker volume on one Lightsail box, and the Seoul
-rollback box was deleted on 2026-08-16. There is no second copy.
+## Enable the nightly timer
 
-Losing it is worse than it sounds. A photo without its sighting is an anonymous
-picture of a dog: no animal, no observer, no place, no date. And
-`confirmations` is not just history, it is the labelled set the matching
-thresholds are supposed to be fitted against — the scarcest data in the system,
-because every row is a human decision someone made once.
-
-## What runs
-
-`deploy/backup-db.timer` fires `deploy/remote-backup-db.sh` nightly at 01:00
-IST. Each run:
-
-1. `pg_dump -Fc` inside the `db` container.
-2. `pg_restore --list` on the result, **before** it is treated as a backup. A
-   dump cut off mid-write is still a file.
-3. Uploads from the `app` container, which already holds the S3 credentials, so
-   nothing new has to be distributed.
-4. Prints the whole inventory. The failure that matters is not a run that
-   errors, it is a run that quietly stopped happening months ago.
-
-`scripts/backup_db.py` refuses anything that does not begin with `PGDMP`, which
-is how a `pg_dump: error:` message landing in the redirect gets caught instead
-of stored as a backup.
-
-Trigger one by hand from Actions → "Back up the database", or on the box:
+Aswin installs the existing service/timer through the private operator procedure.
+The units assume `/home/ubuntu/app`; adapt the private installation copy to
+`<app-checkout>` and the deploy user. Copy units into `/etc/systemd/system/`, then:
 
 ```sh
-bash ~/app/deploy/remote-backup-db.sh
-```
-
-Take one deliberately before any risky migration.
-
-## Installing the timer
-
-Once per box, as the deploy user:
-
-```sh
-sudo cp ~/app/deploy/backup-db.service ~/app/deploy/backup-db.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now backup-db.timer
 systemctl list-timers backup-db.timer
-```
-
-Both units hardcode `/home/ubuntu`. Adjust if the deploy user differs.
-
-Confirm it actually worked rather than assuming:
-
-```sh
 sudo systemctl start backup-db.service
 journalctl -u backup-db.service -n 40 --no-pager
 ```
 
+Verify successful execution and a fresh backup in detailed health. Preserve the
+existing workflow's `DEPLOY_SSH_KEY`, `DEPLOY_SSH_TARGET` and forced-command
+`backup-db` setup. The drill uses a separate read-only identity. Take a backup
+before a risky migration.
+
 ## Retention
 
-**Not handled by the script, deliberately.** The app's IAM has no
-`DeleteObject`, which is exactly why a compromised app cannot erase the photos.
-Giving this job the permission to prune would hand that back.
+Proposed launch default: expire current `backups/` objects after **30 days**.
+Merge this single rule with the existing lifecycle configuration:
 
-Expire old backups with an S3 lifecycle rule scoped to the `backups/` prefix.
-It is server-side, needs no credential on the box, and cannot be turned against
-`sightings/`. Something like 30 daily plus 12 monthly is plenty for a pilot.
-
-## Restoring
-
-The half that only ever runs on the worst day, so read it before you need it.
-
-**Find and fetch a backup**, from any box that can reach the bucket:
-
-```sh
-cd ~/app
-sudo docker compose -f docker-compose.prod.yml exec -T app \
-  sh -c 'cd /app/backend && uv run python scripts/backup_db.py --list' < /dev/null
-
-sudo docker compose -f docker-compose.prod.yml exec -T app \
-  sh -c 'cd /app/backend && uv run python scripts/backup_db.py \
-         --fetch indiedex-20260904T193005Z.dump --to /tmp/restore.dump' < /dev/null
+```json
+{
+  "ID": "database-backups-30d",
+  "Filter": {"Prefix": "backups/"},
+  "Status": "Enabled",
+  "Expiration": {"Days": 30}
+}
 ```
 
-`--fetch` re-runs the same header check on the way down, because a bucket can
-hand back a zero-length object for a key that exists.
+The [media deletion](../docs/ops/media-deletion.md) runbook's global noncurrent
+version retention is **14 days**. With versioning, current expiry creates a
+delete marker and the backup can remain recoverable for the additional window:
+plan for roughly **44 days plus lifecycle processing lag**, not byte erasure on
+day 30. Verify both rules privately. Keep `erasures/` at least as long as **any**
+backup, replica or noncurrent version can be restored; leave its expiry disabled
+until that bound is established. Monthly/yearly archives require extending the
+ledger and agreeing the privacy window too.
 
-**Restore into the database:**
+The script does not prune. Keep backup DeleteObject/DeleteObjectVersion away
+from API/drill credentials even if guarded media deletion is granted. Record
+independent backup copy policy/effective retention privately alongside
+[media protection](../docs/ops/media-backups.md). Confirm #183 wording first.
+
+## Restore drill — Aswin runs this
+
+**Database restore drill** is manual and default-off. It downloads the latest
+matching backup, refuses a missing/stale/future-dated or damaged newest archive,
+and restores into a generated disposable Postgres 16 + PostGIS + pgvector.
+The container has no published port, external network, application, deployment
+database credentials, host data mount or persistent database volume. The target
+is always generated; no database URL/existing destination is accepted.
+
+Checks cover a custom-format archive with core TABLE DATA entries (schema-only
+is refused), full `pg_restore --exit-on-error --single-transaction`, extensions,
+one known Alembic revision, readable core tables, minimum sightings/vectors,
+vector dimensions, validated foreign keys and photo ownership. An intentionally
+unvalidated CHECK constraint is distinguished from a failed foreign-key restore.
+The generated container and downloaded file are discarded on success/failure.
+
+Only fixed pass/fail classifications reach logs: no rows, counts, dump contents,
+keys or raw database errors, and no artifacts. The hosted runner processes a
+plaintext temporary backup and is discarded afterwards. **Approve that processing
+privately before enabling.** If backups must stay inside the existing hosting
+boundary, change `runs-on` in the private workflow copy to a dedicated ephemeral
+self-hosted runner with Docker/AWS CLI/Python, restricted to the trusted workflow.
+Use neither the production host nor a runner shared with untrusted PR jobs.
+
+Create GitHub environment `backup-restore`, restricted to the default branch,
+with operator approval appropriate for backup access. Set environment secrets:
+
+| Secret | Value |
+|---|---|
+| `RESTORE_BACKUP_BUCKET` | `<backup-source-bucket>` |
+| `RESTORE_BACKUP_ACCESS_KEY_ID` | Dedicated read-only backup identity |
+| `RESTORE_BACKUP_SECRET_ACCESS_KEY` | Its secret |
+| `RESTORE_BACKUP_ENDPOINT` | Optional custom HTTPS S3 origin; empty uses regional AWS endpoint |
+
+Set `RESTORE_BACKUP_REGION` (environment/repository variable, default
+`ap-south-1`). IAM needs ListBucket with prefix `backups/` and GetObject on
+`arn:aws:s3:::<backup-source-bucket>/backups/*`, plus Decrypt for the specific KMS
+key if applicable. No database credential or write/delete grant is needed.
+Record actual source, encryption, policy and secret locations privately.
+
+Set **repository variable** `RESTORE_DRILL_ENABLED=true`, then dispatch
+**Database restore drill** on the default branch. Default minimum sightings and
+MiewID embeddings are each 1; choose useful private expected lower bounds.
+Zero is reserved for a deliberately empty test corpus. Freshness defaults to
+36 hours. Keep exact counts and evidence in private ops.
+
+Run before launch, weekly for the first two weeks, and after schema, backup,
+image or restore changes. CI exercises this same script on synthetic data with
+a photo, identity, human verdict and MiewID vector; it never downloads deployment
+backups. **No agent has run the workflow against production.**
+
+For a local synthetic rehearsal (Docker and Python 3.12+):
 
 ```sh
-sudo docker compose -f docker-compose.prod.yml cp \
-  $(sudo docker compose -f docker-compose.prod.yml ps -q app):/tmp/restore.dump /tmp/restore.dump
-sudo docker compose -f docker-compose.prod.yml cp /tmp/restore.dump db:/tmp/restore.dump
-
-# Stop the app first. Restoring under live writes gives you a database that is
-# neither the backup nor what was there before.
-sudo docker compose -f docker-compose.prod.yml stop app
-
-sudo docker compose -f docker-compose.prod.yml exec -T db \
-  pg_restore --clean --if-exists --no-owner -U postgres -d indiedex \
-  /tmp/restore.dump < /dev/null
-
-sudo docker compose -f docker-compose.prod.yml start app
-curl -s https://app.nammaindies.org/health
+docker build -t indiedex-restore-db ./docker/db
+python backend/scripts/restore_db_drill.py --archive /path/to/synthetic.dump
 ```
 
-`--clean --if-exists` drops and recreates each object, so this overwrites the
-current database. On a **fresh** box, let the entrypoint run `alembic upgrade
-head` first so the extensions exist, then restore over it.
+For the real latest-backup drill, Aswin supplies the separate AWS identity,
+region and `RESTORE_BACKUP_BUCKET` privately, with the AWS CLI installed, then
+runs `python backend/scripts/restore_db_drill.py`. It never reads app `.env`.
+Default temporary data capacity is 2 GiB tmpfs with a 3 GiB memory limit; adjust
+`--data-mib` on a suitably sized isolated runner for a larger corpus.
+`--max-age-hours` permits an explicit historical rehearsal, not a silent waiver
+of freshness in scheduled health checks.
 
-Expect noise about the `postgis` and `vector` extensions already existing. That
-is fine. What is not fine is an error mentioning a *table*.
+## Actual disaster recovery
 
-**Then check the numbers, not the exit code:**
+The drill never promotes its database. The private operator recovery procedure
+must stop writes, choose a validated backup, restore into a new isolated DB,
+compare counts, replay the **current** erasure ledger from the backup time and
+complete purges **before** reconnecting traffic. Use `replay_erasures.py` and
+[decision U2](../docs/ops/media-deletion.md#decision-u2-the-erasure-ledger-backup-restores).
+Configure `ERASURE_LEDGER_ENABLED=true` before deletions for this guarantee.
 
-```sh
-sudo docker compose -f docker-compose.prod.yml exec -T db psql -U postgres -d indiedex \
-  -c 'select count(*) from sightings' \
-  -c 'select count(*) from individuals' \
-  -c 'select count(*) from confirmations' \
-  -c 'select count(*) from embeddings where vec_miew is not null' < /dev/null
-```
-
-An embedding count of zero after a restore that reported success means the
-vectors did not come across, and re-ID will be silently inert.
-
-## Test the restore
-
-A backup that has never been restored is a hypothesis. Once, on the staging box:
-fetch the newest production dump, restore it there, and compare those four
-counts against production. Do it again after any change to this file.
+Account requests still in grace are not yet erased/on the ledger: reconcile
+post-snapshot requests/notices as in the deletion runbook, plus later moderation
+and blocking decisions privately. Verify media source/replica erasures. The
+operator authorises promotion and traffic. Keep #187 open until real rehearsal,
+activation and people work are accepted.

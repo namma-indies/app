@@ -74,8 +74,8 @@ async def fetch() -> int:
             raw = await storage.get(key)
         except Exception as e:
             # Loud, but not fatal: taking the whole site down because a model
-            # fetch failed is worse than running without re-ID. /health reports
-            # the degraded state so a deploy check can catch it.
+            # fetch failed is worse than running without re-ID. Protected
+            # health and the local model CLI report the degraded state.
             log.error("models: COULD NOT FETCH %s (%s)", name, e)
             log.error("models: re-identification will be DISABLED until this is fixed")
             failed += 1

@@ -9,8 +9,10 @@ COPY frontend/ ./
 ARG VITE_MULTI_ANIMAL_ENABLED=false
 # The voice-note recorder (#96) ships dark: off until a launch sets this.
 ARG VITE_VOICE_NOTES_ENABLED=false
+ARG VITE_SELF_HOSTED_ERRORS_ENABLED=false
 RUN VITE_MULTI_ANIMAL_ENABLED=$VITE_MULTI_ANIMAL_ENABLED \
-    VITE_VOICE_NOTES_ENABLED=$VITE_VOICE_NOTES_ENABLED npm run build
+    VITE_VOICE_NOTES_ENABLED=$VITE_VOICE_NOTES_ENABLED \
+    VITE_SELF_HOSTED_ERRORS_ENABLED=$VITE_SELF_HOSTED_ERRORS_ENABLED npm run build
 # produces /build/frontend/dist
 
 # ---- backend runtime stage -------------------------------------------------

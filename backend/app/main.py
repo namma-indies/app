@@ -15,6 +15,8 @@ from app.db import effective_dsn
 from app.deps import get_storage
 from app.static import FrontendStaticFiles
 from app.routes.auth import router as auth_router
+from app.routes.health import router as health_router
+from app.operational_errors import ErrorCaptureMiddleware, errors, flush_loop
 from app.routes.dex import router as dex_router
 from app.routes.dogs import router as dogs_router
 from app.routes.erase import router as erase_router
@@ -55,6 +57,8 @@ def configure_logging() -> None:
         handler.setFormatter(logging.Formatter("%(levelname)s:     %(name)s: %(message)s"))
         app_logger.addHandler(handler)
     app_logger.setLevel(logging.INFO)
+    if errors not in app_logger.handlers:
+        app_logger.addHandler(errors)
 
 
 configure_logging()
@@ -94,18 +98,24 @@ async def lifespan(app: FastAPI):
     # deletion someone asked for must happen whatever else is switched off.
     from app.accounts import consumer as account_purger
     purger = asyncio.create_task(account_purger(app.state.pool, get_storage()))
+    error_flusher = (asyncio.create_task(flush_loop(app.state.pool))
+                     if settings.ops_error_monitoring_enabled else None)
     try:
         yield
     finally:
-        for task in (consumer, suggester, purger):
+        for task in (consumer, suggester, purger, error_flusher):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
+        if error_flusher is not None:
+            with suppress(Exception):
+                await errors.flush_to_db(app.state.pool)
         await app.state.pool.close()
 
 
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(ErrorCaptureMiddleware)
 # The native iOS app's webview loads from capacitor://localhost -- a real
 # cross-origin request the web PWA (same-origin) never had to make. Only
 # that scheme is allowed; the web app doesn't need CORS at all.
@@ -117,6 +127,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(auth_router)
+app.include_router(health_router)
 app.include_router(join_router)
 app.include_router(dex_router)
 app.include_router(dogs_router)
@@ -140,32 +151,6 @@ app.include_router(suggestion_jobs_router)
 app.include_router(voice_notes_router)
 app.include_router(describe_router)
 app.include_router(note_language_router)
-
-
-@app.get("/health")
-async def health():
-    """Liveness plus whether re-identification can actually run.
-
-    The deploy workflow's existing check is "does the site return 200", which
-    proves the app booted and nothing more. Both ML background tasks swallow a
-    missing model and let the sighting save, so a box without the ONNX files
-    serves perfectly good 200s while quietly embedding nothing. Reporting model
-    presence here gives that check something falsifiable to look at.
-    """
-    from pathlib import Path
-
-    ml = Path(__file__).resolve().parent / "ml"
-    models = {
-        name: (ml / name).exists()
-        for name in ("miewid_msv3.onnx", "yolo26x.onnx")
-    }
-    return {
-        "status": "ok",
-        "models": models,
-        # Explicit rather than inferred: "degraded" means the app is up but
-        # re-ID is silently off, which is exactly the state worth alerting on.
-        "reid": "ready" if all(models.values()) else "degraded",
-    }
 
 
 @app.get("/.well-known/apple-app-site-association")

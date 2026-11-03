@@ -1,0 +1,55 @@
+name: Launch monitor
+
+on:
+  schedule:
+    # Offset from the hour to avoid the busiest Actions scheduling boundary.
+    - cron: '7,17,27,37,47,57 * * * *'
+  workflow_dispatch:
+    inputs:
+      test_alert:
+        type: boolean
+        default: false
+        description: Send a fixed test notification without probing or changing incident state
+
+permissions:
+  contents: read
+
+concurrency:
+  group: launch-monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: vars.LAUNCH_MONITORING_ENABLED == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: launch-monitoring
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # The hosted runner supplies the AWS CLI. State permissions are Get/Put
+      # on one private object, separate from media and database backups.
+      - name: Check services and notify on change
+        env:
+          MONITOR_APP_URL: ${{ secrets.MONITOR_APP_URL }}
+          MONITOR_API_URL: ${{ secrets.MONITOR_API_URL }}
+          HEALTH_CHECK_TOKEN: ${{ secrets.HEALTH_CHECK_TOKEN }}
+          MONITOR_WEBHOOK_URL: ${{ secrets.MONITOR_WEBHOOK_URL }}
+          MONITOR_STATE_BUCKET: ${{ secrets.MONITOR_STATE_BUCKET }}
+          MONITOR_STATE_ENDPOINT: ${{ secrets.MONITOR_STATE_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.MONITOR_STATE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MONITOR_STATE_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.MONITOR_STATE_REGION || 'ap-south-1' }}
+          MONITOR_REMINDER_S: ${{ vars.MONITOR_REMINDER_S || '21600' }}
+          TEST_ALERT: ${{ inputs.test_alert }}
+        run: |
+          set -euo pipefail
+          if [ "$TEST_ALERT" = "true" ]; then
+            python backend/scripts/check_launch.py --test-alert
+          else
+            python backend/scripts/check_launch.py
+          fi

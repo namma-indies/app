@@ -39,16 +39,8 @@ cd ~/app
 # Refuse rather than write nothing. Without the models loaded the detector
 # raises for every photo, the script dutifully logs a failure on each, and you
 # get a run that finished having scored exactly zero things.
-# urllib, not curl: the runtime image is python:3.12-slim, which ships no curl.
-health=$(sudo docker compose -f "$COMPOSE" exec -T app \
-  python -c 'import urllib.request,sys; sys.stdout.write(urllib.request.urlopen("http://localhost:8000/health", timeout=10).read().decode())' \
-  < /dev/null || true)
-case "$health" in
-  *'"reid":"ready"'*) ;;
-  *) echo "!! /health does not report reid: ready -- models are not loaded" >&2
-     echo "   $health" >&2
-     exit 1 ;;
-esac
+sudo docker compose -f "$COMPOSE" exec -T app \
+  sh -c 'cd /app/backend && uv run python -m app.model_health' < /dev/null
 
 case "${MODE:-dry-run}" in
   run)
