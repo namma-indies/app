@@ -115,3 +115,46 @@ async def test_one_person_cannot_drain_the_shared_budget(authed_client, geocoder
     monkeypatch.setattr(settings, "rl_places_window_s", 10**9)
     codes = [(await client.get("/places", params={"q": f"place {i}"})).status_code for i in range(3)]
     assert codes == [200, 200, 429]
+
+
+async def test_waiting_geocoders_leave_pool_connections_for_other_routes(authed_client, monkeypatch):
+    import asyncio
+    import asyncpg
+
+    client, _ = authed_client
+    app = client._transport.app
+    original_pool = app.state.pool
+    small_pool = await asyncpg.create_pool(settings.test_database_url, min_size=1, max_size=2)
+    app.state.pool = small_pool
+    started, both_checked, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    admitted = 0
+    original_check = places.check
+    async def checked(*args, **kwargs):
+        nonlocal admitted
+        await original_check(*args, **kwargs)
+        admitted += 1
+        if admitted == 2:
+            both_checked.set()
+    async def blocked(q, near):
+        started.set()
+        await release.wait()
+        return []
+    places.reset()
+    monkeypatch.setattr(places, "_lock", asyncio.Lock())
+    monkeypatch.setattr(places, "_ask", blocked)
+    monkeypatch.setattr(places, "check", checked)
+    searches = []
+    try:
+        searches.append(asyncio.create_task(client.get("/places", params={"q": "first place"})))
+        await asyncio.wait_for(started.wait(), 2)
+        searches.append(asyncio.create_task(client.get("/places", params={"q": "second place"})))
+        await asyncio.wait_for(both_checked.wait(), 2)
+        response = await asyncio.wait_for(client.get("/stats"), 2)
+        assert response.status_code == 200
+    finally:
+        release.set()
+        results = await asyncio.gather(*searches, return_exceptions=True)
+        app.state.pool = original_pool
+        await small_pool.close()
+        places.reset()
+    assert all(getattr(r, "status_code", None) == 200 for r in results)

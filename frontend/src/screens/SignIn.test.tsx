@@ -77,4 +77,15 @@ describe("SignIn", () => {
     await userEvent.click(screen.getByText("Email me a link"));
     expect(await screen.findByRole("alert")).toHaveTextContent("Try again in 60 seconds");
   });
+
+  it("keeps the form usable when a 422 contains structured validation details", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: false, status: 422,
+      json: async () => ({ detail: [{ loc: ["body", "email"], msg: "too long", type: "string_too_long" }] }),
+    } as Response);
+    render(<SignIn onSignedIn={vi.fn()} />);
+    await userEvent.type(screen.getByLabelText("Email"), "person@example.test");
+    await userEvent.click(screen.getByText("Email me a link"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Please check the fields");
+    expect(screen.getByText("Email me a link")).toBeEnabled();
+  });
 });

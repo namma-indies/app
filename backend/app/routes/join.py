@@ -167,7 +167,7 @@ async def join_submit(
             raise
     except HTTPException as exc:
         return _limited(request, exc, display_name)
-    if not hmac.compare_digest(passcode, settings.join_passcode):
+    if not hmac.compare_digest(passcode.encode(), settings.join_passcode.encode()):
         # Counted here rather than at the top of the handler so the budget is
         # spent by *wrong* guesses only. The threat is someone walking a
         # keyspace against a shared code; a dozen field testers joining from

@@ -28,11 +28,10 @@ from collections import OrderedDict
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.auth.deps import require_observer
 from app.config import settings
-from app.deps import get_conn
 from app.ratelimit import Limit, check
 
 router = APIRouter()
@@ -94,14 +93,15 @@ async def _ask(q: str, near: tuple[float, float] | None) -> list[dict]:
 
 @router.get("/places")
 async def search_places(
+    request: Request,
     q: str = Query(min_length=2, max_length=200),
     lat: float | None = Query(None, ge=-90, le=90),
     lng: float | None = Query(None, ge=-180, le=180),
     observer_id: UUID = Depends(require_observer),
-    conn=Depends(get_conn),
 ):
     global _last_request
-    await check(conn, f"obs:{observer_id}:places", search_limit())
+    async with request.app.state.pool.acquire() as conn:
+        await check(conn, f"obs:{observer_id}:places", search_limit())
     query = " ".join(q.split())
     near = (lat, lng) if lat is not None and lng is not None else None
     # Rounded so that nudging the map a little still hits the cache.

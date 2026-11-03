@@ -84,6 +84,12 @@ async def test_passcode_requires_work_even_with_the_right_secret(app_client):
     assert "session=" not in response.headers.get("set-cookie", "")
 
 
+async def test_non_ascii_wrong_passcode_is_a_normal_failure(app_client, passcode_form):
+    form = await passcode_form(app_client, name="Tester", passcode="नहीं")
+    response = await app_client.post("/auth/join", data=form, headers=JSON)
+    assert response.status_code == 401
+
+
 async def test_one_proof_cannot_create_two_accounts_concurrently(app_client, passcode_form):
     form = await passcode_form(app_client, name="Tester", passcode=settings.join_passcode)
     replies = await asyncio.gather(*(app_client.post("/auth/join", data=form, headers=JSON) for _ in range(2)))
