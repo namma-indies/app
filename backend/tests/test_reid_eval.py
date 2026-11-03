@@ -424,3 +424,25 @@ async def test_inventory_preserves_the_video_pipeline_path(migrated_db, pipeline
     (row,) = data["observations"]
     assert row["pipeline"] == expected and row["media"] == "video"
     assert row["video_recipe"] == expected+"_frames"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_vicinity_depends_on_cells_not_positions_inside_them(migrated_db, monkeypatch):
+    conn, oid = migrated_db, uuid7()
+    monkeypatch.setattr(settings, "map_coarsen_cell_m", 1000)
+    monkeypatch.setattr(settings, "reid_radius_m", 100)
+    await conn.execute("INSERT INTO observers(id) VALUES($1)", oid)
+    gallery, _ = await db_encounter(conn, oid, 1, located=True)
+    query, _ = await db_encounter(conn, oid, 2, located=True)
+    await human_label(conn, oid, query, gallery)
+    await conn.execute("UPDATE sightings SET geog=ST_SetSRID(ST_MakePoint(0.0089,0.0044),4326)::geography WHERE id=$1", query)
+    outcomes = []
+    for longitude in (.0181, .0268):  # different exact distances, same candidate cell
+        await conn.execute("UPDATE sightings SET geog=ST_SetSRID(ST_MakePoint($2,0.0044),4326)::geography WHERE id=$1", gallery,longitude)
+        data = await take_snapshot(conn)
+        (pair,) = data["pairs"]
+        assert pair["within_reach"] is False and pair["reverse_within_reach"] is False
+        assert pair["ann_score"] is None
+        assert report(data)["funnel"]["vicinity"] == 1
+        outcomes.append(pair)
+    assert outcomes[0] == outcomes[1]
