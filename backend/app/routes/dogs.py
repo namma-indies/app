@@ -51,6 +51,7 @@ from app.auth.deps import require_observer
 from app.config import settings
 from app.deps import get_conn, get_storage
 from app.embed import EMBED_DIM, MODEL_NAME
+from app.reid_recipe import ACTIVE_RECIPE
 from app.photos import thumb_key
 from app.precision import resolve_precision
 from app.storage.s3 import S3Storage
@@ -110,7 +111,7 @@ async def _look_alikes(conn, ids: list[UUID], viewer: UUID) -> dict[UUID, list[d
             WHERE s.individual_id = ANY($1::uuid[])
               AND s.review_status = 'valid'
               AND {owner_active('s')} AND {visible_to('$3')}
-              AND e.model = $2 AND e.vec_miew IS NOT NULL
+              AND e.model = $2 AND e.recipe = $4 AND e.vec_miew IS NOT NULL
         )
         SELECT dv.individual_id AS dog_id,
                n.individual_id  AS other_id,
@@ -122,6 +123,7 @@ async def _look_alikes(conn, ids: list[UUID], viewer: UUID) -> dict[UUID, list[d
             JOIN photos p2 ON p2.id = e2.photo_id
             JOIN sightings s2 ON s2.id = p2.sighting_id
             WHERE e2.model = $2
+              AND e2.recipe = $4
               AND e2.vec_miew IS NOT NULL
               AND s2.individual_id IS NOT NULL
               AND s2.individual_id <> dv.individual_id
@@ -142,7 +144,7 @@ async def _look_alikes(conn, ids: list[UUID], viewer: UUID) -> dict[UUID, list[d
     # are all still unmatched can come back empty.
     async with conn.transaction():
         await conn.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
-        rows = await conn.fetch(sql, ids, MODEL_NAME, viewer)
+        rows = await conn.fetch(sql, ids, MODEL_NAME, viewer, ACTIVE_RECIPE)
 
     out: dict[UUID, list[dict]] = {}
     for r in rows:

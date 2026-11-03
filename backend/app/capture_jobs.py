@@ -23,6 +23,7 @@ from app.ids import uuid7
 from app.media_jobs import (Claim, EMBED_DIM, Failure, Lease, MODEL_NAME, heartbeat_job,
     locked_lease, payload_of, require_gpu, token_hash, vector_text)
 from app.photos import thumb_key
+from app.reid_recipe import ACTIVE_RECIPE
 from app.scoring import save_detection
 
 router = APIRouter(prefix="/internal/capture-jobs",dependencies=[Depends(require_gpu)])
@@ -210,9 +211,9 @@ async def complete_capture_job(conn,storage,job_id,body: MultiCompletion,*,cpu=F
             await save_detection(conn,pid,item.confidence if item.species == "dog" else 0,
                 item.confidence if item.species == "cat" else 0)
             if item.vector is not None:
-                await conn.execute("""INSERT INTO embeddings(id,photo_id,instance_id,model,dim,vec_miew,bbox)
-                    VALUES($1,$2,$3,$4,$5,$6::vector,$7::jsonb)""",uuid7(),pid,iid,MODEL_NAME,EMBED_DIM,
-                    vector_text(item.vector),json.dumps(dict(zip(("x1","y1","x2","y2"),item.crop_bbox))))
+                await conn.execute("""INSERT INTO embeddings(id,photo_id,instance_id,model,dim,vec_miew,bbox,recipe)
+                    VALUES($1,$2,$3,$4,$5,$6::vector,$7::jsonb,$8)""",uuid7(),pid,iid,MODEL_NAME,EMBED_DIM,
+                    vector_text(item.vector),json.dumps(dict(zip(("x1","y1","x2","y2"),item.crop_bbox))),ACTIVE_RECIPE)
             groups.setdefault(item.track_id,[]).append(iid)
         outcome = "no_animal" if not body.instances else "needs_review" if body.needs_review else "ready"
         if outcome == "ready":

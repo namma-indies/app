@@ -10,6 +10,7 @@ from app.config import settings
 from app.ids import uuid7
 from app.media_jobs import MODEL_NAME, vector_text
 from app.photos import thumb_key
+from app.reid_recipe import ACTIVE_RECIPE
 from app.suggestions import for_capture
 from app.voice_notes import for_sighting, heard
 
@@ -87,8 +88,8 @@ async def publish_groups(conn, capture, groups, excluded=()):
     from app.matching import resolve_sighting
     rows = await conn.fetch("""SELECT a.*,p.phash,e.vec_miew::text AS vec
         FROM animal_instances a JOIN photos p ON p.id=a.evidence_photo_id
-        LEFT JOIN embeddings e ON e.instance_id=a.id AND e.model=$2
-        WHERE a.capture_id=$1 ORDER BY a.id""", capture["id"], MODEL_NAME)
+        LEFT JOIN embeddings e ON e.instance_id=a.id AND e.model=$2 AND e.recipe=$3
+        WHERE a.capture_id=$1 ORDER BY a.id""", capture["id"], MODEL_NAME, ACTIVE_RECIPE)
     validate_groups(rows, groups, excluded)
     by_id = {r["id"]: r for r in rows}
     existing = {}
@@ -117,13 +118,16 @@ async def publish_groups(conn, capture, groups, excluded=()):
                 mean = vector_text(v / norm)
         await conn.execute("""INSERT INTO sightings (id,capture_id,observer_id,captured_at,reported_at,
             geog,geo_source,geo_accuracy_m,attrs,species,phash,animal_confidence,dog_confidence,
-            vec_miew,processing_state)
+            vec_miew,processing_state,vec_miew_model,vec_miew_recipe)
             SELECT $2,id,observer_id,captured_at,reported_at,geog,geo_source,geo_accuracy_m,
-                $3::jsonb,$4,$5,$6,$7,$8::vector,'ready' FROM captures WHERE id=$1
-            ON CONFLICT(id) DO UPDATE SET attrs=EXCLUDED.attrs,updated_at=now()""",
+                $3::jsonb,$4,$5,$6,$7,$8::vector,'ready',$9,$10 FROM captures WHERE id=$1
+            ON CONFLICT(id) DO UPDATE SET attrs=EXCLUDED.attrs,vec_miew=EXCLUDED.vec_miew,
+                vec_miew_model=EXCLUDED.vec_miew_model,vec_miew_recipe=EXCLUDED.vec_miew_recipe,
+                updated_at=now()""",
             capture["id"],sid,json.dumps(attrs),members[0]["species"],members[0]["phash"],
             max(r["confidence"] for r in members),
-            max(r["confidence"] if r["species"] == "dog" else 0 for r in members),mean)
+            max(r["confidence"] if r["species"] == "dog" else 0 for r in members),mean,
+            MODEL_NAME if mean else None, ACTIVE_RECIPE if mean else None)
         # The share chosen at capture time lands once, when the sighting is
         # created. Editing details re-runs publication, and re-applying it then
         # would undo a share the contributor has since withdrawn (and clear a

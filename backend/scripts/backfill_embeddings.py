@@ -24,8 +24,10 @@ Usage, from /app/backend inside the container:
     uv run python scripts/backfill_embeddings.py
     uv run python scripts/backfill_embeddings.py --resolve
 
-`--resolve` additionally runs the matching decision for each affected sighting,
-so proposals exist without waiting for someone to open the sighting.
+Every run also rebuilds sighting means from persisted active-recipe vectors,
+including v2 animal crops. This happens even when no photos need embedding.
+`--resolve` keeps its existing scope: newly embedded sightings only. Rebuilding
+old means is not a proposal sweep; that waits for cannot-link enforcement.
 
 Deliberately serial. Embedding is CPU-bound ONNX and this runs against the same
 box that serves requests; a parallel backfill would compete with live uploads
@@ -53,6 +55,8 @@ from app.config import settings  # noqa: E402
 from app.db import effective_dsn  # noqa: E402
 from app.embed import EMBED_DIM, MODEL_NAME, embed_photo  # noqa: E402
 from app.ids import uuid7  # noqa: E402
+from app.reid_recipe import ACTIVE_RECIPE  # noqa: E402
+from app.sighting_vectors import rebuild_mean  # noqa: E402
 from app.storage.s3 import storage_from_settings  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -62,11 +66,52 @@ PENDING_SQL = """
     SELECT p.id, p.s3_key, p.sighting_id
     FROM photos p
     LEFT JOIN embeddings e
-           ON e.photo_id = p.id AND e.model = $1
+           ON e.photo_id = p.id AND e.model = $1 AND e.recipe = $2
     WHERE p.capture_id IS NULL
       AND (e.id IS NULL OR e.vec_miew IS NULL)
     ORDER BY p.created_at
 """
+
+
+MEANS_SQL = """
+    SELECT s.id, (s.vec_miew IS NULL OR s.vec_miew_model IS DISTINCT FROM $1
+                  OR s.vec_miew_recipe IS DISTINCT FROM $2) AS stale
+    FROM sightings s
+    WHERE s.vec_miew IS NOT NULL OR EXISTS (
+        SELECT 1 FROM photos p JOIN embeddings e ON e.photo_id=p.id
+        WHERE p.sighting_id=s.id AND e.model=$1 AND e.recipe=$2
+          AND e.vec_miew IS NOT NULL)
+    ORDER BY (s.id=ANY($3::uuid[])) DESC,stale DESC,s.created_at,s.id
+"""
+
+
+async def rebuild_means(pool, touched=(), *, limit=0, sleep=0.0):
+    """Repair caches without fetching media; return affected usable means and failures.
+
+    Touched sightings come first so --limit cannot leave a newly written frame
+    outside its mean. Existing valid means are rebuilt too, but not re-resolved
+    merely because the script ran. --limit bounds mean repairs separately from
+    photo inference; --sleep applies to both phases.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(MEANS_SQL, MODEL_NAME, ACTIVE_RECIPE, list(touched))
+    if limit:
+        rows = rows[:limit]
+    affected, failed, usable = set(), 0, 0
+    for row in rows:
+        try:
+            async with pool.acquire() as conn:
+                ready = await rebuild_mean(conn, row["id"])
+            usable += ready
+            if ready and (row["stale"] or row["id"] in touched):
+                affected.add(row["id"])
+        except Exception:
+            log.warning("sighting=%s: mean rebuild failed", row["id"], exc_info=True)
+            failed += 1
+        if sleep:
+            await asyncio.sleep(sleep)
+    log.info("rebuilt %d mean(s): %d usable, %d failed", len(rows), usable, failed)
+    return affected, failed
 
 
 async def main() -> int:
@@ -85,12 +130,14 @@ async def main() -> int:
     assert pool is not None
 
     async with pool.acquire() as conn:
-        rows = await conn.fetch(PENDING_SQL, MODEL_NAME)
+        rows = await conn.fetch(PENDING_SQL, MODEL_NAME, ACTIVE_RECIPE)
+        means = await conn.fetch(MEANS_SQL, MODEL_NAME, ACTIVE_RECIPE, [])
     if args.limit:
         rows = rows[: args.limit]
 
-    log.info("%d photo(s) need a %s vector", len(rows), MODEL_NAME)
-    if args.dry_run or not rows:
+    log.info("%d photo(s) need a %s/%s vector; %d sighting mean(s) to rebuild",
+             len(rows), MODEL_NAME, ACTIVE_RECIPE, min(len(means), args.limit or len(means)))
+    if args.dry_run:
         await pool.close()
         return 0
 
@@ -125,16 +172,18 @@ async def main() -> int:
         async with pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, bbox)
-                VALUES ($1, $2, $3, $4, $5::vector, $6::jsonb)
+                INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, bbox, recipe)
+                VALUES ($1, $2, $3, $4, $5::vector, $6::jsonb, $7)
                 ON CONFLICT (photo_id, model) DO UPDATE
                     SET vec_miew = EXCLUDED.vec_miew,
                         bbox = EXCLUDED.bbox,
+                        recipe = EXCLUDED.recipe,
                         created_at = now()
                 """,
                 uuid7(), r["id"], MODEL_NAME, EMBED_DIM,
                 "[" + ",".join(f"{float(v):.7g}" for v in vec) + "]",
                 json.dumps({"x1": box[0], "y1": box[1], "x2": box[2], "y2": box[3]}),
+                ACTIVE_RECIPE,
             )
         embedded += 1
         touched.add(r["sighting_id"])
@@ -148,6 +197,10 @@ async def main() -> int:
 
     log.info("embedded %d · no animal %d · failed %d · %d sighting(s) affected",
              embedded, no_animal, failed, len(touched))
+
+    repaired, mean_failures = await rebuild_means(pool, touched, limit=args.limit, sleep=args.sleep)
+    failed += mean_failures
+    log.info("%d formerly stale mean(s) repaired; no extra sightings queued for resolution", len(repaired))
 
     if args.resolve and touched:
         # Import here so a plain backfill does not require the matching module.

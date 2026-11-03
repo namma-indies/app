@@ -398,6 +398,11 @@ async def test_completion_persists_detector_scores_and_replay_is_read_only(migra
         assert row["cat"] == pytest.approx(by_id[row["photo_id"]].cat_confidence)
     sighting = await conn.fetchrow("SELECT * FROM sightings WHERE id=$1", job["sighting_id"])
     assert sighting["animal_confidence"] == pytest.approx(max(max(pair) for pair in scores))
+    expected_tags = (jobs.MODEL_NAME, jobs.ACTIVE_RECIPE) if result["outcome"] == "ready" else (None, None)
+    assert (sighting["vec_miew_model"], sighting["vec_miew_recipe"]) == expected_tags
+    assert all(r["recipe"] == jobs.ACTIVE_RECIPE for r in await conn.fetch(
+        "SELECT e.recipe FROM embeddings e JOIN photos p ON p.id=e.photo_id WHERE p.sighting_id=$1",
+        job["sighting_id"]))
     storage.publish_checked.reset_mock()
     assert (await jobs.complete_job(conn, storage, job["id"], body, cpu=cpu))["replayed"]
     assert await conn.fetch("SELECT * FROM detections ORDER BY photo_id") == rows

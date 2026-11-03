@@ -20,6 +20,7 @@ from app.embed import MODEL_NAME
 from app.ids import uuid7
 from app.matching import find_candidates
 from app.photos import thumb_key
+from app.reid_recipe import ACTIVE_RECIPE
 from app.storage.s3 import S3Storage
 
 logger = logging.getLogger(__name__)
@@ -58,11 +59,13 @@ async def get_match(
         """
         SELECT EXISTS (
             SELECT 1 FROM photos p
-            JOIN embeddings e ON e.photo_id = p.id
+            JOIN embeddings e ON e.photo_id = p.id AND e.model = $2 AND e.recipe = $3
             WHERE p.sighting_id = $1 AND e.vec_miew IS NOT NULL
         )
         """,
         sighting_id,
+        MODEL_NAME,
+        ACTIVE_RECIPE,
     )
     if not embedded:
         # Distinguishes "not scored yet" from "scored, found nothing" -- the
@@ -86,12 +89,17 @@ async def get_match(
         FROM sightings s
         JOIN photos p ON p.sighting_id = s.id
         JOIN embeddings e ON e.photo_id = p.id AND e.model = $2
-        WHERE s.id = $1 AND e.vec_miew IS NOT NULL
+        WHERE s.id = $1 AND e.vec_miew IS NOT NULL AND e.recipe = $3
         ORDER BY e.created_at
         """,
         sighting_id,
         MODEL_NAME,
+        ACTIVE_RECIPE,
     )
+    if not rows:
+        # Frames can be removed between the existence check and this read.
+        return {"status": "pending", "processing_state": row["processing_state"],
+                "candidates": [], "proposals": []}
     vecs = [
         np.array([float(x) for x in r["vec"].strip("[]").split(",")], dtype=np.float32)
         for r in rows

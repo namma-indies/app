@@ -17,6 +17,8 @@ from app.deps import get_storage
 from app.ids import uuid7
 from app.photos import process_photo, ProcessedPhoto, thumb_key
 from app.scoring import recompute_animal_confidence
+from app.reid_recipe import ACTIVE_RECIPE
+from app.sighting_vectors import save_mean
 from app.social import mark_shared
 from app.storage.s3 import S3Storage
 from app.transcription_jobs import enqueue_transcription
@@ -112,16 +114,16 @@ async def _analyse_and_save(
             continue
 
         box = found.box
-        collected.append(vec)
         try:
             async with pool.acquire() as conn:
                 await conn.execute(
                     """
-                    INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, bbox)
-                    VALUES ($1, $2, $3, $4, $5::vector, $6::jsonb)
+                    INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, bbox, recipe)
+                    VALUES ($1, $2, $3, $4, $5::vector, $6::jsonb, $7)
                     ON CONFLICT (photo_id, model) DO UPDATE
                         SET vec_miew = EXCLUDED.vec_miew,
                             bbox = EXCLUDED.bbox,
+                            recipe = EXCLUDED.recipe,
                             created_at = now()
                     """,
                     uuid7(),
@@ -130,7 +132,9 @@ async def _analyse_and_save(
                     EMBED_DIM,
                     "[" + ",".join(f"{float(v):.7g}" for v in vec) + "]",
                     json.dumps({"x1": box[0], "y1": box[1], "x2": box[2], "y2": box[3]}),
+                    ACTIVE_RECIPE,
                 )
+            collected.append(vec)
         except Exception:
             logger.warning(
                 "failed to store embedding for photo=%s", photo_id, exc_info=True
@@ -190,26 +194,19 @@ async def _save_mean_vector(pool: asyncpg.Pool, sighting_id: UUID, vecs: list) -
     for them and the caller skips. That matters more for a mean than for a max
     -- one bad frame drags an average, while a max simply ignores it.
     """
-    if not vecs:
-        return
     import numpy as np
 
-    mean = np.mean(np.stack(vecs), axis=0)
-    norm = float(np.linalg.norm(mean))
-    if norm == 0.0:
-        # Only reachable if the frames cancelled exactly, which would mean the
-        # embeddings are not what we think. Skip rather than store a zero
-        # vector, whose cosine against anything is undefined.
-        logger.warning("mean vector for sighting=%s has zero norm; not stored", sighting_id)
-        return
-    mean = mean / norm
+    vector = None
+    if vecs:
+        mean = np.mean(np.stack(vecs), axis=0)
+        norm = float(np.linalg.norm(mean))
+        if np.isfinite(norm) and norm > 1e-8:
+            vector = "[" + ",".join(f"{float(v):.7g}" for v in mean / norm) + "]"
+        else:
+            logger.warning("mean vector for sighting=%s is unusable; clearing it", sighting_id)
     try:
         async with pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE sightings SET vec_miew = $1::vector WHERE id = $2",
-                "[" + ",".join(f"{float(v):.7g}" for v in mean) + "]",
-                sighting_id,
-            )
+            await save_mean(conn, sighting_id, vector)
     except Exception:
         logger.warning(
             "failed to store mean vector for sighting=%s", sighting_id, exc_info=True

@@ -254,10 +254,15 @@ async def test_db_completion_isolated_children_and_replay(migrated_db):
     oid,cid,jid,storage = await seed(conn,body)
     response = await complete_capture_job(conn,storage,jid,body)
     assert response["outcome"] == "ready"
-    children = await conn.fetch("SELECT id,species,vec_miew::text AS vec FROM sightings WHERE capture_id=$1 ORDER BY species",cid)
+    children = await conn.fetch("SELECT id,species,vec_miew::text AS vec,vec_miew_model,vec_miew_recipe FROM sightings WHERE capture_id=$1 ORDER BY species",cid)
     assert len(children) == 2
     assert {r["species"] for r in children} == {"dog","cat"}
     assert children[0]["vec"] != children[1]["vec"]
+    from app.embed import MODEL_NAME
+    from app.reid_recipe import ACTIVE_RECIPE
+    assert all((r["vec_miew_model"], r["vec_miew_recipe"]) == (MODEL_NAME, ACTIVE_RECIPE) for r in children)
+    assert all(r["recipe"] == ACTIVE_RECIPE for r in await conn.fetch(
+        "SELECT e.recipe FROM embeddings e JOIN animal_instances a ON a.id=e.instance_id WHERE a.capture_id=$1", cid))
     assert await conn.fetchval("SELECT count(*) FROM photos WHERE capture_id=$1 AND sighting_id IS NULL",cid) == 1
     assert await conn.fetchval("SELECT count(*) FROM embeddings e JOIN animal_instances a ON a.id=e.instance_id WHERE a.capture_id=$1",cid) == 2
     assert await conn.fetchval("SELECT count(*) FROM match_proposals WHERE sighting_id=ANY($1::uuid[])",[r["id"] for r in children]) == 0
