@@ -201,7 +201,7 @@ async def test_a_new_report_does_not_overturn_a_moderator(authed_client):
     sid = await _post(client)
     await _report(client, sid)
     await _make_moderator(client, oid)
-    await client.post(f"/sighting/{sid}/review", data={"verdict": "valid"})
+    await client.post(f"/sighting/{sid}/review", data={"verdict": "valid", "reason": "Reviewed the evidence"})
 
     other = await _observer(client, name="Someone")
     _become(client, other)
@@ -341,7 +341,7 @@ async def test_the_most_reported_comes_first(authed_client):
 async def test_reviewing_requires_a_moderator(authed_client):
     client, _ = authed_client
     sid = await _post(client)
-    r = await client.post(f"/sighting/{sid}/review", data={"verdict": "rejected"})
+    r = await client.post(f"/sighting/{sid}/review", data={"verdict": "rejected", "reason": "Reviewed the evidence"})
     assert r.status_code == 404
     assert await _status(client, sid) == "valid"
 
@@ -353,7 +353,7 @@ async def test_rejecting_keeps_it_off_the_map_for_good(authed_client):
     await _report(client, sid)
     await _make_moderator(client, oid)
 
-    r = await client.post(f"/sighting/{sid}/review", data={"verdict": "rejected"})
+    r = await client.post(f"/sighting/{sid}/review", data={"verdict": "rejected", "reason": "Reviewed the evidence"})
 
     assert r.status_code == 200
     assert await _status(client, sid) == "rejected"
@@ -367,7 +367,7 @@ async def test_marking_it_valid_puts_it_back(authed_client):
     await _report(client, sid)
     await _make_moderator(client, oid)
 
-    await client.post(f"/sighting/{sid}/review", data={"verdict": "valid"})
+    await client.post(f"/sighting/{sid}/review", data={"verdict": "valid", "reason": "Reviewed the evidence"})
 
     assert sid in [s["id"] for s in (await client.get("/map")).json()["sightings"]]
 
@@ -380,7 +380,7 @@ async def test_rejecting_deletes_nothing(authed_client):
     sid = await _post(client)
     await _report(client, sid)
     await _make_moderator(client, oid)
-    await client.post(f"/sighting/{sid}/review", data={"verdict": "rejected"})
+    await client.post(f"/sighting/{sid}/review", data={"verdict": "rejected", "reason": "Reviewed the evidence"})
 
     async with (await _pool(client)).acquire() as c:
         assert await c.fetchval(
@@ -407,7 +407,7 @@ async def test_a_fresh_report_after_a_review_still_reaches_a_human(authed_client
     sid = await _post(client)
     await _report(client, sid)
     await _make_moderator(client, oid)
-    await client.post(f"/sighting/{sid}/review", data={"verdict": "valid"})
+    await client.post(f"/sighting/{sid}/review", data={"verdict": "valid", "reason": "Reviewed the evidence"})
     assert (await client.get("/moderation/queue")).json()["items"] == []
 
     other = await _observer(client, name="Someone")
@@ -426,7 +426,7 @@ async def test_the_verdict_records_who_made_it(authed_client):
     sid = await _post(client)
     await _report(client, sid)
     await _make_moderator(client, oid)
-    await client.post(f"/sighting/{sid}/review", data={"verdict": "rejected"})
+    await client.post(f"/sighting/{sid}/review", data={"verdict": "rejected", "reason": "Reviewed the evidence"})
 
     async with (await _pool(client)).acquire() as c:
         row = await c.fetchrow(

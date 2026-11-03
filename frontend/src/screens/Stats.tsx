@@ -54,12 +54,13 @@ export default function Stats({ onUnauthorized }: { onUnauthorized: () => void }
     const who = o.display_name ?? "this person";
     try {
       if (o.banned) {
-        if (!confirm(`Lift the ban on ${who}? Everything they logged shows again.`)) return;
-        await unbanObserver(o.id);
+        const reason = prompt(`Lift the ban on ${who}? Everything they logged shows again. Reason (required for the record):`);
+        if (!reason?.trim()) return;
+        await unbanObserver(o.id, reason.trim());
       } else {
         const reason = prompt(`Ban ${who}? Everything they logged is hidden from everyone, and they can't sign in. Reason (for the record):`);
-        if (reason === null) return;
-        await banObserver(o.id, reason.trim() || undefined);
+        if (!reason?.trim()) return;
+        await banObserver(o.id, reason.trim());
       }
       setObservers((cur) => (cur ?? []).map((x) => (x.id === o.id ? { ...x, banned: !o.banned } : x)));
     } catch (e) {

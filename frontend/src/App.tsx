@@ -24,7 +24,8 @@ type Tab = "capture" | "dex" | "admin";
 export const HAPTICS_HOLD_MS = 2000;
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("capture");
+  const [tab, setTab] = useState<Tab>(() =>
+    new URLSearchParams(window.location.search).get("tab") === "moderation" ? "admin" : "capture");
   // Display hint only: /stats/observers checks the tier itself and 404s
   // without it, so a forged flag here reveals nothing.
   const [isModerator, setIsModerator] = useState(false);
@@ -236,7 +237,7 @@ export default function App() {
           onUnauthorized={() => { setShowingBlocks(false); setUnauthorized(true); }} />
       )}
       <div className="screen">
-        {tab === "capture" ? (
+        {tab === "capture" || (tab === "admin" && !isModerator) ? (
           <Capture />
         ) : tab === "admin" ? (
           <Admin onUnauthorized={() => setUnauthorized(true)} />

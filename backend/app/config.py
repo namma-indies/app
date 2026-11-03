@@ -52,6 +52,15 @@ class Settings(BaseSettings):
     email_from: str = "IndieDex <hello@nammaindies.org>"
     public_base_url: str = "http://localhost:8000"
 
+    # Launch moderation operations (#198). Addresses belong in deployment
+    # settings, never in the repository. Empty retains alerts for later.
+    moderator_alert_emails: str = ""
+    moderation_digest_minutes: int = Field(default=60, ge=1, le=1440)
+    moderation_mail_poll_s: float = Field(default=5, ge=0.1, le=60)
+    # Provisional operational targets; product/coverage must confirm them.
+    moderation_response_hours: float = Field(default=24, gt=0, le=720)
+    moderation_severe_response_hours: float = Field(default=2, gt=0, le=168)
+
     phone_hash_secret: str = "dev-phone-secret"
     session_secret: str = "dev-session-secret"
     magic_link_secret: str = "dev-magic-secret"
