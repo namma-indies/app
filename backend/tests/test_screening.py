@@ -182,6 +182,40 @@ async def test_a_rejected_upload_is_never_searched(authed_client):
         assert await candidates() == []
 
 
+@pytest.mark.parametrize("by", ["photo", "clip"])
+@pytest.mark.asyncio
+async def test_a_clean_copy_of_a_rejected_upload_is_not_folded_into_it(authed_client, by):
+    """The identical-photo and same-clip rule must not make a cleared upload
+    the duplicate of one a moderator rejected at screening: duplicates drop
+    off the map with their original."""
+    from app.matching import resolve_sighting
+    client, owner = authed_client
+    other, viewer = await _second_observer(client, "Other"), await _second_observer(client, "Viewer")
+    rejected = await _post(client)
+    _as(client, other)
+    copy = await _post(client)
+    pool = await _pool(client)
+    async with pool.acquire() as c:
+        if by == "clip":
+            await c.execute("UPDATE photos SET content_sha256 = NULL")
+            await c.execute("UPDATE captures SET clip_sha256 = 'same-clip' WHERE id = ANY($1::uuid[])",
+                            [await _capture_of(pool, s) for s in (rejected, copy)])
+        from app.embed import EMBED_DIM, MODEL_NAME
+        for sid in (rejected, copy):         # resolution only runs on an embedded upload
+            await c.execute(f"""INSERT INTO embeddings (id, photo_id, model, dim, vec_miew)
+                                SELECT $1, id, $2, {EMBED_DIM}, array_fill(0.1::real, ARRAY[{EMBED_DIM}])::vector
+                                FROM photos WHERE sighting_id=$3""", uuid7(), MODEL_NAME, UUID(sid))
+        await c.execute("UPDATE sightings SET individual_id = NULL, duplicate_of = NULL, match_status = 'unmatched'")
+        await c.execute("UPDATE captures SET screening = 'rejected' WHERE id = $1", await _capture_of(pool, rejected))
+        await resolve_sighting(c, UUID(copy), auto_merge_min=1.01, propose_min=0.5, radius_m=1000.0,
+                               max_candidates=5, new_uuid=uuid7)
+        row = await c.fetchrow("SELECT duplicate_of, individual_id FROM sightings WHERE id = $1", UUID(copy))
+    assert (row["duplicate_of"], row["individual_id"]) == (None, None)
+    _as(client, viewer)
+    shown = (await client.get("/map")).json()["sightings"]
+    assert _mentions(shown, copy) and not _mentions(shown, rejected)
+
+
 # --- what gets held ---------------------------------------------------------------
 
 
