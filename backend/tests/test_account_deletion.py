@@ -226,6 +226,52 @@ async def test_the_web_page_reveals_nothing_about_who_has_an_account(app_client,
         assert await c.fetchval("SELECT count(*) FROM observers") == 1          # nothing is created
 
 
+@pytest.mark.parametrize("pause", ["interval", "daily", "provider_backoff"])
+async def test_busy_deletion_email_shows_the_same_wait_for_known_and_unknown_addresses(app_client, mail, monkeypatch, pause):
+    import re
+    from app.email.delivery import reserve
+    monkeypatch.setattr(settings, "email_sender", "ses")
+    pool = await _pool(app_client)
+    async with pool.acquire() as conn:
+        await conn.execute("INSERT INTO observers (id,email,created_via) VALUES ($1,'known@example.test','email')", uuid7())
+        await reserve(conn)
+        if pause == "daily":
+            monkeypatch.setattr(settings, "email_daily_budget", 1)
+            await conn.execute("UPDATE email_delivery_state SET next_at=now()-interval '1 second'")
+        else:
+            await conn.execute("UPDATE email_delivery_state SET next_at=now()+interval '60 seconds'")
+    known = await app_client.post("/account/delete/request", data={"email": "known@example.test"})
+    unknown = await app_client.post("/account/delete/request", data={"email": "unknown@example.test"})
+    assert known.status_code == unknown.status_code == 429
+    assert int(known.headers["Retry-After"]) > 0 and int(unknown.headers["Retry-After"]) > 0
+    assert "Try again" in known.text and "Try again" in unknown.text
+    assert re.sub(r"\d+", "N", known.text) == re.sub(r"\d+", "N", unknown.text)
+    assert "we've emailed" not in known.text
+    assert mail == []
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM login_tokens") == 0
+
+
+async def test_failed_deletion_send_keeps_a_neutral_response_and_retry_guidance(app_client, monkeypatch):
+    from botocore.exceptions import ClientError
+    monkeypatch.setattr(settings, "email_sender", "ses")
+    pool = await _pool(app_client)
+    async with pool.acquire() as conn:
+        await conn.execute("INSERT INTO observers (id,email,created_via) VALUES ($1,'known@example.test','email')", uuid7())
+    async def failed(to, message):
+        raise ClientError({"Error": {"Code": "MessageRejected", "Message": "private provider reason"}}, "SendEmail")
+    monkeypatch.setattr("app.routes.account.send", failed)
+    known = await app_client.post("/account/delete/request", data={"email": "known@example.test"})
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE email_delivery_state SET next_at=now()-interval '1 second'")
+    unknown = await app_client.post("/account/delete/request", data={"email": "unknown@example.test"})
+    assert known.status_code == unknown.status_code == 200
+    assert known.headers["Retry-After"] == unknown.headers["Retry-After"] == "60"
+    assert known.text.replace("known@example.test", "X") == unknown.text.replace("unknown@example.test", "X")
+    assert "we've emailed" not in known.text and "private provider reason" not in known.text
+    assert "wait 60 seconds" in known.text
+
+
 @pytest.mark.asyncio
 async def test_following_the_link_deletes_nothing_and_the_button_schedules_it(app_client, mail):
     pool = await _pool(app_client)
