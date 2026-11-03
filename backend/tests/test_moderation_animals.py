@@ -116,7 +116,7 @@ async def test_ruling_records_the_verdict_and_empties_it_from_the_queue(app_clie
     mod = await _moderator(app_client)
     sid = await _scored(app_client, dog=0.02, cat=0.00)
 
-    r = await app_client.post(f"/sighting/{sid}/animal", data={"verdict": "animal"})
+    r = await app_client.post(f"/sighting/{sid}/animal", data={"verdict": "animal", "reason": "Reviewed the evidence"})
     assert r.status_code == 200, r.text
 
     async with (await _pool(app_client)).acquire() as c:
@@ -137,7 +137,7 @@ async def test_ruling_records_the_verdict_and_empties_it_from_the_queue(app_clie
 async def test_no_animal_is_recorded_too(app_client):
     await _moderator(app_client)
     sid = await _scored(app_client, dog=0.02, cat=0.00)
-    r = await app_client.post(f"/sighting/{sid}/animal", data={"verdict": "no_animal"})
+    r = await app_client.post(f"/sighting/{sid}/animal", data={"verdict": "no_animal", "reason": "Reviewed the evidence"})
     assert r.status_code == 200
 
     async with (await _pool(app_client)).acquire() as c:

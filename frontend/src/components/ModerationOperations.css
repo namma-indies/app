@@ -1,0 +1,8 @@
+.mod-ops-notice { padding: .7rem 1rem; margin: 0; font-size: .8rem; line-height: 1.5; }
+.mod-decision-reason { display: block; margin: .75rem 1rem; font-size: .8rem; }
+.mod-decision-reason textarea { display: block; width: 100%; box-sizing: border-box; margin-top: .35rem; font: inherit; }
+.mod-clock { font-size: .8rem; line-height: 1.5; }
+.mod-clock strong { color: #ac362d; }
+.mod-audit-card { padding: 1rem; }
+.mod-audit-card p { margin: .5rem 0; overflow-wrap: anywhere; }
+.mod-target-id { font-size: .75rem; }
