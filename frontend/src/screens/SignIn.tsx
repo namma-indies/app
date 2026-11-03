@@ -54,7 +54,11 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
       // a proxy error page). Say so rather than throwing a parse error.
       const data = await res.json().catch(() => null);
       if (!res.ok || !data?.ok) {
-        setError(data?.error ?? data?.detail ?? "Something went wrong. Try again in a moment.");
+        const message = typeof data?.error === "string" ? data.error
+          : typeof data?.detail === "string" ? data.detail
+          : res.status === 422 ? "Please check the fields and try again."
+          : "Something went wrong. Try again in a moment.";
+        setError(message);
         return null;
       }
       return data;
@@ -122,6 +126,7 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
             <input
               id="signin-email"
               type="email"
+              maxLength={320}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@example.com"
@@ -144,6 +149,7 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
             <label htmlFor="signin-name">Your name</label>
             <input
               id="signin-name"
+              maxLength={200}
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="your email works best"
@@ -155,6 +161,7 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
             <input
               id="signin-passcode"
               type="password"
+              maxLength={512}
               value={passcode}
               onChange={(e) => setPasscode(e.target.value)}
               placeholder="shared code"
