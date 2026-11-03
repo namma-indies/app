@@ -37,6 +37,7 @@ import numpy as np
 from app.aggregates import animal_present, coarse_geog, owner_active
 from app.config import settings
 from app.embed import EMBED_DIM, MODEL_NAME
+from app.reid_recipe import ACTIVE_RECIPE
 
 # How many neighbours the ANN stage pulls before exact re-ranking. Larger costs
 # little (the exact pass is a dot product over a shortlist) and protects
@@ -105,7 +106,7 @@ async def find_candidates(
     # no inferable type -- Postgres raises IndeterminateDatatypeError. That is
     # exactly what happened to sightings with no GPS, the case this function
     # claims to support: the geo predicates vanished and $3/$4 became untypeable.
-    params: list = [qs, MODEL_NAME, exclude_sighting_id]
+    params: list = [qs, MODEL_NAME, exclude_sighting_id, ACTIVE_RECIPE]
     p_vecs, p_model, p_excl = "$1", "$2", "$3"
     if has_geo:
         # THE VICINITY IS MEASURED FROM CELL TO CELL, NEVER FROM A POINT
@@ -131,7 +132,7 @@ async def find_candidates(
         # on this anyway, so a spatial index had little to save.
         reach = radius_m + settings.reid_slack_m()
         params += [lng, lat, reach]
-        p_lng, p_lat, p_radius = "$4", "$5", "$6"
+        p_lng, p_lat, p_radius = "$5", "$6", "$7"
         here = f"ST_SetSRID(ST_MakePoint({p_lng}, {p_lat}), 4326)::geography"
         here_cell = coarse_geog(here)
         geo_filter = (
@@ -156,6 +157,7 @@ async def find_candidates(
                 JOIN photos p ON p.id = e.photo_id
                 JOIN sightings s ON s.id = p.sighting_id
                 WHERE e.model = {p_model}
+                  AND e.recipe = $4
                   AND e.vec_miew IS NOT NULL
                   -- Rejected content must not seed identities. A moderator
                   -- taking a sighting down and it still being the reason two
@@ -329,19 +331,23 @@ async def _resolve_sighting(
                ST_Y(geog::geometry) AS lat,
                ST_X(geog::geometry) AS lng
         FROM sightings WHERE id = $1 AND vec_miew IS NOT NULL
+          AND vec_miew_model = $2 AND vec_miew_recipe = $3
         """,
         sighting_id,
+        MODEL_NAME,
+        ACTIVE_RECIPE,
     )
     frame_count = await conn.fetchval(
         """
         SELECT count(*) FROM photos p
         JOIN embeddings e ON e.photo_id = p.id AND e.model = $2
-        WHERE p.sighting_id = $1 AND e.vec_miew IS NOT NULL
+        WHERE p.sighting_id = $1 AND e.vec_miew IS NOT NULL AND e.recipe = $3
         """,
         sighting_id,
         MODEL_NAME,
+        ACTIVE_RECIPE,
     )
-    if mean is not None:
+    if mean is not None and frame_count:
         rows = [mean]
     else:
         rows = await conn.fetch(
@@ -352,11 +358,12 @@ async def _resolve_sighting(
             FROM sightings s
             JOIN photos p ON p.sighting_id = s.id
             JOIN embeddings e ON e.photo_id = p.id AND e.model = $2
-            WHERE s.id = $1 AND e.vec_miew IS NOT NULL
+            WHERE s.id = $1 AND e.vec_miew IS NOT NULL AND e.recipe = $3
             ORDER BY e.created_at
             """,
             sighting_id,
             MODEL_NAME,
+            ACTIVE_RECIPE,
         )
     if not rows:
         # No embedding yet (or no animal found). Nothing to decide.

@@ -9,6 +9,7 @@ every run and the pending count never reaches zero.
 import pytest
 
 from app.ids import uuid7
+from app.reid_recipe import ACTIVE_RECIPE
 from scripts.rescore_photos import PENDING_SQL
 
 pytestmark = pytest.mark.asyncio
@@ -71,6 +72,6 @@ async def test_legacy_maintenance_excludes_capture_sources_and_animal_evidence(m
         uuid7(), sibling_id, sid,
     )
     assert [r["id"] for r in await migrated_db.fetch(PENDING_SQL, "yolo26x")] == [legacy]
-    assert [r["id"] for r in await migrated_db.fetch(EMBEDDING_SQL, "miewid-msv3")] == [legacy]
+    assert [r["id"] for r in await migrated_db.fetch(EMBEDDING_SQL, "miewid-msv3", ACTIVE_RECIPE)] == [legacy]
     assert not await migrated_db.fetch(SQL)
     assert not await migrated_db.fetch(DETAIL_SQL)

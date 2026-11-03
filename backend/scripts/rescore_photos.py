@@ -81,6 +81,8 @@ from app.db import effective_dsn  # noqa: E402
 from app.detect_reid import DETECTOR_NAME  # noqa: E402
 from app.embed import EMBED_DIM, MODEL_NAME  # noqa: E402
 from app.ids import uuid7  # noqa: E402
+from app.reid_recipe import ACTIVE_RECIPE  # noqa: E402
+from app.sighting_vectors import rebuild_mean  # noqa: E402
 from app.scoring import recompute_animal_confidence, save_detection  # noqa: E402
 from app.storage.s3 import storage_from_settings  # noqa: E402
 
@@ -202,8 +204,8 @@ async def main() -> int:
 async def _maybe_embed(conn, photo_id, found) -> None:
     """Fill a missing vector from the detection pass we already paid for."""
     exists = await conn.fetchval(
-        "SELECT 1 FROM embeddings WHERE photo_id=$1 AND model=$2 AND vec_miew IS NOT NULL",
-        photo_id, MODEL_NAME)
+        "SELECT 1 FROM embeddings WHERE photo_id=$1 AND model=$2 AND recipe=$3 AND vec_miew IS NOT NULL",
+        photo_id, MODEL_NAME, ACTIVE_RECIPE)
     if exists:
         return
     try:
@@ -216,14 +218,18 @@ async def _maybe_embed(conn, photo_id, found) -> None:
     box = found.box
     await conn.execute(
         """
-        INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, bbox)
-        VALUES ($1,$2,$3,$4,$5::vector,$6::jsonb)
+        INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, bbox, recipe)
+        VALUES ($1,$2,$3,$4,$5::vector,$6::jsonb,$7)
         ON CONFLICT (photo_id, model) DO UPDATE
-            SET vec_miew = EXCLUDED.vec_miew, bbox = EXCLUDED.bbox, created_at = now()
+            SET vec_miew = EXCLUDED.vec_miew, bbox = EXCLUDED.bbox,
+                recipe = EXCLUDED.recipe, created_at = now()
         """,
         uuid7(), photo_id, MODEL_NAME, EMBED_DIM,
         "[" + ",".join(f"{float(v):.7g}" for v in vec) + "]",
-        json.dumps({"x1": box[0], "y1": box[1], "x2": box[2], "y2": box[3]}))
+        json.dumps({"x1": box[0], "y1": box[1], "x2": box[2], "y2": box[3]}), ACTIVE_RECIPE)
+    sid = await conn.fetchval("SELECT sighting_id FROM photos WHERE id=$1", photo_id)
+    if sid is not None:
+        await rebuild_mean(conn, sid)
 
 
 if __name__ == "__main__":
