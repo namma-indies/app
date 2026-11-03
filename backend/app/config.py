@@ -325,6 +325,16 @@ class Settings(BaseSettings):
     # restarted) is put in front of a moderator as "not screened". It stays
     # hidden either way.
     screening_stale_s: int = 1800
+    # The local model as a second look (app/model_screening.py): it can only
+    # add a hold. On the local model only (SUGGEST_VIA=worker,
+    # SUGGESTIONS_ENABLED), as a street photo is never sent to a third party.
+    # Off until deliberately switched on, like descriptions.
+    screening_model_enabled: bool = False
+    # How long an upload the detector cleared waits, hidden, for the model.
+    # After this it shows on the detector's verdict alone, so a model that is
+    # down never blanks the map; a later "hold" from the model still takes
+    # it back down.
+    screening_model_wait_s: int = Field(default=600, ge=0, le=86_400)
 
     # --- aggregates --------------------------------------------------------
     # Which boundary scheme a public count is labelled with when the caller

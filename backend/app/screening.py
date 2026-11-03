@@ -22,6 +22,8 @@ The rules, from the YOLO pass every upload already gets (`app/scene.py`):
 * `new_account` fewer than `screening_trusted_after` of the account's uploads
                have gone public; moderators are exempt from this one rule
 * `unscreened` the detector failed on a photo, so nothing is known about it
+* `model_*`    the local model, when on, saw something the detector cannot
+               (app/model_screening.py; it can only add a hold)
 
 FAILS SAFE
 ----------
@@ -57,6 +59,14 @@ PUBLIC = ("clear", "approved")
 MAX_QUEUE = 200
 # Whole frames shown per held upload: enough to judge, few enough to load.
 MAX_PHOTOS = 4
+
+# An upload's whole frames, oldest first: the photos of its sightings and its
+# own sources, never the animal crops cut from them -- the question is what
+# the photo shows, and a crop is cut to leave the rest of it out.
+FRAME_KEYS = """ARRAY(SELECT p.s3_key FROM photos p
+    WHERE (p.capture_id = {capture} OR p.sighting_id IN (SELECT id FROM sightings WHERE capture_id = {capture}))
+      AND NOT EXISTS (SELECT 1 FROM animal_instances a WHERE a.evidence_photo_id = p.id)
+    ORDER BY p.created_at, p.id LIMIT {limit})"""
 
 
 async def start(conn, capture_id: UUID) -> None:
@@ -110,6 +120,12 @@ async def screen(conn, capture_id: UUID) -> str | None:
             return None
         reasons = await reasons_for(conn, capture_id, row["observer_id"])
         state = "held" if reasons else "clear"
+        from app import model_screening
+        if not reasons and model_screening.screening_by_model():
+            # Nothing the detector can see; the local model looks too, for
+            # at most `screening_model_wait_s` (app/model_screening.py).
+            state = "checking"
+            await model_screening.enqueue(conn, capture_id)
         await conn.execute(
             "UPDATE captures SET screening = $2, hold_reasons = $3, screened_at = now(), updated_at = now() "
             "WHERE id = $1", capture_id, state, reasons)
@@ -134,9 +150,9 @@ async def screen_sighting(pool, sighting_id: UUID) -> None:
 
 
 # Screening reasons a moderator should hear about at once rather than in a
-# digest. None yet: what YOLO flags is "have a look", not an emergency. The
-# model's severe categories (sexual content, gore) will be.
-URGENT_REASONS: frozenset[str] = frozenset()
+# digest. What YOLO flags is "have a look", not an emergency; sexual content
+# the model sees is.
+URGENT_REASONS: frozenset[str] = frozenset({"model_sexual"})
 
 
 async def notify_moderators_held(conn, capture_id: UUID, reasons: list[str]) -> None:
@@ -171,21 +187,17 @@ async def held_queue(
     """Uploads waiting on a moderator, oldest first: held by screening, or
     never screened at all after `screening_stale_s`.
 
-    Whole frames, never the animal crops: the question is what the photo
-    shows, and a crop is cut to leave the rest of it out. The typed note and
-    name come too, as they are public with the upload once it is approved.
+    Whole frames (`FRAME_KEYS`). The typed note and name come too, as they
+    are public with the upload once it is approved.
     """
     rows = await conn.fetch(
-        """
+        f"""
         SELECT c.id, c.created_at, c.screening, c.hold_reasons, c.kind,
                c.attrs->>'note' AS note,
                (SELECT array_agg(DISTINCT s.attrs->>'known_name') FILTER (WHERE s.attrs->>'known_name' IS NOT NULL)
                 FROM sightings s WHERE s.capture_id = c.id) AS known_names,
                c.observer_id, o.display_name AS observer,
-               ARRAY(SELECT p.s3_key FROM photos p
-                     WHERE (p.capture_id = c.id OR p.sighting_id IN (SELECT id FROM sightings WHERE capture_id = c.id))
-                       AND NOT EXISTS (SELECT 1 FROM animal_instances a WHERE a.evidence_photo_id = p.id)
-                     ORDER BY p.created_at, p.id LIMIT $2) AS keys
+               {FRAME_KEYS.format(capture="c.id", limit="$2")} AS keys
         FROM captures c
         LEFT JOIN observers o ON o.id = c.observer_id
         WHERE (c.screening = 'held'
@@ -238,7 +250,7 @@ async def rule_on_upload(
         updated = await conn.fetchval(
             """UPDATE captures SET screening = $2, screening_reviewed_at = now(), screening_reviewed_by = $3,
                    updated_at = now()
-               WHERE id = $1 AND screening IN ('pending','held','approved','rejected') RETURNING id""",
+               WHERE id = $1 AND screening IN ('pending','checking','held','approved','rejected') RETURNING id""",
             capture_id, state, moderator_id)
         if updated is None:
             raise HTTPException(status_code=404, detail="no held upload")

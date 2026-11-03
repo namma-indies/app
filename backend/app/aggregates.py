@@ -94,8 +94,14 @@ def screened(alias: str = "s") -> str:
     state added later, does not show. Next to `owner_active` wherever a
     surface shows someone else's sightings.
     """
+    wait = float(settings.screening_model_wait_s)
+    # `checking`: the detector cleared it and the local model is looking. It
+    # shows once the model has had its time, so a model that is down never
+    # blanks the map (app/model_screening.py).
     return (f"EXISTS (SELECT 1 FROM captures cs WHERE cs.id = {alias}.capture_id"
-            f" AND cs.screening IN ('clear','approved'))")
+            f" AND (cs.screening IN ('clear','approved')"
+            f" OR (cs.screening = 'checking'"
+            f" AND cs.screened_at <= now() - {wait!r}::float8 * interval '1 second')))")
 
 
 def visible_to(viewer: str, alias: str = "s") -> str:
