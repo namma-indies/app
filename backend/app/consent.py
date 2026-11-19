@@ -11,6 +11,17 @@ from app.auth.magiclink import create_observer
 from app.config import settings
 
 CONSENT_REQUIRED = "consent_required"
+# Sent by every client that implements the consent prompt (#228).
+CONSENT_CAPABILITY_HEADER = "X-IndieDex-Consent-Flow"
+
+
+def legacy_client_grace(headers) -> bool:
+    """True while a client without the consent flow is still let through
+    (see settings.consent_legacy_clients_until)."""
+    cutoff = settings.consent_legacy_clients_until
+    if cutoff is None or headers.get(CONSENT_CAPABILITY_HEADER):
+        return False
+    return datetime.now(timezone.utc) < cutoff
 
 
 class ConsentSubmission(BaseModel):

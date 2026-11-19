@@ -14,6 +14,7 @@ Aswin must set these privately once the approved documents are published:
 | `COMMUNITY_GUIDELINES_VERSION` | Opaque identifier for the guidelines revision |
 | `CONSENT_ENABLED` | Set true after current clients and the final links are available |
 | `CONSENT_MINIMUM_AGE` | Optional integer for the age assertion; leave unset while #194 is undecided |
+| `CONSENT_LEGACY_CLIENTS_UNTIL` | Optional timezone-aware instant (e.g. `2027-01-31T00:00:00+05:30`). Until then, clients that don't send `X-IndieDex-Consent-Flow` are let through instead of answered 428. Unset = no grace |
 
 Also configure #222's `TERMS_URL`, `PRIVACY_URL`,
 `COMMUNITY_GUIDELINES_URL`, `GRIEVANCE_URL`, `SUPPORT_CONTACT_NAME`,
@@ -45,9 +46,22 @@ preserves the draft underneath. Account management/deletion, sign-out, public
 support and document links remain available. Queued uploads retain bytes,
 endpoint and retry token as pending; accepting resumes the queue. Capability
 and language lookups blocked during initial load refresh after acceptance
-while the capture draft stays in place. An older
-client that does not implement the consent flow needs updating before
-enforcement is enabled.
+while the capture draft stays in place. Clients
+that implement the flow send `X-IndieDex-Consent-Flow: 1` on every API
+request.
+
+## Older clients
+
+A client from before this flow (no header) cannot show the prompt and treats
+428 as permanent: its upload queue marks uploads failed. The web PWA updates
+itself, but native builds only change through the stores. Before enabling:
+
+1. Confirm the minimum native build that contains this flow (the first iOS and
+   Android build cut after #228 merged) is live in both stores.
+2. Either wait until testers are on it, or set `CONSENT_LEGACY_CLIENTS_UNTIL`
+   to a date by which they will be. Until then header-less clients keep
+   working without agreeing; after it they get 428 like everyone else.
+3. Leaving it unset holds every client to consent immediately.
 
 Receipts store document versions, a server timestamp, the entry path and the
 minimum-age assertion shown (zero means none). They contain no birth date, IP

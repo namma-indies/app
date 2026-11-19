@@ -378,3 +378,24 @@ async def test_disabled_consent_preserves_existing_signup_contract(app_client, m
         observer_id = await conn.fetchval("SELECT id FROM observers")
     as_account(app_client, observer_id)
     assert (await app_client.get("/dex")).status_code == 200
+
+
+async def test_legacy_clients_get_through_only_until_the_configured_cutoff(authed_client, monkeypatch):
+    from datetime import timedelta
+    client, _ = authed_client
+    capable = {consent.CONSENT_CAPABILITY_HEADER: "1"}
+    # Unset: no grace, every client is held to consent (the previous contract).
+    assert settings.consent_legacy_clients_until is None
+    assert (await client.get("/dex")).status_code == 428
+    monkeypatch.setattr(settings, "consent_legacy_clients_until", datetime.now(timezone.utc) + timedelta(days=1))
+    # A pre-#228 client (no header) keeps working; one that can prompt is asked.
+    assert (await client.get("/dex")).status_code == 200
+    assert (await client.get("/dex", headers=capable)).status_code == 428
+    monkeypatch.setattr(settings, "consent_legacy_clients_until", datetime.now(timezone.utc) - timedelta(seconds=1))
+    assert (await client.get("/dex")).status_code == 428
+
+
+def test_legacy_client_cutoff_needs_a_timezone():
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, consent_legacy_clients_until="2027-01-31T00:00:00")
+    assert Settings(_env_file=None, consent_legacy_clients_until="2027-01-31T00:00:00+05:30").consent_legacy_clients_until

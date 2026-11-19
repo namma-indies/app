@@ -4,7 +4,7 @@ from fastapi import Depends, HTTPException
 from starlette.requests import Request
 
 from app.deps import get_conn as _get_conn
-from app.consent import CONSENT_REQUIRED, needs_consent
+from app.consent import CONSENT_REQUIRED, legacy_client_grace, needs_consent
 from app.security import issue_session, read_session
 from app.auth import store_review
 
@@ -68,6 +68,8 @@ async def require_observer(request: Request) -> UUID:
     `account_suspended`, and may still reach /account to delete it."""
     observer_id, only_account = await _account_state(request)
     if only_account == CONSENT_REQUIRED:
+        if legacy_client_grace(request.headers):
+            return observer_id
         raise HTTPException(428, CONSENT_REQUIRED, headers={"Cache-Control": "no-store"})
     if only_account:
         raise HTTPException(status_code=403, detail=only_account)

@@ -1,4 +1,5 @@
 import math
+from datetime import datetime
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -112,6 +113,19 @@ class Settings(BaseSettings):
     community_guidelines_version: str = Field(default="", max_length=100)
     # A self-assertion only; no birth date is collected. Product decides N.
     consent_minimum_age: int | None = Field(default=None, ge=1, le=120)
+    # Clients from before the consent flow (#228) don't send the consent
+    # capability header and treat 428 as a permanent failure (their upload
+    # queue marks uploads failed). Until this instant they are let through
+    # instead of answered 428; unset means no grace, every client is held to
+    # consent. Give it a timezone (e.g. 2027-01-31T00:00:00+05:30).
+    consent_legacy_clients_until: datetime | None = None
+
+    @field_validator("consent_legacy_clients_until")
+    @classmethod
+    def _aware_cutoff(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("consent_legacy_clients_until needs a timezone")
+        return value
 
     @model_validator(mode="after")
     def _consent_has_versions(self):
