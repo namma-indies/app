@@ -1,6 +1,10 @@
 """Read-only re-ID baseline: freeze a private snapshot, then export metrics.
 
-Only Aswin runs snapshot in the production environment, with a read-only role.
+Only Aswin runs snapshot in the production environment, with a read-only role,
+against a streaming replica or a restored backup -- never the primary that
+serves the app. It refuses a server that is not a replica unless
+--allow-primary says the target was chosen on purpose (a restored backup is a
+primary too, as far as Postgres can tell).
 The implementation and CI use synthetic local data. No media or inference.
 See docs/reid-evaluation.md for denominators, limitations and holdout rules.
 """
@@ -28,6 +32,10 @@ def write_private(path, data, validator):
         output.write(encoded)
 
 
+class PrimaryRefused(Exception):
+    """The DSN is not a replica and --allow-primary was not given."""
+
+
 async def snapshot(args):
     import asyncpg
     from app.reid_eval.snapshot import take_snapshot
@@ -37,8 +45,11 @@ async def snapshot(args):
         raise ValueError("set the requested DSN environment variable to a read-only database role")
     conn = await asyncpg.connect(dsn)
     try:
-        data = await take_snapshot(conn, limit=args.limit, seed=args.seed, folds=args.folds,
-            phash_distance=args.phash_distance, holdout_fraction=args.holdout_fraction, sleep=args.sleep)
+        if not await conn.fetchval("SELECT pg_is_in_recovery()") and not args.allow_primary:
+            raise PrimaryRefused()
+        data = await take_snapshot(conn, limit=args.limit, seed=args.seed,
+            phash_distance=args.phash_distance, holdout_fraction=args.holdout_fraction, sleep=args.sleep,
+            statement_timeout_ms=args.statement_timeout_ms)
     finally:
         await conn.close()
     write_private(args.out, data, validate_snapshot)
@@ -54,7 +65,10 @@ def main(argv=None):
     snap.add_argument("--sleep", type=float, default=0, help="seconds to pause per query phase")
     snap.add_argument("--phash-distance", type=int, default=4, help="conservative near-copy leakage grouping, not an identity label")
     snap.add_argument("--seed", type=int, default=189)
-    snap.add_argument("--folds", type=int, default=5)
+    snap.add_argument("--allow-primary", action="store_true",
+                      help="the server is not a replica: a restored backup, or knowingly the primary")
+    snap.add_argument("--statement-timeout-ms", type=int, default=None,
+                      help="per-statement ceiling (default REID_EVAL_STATEMENT_TIMEOUT_MS setting)")
     snap.add_argument("--holdout-fraction", type=float, default=.3)
     score = commands.add_parser("score", help="pure offline scoring; writes aggregate-only metrics")
     score.add_argument("--snap", required=True, type=Path)
@@ -71,6 +85,10 @@ def main(argv=None):
             report = evaluate(data, split=args.split,
                               decision_id=str(args.decision_id) if args.decision_id else None)
             write_private(args.out, report, validate_metrics)
+    except PrimaryRefused:
+        print("reid_eval refused: the server is not a replica; run against a replica or a restored "
+              "backup, or pass --allow-primary for a restored backup", file=sys.stderr)
+        return 2
     except Exception as exc:
         # Never echo a DSN, database error, user value or row into an export/log.
         print(f"reid_eval failed ({type(exc).__name__}); check inputs and the private protocol", file=sys.stderr)

@@ -47,6 +47,8 @@ def world(rows, labels=(), overrides=None):
     overrides = overrides or {}
     pairs = []
     for q in rows:
+        if not q["verified"]:
+            continue  # pairs exist for verified queries only
         for c in rows:
             if (c["created_ms"], c["id"]) >= (q["created_ms"], q["id"]):
                 continue
@@ -59,7 +61,7 @@ def world(rows, labels=(), overrides=None):
             pairs.append(pair)
     return {"meta": {"schema": 1, "snapshot_id": uid(9000), "recipe_id": uid(9001), "policy_id": uid(9003),
                      "as_of_ms": 100000000000, "threshold": .4, "cap": 5, "ann_shortlist": 50,
-                     "phash_distance": 4, "holdout_fraction": .3, "seed": 189, "folds": 3,
+                     "phash_distance": 4, "holdout_fraction": .3, "seed": 189, "ann_replay": "whole_index_walk",
                      "versioning": "baseline_unversioned", "replay": "counterfactual_current_state",
                      "orphan_labels": 0, "truncated": False},
             "observations": rows, "labels": list(labels), "pairs": pairs}
@@ -189,16 +191,17 @@ def test_copy_families_group_exact_near_and_source_copies_without_identity_label
     assert len(set(roots.values())) == 4 and not conflicts
 
 
-def test_no_copy_family_or_human_component_crosses_development_folds():
+def test_no_copy_family_crosses_the_holdout_boundary():
     rows = [observation(n) for n in range(1, 11)]
     rows[8]["copy_family"] = rows[0]["copy_family"]  # crosses the time boundary
-    rows[3]["copy_family"] = rows[1]["copy_family"]  # same side, same fold
+    rows[3]["copy_family"] = rows[1]["copy_family"]  # same side
     data = world(rows, [label(rows[1]["id"], rows[2]["id"])])
     for seed in range(10):
         data["meta"]["seed"] = seed
         plan, counts = split_plan(data)
         assert plan[rows[0]["id"]]["split"] == plan[rows[8]["id"]]["split"] == "quarantined"
-        assert plan[rows[1]["id"]]["fold"] == plan[rows[2]["id"]]["fold"] == plan[rows[3]["id"]]["fold"]
+        assert plan[rows[1]["id"]]["split"] == plan[rows[3]["id"]]["split"] == "development"
+        assert set(counts) == {"development", "holdout", "quarantined", "cutoff_ms"}
         dev = [r["created_ms"] for r in rows if plan[r["id"]]["split"] == "development"]
         holdout = [r["created_ms"] for r in rows if plan[r["id"]]["split"] == "holdout"]
         assert max(dev) < counts["cutoff_ms"] <= min(holdout)
@@ -411,7 +414,11 @@ async def test_snapshot_cli_runs_against_fixture_db_and_score_needs_no_dsn(migra
     backend = Path(__file__).resolve().parents[1]
     snapshot_path, metrics_path = tmp_path/"cli-snapshot.json", tmp_path/"cli-metrics.json"
     command = [sys.executable, str(backend/"scripts"/"reid_eval.py")]
-    snap = await asyncio.to_thread(subprocess.run, [*command, "snapshot", "--out", str(snapshot_path)],
+    refused = await asyncio.to_thread(subprocess.run, [*command, "snapshot", "--out", str(snapshot_path)],
+                                      env=env, capture_output=True, text=True, timeout=30)
+    assert refused.returncode == 2 and "replica" in refused.stderr and not snapshot_path.exists()
+    snap = await asyncio.to_thread(subprocess.run,
+                                   [*command, "snapshot", "--allow-primary", "--out", str(snapshot_path)],
                                    env=env, capture_output=True, text=True, timeout=30)
     assert snap.returncode == 0, snap.stderr
     validate_snapshot(json.loads(snapshot_path.read_text()))
@@ -472,3 +479,104 @@ async def test_snapshot_vicinity_depends_on_cells_not_positions_inside_them(migr
         assert report(data)["funnel"]["vicinity"] == 1
         outcomes.append(pair)
     assert outcomes[0] == outcomes[1]
+
+
+def test_near_copy_banding_finds_exactly_the_all_pairs_answer():
+    from app.reid_eval.core import near_hash_pairs
+    rng = np.random.default_rng(7)
+    base = [int(rng.integers(0, 2**63)) for _ in range(20)]
+    hashes = []
+    for value in base:   # each base with a few near variants
+        for flips in range(4):
+            bits = rng.choice(64, size=flips, replace=False)
+            hashes.append((value ^ sum(1 << int(b) for b in bits), 64))
+    for distance in (0, 1, 4, 9):
+        brute = {(i, j) for i in range(len(hashes)) for j in range(i + 1, len(hashes))
+                 if (hashes[i][0] ^ hashes[j][0]).bit_count() <= distance}
+        assert {tuple(sorted(p)) for p in near_hash_pairs(hashes, distance)} == brute
+
+
+def test_model_ranking_drops_junk_but_policy_replay_keeps_it():
+    """A same-day sighting of the same dog and a copy of the query rank above
+    the true repeat: junk for top-1/mAP, still shown in the policy replay."""
+    true, copy_row, same_day, q = observation(1), observation(17), observation(18, captured_day=20), observation(20)
+    fillers = [observation(n, verified=False) for n in range(2, 10)]  # keeps q's copy family in the holdout
+    copy_row["copy_family"] = q["copy_family"]
+    labels = [label(true["id"], q["id"]), label(same_day["id"], q["id"])]
+    edges = {(q["id"], true["id"]): scored(.6), (q["id"], same_day["id"]): scored(.9),
+             (q["id"], copy_row["id"]): scored(.95)}
+    got = report(world([true, *fillers, copy_row, same_day, q], labels, edges))
+    # Both scored queries (q, and same_day against the earlier true repeat)
+    # rank a true repeat first once junk is gone; with it, q would rank its copy.
+    assert got["populations"]["model_repeat_encounters"] == 2
+    assert got["model"]["top1"]["value"] == 1 and got["model"]["mean_ap"]["value"] == 1
+    assert got["policy"]["prompts"] == 3
+
+
+def test_metrics_carry_the_availability_caveat():
+    a, q = observation(1), observation(2)
+    got = report(world([a, q], [label(a["id"], q["id"])]))
+    assert got["caveats"] == ["availability_reset_by_reembed"]
+
+
+def test_unverified_queries_get_no_pairs_and_extra_pairs_are_refused():
+    a, q = observation(1, verified=False), observation(2, verified=False)
+    data = world([a, q])
+    assert data["pairs"] == []
+    validate_snapshot(data)
+    data["pairs"].append({"query": q["id"], "candidate": a["id"], **scored(.5), "within_reach": True,
+                          "reverse_within_reach": True, "species_ok": True, "capture_ok": True,
+                          "observer_relation": "same"})
+    with pytest.raises(ValueError, match="complete"):
+        validate_snapshot(data)
+
+
+@pytest.mark.asyncio
+async def test_snapshot_builds_pairs_only_for_verified_queries(migrated_db):
+    conn, oid = migrated_db, uuid7()
+    await conn.execute("INSERT INTO observers(id) VALUES($1)", oid)
+    a, _ = await db_encounter(conn, oid, 1, verified=False)
+    b, _ = await db_encounter(conn, oid, 2, verified=False)
+    q, _ = await db_encounter(conn, oid, 3)
+    data = await take_snapshot(conn)
+    assert {(p["query"], p["candidate"]) for p in data["pairs"]} == {(str(q), str(a)), (str(q), str(b))}
+
+
+@pytest.mark.asyncio
+async def test_ann_replay_walks_the_whole_index_so_ineligible_neighbours_can_crowd_out(migrated_db):
+    """Production's unlocated walk returns the nearest frames of the whole
+    index and filters after. Later uploads (not available to the query) that
+    sit nearer than the true match fill that walk, so ANN loses the match while
+    the exact score keeps it: ANN loss is measured, not zero by construction."""
+    from app.matching import ANN_SHORTLIST
+    conn, oid = migrated_db, uuid7()
+    await conn.execute("INSERT INTO observers(id) VALUES($1)", oid)
+    gallery, _ = await db_encounter(conn, oid, 1, cosine=.5)
+    query, _ = await db_encounter(conn, oid, 2)
+    await human_label(conn, oid, query, gallery)
+    for n in range(ANN_SHORTLIST + 5):
+        await db_encounter(conn, oid, 10 + n, cosine=.99, verified=False)
+    data = await take_snapshot(conn)
+    pair = next(p for p in data["pairs"] if p["query"] == str(query) and p["candidate"] == str(gallery))
+    assert pair["policy_score"] == pytest.approx(.5, abs=1e-3)
+    assert pair["ann_score"] is None
+
+
+@pytest.mark.asyncio
+async def test_snapshot_sets_a_statement_timeout(migrated_db):
+    class Spy:
+        def __init__(self, conn):
+            self.conn, self.statements = conn, []
+
+        def __getattr__(self, name):
+            return getattr(self.conn, name)
+
+        async def execute(self, sql, *args):
+            self.statements.append(sql)
+            return await self.conn.execute(sql, *args)
+
+    spy = Spy(migrated_db)
+    await take_snapshot(spy, statement_timeout_ms=4321)
+    assert "SET LOCAL statement_timeout = 4321" in spy.statements
+    await take_snapshot(spy)
+    assert f"SET LOCAL statement_timeout = {settings.reid_eval_statement_timeout_ms}" in spy.statements

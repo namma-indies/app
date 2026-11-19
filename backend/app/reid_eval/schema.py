@@ -13,6 +13,8 @@ PIPELINES = {"legacy", "media_v1", "capture_v2", "unknown"}
 GEO = {"located", "none"}
 STAGES = {"unscored", "detection", "embedding", "gallery_vector", "eligibility",
           "species", "capture", "vicinity", "ann", "cap", "threshold", "queue", "proposed"}
+CAVEATS = {"availability_reset_by_reembed"}
+ANN_REPLAY = {"whole_index_walk"}
 VIDEO_RECIPES = {"not_video", "legacy_frames", "media_v1_frames", "capture_v2_frames", "unknown_frames"}
 SLICES = (SPECIES - {"unknown"}) | MEDIA | (PIPELINES - {"unknown"}) | (VIDEO_RECIPES - {"not_video"}) | {
     "unknown_species", "unknown_pipeline", "no_gps", "has_gps", "same_observer", "cross_observer", "unknown_observer"}
@@ -60,19 +62,20 @@ def validate_snapshot(data):
     keys(data, {"meta", "observations", "pairs", "labels"})
     meta = data["meta"]
     keys(meta, {"schema", "snapshot_id", "recipe_id", "policy_id", "as_of_ms", "threshold", "cap",
-                "ann_shortlist", "phash_distance", "holdout_fraction", "seed", "folds",
+                "ann_shortlist", "phash_distance", "holdout_fraction", "seed", "ann_replay",
                 "versioning", "replay", "orphan_labels", "truncated"})
     for field in ("snapshot_id", "recipe_id", "policy_id"):
         uuid(meta[field])
     for field in ("schema", "as_of_ms", "threshold", "cap", "ann_shortlist", "phash_distance",
-                  "holdout_fraction", "seed", "folds", "orphan_labels"):
+                  "holdout_fraction", "seed", "orphan_labels"):
         number(meta[field])
-    if meta["schema"] != 1 or not 0 < meta["holdout_fraction"] < 1 or meta["cap"] < 1 or meta["folds"] < 2:
+    if meta["schema"] != 1 or not 0 < meta["holdout_fraction"] < 1 or meta["cap"] < 1:
         raise ValueError("unsupported snapshot settings")
     enum(meta["versioning"], {"versioned", "baseline_unversioned"})
+    enum(meta["ann_replay"], ANN_REPLAY)
     enum(meta["replay"], {"counterfactual_current_state"})
     boolean(meta["truncated"])
-    ids, order = set(), {}
+    ids, order, queries = set(), {}, set()
     for row in data["observations"]:
         keys(row, {"id", "capture_id", "created_ms", "captured_day", "available_ms", "verified",
                    "embedded", "eligible", "review", "species", "media", "pipeline", "geo",
@@ -88,6 +91,8 @@ def validate_snapshot(data):
         order[row["id"]] = (row["created_ms"], row["id"])
         for field in ("verified", "embedded", "eligible"):
             boolean(row[field])
+        if row["verified"]:
+            queries.add(row["id"])
         for field, choices in (("review", {"valid", "pending", "rejected"}), ("species", SPECIES),
                                ("media", MEDIA), ("pipeline", PIPELINES), ("geo", GEO),
                                ("video_recipe", VIDEO_RECIPES),
@@ -112,9 +117,11 @@ def validate_snapshot(data):
         for field in ("within_reach", "reverse_within_reach", "species_ok", "capture_ok"):
             boolean(row[field])
         enum(row["observer_relation"], {"same", "different", "unknown"})
-    expected = {(q, c) for q in ids for c in ids if order[c] < order[q]}
+    # Every verified query against every earlier encounter, and nothing else:
+    # only a verified query is scored, so other pairs would be cost and no use.
+    expected = {(q, c) for q in queries for c in ids if order[c] < order[q]}
     if seen != expected:
-        raise ValueError("snapshot must contain the complete earlier-gallery pair matrix")
+        raise ValueError("snapshot must contain the complete earlier-gallery pairs of every verified query")
     for row in data["labels"]:
         keys(row, {"a", "b", "verdict", "source"})
         for field in ("a", "b"):
@@ -128,16 +135,18 @@ def validate_snapshot(data):
 def validate_metrics(data):
     keys(data, {"schema", "snapshot_id", "recipe_id", "policy_id", "protocol", "status", "split", "replay", "label_scope",
                 "inventory", "populations", "model", "policy", "funnel", "slices", "failures",
-                "split_inventory"}, {"decision_id"})
+                "split_inventory", "caveats"}, {"decision_id"})
     if data["schema"] != 1:
         raise ValueError("unsupported metrics schema")
     uuid(data["snapshot_id"])
     uuid(data["recipe_id"])
     uuid(data["policy_id"])
-    keys(data["protocol"], {"threshold", "cap", "ann_shortlist", "phash_distance", "holdout_fraction", "seed", "folds", "versioning"})
+    keys(data["protocol"], {"threshold", "cap", "ann_shortlist", "phash_distance", "holdout_fraction", "seed", "ann_replay", "versioning"})
     for field, value in data["protocol"].items():
         if field == "versioning":
             enum(value, {"versioned", "baseline_unversioned"})
+        elif field == "ann_replay":
+            enum(value, ANN_REPLAY)
         else:
             number(value)
     if "decision_id" in data:
@@ -155,7 +164,7 @@ def validate_metrics(data):
         "policy": {"coverage_at_5", "exact_coverage_at_5", "ann_losses", "prompts", "labelled_same",
                    "labelled_different", "unknown_prompts", "precision_on_labelled_prompts", "wrong_per_correct",
                    "reviewer_timing_available"},
-        "split_inventory": {"development", "holdout", "quarantined", "components", "folds", "cutoff_ms"},
+        "split_inventory": {"development", "holdout", "quarantined", "cutoff_ms"},
     }
     ratio_fields = {"hits", "total", "groups", "status"}
     ratios = {("model", key) for key in ("top1", "top5", "mean_ap")} | {
@@ -181,3 +190,7 @@ def validate_metrics(data):
         for value in row.values():
             number(value)
     number(data["failures"])
+    if not isinstance(data["caveats"], list):
+        raise ValueError("caveats must be a list")
+    for value in data["caveats"]:
+        enum(value, CAVEATS)
