@@ -868,6 +868,9 @@ export interface ModerationAlertStatus {
   pending_events: number;
   pending_mail: number;
   failed_mail: number;
+  /** Given up after the configured number of attempts; needs an operator. */
+  undeliverable_mail?: number;
+  oldest_unsent_age_s?: number | null;
   recipient_count: number;
   email_sender: string;
   delivery_configured: boolean;

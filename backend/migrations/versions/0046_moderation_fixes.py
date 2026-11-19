@@ -10,6 +10,8 @@ Revises: 0045_match_evidence
   and the `postgres` login production connects as. REVOKE alone only bound
   app_rw. A superuser can still disable triggers deliberately; this stops
   application code and casual SQL from rewriting history.
+* moderation_mail.failed_at marks a message given up on after a bounded
+  number of attempts, instead of retrying a permanent error forever.
 """
 from alembic import op
 
@@ -22,6 +24,7 @@ depends_on = None
 def upgrade():
     op.execute("""
         ALTER TABLE sighting_reports ADD COLUMN last_resolved_at timestamptz;
+        ALTER TABLE moderation_mail ADD COLUMN failed_at timestamptz;
 
         CREATE FUNCTION moderation_actions_append_only() RETURNS trigger
         LANGUAGE plpgsql AS $$
@@ -46,4 +49,5 @@ def downgrade():
         DROP TRIGGER moderation_actions_no_update_delete ON moderation_actions;
         DROP FUNCTION moderation_actions_append_only();
         ALTER TABLE sighting_reports DROP COLUMN last_resolved_at;
+        ALTER TABLE moderation_mail DROP COLUMN failed_at;
     """)

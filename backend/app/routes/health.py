@@ -13,6 +13,7 @@ from app.auth.deps import require_observer
 from app.deps import get_storage
 from app.media_jobs import require_gpu
 from app.model_health import local_reid_health
+from app.moderator_alerts import delivery_configured, mail_status
 from app.operational_errors import WINDOW_S, errors
 from app.ratelimit import Limit, check
 
@@ -121,7 +122,26 @@ async def database_checks(pool):
                 count = await conn.fetchval(
                     "SELECT coalesce(sum(count),0) FROM operational_errors "
                     "WHERE minute >= now() - $1 * interval '1 second'", WINDOW_S)
-            return queues, beats, int(count)
+            mail = await mail_status(conn)
+            return {"queues": queues, "beats": beats, "errors": int(count), "mail": mail}
+
+
+def moderation_mail_check(mail):
+    """Alert/acknowledgement delivery, visible outside the moderator tab.
+
+    Unconfigured delivery is degraded: alerts and grievance acknowledgements
+    would silently wait. Counts and ages only; never recipients or content.
+    """
+    if mail is None:
+        return {"status": "unknown"}
+    age = mail["oldest_unsent_age_s"]
+    status = ("unconfigured" if not delivery_configured() else
+              "failed" if mail["recently_undeliverable_mail"] else
+              "stale" if age is not None and age >= settings.health_moderation_mail_stale_s else "ok")
+    return {"status": status, "pending": mail["pending_mail"], "retrying": mail["failed_mail"],
+            "undeliverable": mail["undeliverable_mail"],
+            "recently_undeliverable": mail["recently_undeliverable_mail"],
+            "oldest_unsent_age_s": age, "stale_after_s": settings.health_moderation_mail_stale_s}
 
 
 async def storage_check(storage):
@@ -160,12 +180,13 @@ async def detailed_health(request: Request, storage=Depends(get_storage)):
               "object_storage": object_storage, "database_backup": database_backup}
     checks["local_reid_models"] = (local_reid_health()
         if not settings.media_jobs_enabled or settings.media_cpu_fallback_enabled else {"status": "disabled"})
+    checks["moderation_mail"] = moderation_mail_check(snapshot["mail"] if snapshot else None)
     if snapshot is None:
         queues = {name: {"status": "unknown"} for name in QUEUE_NAMES}
         gpu = {"status": "unknown" if required else "disabled"}
         error_check = {"status": "unknown" if settings.ops_error_monitoring_enabled else "disabled"}
     else:
-        queues, beats, count = snapshot
+        queues, beats, count = snapshot["queues"], snapshot["beats"], snapshot["errors"]
         capabilities = {name: {"status": ("missing" if name not in beats else
                                 "stale" if beats[name] >= settings.health_worker_stale_s else "ok"),
                                "age_s": beats.get(name)} for name in required}

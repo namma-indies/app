@@ -30,6 +30,7 @@ async def health_client(app_client, monkeypatch):
         "suggestions_enabled": True, "suggest_via": "worker", "describe_enabled": True,
         "ops_error_monitoring_enabled": False,
         "media_cpu_fallback_enabled": False,
+        "moderator_alert_emails": "mod@example.invalid", "email_sender": "ses",
     }.items():
         monkeypatch.setattr(settings, name, value)
     app = app_client._transport.app

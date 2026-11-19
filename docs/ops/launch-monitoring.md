@@ -73,6 +73,12 @@ a size bound rather than a time guarantee; replacement can discard them.
   Deliberately disabled features or zero-rate backfills show `paused` with
   counts/ages still visible. Re-ID monitoring covers durable media jobs, not the
   legacy unqueued CPU background path.
+- `moderation_mail` covers the shared moderator-alert / grievance
+  acknowledgement outbox: `unconfigured` when no moderator recipients are set
+  or the real sender is not selected (alerts would silently wait), `stale` when
+  the oldest unsent message is older than `HEALTH_MODERATION_MAIL_STALE_S`, and
+  `failed` while a message given up on after `MODERATION_MAIL_MAX_ATTEMPTS` is
+  within `HEALTH_MODERATION_MAIL_FAILED_WINDOW_S`. Counts/ages only.
 - The external checker fetches app HTML plus its first-party JS entry asset,
   public API liveness and detailed health. Redirects/malformed responses fail;
   the health token goes only to the detailed endpoint. This static availability
@@ -91,6 +97,8 @@ configuration changes are Aswin's private deployment procedure.
 | `HEALTH_QUEUE_STALE_S` | `1800` | Oldest live job; **starting value to tune against actual durations** |
 | `HEALTH_BACKFILL_STALE_S` | `86400` | Enabled backfill age; tune to batch size/rate |
 | `HEALTH_BACKUP_STALE_S` | `129600` | 36-hour backup freshness |
+| `HEALTH_MODERATION_MAIL_STALE_S` | `3600` | Oldest unsent moderation/grievance mail |
+| `HEALTH_MODERATION_MAIL_FAILED_WINDOW_S` | `86400` | How long a given-up message keeps health degraded |
 | `OPS_ERROR_MONITORING_ENABLED` | `false` | Server counts and authenticated client-event intake; API restart |
 | `OPS_ERROR_ALERT_THRESHOLD` | `5` | Signals in approximately 15 minutes |
 | `VITE_SELF_HOSTED_ERRORS_ENABLED` | `false` | Web/PWA reporting; frontend rebuild, passed by Compose |

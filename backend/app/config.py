@@ -126,6 +126,10 @@ class Settings(BaseSettings):
     # Provisional operational targets; product/coverage must confirm them.
     moderation_response_hours: float = Field(default=24, gt=0, le=720)
     moderation_severe_response_hours: float = Field(default=2, gt=0, le=168)
+    # Give up on one outbox message after this many failed sends (about two
+    # hours with the capped exponential backoff) instead of retrying a
+    # permanent provider error forever. Failed messages surface in health.
+    moderation_mail_max_attempts: int = Field(default=8, ge=1, le=50)
 
     # Public grievance contact (#199). Honest placeholders until people are
     # appointed; never commit personal contact details here.
@@ -165,6 +169,10 @@ class Settings(BaseSettings):
     health_queue_stale_s: int = Field(default=1800, ge=60, le=604800)
     health_backfill_stale_s: int = Field(default=86400, ge=60, le=2592000)
     health_backup_stale_s: int = Field(default=129600, ge=3600, le=2592000)
+    # Moderation/grievance outbox: the oldest unsent message older than this
+    # means delivery is stuck; a message given up on within the window degrades.
+    health_moderation_mail_stale_s: int = Field(default=3600, ge=60, le=604800)
+    health_moderation_mail_failed_window_s: int = Field(default=86400, ge=60, le=2592000)
     ops_error_monitoring_enabled: bool = False
     ops_error_alert_threshold: int = Field(default=5, ge=1, le=100000)
 

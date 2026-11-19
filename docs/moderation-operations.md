@@ -36,6 +36,7 @@ moderators, staffing a rota and agreeing response targets.
 | `MODERATION_RESPONSE_HOURS` | Ordinary report response target | `24` |
 | `MODERATION_SEVERE_RESPONSE_HOURS` | Severe report response target | `2` |
 | `MODERATION_MAIL_POLL_S` | Idle delivery poll interval | `5` |
+| `MODERATION_MAIL_MAX_ATTEMPTS` | Failed sends before a message is marked undeliverable instead of retried forever | `8` (about two hours of backoff) |
 
 Set contacts privately in deployment settings, never in this public repository.
 No deployment or production configuration changes are part of this PR.
@@ -72,8 +73,14 @@ Console mode keeps mail pending; a log message never counts as delivery.
 Decision drafts hold automatic service-worker reloads until they are submitted
 or the view is closed. A failed request keeps its reason visible for retry.
 
-The moderator view reports unconfigured delivery, pending counts and failed
-messages retrying. Report clocks start at the first unanswered report; editing
+The moderator view reports unconfigured delivery, pending counts, failed
+messages retrying and messages given up on. The same signals reach the
+protected `/health/detailed` check `moderation_mail` (and so the launch
+monitor): unconfigured delivery, the oldest unsent message's age, and recently
+undeliverable mail all degrade it. After fixing the cause (for example an
+unverified sender), an operator requeues given-up mail privately with
+`UPDATE moderation_mail SET failed_at=NULL, attempts=0, available_at=now()
+WHERE sent_at IS NULL AND failed_at IS NOT NULL`. Report clocks start at the first unanswered report; editing
 or repeating an open report cannot extend its deadline. A ruling closes the
 capture's open reports atomically with audit records for affected sightings.
 Fresh reports open a new clock. Severe reports sort ahead of ordinary ones.

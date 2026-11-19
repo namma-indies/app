@@ -13,10 +13,11 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 it("shows unconfigured delivery and failed mail retrying", async () => {
   vi.mocked(getModerationAlertStatus).mockResolvedValue({ delivery_configured: false, recipient_count: 0,
-    email_sender: "console", pending_events: 2, pending_mail: 1, failed_mail: 1 });
+    email_sender: "console", pending_events: 2, pending_mail: 1, failed_mail: 1, undeliverable_mail: 2 });
   render(<ModerationAlerts onUnauthorized={() => {}} />);
   expect(await screen.findByText(/email delivery is not configured/)).toBeInTheDocument();
   expect(screen.getByText(/EMAIL\(S\) RETRYING/)).toBeInTheDocument();
+  expect(screen.getByText(/2 EMAIL\(S\) UNDELIVERABLE/)).toBeInTheDocument();
 });
 
 it("renders reasons as text and loads older audit decisions", async () => {

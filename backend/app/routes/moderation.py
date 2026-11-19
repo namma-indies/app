@@ -26,7 +26,7 @@ from app.deps import get_conn, get_storage
 from app.detect_reid import DETECTOR_NAME
 from app.ids import uuid7
 from app.moderation_ops import SEVERE_REASONS, action_reason, apply_sighting_action, record_action, report_clock
-from app.moderator_alerts import alert_moderators, recipients
+from app.moderator_alerts import alert_moderators, delivery_configured, mail_status, recipients
 from app.photos import thumb_key
 from app.ratelimit import Limit, check
 from app.security import email_hash
@@ -498,10 +498,7 @@ async def audit_log(before: UUID | None = None, _mod: UUID = Depends(require_mod
 
 @router.get("/moderation/alerts/status")
 async def alerts_status(_mod: UUID = Depends(require_moderator), conn=Depends(get_conn)):
-    row = await conn.fetchrow(
-        "SELECT (SELECT count(*) FROM moderator_alerts WHERE queued_at IS NULL) AS pending_events, "
-        "count(*) FILTER (WHERE sent_at IS NULL) AS pending_mail, "
-        "count(*) FILTER (WHERE sent_at IS NULL AND attempts>0 AND last_error IS NOT NULL) AS failed_mail "
-        "FROM moderation_mail")
-    return {**dict(row), "recipient_count": len(recipients()), "email_sender": settings.email_sender,
-            "delivery_configured": bool(recipients()) and settings.email_sender == "ses"}
+    status = await mail_status(conn)
+    status.pop("recently_undeliverable_mail")
+    return {**status, "recipient_count": len(recipients()), "email_sender": settings.email_sender,
+            "delivery_configured": delivery_configured()}

@@ -52,6 +52,33 @@ def recipients() -> list[str]:
     return sorted({s.strip().lower() for s in settings.moderator_alert_emails.split(",") if s.strip()})
 
 
+def delivery_configured() -> bool:
+    return bool(recipients()) and settings.email_sender == "ses"
+
+
+MAIL_STATUS_SQL = """
+    SELECT (SELECT count(*) FROM moderator_alerts WHERE queued_at IS NULL) AS pending_events,
+           count(*) FILTER (WHERE sent_at IS NULL AND failed_at IS NULL) AS pending_mail,
+           count(*) FILTER (WHERE sent_at IS NULL AND failed_at IS NULL AND attempts>0
+                            AND last_error IS NOT NULL) AS failed_mail,
+           count(*) FILTER (WHERE sent_at IS NULL AND failed_at IS NOT NULL) AS undeliverable_mail,
+           count(*) FILTER (WHERE sent_at IS NULL AND failed_at >= now() - $1 * interval '1 second')
+               AS recently_undeliverable_mail,
+           extract(epoch FROM now() - min(created_at) FILTER (WHERE sent_at IS NULL AND failed_at IS NULL))
+               AS oldest_unsent_age_s
+    FROM moderation_mail
+"""
+
+
+async def mail_status(conn) -> dict:
+    """Counts only: no recipients, subjects or bodies leave this function."""
+    row = await conn.fetchrow(MAIL_STATUS_SQL, float(settings.health_moderation_mail_failed_window_s))
+    result = dict(row)
+    age = result.pop("oldest_unsent_age_s")
+    result["oldest_unsent_age_s"] = max(0, int(age)) if age is not None else None
+    return result
+
+
 async def prepare_alerts(conn) -> int:
     """Atomically expand due events into one digest per recipient and urgency."""
     addresses = recipients()
@@ -97,7 +124,7 @@ async def deliver_one(pool) -> bool:
         row = await conn.fetchrow(
             "UPDATE moderation_mail SET lease_token=$1, lease_until=now()+$2*interval '1 second', "
             "attempts=attempts+1 WHERE id=(SELECT id FROM moderation_mail "
-            "WHERE sent_at IS NULL AND available_at<=now() "
+            "WHERE sent_at IS NULL AND failed_at IS NULL AND available_at<=now() "
             "AND (lease_until IS NULL OR lease_until<=now()) "
             "ORDER BY urgent DESC,available_at,id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *",
             token, float(MAIL_LEASE_S))
@@ -109,12 +136,17 @@ async def deliver_one(pool) -> bool:
     except Exception as exc:
         # Exception messages can contain provider identifiers or addresses.
         # Store only the class; detailed complaint content never enters logs.
+        # Bounded: a permanent provider error (unverified sender, rejected
+        # address) must not retry forever. Given-up mail stays visible in the
+        # moderator view and /health/detailed until an operator requeues it.
+        give_up = row["attempts"] >= settings.moderation_mail_max_attempts
         async with pool.acquire() as conn:
             await conn.execute(
                 "UPDATE moderation_mail SET last_error=$3, lease_until=NULL, lease_token=NULL, "
-                "available_at=now()+$4*interval '1 second' WHERE id=$1 AND lease_token=$2",
-                row["id"], token, type(exc).__name__, float(min(3600, 30 * 2 ** min(row["attempts"], 7))))
-        logger.warning("moderation mail delivery failed id=%s error=%s", row["id"], type(exc).__name__)
+                "available_at=now()+$4*interval '1 second', failed_at=CASE WHEN $5 THEN now() END "
+                "WHERE id=$1 AND lease_token=$2",
+                row["id"], token, type(exc).__name__, float(min(3600, 30 * 2 ** min(row["attempts"], 7))), give_up)
+        logger.warning("moderation mail delivery failed id=%s error=%s gave_up=%s", row["id"], type(exc).__name__, give_up)
     else:
         async with pool.acquire() as conn:
             await conn.execute("UPDATE moderation_mail SET sent_at=now(), last_error=NULL, "
