@@ -22,6 +22,8 @@ The rules, from the YOLO pass every upload already gets (`app/scene.py`):
 * `new_account` fewer than `screening_trusted_after` of the account's uploads
                have gone public; moderators are exempt from this one rule
 * `unscreened` the detector failed on a photo, so nothing is known about it
+* `model_*`    the local model, when on, saw something the detector cannot
+               (app/model_screening.py; it can only add a hold)
 
 FAILS SAFE
 ----------
@@ -55,8 +57,32 @@ router = APIRouter()
 # Only these reach anyone but the owner and moderators (aggregates.screened).
 PUBLIC = ("clear", "approved")
 MAX_QUEUE = 200
-# Whole frames shown per held upload: enough to judge, few enough to load.
+# Whole frames listed per held upload in the queue; the rest are one tap away
+# (`held_frames`), and approval waits until a moderator has opened them.
 MAX_PHOTOS = 4
+# A clip completion has at most 48 frames, a /capture at most 12 photos.
+MAX_FRAMES = 64
+
+
+def frames_sql(capture: str) -> str:
+    """An upload's whole frames as rows (s3_key, flagged), the frames that
+    could have held it first: the photos of its sightings and its own
+    sources, never the animal crops cut from them -- the question is what the
+    photo shows, and a crop is cut to leave the rest of it out.
+
+    `flagged` is the photo rules of `reasons_for` applied to one frame, so
+    the frame that held an upload is the first a moderator sees.
+    """
+    person, indoor = float(settings.screening_person_area_min), float(settings.screening_indoor_min)
+    return f"""
+        SELECT p.s3_key, p.created_at, p.id,
+               (d.photo_id IS NULL OR coalesce(d.person_area, 0) >= {person!r}::real
+                OR coalesce(d.indoor, 0) >= {indoor!r}::real) AS flagged
+        FROM photos p
+        LEFT JOIN detections d ON d.photo_id = p.id AND d.model = '{DETECTOR_NAME}'
+        WHERE (p.capture_id = {capture} OR p.sighting_id IN (SELECT id FROM sightings WHERE capture_id = {capture}))
+          AND NOT EXISTS (SELECT 1 FROM animal_instances a WHERE a.evidence_photo_id = p.id)
+        ORDER BY flagged DESC, p.created_at, p.id"""
 
 
 async def start(conn, capture_id: UUID) -> None:
@@ -110,6 +136,12 @@ async def screen(conn, capture_id: UUID) -> str | None:
             return None
         reasons = await reasons_for(conn, capture_id, row["observer_id"])
         state = "held" if reasons else "clear"
+        from app import model_screening
+        if not reasons and model_screening.screening_by_model():
+            # Nothing the detector can see; the local model looks too, for
+            # at most `screening_model_wait_s` (app/model_screening.py).
+            state = "checking"
+            await model_screening.enqueue(conn, capture_id)
         await conn.execute(
             "UPDATE captures SET screening = $2, hold_reasons = $3, screened_at = now(), updated_at = now() "
             "WHERE id = $1", capture_id, state, reasons)
@@ -134,9 +166,9 @@ async def screen_sighting(pool, sighting_id: UUID) -> None:
 
 
 # Screening reasons a moderator should hear about at once rather than in a
-# digest. None yet: what YOLO flags is "have a look", not an emergency. The
-# model's severe categories (sexual content, gore) will be.
-URGENT_REASONS: frozenset[str] = frozenset()
+# digest. What YOLO flags is "have a look", not an emergency; sexual content
+# the model sees is.
+URGENT_REASONS: frozenset[str] = frozenset({"model_sexual"})
 
 
 async def notify_moderators_held(conn, capture_id: UUID, reasons: list[str]) -> None:
@@ -171,21 +203,20 @@ async def held_queue(
     """Uploads waiting on a moderator, oldest first: held by screening, or
     never screened at all after `screening_stale_s`.
 
-    Whole frames, never the animal crops: the question is what the photo
-    shows, and a crop is cut to leave the rest of it out. The typed note and
+    Whole frames (`frames_sql`), the ones that could have held it first; a
+    longer upload's other frames come from `held_frames`. The typed note and
     name come too, as they are public with the upload once it is approved.
     """
     rows = await conn.fetch(
-        """
+        f"""
         SELECT c.id, c.created_at, c.screening, c.hold_reasons, c.kind,
                c.attrs->>'note' AS note,
                (SELECT array_agg(DISTINCT s.attrs->>'known_name') FILTER (WHERE s.attrs->>'known_name' IS NOT NULL)
                 FROM sightings s WHERE s.capture_id = c.id) AS known_names,
                c.observer_id, o.display_name AS observer,
-               ARRAY(SELECT p.s3_key FROM photos p
-                     WHERE (p.capture_id = c.id OR p.sighting_id IN (SELECT id FROM sightings WHERE capture_id = c.id))
-                       AND NOT EXISTS (SELECT 1 FROM animal_instances a WHERE a.evidence_photo_id = p.id)
-                     ORDER BY p.created_at, p.id LIMIT $2) AS keys
+               ARRAY(SELECT f.s3_key FROM ({frames_sql("c.id")}) f LIMIT $2) AS keys,
+               ARRAY(SELECT f.flagged FROM ({frames_sql("c.id")}) f LIMIT $2) AS flagged,
+               (SELECT count(*) FROM ({frames_sql("c.id")}) f) AS frame_count
         FROM captures c
         LEFT JOIN observers o ON o.id = c.observer_id
         WHERE (c.screening = 'held'
@@ -198,7 +229,7 @@ async def held_queue(
         MAX_QUEUE, MAX_PHOTOS, settings.screening_stale_s,
     )
     keys = [k for r in rows for k in r["keys"]]
-    urls = iter(await storage.urls([thumb_key(k) for k in keys]))
+    urls = iter(await storage.urls([k for key in keys for k in (thumb_key(key), key)]))
     return {"items": [
         {
             "capture_id": str(r["id"]),
@@ -211,9 +242,35 @@ async def held_queue(
             # User-written, shown to a moderator. React escapes on render.
             "note": r["note"],
             "known_names": list(r["known_names"] or []),
-            "thumb_urls": [next(urls) for _ in r["keys"]],
+            # The frames that could have held it first. More than these:
+            # `frame_count`, all of them from `held_frames`.
+            # Full size as well: the preview is too small for some detail.
+            "frames": [{"thumb_url": next(urls), "url": next(urls), "flagged": flagged}
+                       for _, flagged in zip(r["keys"], r["flagged"])],
+            "frame_count": r["frame_count"],
         }
         for r in rows
+    ]}
+
+
+@router.get("/moderation/capture/{capture_id}/frames")
+async def held_frames(
+    capture_id: UUID,
+    _mod: UUID = Depends(require_moderator),
+    conn=Depends(get_conn),
+    storage: S3Storage = Depends(get_storage),
+):
+    """Every whole frame of an upload screening stopped, so a moderator rules
+    on all of it: approving shows every frame, not only the first few."""
+    state = await conn.fetchval("SELECT screening FROM captures WHERE id = $1", capture_id)
+    if state not in ("pending", "checking", "held", "approved", "rejected"):
+        raise HTTPException(status_code=404, detail="no held upload")
+    rows = await conn.fetch(f"SELECT * FROM ({frames_sql('$1')}) f LIMIT $2", capture_id, MAX_FRAMES)
+    keys = [r["s3_key"] for r in rows]
+    signed = await storage.urls([k for key in keys for k in (thumb_key(key), key)])
+    return {"frames": [
+        {"thumb_url": signed[2 * i], "url": signed[2 * i + 1], "flagged": r["flagged"]}
+        for i, r in enumerate(rows)
     ]}
 
 
@@ -238,7 +295,7 @@ async def rule_on_upload(
         updated = await conn.fetchval(
             """UPDATE captures SET screening = $2, screening_reviewed_at = now(), screening_reviewed_by = $3,
                    updated_at = now()
-               WHERE id = $1 AND screening IN ('pending','held','approved','rejected') RETURNING id""",
+               WHERE id = $1 AND screening IN ('pending','checking','held','approved','rejected') RETURNING id""",
             capture_id, state, moderator_id)
         if updated is None:
             raise HTTPException(status_code=404, detail="no held upload")

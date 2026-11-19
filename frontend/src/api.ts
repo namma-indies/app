@@ -1016,7 +1016,10 @@ export async function ruleOnAnimal(
 
 /** Why screening held an upload (#181). `not_screened`: screening never
  * finished, so nothing is known about it. */
-export type HoldReason = "person" | "indoor" | "new_account" | "unscreened" | "not_screened";
+export type HoldReason =
+  | "person" | "indoor" | "new_account" | "unscreened" | "not_screened"
+  // The local model's second look, when it is on.
+  | "model_person" | "model_home" | "model_sexual" | "model_graphic" | "model_text";
 
 export interface HeldItem {
   capture_id: string;
@@ -1030,8 +1033,20 @@ export interface HeldItem {
   /** Typed by the uploader and public once approved. Untrusted text. */
   note: string | null;
   known_names: string[];
-  /** Whole frames, never the animal crops: the question is what the photo shows. */
-  thumb_urls: string[];
+  /** Whole frames, never the animal crops: the question is what the photo
+   * shows. The frames that could have held it come first (`flagged`). */
+  frames: HeldFrame[];
+  /** Every whole frame of the upload; more than `frames` means the rest must
+   * be opened (`getHeldFrames`) before it can be approved. */
+  frame_count: number;
+}
+
+export interface HeldFrame {
+  thumb_url: string;
+  /** Full size, for detail the preview is too small to show. */
+  url: string;
+  /** This frame alone would have held the upload (a person, indoors, or unchecked). */
+  flagged: boolean;
 }
 
 /** Moderators only. Uploads screening held back from everyone but their
@@ -1039,6 +1054,14 @@ export interface HeldItem {
 export async function getHeldQueue(): Promise<{ items: HeldItem[] }> {
   const res = await fetch(`${API_BASE}/moderation/held`, { credentials: "include" });
   return handle<{ items: HeldItem[] }>(res);
+}
+
+/** Moderators only. Every whole frame of a held upload. */
+export async function getHeldFrames(captureId: string): Promise<{ frames: HeldFrame[] }> {
+  const res = await fetch(`${API_BASE}/moderation/capture/${encodeURIComponent(captureId)}/frames`, {
+    credentials: "include",
+  });
+  return handle<{ frames: HeldFrame[] }>(res);
 }
 
 /** `approve` shows it to everyone; `reject` keeps it to its owner. Either can

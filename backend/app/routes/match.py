@@ -107,18 +107,24 @@ async def get_match(
     )
     # Not someone this viewer blocked, or who blocked them (#180). Shown, not
     # searched: which candidates exist for the matcher is the same for all.
+    # Nor an upload still being screened (#181): matching searches those, so
+    # what is shown has to leave them out.
     if candidates:
         hidden = {r["id"] for r in await conn.fetch(
-            f"SELECT s.id FROM sightings s WHERE s.id = ANY($1::uuid[]) AND NOT {visible_to('$2')}",
+            f"SELECT s.id FROM sightings s WHERE s.id = ANY($1::uuid[])"
+            f" AND NOT ({visible_to('$2')} AND {screened('s')})",
             [c.sighting_id for c in candidates], observer_id)}
         candidates = [c for c in candidates if c.sighting_id not in hidden]
 
     proposals = await conn.fetch(
-        """
+        f"""
         SELECT mp.id, mp.candidate_individual_id, mp.score, i.name
         FROM match_proposals mp
         LEFT JOIN individuals i ON i.id = mp.candidate_individual_id
         WHERE mp.sighting_id = $1 AND mp.status = 'pending'
+          -- The other side of the pair is showing (#181).
+          AND (mp.candidate_sighting_id IS NULL OR EXISTS (
+              SELECT 1 FROM sightings s WHERE s.id = mp.candidate_sighting_id AND {screened('s')}))
         ORDER BY mp.score DESC
         """,
         sighting_id,

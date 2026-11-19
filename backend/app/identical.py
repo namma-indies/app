@@ -70,7 +70,7 @@ from uuid import UUID
 
 import asyncpg
 
-from app.aggregates import animal_present
+from app.aggregates import animal_present, not_rejected_upload
 
 METHOD = "identical_photo"
 CLIP_METHOD = "identical_clip"
@@ -222,11 +222,15 @@ async def link_identical(
     # Rejected or no-animal rows drop out quietly, exactly as find_candidates
     # drops them: they are not candidates at all, so there is no pair to ask
     # about. If the resolving sighting itself is one, there is nothing to do.
+    # Rejected covers a moderator's ruling at screening too (#181): otherwise
+    # a clean copy of a rejected photo would be marked its duplicate and drop
+    # off the map with it. Photo and clip evidence both meet here.
     rows = await conn.fetch(
         f"""
         SELECT s.id, s.individual_id, s.captured_at FROM sightings s
         WHERE s.id = ANY($1::uuid[])
           AND s.review_status <> 'rejected'
+          AND {not_rejected_upload('s')}
           AND {animal_present()}
         """,
         group_ids,

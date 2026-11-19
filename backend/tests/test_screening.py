@@ -115,7 +115,50 @@ async def test_an_unscreened_upload_is_hidden_too(authed_client):
 
 
 @pytest.mark.asyncio
-async def test_match_candidates_leave_out_held_uploads(authed_client):
+async def test_two_uploads_held_at_once_still_pair_and_the_pair_shows_once_both_are_public(authed_client):
+    """Matching searches uploads still being screened, and hides them where
+    shown: so two photos of a new dog held together still meet, the pair is
+    nobody's to see while held, and appears by itself when both are approved."""
+    from app.embed import EMBED_DIM, MODEL_NAME
+    from app.matching import resolve_sighting
+    client, owner = authed_client
+    other, viewer, mod = await _second_observer(client, "Other"), await _second_observer(client, "Viewer"), \
+        await _moderator(client)
+    first = await _post(client)
+    _as(client, other)
+    second = await _post(client)
+    pool = await _pool(client)
+    async with pool.acquire() as c:
+        # Two different photos of one dog: the same vector, not the same file.
+        await c.execute("UPDATE photos SET content_sha256 = NULL")
+        for sid in (first, second):
+            await c.execute(f"""INSERT INTO embeddings (id, photo_id, model, dim, vec_miew)
+                                SELECT $1, id, $2, {EMBED_DIM}, array_fill(0.1::real, ARRAY[{EMBED_DIM}])::vector
+                                FROM photos WHERE sighting_id=$3""", uuid7(), MODEL_NAME, UUID(sid))
+            await c.execute("UPDATE captures SET screening='held' WHERE id=$1", await _capture_of(pool, sid))
+        outcome = await resolve_sighting(c, UUID(second), auto_merge_min=1.01, propose_min=0.5, radius_m=1000.0,
+                                         max_candidates=5, new_uuid=uuid7)
+    assert outcome.status == "proposed", "the held earlier upload was not searched"
+
+    # Nobody sees the pair, or the other upload as a candidate, while held.
+    _as(client, viewer)
+    assert not _mentions((await client.get("/proposals")).json()["proposals"], first)
+    _as(client, other)
+    seen = (await client.get(f"/sighting/{second}/match")).json()
+    assert seen["candidates"] == [] and seen["proposals"] == []
+
+    _as(client, mod)
+    for sid in (first, second):
+        await client.post(f"/moderation/capture/{await _capture_of(pool, sid)}/screening", json={"verdict": "approve"})
+    _as(client, viewer)
+    assert _mentions((await client.get("/proposals")).json()["proposals"], first)
+    _as(client, other)
+    seen = (await client.get(f"/sighting/{second}/match")).json()
+    assert [c["sighting_id"] for c in seen["candidates"]] == [first] and len(seen["proposals"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_upload_is_never_searched(authed_client):
     from app.embed import EMBED_DIM, MODEL_NAME
     from app.matching import find_candidates
     client, owner = authed_client
@@ -133,9 +176,44 @@ async def test_match_candidates_leave_out_held_uploads(authed_client):
             return [x.sighting_id for x in await find_candidates(
                 c, query, lat=lat, lng=lng, radius_m=500, exclude_sighting_id=None, limit=5)]
 
-        assert await candidates() == [UUID(mine)]
         await c.execute("UPDATE captures SET screening='held' WHERE id=$1", await _capture_of(pool, mine))
+        assert await candidates() == [UUID(mine)]          # searched while held, hidden where shown
+        await c.execute("UPDATE captures SET screening='rejected' WHERE id=$1", await _capture_of(pool, mine))
         assert await candidates() == []
+
+
+@pytest.mark.parametrize("by", ["photo", "clip"])
+@pytest.mark.asyncio
+async def test_a_clean_copy_of_a_rejected_upload_is_not_folded_into_it(authed_client, by):
+    """The identical-photo and same-clip rule must not make a cleared upload
+    the duplicate of one a moderator rejected at screening: duplicates drop
+    off the map with their original."""
+    from app.matching import resolve_sighting
+    client, owner = authed_client
+    other, viewer = await _second_observer(client, "Other"), await _second_observer(client, "Viewer")
+    rejected = await _post(client)
+    _as(client, other)
+    copy = await _post(client)
+    pool = await _pool(client)
+    async with pool.acquire() as c:
+        if by == "clip":
+            await c.execute("UPDATE photos SET content_sha256 = NULL")
+            await c.execute("UPDATE captures SET clip_sha256 = 'same-clip' WHERE id = ANY($1::uuid[])",
+                            [await _capture_of(pool, s) for s in (rejected, copy)])
+        from app.embed import EMBED_DIM, MODEL_NAME
+        for sid in (rejected, copy):         # resolution only runs on an embedded upload
+            await c.execute(f"""INSERT INTO embeddings (id, photo_id, model, dim, vec_miew)
+                                SELECT $1, id, $2, {EMBED_DIM}, array_fill(0.1::real, ARRAY[{EMBED_DIM}])::vector
+                                FROM photos WHERE sighting_id=$3""", uuid7(), MODEL_NAME, UUID(sid))
+        await c.execute("UPDATE sightings SET individual_id = NULL, duplicate_of = NULL, match_status = 'unmatched'")
+        await c.execute("UPDATE captures SET screening = 'rejected' WHERE id = $1", await _capture_of(pool, rejected))
+        await resolve_sighting(c, UUID(copy), auto_merge_min=1.01, propose_min=0.5, radius_m=1000.0,
+                               max_candidates=5, new_uuid=uuid7)
+        row = await c.fetchrow("SELECT duplicate_of, individual_id FROM sightings WHERE id = $1", UUID(copy))
+    assert (row["duplicate_of"], row["individual_id"]) == (None, None)
+    _as(client, viewer)
+    shown = (await client.get("/map")).json()["sightings"]
+    assert _mentions(shown, copy) and not _mentions(shown, rejected)
 
 
 # --- what gets held ---------------------------------------------------------------
@@ -190,9 +268,48 @@ async def test_people_filling_the_frame_or_an_indoor_scene_are_held(authed_clien
     _as(client, mod)
     (item,) = (await client.get("/moderation/held")).json()["items"]
     assert item["reasons"] == reasons and item["observer"] == "Tester"
-    assert len(item["thumb_urls"]) == 1
+    assert [f["flagged"] for f in item["frames"]] == [True] and item["frame_count"] == 1
+    assert item["frames"][0]["url"] != item["frames"][0]["thumb_url"]
     _as(client, owner)
     assert (await client.get("/dex")).json()["sightings"][0]["off_map_reason"] == "held"
+
+
+@pytest.mark.asyncio
+async def test_every_frame_is_open_to_the_moderator_and_the_one_that_held_it_comes_first(
+        authed_client, trusted, monkeypatch):
+    """Approval shows every frame, so a moderator must be able to see every
+    frame -- above all the one that held it, wherever it is in the upload."""
+    from app import analyse as analyse_mod
+    from tests.test_dogs_route import _jpeg
+    seen = []
+
+    def analyse(raw):
+        seen.append(raw)
+        person = SceneSignals(person=.95, person_area=.5) if len(seen) == 6 else SceneSignals()
+        return SimpleNamespace(dog_confidence=.9, cat_confidence=0, box=None, image=None,
+                               has_animal=False, scene=person)
+    monkeypatch.setattr(analyse_mod, "analyse", analyse)
+    client, _ = authed_client
+    mod = await _moderator(client)
+    r = await client.post("/sighting", files=[("photos", (f"{i}.jpg", _jpeg(), "image/jpeg")) for i in range(6)],
+                          data={"geo_source": "none", "captured_at": "2026-07-19T09:00:00Z"})
+    sid = r.json()["sighting_id"]
+    sixth = UUID(r.json()["photo_ids"][5])
+    pool = await _pool(client)
+    assert list((await _state(pool, sid))["hold_reasons"]) == ["person"]
+    _as(client, mod)
+    (item,) = (await client.get("/moderation/held")).json()["items"]
+    assert item["frame_count"] == 6
+    assert [f["flagged"] for f in item["frames"]] == [True, False, False, False]
+    async with pool.acquire() as c:
+        sixth_key = await c.fetchval("SELECT s3_key FROM photos WHERE id=$1", sixth)
+    assert sixth_key.rsplit(".", 1)[0] in item["frames"][0]["thumb_url"]
+    frames = (await client.get(f"/moderation/capture/{item['capture_id']}/frames")).json()["frames"]
+    assert len(frames) == 6 and [f["flagged"] for f in frames].count(True) == 1
+    assert all(f["url"] and f["thumb_url"] for f in frames)
+    # Moderators only, and only for an upload screening stopped.
+    _as(client, await _second_observer(client, "Viewer"))
+    assert (await client.get(f"/moderation/capture/{item['capture_id']}/frames")).status_code == 404
 
 
 @pytest.mark.asyncio

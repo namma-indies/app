@@ -4,7 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 
 from app import describe
-from app.aggregates import animal_present
+from app.aggregates import animal_present, screened
 from app.auth.deps import require_observer
 from app.deps import get_conn, get_storage
 from app.photos import thumb_key
@@ -24,7 +24,7 @@ def _off_map_reason(row) -> str | None:
     # Screening (#181): waiting for a moderator, or not checked yet.
     if row["screening"] == "held":
         return "held"
-    if row["screening"] == "pending":
+    if not row["screening_public"]:
         return "checking"
     if not row["animal_ok"]:
         return "no_animal"
@@ -56,6 +56,7 @@ async def get_dex(
             s.capture_id,
             c.processing_state = 'ready' AS details_editable,
             COALESCE(c.screening, 'clear') AS screening,
+            {screened('s')} AS screening_public,
             s.species,
             -- A /capture upload keeps its note on the capture, which all its
             -- published sightings share.
