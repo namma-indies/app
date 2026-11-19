@@ -1,6 +1,10 @@
 name: Database restore drill
 
 on:
+  # Optional weekly run. Like dispatch, it does nothing unless the repository
+  # variable RESTORE_DRILL_ENABLED is 'true' (the job condition below).
+  schedule:
+    - cron: '23 22 * * 0'  # Sunday 22:23 UTC = Monday 03:53 Asia/Kolkata, after the 01:00 backup
   workflow_dispatch:
     inputs:
       minimum_sightings:
@@ -41,11 +45,19 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.RESTORE_BACKUP_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.RESTORE_BACKUP_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: ${{ vars.RESTORE_BACKUP_REGION || 'ap-south-1' }}
-          MINIMUM_SIGHTINGS: ${{ inputs.minimum_sightings }}
-          MINIMUM_EMBEDDINGS: ${{ inputs.minimum_embeddings }}
+          # Scheduled runs have no inputs; fall back to the dispatch defaults.
+          MINIMUM_SIGHTINGS: ${{ inputs.minimum_sightings || 1 }}
+          MINIMUM_EMBEDDINGS: ${{ inputs.minimum_embeddings || 1 }}
+          # 'true' writes monitoring/restore-drill.json on success, so detailed
+          # health can see the last pass. Needs PutObject on that one key.
+          RECORD_PASS: ${{ vars.RESTORE_DRILL_RECORD_PASS }}
         run: |
+          set -euo pipefail
+          record=()
+          if [ "$RECORD_PASS" = "true" ]; then record=(--record-pass); fi
           python backend/scripts/restore_db_drill.py \
             --minimum-sightings "$MINIMUM_SIGHTINGS" \
-            --minimum-embeddings "$MINIMUM_EMBEDDINGS"
+            --minimum-embeddings "$MINIMUM_EMBEDDINGS" \
+            "${record[@]}"
       # No dump, database volume, inventory, counts or raw tool logs are
       # uploaded. A killed hosted runner is discarded along with its tmpfs.

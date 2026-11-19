@@ -178,6 +178,11 @@ class Settings(BaseSettings):
     health_backup_stale_s: int = Field(default=129600, ge=3600, le=2592000)
     # Moderation/grievance outbox: the oldest unsent message older than this
     # means delivery is stuck; a message given up on within the window degrades.
+    # Last restore-drill pass (monitoring/restore-drill.json, written by the
+    # drill with --record-pass). Not required by default: until the drill is
+    # enabled the check reports "disabled" with the age if one exists.
+    health_restore_drill_required: bool = False
+    health_restore_drill_stale_s: int = Field(default=691200, ge=3600, le=7776000)
     health_moderation_mail_stale_s: int = Field(default=3600, ge=60, le=604800)
     health_moderation_mail_failed_window_s: int = Field(default=86400, ge=60, le=2592000)
     ops_error_monitoring_enabled: bool = False

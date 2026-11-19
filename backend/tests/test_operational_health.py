@@ -21,6 +21,9 @@ class HealthyStorage:
     async def backup_health(self):
         return {"age_s": 3600, "valid": True}
 
+    async def restore_drill_health(self):
+        return {"age_s": 3600, "valid": True, "manifest_compared": True}
+
 
 @pytest_asyncio.fixture
 async def health_client(app_client, monkeypatch):
@@ -292,3 +295,22 @@ async def test_self_hosted_capture_handles_both_handled_and_unhandled_5xx(monkey
     assert errors.pending() == 3
     assert all(kind in ("http_5xx", "application_error") for _, kind in errors._counts)
     errors.clear()
+
+
+@pytest.mark.parametrize("required,drill,status", [
+    (False, None, "disabled"), (False, {"age_s": 10**7, "valid": True, "manifest_compared": True}, "disabled"),
+    (True, None, "missing"), (True, {"age_s": 10**7, "valid": True, "manifest_compared": True}, "stale"),
+    (True, {"age_s": None, "valid": False, "manifest_compared": False}, "invalid"),
+    (True, {"age_s": 60, "valid": True, "manifest_compared": True}, "ok")])
+async def test_restore_drill_last_pass_is_visible(health_client, monkeypatch, required, drill, status):
+    monkeypatch.setattr(settings, "health_restore_drill_required", required)
+    class DrillStorage(HealthyStorage):
+        async def restore_drill_health(self):
+            return drill
+    health_client._transport.app.dependency_overrides[get_storage] = DrillStorage
+    response = await detail(health_client)
+    check = response.json()["checks"]["restore_drill"]
+    assert check["status"] == status
+    assert check["age_s"] == (drill["age_s"] if drill else None)
+    if status not in ("ok", "disabled"):
+        assert response.status_code == 503

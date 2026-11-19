@@ -177,6 +177,22 @@ async def backup_check(storage):
         return {"status": "unavailable"}
 
 
+async def restore_drill_check(storage):
+    required = settings.health_restore_drill_required
+    stale_after = settings.health_restore_drill_stale_s
+    try:
+        async with asyncio.timeout(settings.health_check_timeout_s):
+            drill = await storage.restore_drill_health()
+    except Exception:
+        return {"status": "unavailable" if required else "disabled"}
+    if drill is None:
+        return {"status": "missing" if required else "disabled", "age_s": None, "stale_after_s": stale_after}
+    status = ("invalid" if not drill["valid"] else
+              "stale" if drill["age_s"] >= stale_after else "ok")
+    return {"status": status if required else "disabled", "age_s": drill["age_s"],
+            "manifest_compared": drill["manifest_compared"], "stale_after_s": stale_after}
+
+
 @router.get("/health/detailed", dependencies=[Depends(require_health_token)])
 async def detailed_health(request: Request, storage=Depends(get_storage)):
     async def database():
@@ -185,11 +201,12 @@ async def detailed_health(request: Request, storage=Depends(get_storage)):
         except Exception:
             return None
 
-    snapshot, object_storage, database_backup = await asyncio.gather(
-        database(), storage_check(storage), backup_check(storage))
+    snapshot, object_storage, database_backup, restore_drill = await asyncio.gather(
+        database(), storage_check(storage), backup_check(storage), restore_drill_check(storage))
     required = expected_capabilities()
     checks = {"database": {"status": "unavailable" if snapshot is None else "ok"},
-              "object_storage": object_storage, "database_backup": database_backup}
+              "object_storage": object_storage, "database_backup": database_backup,
+              "restore_drill": restore_drill}
     checks["local_reid_models"] = (local_reid_health()
         if not settings.media_jobs_enabled or settings.media_cpu_fallback_enabled else {"status": "disabled"})
     checks["moderation_mail"] = moderation_mail_check(snapshot["mail"] if snapshot else None)

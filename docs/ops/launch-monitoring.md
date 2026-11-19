@@ -81,6 +81,9 @@ a size bound rather than a time guarantee; replacement can discard them.
   the oldest unsent message is older than `HEALTH_MODERATION_MAIL_STALE_S`, and
   `failed` while a message given up on after `MODERATION_MAIL_MAX_ATTEMPTS` is
   within `HEALTH_MODERATION_MAIL_FAILED_WINDOW_S`. Counts/ages only.
+- `restore_drill` reports the age of the last successful restore drill from
+  `monitoring/restore-drill.json` (see deploy/BACKUPS.md). It is `disabled`
+  until `HEALTH_RESTORE_DRILL_REQUIRED=true`, then `missing`/`stale`/`ok`.
 - `grievances` reports open and overdue grievance counts (resolution, removal
   or unsent acknowledgement past its provisional clock) and is `overdue` while
   any are. No references or contact data.
@@ -102,6 +105,8 @@ configuration changes are Aswin's private deployment procedure.
 | `HEALTH_QUEUE_STALE_S` | `1800` | Oldest live job; **starting value to tune against actual durations** |
 | `HEALTH_BACKFILL_STALE_S` | `86400` | Enabled backfill age; tune to batch size/rate |
 | `HEALTH_BACKUP_STALE_S` | `129600` | 36-hour backup freshness |
+| `HEALTH_RESTORE_DRILL_REQUIRED` | `false` | Degrade when the last drill pass is missing/stale |
+| `HEALTH_RESTORE_DRILL_STALE_S` | `691200` | Eight days since the last drill pass |
 | `HEALTH_MODERATION_MAIL_STALE_S` | `3600` | Oldest unsent moderation/grievance mail |
 | `HEALTH_MODERATION_MAIL_FAILED_WINDOW_S` | `86400` | How long a given-up message keeps health degraded |
 | `OPS_ERROR_MONITORING_ENABLED` | `false` | Server counts and authenticated client-event intake; API restart |

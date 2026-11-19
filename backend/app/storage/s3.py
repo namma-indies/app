@@ -8,6 +8,8 @@ from app.config import settings
 # object the API reads. Small JSON: key, size, created_at, pgdmp_verified.
 BACKUP_MARKER_KEY = "backups/latest.json"
 MARKER_MAX_BYTES = 4096
+# Written by scripts/restore_db_drill.py --record-pass after a full pass.
+RESTORE_DRILL_MARKER_KEY = "monitoring/restore-drill.json"
 
 
 class S3Storage:
@@ -117,6 +119,36 @@ class S3Storage:
         except (ValueError, KeyError, TypeError, UnicodeError):
             return {"age_s": None, "valid": False}
         return {"age_s": max(0, age), "valid": valid}
+
+    async def restore_drill_health(self) -> dict | None:
+        """Age of the last successful restore drill, from its fixed marker."""
+        import json
+        from datetime import datetime, timezone
+
+        async with self._client() as client:
+            try:
+                result = await client.get_object(Bucket=self.bucket, Key=RESTORE_DRILL_MARKER_KEY)
+            except ClientError as exc:
+                if exc.response.get("Error", {}).get("Code") in ("NoSuchKey", "404", "NotFound"):
+                    return None
+                raise
+            body = result["Body"]
+            async with body:
+                raw = await body.read(MARKER_MAX_BYTES + 1)
+        try:
+            if len(raw) > MARKER_MAX_BYTES:
+                raise ValueError
+            marker = json.loads(raw)
+            passed = datetime.fromisoformat(marker["passed_at"])
+            if marker.get("version") != 1 or passed.tzinfo is None:
+                raise ValueError
+            age = int((datetime.now(timezone.utc) - passed).total_seconds())
+            if age < -300:
+                raise ValueError
+        except (ValueError, KeyError, TypeError, UnicodeError):
+            return {"age_s": None, "valid": False, "manifest_compared": False}
+        return {"age_s": max(0, age), "valid": True,
+                "manifest_compared": marker.get("manifest_compared") is True}
 
     async def put(self, key: str, data: bytes, content_type: str) -> None:
         async with self._client() as client:

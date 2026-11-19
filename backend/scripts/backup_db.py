@@ -75,6 +75,35 @@ def _key(now: datetime | None = None) -> str:
     return f"{PREFIX}indiedex-{now:%Y%m%dT%H%M%SZ}.dump"
 
 
+MANIFEST_TABLES = ("observers", "sightings", "captures", "photos", "individuals",
+                   "confirmations", "embeddings")
+
+
+def read_counts(path: str) -> dict:
+    """Validate the psql output of deploy/backup-manifest.sql."""
+    try:
+        data = json.loads(Path(path).read_text())
+        counts = data["counts"]
+        if (not isinstance(data["schema_head"], str) or not data["schema_head"]
+                or set(counts) != set(MANIFEST_TABLES)
+                or any(type(v) is not int or v < 0 for v in counts.values())):
+            raise ValueError
+    except (OSError, ValueError, KeyError, TypeError):
+        raise SystemExit(f"refusing to upload: {path} is not a backup-manifest.sql result")
+    return {"schema_head": data["schema_head"], "counts": counts}
+
+
+def manifest_key(dump_key: str) -> str:
+    return dump_key.removesuffix(".dump") + ".json"
+
+
+def manifest(key: str, size: int, created_at: datetime, counts: dict) -> bytes:
+    """Written beside the dump; the restore drill compares a restore to it."""
+    return json.dumps({"version": 1, "key": key, "size": size,
+                       "created_at": created_at.isoformat(timespec="seconds"),
+                       **counts}, sort_keys=True).encode()
+
+
 def latest_marker(key: str, size: int, created_at: datetime) -> bytes:
     """The tiny `backups/latest.json` the API's freshness check reads instead
     of listing and reading database dumps. Written last, only after the dump
@@ -99,8 +128,9 @@ def check_dump(path: str) -> int:
     return size
 
 
-async def upload(path: str) -> int:
+async def upload(path: str, counts_path: str | None = None) -> int:
     size = check_dump(path)
+    counts = read_counts(counts_path) if counts_path else None
     storage = storage_from_settings()
     now = datetime.now(timezone.utc).replace(microsecond=0)
     key = _key(now)
@@ -113,6 +143,11 @@ async def upload(path: str) -> int:
     keys = await storage.list_keys(key)
     if key not in keys:
         raise SystemExit(f"upload reported success but {key} is not in the bucket")
+    if counts is not None:
+        await storage.put(manifest_key(key), manifest(key, size, now, counts), "application/json")
+    else:
+        log.warning("backup: no --counts given; no manifest written, so the restore drill "
+                    "cannot compare row counts for this backup")
     await storage.put(BACKUP_MARKER_KEY, latest_marker(key, size, now), "application/json")
     log.info("backup: stored %s and updated %s", key, BACKUP_MARKER_KEY)
     return 0
@@ -154,6 +189,8 @@ async def fetch(key: str, dest: str) -> int:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("path", nargs="?", help="the pg_dump -Fc archive to upload")
+    ap.add_argument("--counts", metavar="JSON",
+                    help="deploy/backup-manifest.sql output; writes a manifest beside the dump")
     ap.add_argument("--list", action="store_true", help="list what is stored")
     ap.add_argument("--fetch", metavar="KEY",
                     help="download a stored backup instead of making one")
@@ -166,4 +203,4 @@ if __name__ == "__main__":
         raise SystemExit(asyncio.run(fetch(args.fetch, args.to)))
     if not args.path:
         ap.error("give a dump path, or --list, or --fetch KEY")
-    raise SystemExit(asyncio.run(upload(args.path)))
+    raise SystemExit(asyncio.run(upload(args.path, args.counts)))

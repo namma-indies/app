@@ -4,7 +4,10 @@ Media bytes cannot reconstruct sightings, identities, confirmations or vectors.
 The existing `backup-db.timer` runs nightly at **01:00 Asia/Kolkata** through
 `remote-backup-db.sh`; **Back up the database** is the manual workflow for the
 same path. It creates `pg_dump -Fc`, verifies its table of contents, then uploads
-to `backups/`. After the upload is read back it writes a tiny marker,
+to `backups/`. Immediately before the dump it records row counts of the key
+tables and the Alembic head (`deploy/backup-manifest.sql`); after the upload it
+writes them beside the dump as `backups/indiedex-<stamp>.json` (the manifest).
+After the upload is read back it writes a tiny marker,
 `backups/latest.json` (dump key, size, `created_at`, `pgdmp_verified`). Detailed
 health reads **only that marker** for validity and 36-hour freshness; it never
 lists or reads database dumps. A successful restore still needs the drill below.
@@ -86,7 +89,14 @@ is always generated; no database URL/existing destination is accepted.
 Checks cover a custom-format archive with core TABLE DATA entries (schema-only
 is refused), full `pg_restore --exit-on-error --single-transaction`, extensions,
 one known Alembic revision, readable core tables, minimum sightings/vectors,
-vector dimensions, validated foreign keys and photo ownership. An intentionally
+vector dimensions, validated foreign keys and photo ownership. It also
+downloads the dump's **manifest** and requires the restored schema head to
+match it exactly and each key table's restored row count to be within
+`max(--count-slack, --count-tolerance × expected)` of the recorded count
+(defaults 10 rows / 1%; counts are taken seconds before the dump, so a busy
+moment can differ slightly). A latest backup without a manifest fails
+(`manifest_missing`) unless `--allow-missing-manifest` is given for a backup
+taken before manifests existed. An intentionally
 unvalidated CHECK constraint is distinguished from a failed foreign-key restore.
 The generated container and downloaded file are discarded on success/failure.
 
@@ -115,7 +125,19 @@ key if applicable. No database credential or write/delete grant is needed.
 Record actual source, encryption, policy and secret locations privately.
 
 Set **repository variable** `RESTORE_DRILL_ENABLED=true`, then dispatch
-**Database restore drill** on the default branch. Default minimum sightings and
+**Database restore drill** on the default branch. The same variable also turns
+on the workflow's optional **weekly schedule** (Monday ~03:53 Asia/Kolkata,
+after the nightly backup); with it unset neither dispatch nor schedule runs.
+
+To let detailed health see the last successful drill, set repository variable
+`RESTORE_DRILL_RECORD_PASS=true` and grant the drill identity `s3:PutObject` on
+`arn:aws:s3:::<backup-source-bucket>/monitoring/restore-drill.json` only. On a
+pass the drill writes that marker (pass time, backup time, whether a manifest
+was compared; no counts). Grant the API `s3:GetObject` on the same single key.
+`/health/detailed` reports it as `restore_drill`; set
+`HEALTH_RESTORE_DRILL_REQUIRED=true` once the drill is running so a missing or
+older-than-`HEALTH_RESTORE_DRILL_STALE_S` (default 8 days) pass degrades health.
+Until then it shows `disabled` with the age. Default minimum sightings and
 MiewID embeddings are each 1; choose useful private expected lower bounds.
 Zero is reserved for a deliberately empty test corpus. Freshness defaults to
 36 hours. Keep exact counts and evidence in private ops.
@@ -129,7 +151,8 @@ For a local synthetic rehearsal (Docker and Python 3.12+):
 
 ```sh
 docker build -t indiedex-restore-db ./docker/db
-python backend/scripts/restore_db_drill.py --archive /path/to/synthetic.dump
+python backend/scripts/restore_db_drill.py --archive /path/to/synthetic.dump \
+  --manifest /path/to/synthetic-counts.json   # optional: backup-manifest.sql output
 ```
 
 For the real latest-backup drill, Aswin supplies the separate AWS identity,

@@ -95,3 +95,14 @@ async def test_missing_marker_is_missing_and_bad_markers_are_invalid(monkeypatch
                 marker(created_at="2026-01-01T00:00:00"), b"not json", b"{" + b" " * 5000 + b"}",
                 marker(created_at=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat())):
         assert (await storage(monkeypatch, MarkerClient(bad)).backup_health())["valid"] is False
+
+
+async def test_restore_drill_marker_is_read_from_one_fixed_key(monkeypatch):
+    passed = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(hours=2)
+    client = MarkerClient(json.dumps({"version": 1, "passed_at": passed.isoformat(),
+                                      "manifest_compared": True}).encode())
+    result = await storage(monkeypatch, client).restore_drill_health()
+    assert result["valid"] and 7100 < result["age_s"] < 7300 and result["manifest_compared"]
+    assert [g["Key"] for g in client.gets] == ["monitoring/restore-drill.json"]
+    assert await storage(monkeypatch, MarkerClient(missing=True)).restore_drill_health() is None
+    assert (await storage(monkeypatch, MarkerClient(b"[]")).restore_drill_health())["valid"] is False
