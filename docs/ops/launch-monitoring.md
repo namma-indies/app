@@ -58,10 +58,12 @@ a size bound rather than a time guarantee; replacement can discard them.
   use. Model names/presence are private. The maintenance scripts use
   `uv run python -m app.model_health` locally; seeding also checks local liveness.
 - Storage writes/reads the constant two-byte `monitoring/storage-probe`.
-  Grant the API ListBucket and Get/Put on that key, plus List/Get on `backups/`
-  for freshness. No delete permission is required. The existing noncurrent
-  lifecycle rule bounds probe versions. The latest backup check reads its
-  header/age, never exposes its name, and does not claim to prove a restore.
+  Grant the API ListBucket and Get/Put on that key, plus GetObject on the single
+  `backups/latest.json` marker for freshness (see deploy/BACKUPS.md for the
+  narrowed backup-prefix grants). No delete permission is required. The existing
+  noncurrent lifecycle rule bounds probe versions. The backup check reads the
+  marker's age/validity, never exposes the dump's name, and does not claim to
+  prove a restore.
 - A model-loaded GPU worker sends an outbound authenticated readiness heartbeat
   once per minute through the existing worker connection. It advertises re-ID,
   multi-animal, transcription and suggestion capabilities. Only the serial claim

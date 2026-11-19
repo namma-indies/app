@@ -4,8 +4,25 @@ Media bytes cannot reconstruct sightings, identities, confirmations or vectors.
 The existing `backup-db.timer` runs nightly at **01:00 Asia/Kolkata** through
 `remote-backup-db.sh`; **Back up the database** is the manual workflow for the
 same path. It creates `pg_dump -Fc`, verifies its table of contents, then uploads
-to `backups/`. Detailed health now checks the newest archive's size/header and
-36-hour freshness. A successful restore still needs the drill below.
+to `backups/`. After the upload is read back it writes a tiny marker,
+`backups/latest.json` (dump key, size, `created_at`, `pgdmp_verified`). Detailed
+health reads **only that marker** for validity and 36-hour freshness; it never
+lists or reads database dumps. A successful restore still needs the drill below.
+
+### Narrowing the API's storage permissions
+
+Because health reads only the marker, the application identity no longer needs
+to read database dumps at all. In the private policy, grant it on the backup
+prefix only:
+
+- `s3:PutObject` on `arn:aws:s3:::<bucket>/backups/*` (the backup job runs with
+  the application identity and writes dumps, manifests and the marker);
+- `s3:ListBucket` on `arn:aws:s3:::<bucket>` with an `s3:prefix` condition of
+  `backups/` (the job's post-upload read-back and `--list` inventory);
+- `s3:GetObject` on `arn:aws:s3:::<bucket>/backups/latest.json` **only**.
+
+Remove any broader GetObject on `backups/*`. Downloading a dump to restore uses
+a separate, operator-held read identity (as the drill does), not the API's.
 
 Real hosts, directories, bucket names, credentials, inventories and drill
 evidence belong in private ops. Use placeholders here.

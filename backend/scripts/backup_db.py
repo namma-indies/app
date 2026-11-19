@@ -42,6 +42,7 @@ Usage, on the box:
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -51,7 +52,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.config import settings  # noqa: E402
-from app.storage.s3 import storage_from_settings  # noqa: E402
+from app.storage.s3 import BACKUP_MARKER_KEY, storage_from_settings  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("backup")
@@ -74,6 +75,15 @@ def _key(now: datetime | None = None) -> str:
     return f"{PREFIX}indiedex-{now:%Y%m%dT%H%M%SZ}.dump"
 
 
+def latest_marker(key: str, size: int, created_at: datetime) -> bytes:
+    """The tiny `backups/latest.json` the API's freshness check reads instead
+    of listing and reading database dumps. Written last, only after the dump
+    passed the PGDMP/size check and was read back from the bucket."""
+    return json.dumps({"version": 1, "key": key, "size": size,
+                       "created_at": created_at.isoformat(timespec="seconds"),
+                       "pgdmp_verified": True}, sort_keys=True).encode()
+
+
 def check_dump(path: str) -> int:
     """Refuse anything that is not plausibly a pg_dump archive. Returns size."""
     size = os.path.getsize(path)
@@ -92,7 +102,8 @@ def check_dump(path: str) -> int:
 async def upload(path: str) -> int:
     size = check_dump(path)
     storage = storage_from_settings()
-    key = _key()
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    key = _key(now)
     log.info("backup: %s -> s3://%s/%s (%.1f MB)",
              path, settings.s3_bucket, key, size / 1_000_000)
     await storage.put_file(key, path, "application/octet-stream")
@@ -102,13 +113,14 @@ async def upload(path: str) -> int:
     keys = await storage.list_keys(key)
     if key not in keys:
         raise SystemExit(f"upload reported success but {key} is not in the bucket")
-    log.info("backup: stored %s", key)
+    await storage.put(BACKUP_MARKER_KEY, latest_marker(key, size, now), "application/json")
+    log.info("backup: stored %s and updated %s", key, BACKUP_MARKER_KEY)
     return 0
 
 
 async def list_backups() -> int:
     storage = storage_from_settings()
-    keys = sorted(await storage.list_keys(PREFIX))
+    keys = sorted(k for k in await storage.list_keys(PREFIX) if k.endswith(".dump"))
     if not keys:
         log.warning("no backups in s3://%s/%s -- nothing has ever run",
                     settings.s3_bucket, PREFIX)
