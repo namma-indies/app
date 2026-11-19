@@ -597,9 +597,22 @@ export interface MatchSide {
   /** All contributing query views; one matched photo on the gallery side. */
   photos?: MatchPhoto[];
   species?: "dog" | "cat" | null;
-  /** The viewer logged this side. Nothing about where it was taken is sent
-   * for either side (issue #45). */
+  /** The viewer logged this side. */
   mine?: boolean;
+  /** Where this side was taken, at exactly the precision /map gives this
+   * viewer (issue #45): exact for their own sighting, the grid cell centre for
+   * anyone else's, and null when there is no location or none they may see.
+   * Older servers omit it. */
+  location?: PairLocation | null;
+}
+
+/** A shown coordinate and what it means; mirrors app/precision.py `Located`. */
+export interface PairLocation {
+  lat: number;
+  lng: number;
+  precision: "exact" | "area";
+  /** Width of the cell an "area" point stands for; null when exact. */
+  cell_m: number | null;
 }
 
 /** A pair the model thinks might be one dog, awaiting a human. */
@@ -610,6 +623,9 @@ export interface Proposal {
   score: number;
   a: MatchSide;
   b: MatchSide;
+  /** Metres between the two locations *as shown*, never between exact points
+   * the server withheld. Null when either side has no location. */
+  distance_m?: number | null;
 }
 
 export interface ProposalsResponse {

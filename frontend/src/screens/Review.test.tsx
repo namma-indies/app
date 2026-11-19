@@ -144,8 +144,8 @@ describe("Review", () => {
       b: { sighting_id: "s2", date: "2026-07-09", thumb_url: "https://x.test/b_thumb.webp", mine: false },
     })]));
     render(<Review onUnauthorized={() => {}} />);
-    expect(await screen.findByText("2026-07-01 · YOUR PHOTO")).toBeInTheDocument();
-    expect(screen.getByText("2026-07-09")).toBeInTheDocument();
+    expect(await screen.findByText("A · 2026-07-01 · YOUR PHOTO")).toBeInTheDocument();
+    expect(screen.getByText("B · 2026-07-09")).toBeInTheDocument();
   });
 
   it("drops a pair someone else answered first instead of failing the queue", async () => {
@@ -217,5 +217,60 @@ describe("Review species wording", () => {
     expect(await screen.findByText(/SAME ANIMAL OR NOT\?/)).toBeInTheDocument();
     expect(screen.getAllByText("SAME ANIMAL")).toHaveLength(1);
     expect(screen.getAllByText("SAME DOG")).toHaveLength(1);
+  });
+});
+
+describe("Review: where the two photos were taken", () => {
+  const own = { lat: 12.9716, lng: 77.5946, precision: "exact" as const, cell_m: null };
+  const area = { lat: 12.9761, lng: 77.61531, precision: "area" as const, cell_m: 1000 };
+
+  it("shows a map of both, the distance between what is shown, and both dates", async () => {
+    const p = proposal({ distance_m: 1830 });
+    p.a = { ...p.a, mine: true, location: own };
+    p.b = { ...p.b, mine: false, location: area };
+    vi.mocked(getProposals).mockResolvedValue(resp([p]));
+    render(<Review onUnauthorized={() => {}} />);
+    expect(await screen.findByRole("img", { name: "Map of where photos A and B were taken" })).toBeInTheDocument();
+    expect(screen.getByText("ABOUT 1.8 KM APART")).toBeInTheDocument();
+    expect(screen.getByText("2026-07-01 and 2026-07-09 · 8 days apart")).toBeInTheDocument();
+    expect(screen.getByText("Their photo is shown as a ~1 km area, not an exact spot.")).toBeInTheDocument();
+  });
+
+  it("says exactly how far apart when both photos are the viewer's", async () => {
+    const p = proposal({ distance_m: 420 });
+    p.a = { ...p.a, mine: true, location: own };
+    p.b = { ...p.b, mine: true, location: { ...own, lat: 12.975 } };
+    vi.mocked(getProposals).mockResolvedValue(resp([p]));
+    render(<Review onUnauthorized={() => {}} />);
+    expect(await screen.findByText("420 M APART")).toBeInTheDocument();
+    expect(screen.queryByText(/area, not an exact spot/)).not.toBeInTheDocument();
+  });
+
+  it("maps only the side it may show, and gives no distance", async () => {
+    const p = proposal({ distance_m: null });
+    p.a = { ...p.a, mine: true, location: own };
+    p.b = { ...p.b, mine: false, location: null };
+    vi.mocked(getProposals).mockResolvedValue(resp([p]));
+    render(<Review onUnauthorized={() => {}} />);
+    expect(await screen.findByRole("img", { name: "Map of where photo A was taken" })).toBeInTheDocument();
+    expect(screen.getByText("Only one of these photos has a location you can see.")).toBeInTheDocument();
+    expect(screen.queryByText(/ APART$/)).not.toBeInTheDocument();
+  });
+
+  it("shows no map when neither side has a location", async () => {
+    const p = proposal({ distance_m: null });
+    p.a = { ...p.a, location: null };
+    p.b = { ...p.b, location: null };
+    vi.mocked(getProposals).mockResolvedValue(resp([p]));
+    render(<Review onUnauthorized={() => {}} />);
+    expect(await screen.findByText("No location to show for either photo.")).toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: /Map of where/ })).not.toBeInTheDocument();
+  });
+
+  it("says nothing about place for a server that sends none", async () => {
+    vi.mocked(getProposals).mockResolvedValue(resp([proposal()]));
+    render(<Review onUnauthorized={() => {}} />);
+    await screen.findByText("SIMILARITY 0.62");
+    expect(screen.queryByText(/apart|location/i)).not.toBeInTheDocument();
   });
 });
