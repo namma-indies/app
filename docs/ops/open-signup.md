@@ -224,12 +224,29 @@ not seed or touch production data. A banned or erased review account is refused,
 never replaced to bypass the ban or deletion. A pending deletion can still be
 kept from the account screen within its grace period.
 
+### Resetting the review account
+
+Reviewers are asked to test account deletion, and do. Once the review account
+is erased (or banned) the door answers 503 until an operator resets it. From
+`/app/backend` inside the API container:
+
+```sh
+uv run python scripts/reset_store_reviewer.py                 # erase its content, start a fresh empty account
+uv run python scripts/reset_store_reviewer.py --keep-content  # only cancel a deletion still in its grace period
+```
+
+The default erases whatever the account still holds exactly as an account
+deletion would, retires it, and creates a fresh reviewer identity; existing
+reviewer sessions stop working, the reviewer code does not change. A banned
+review account is refused unless `--allow-banned` is passed. Run it before each
+review round so reviewers start from an empty account.
+
 Reviewer sessions require a separate signed, seven-day, HTTP-only credential
 in addition to the normal session. **Disabling the flag or rotating the reviewer
 secret revokes them on the next request**, including already-issued sessions.
 Logout clears both credentials. Failed attempts use persisted rate limits and
-progressive backoff; defaults are `RL_STORE_REVIEW_TIMES=5` per
-`RL_STORE_REVIEW_WINDOW_S=900` per source IP. Success/failure outcomes are logged
+progressive backoff; defaults are `RL_STORE_REVIEW_TIMES=5` failed attempts per
+`RL_STORE_REVIEW_WINDOW_S=900` per source IP. Successful sign-ins do not count. Success/failure outcomes are logged
 without code/cookie values; successful reviewer logins also appear in the private
 hourly abuse signals.
 

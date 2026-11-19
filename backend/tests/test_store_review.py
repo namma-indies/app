@@ -122,9 +122,9 @@ async def test_expired_review_credential_is_rejected(app_client, enabled, monkey
     assert (await app_client.get("/me", headers=cookies(response)[0])).status_code == 401
 
 
-async def test_wrong_codes_back_off_and_audit_never_contains_credentials(app_client, enabled, caplog):
-    responses = [await signin(app_client, "wrong-reviewer-code") for _ in range(4)]
-    assert [r.status_code for r in responses] == [401, 401, 429, 429]
+async def test_wrong_codes_run_out_and_audit_never_contains_credentials(app_client, enabled, caplog):
+    responses = [await signin(app_client, "wrong-reviewer-code") for _ in range(7)]
+    assert [r.status_code for r in responses] == [401] * 5 + [429] * 2
     assert int(responses[-1].headers["Retry-After"]) > 0
     assert "store_review_signin outcome=failed" in caplog.text
     assert CODE not in caplog.text and "wrong-reviewer-code" not in caplog.text
@@ -155,3 +155,85 @@ async def test_ban_or_erasure_does_not_mint_a_replacement_demo(app_client, enabl
     assert (await signin(app_client)).status_code == 503
     async with app_client._transport.app.state.pool.acquire() as conn:
         assert await conn.fetchval("SELECT count(*) FROM observers WHERE store_reviewer") == 1
+
+
+async def test_successful_signins_do_not_spend_the_attempt_limit(app_client, enabled, monkeypatch):
+    monkeypatch.setattr(settings, "rl_store_review_times", 2)
+    for _ in range(5):
+        assert (await signin(app_client)).status_code == 200
+    assert (await signin(app_client, "wrong-reviewer-code")).status_code == 401
+
+
+async def _upload_as_reviewer(conn):
+    oid = await conn.fetchval("SELECT id FROM observers WHERE store_reviewer AND deleted_at IS NULL")
+    await conn.execute("INSERT INTO sightings (id, observer_id, captured_at) VALUES ($1,$2,now())", uuid7(), oid)
+    return oid
+
+
+async def test_reset_brings_back_a_door_the_reviewer_deleted(app_client, enabled):
+    from app.deps import get_storage
+    from app.media_purges import settled
+    first = await signin(app_client)
+    headers, _ = cookies(first)
+    pool = app_client._transport.app.state.pool
+    async with pool.acquire() as conn:
+        old = await _upload_as_reviewer(conn)
+    # The reviewer deletes the account; the grace period ends; it is erased.
+    assert (await app_client.post("/account/delete", json={"confirm": "delete"}, headers=headers)).status_code == 200
+    from app import accounts
+    await accounts.erase_account(pool, get_storage(), old)
+    await settled()
+    assert (await signin(app_client)).status_code == 503
+
+    assert await store_review.reset(pool, get_storage()) == "reset"
+    await settled()
+    again = await signin(app_client)
+    assert again.status_code == 200
+    new = read_session(cookies(again)[1]["session"].value)
+    assert new != old
+    assert (await app_client.get("/me", headers=headers)).status_code == 401   # old session is gone
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM observers WHERE store_reviewer") == 1
+        assert await conn.fetchval("SELECT count(*) FROM sightings") == 0
+
+
+async def test_reset_erases_a_live_review_account_and_starts_clean(app_client, enabled):
+    from app.deps import get_storage
+    from app.media_purges import settled
+    pool = app_client._transport.app.state.pool
+    assert (await signin(app_client)).status_code == 200
+    async with pool.acquire() as conn:
+        old = await _upload_as_reviewer(conn)
+    assert await store_review.reset(pool, get_storage()) == "reset"
+    await settled()
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("SELECT deleted_at IS NOT NULL FROM observers WHERE id=$1", old)
+        assert await conn.fetchval("SELECT count(*) FROM sightings") == 0
+        assert await conn.fetchval("SELECT id FROM observers WHERE store_reviewer") != old
+
+
+async def test_reset_can_just_cancel_a_scheduled_deletion(app_client, enabled):
+    from app.deps import get_storage
+    pool = app_client._transport.app.state.pool
+    headers, jar = cookies(await signin(app_client))
+    oid = read_session(jar["session"].value)
+    async with pool.acquire() as conn:
+        await _upload_as_reviewer(conn)
+    await app_client.post("/account/delete", json={"confirm": "delete"}, headers=headers)
+    assert await store_review.reset(pool, get_storage(), keep_content=True) == "kept"
+    assert (await app_client.get("/me", headers=headers)).status_code == 200
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM sightings WHERE observer_id=$1", oid) == 1
+    assert await store_review.reset(pool, get_storage(), keep_content=True) == "unchanged"
+
+
+async def test_reset_refuses_a_banned_reviewer_unless_told(app_client, enabled):
+    from app.deps import get_storage
+    pool = app_client._transport.app.state.pool
+    assert (await signin(app_client)).status_code == 200
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE observers SET banned_at=now() WHERE store_reviewer")
+    with pytest.raises(store_review.ResetRefused):
+        await store_review.reset(pool, get_storage())
+    assert await store_review.reset(pool, get_storage(), allow_banned=True) == "reset"
+    assert (await signin(app_client)).status_code == 200

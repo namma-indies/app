@@ -11,7 +11,7 @@ from app.auth.audit import audit_failures
 from app.auth.deps import set_session_cookie
 from app.config import settings
 from app.deps import get_conn
-from app.ratelimit import Limit, check, check_backoff, clear_failures, client_key, record_failure
+from app.ratelimit import Limit, check, check_backoff, clear_failures, client_key, record_failure, refund
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -28,12 +28,17 @@ async def reviewer_signin(request: Request, secret: str = Form(..., max_length=5
     if not store_review.enabled():
         raise HTTPException(404, "not found")
     key = f"store-review:ip:{client_key(request)}"
+    limit = Limit(settings.rl_store_review_times, settings.rl_store_review_window_s)
     try:
-        await check(conn, key, Limit(settings.rl_store_review_times, settings.rl_store_review_window_s))
         await check_backoff(conn, key)
+        # Charged before the compare so parallel guesses stay bounded, and
+        # given back on success: a reviewer signing in again and again (as
+        # review tooling does) is not an attempt on the code.
+        await check(conn, key, limit)
         if not hmac.compare_digest(secret.encode(), store_review.secret().encode()):
-            await record_failure(conn, key)
+            await record_failure(conn, key, after=settings.auth_ip_backoff_after)
             raise HTTPException(401, "That reviewer code is not valid. Check the review notes and try again.")
+        await refund(conn, key, limit)
         oid = await store_review.account(conn)
     except HTTPException:
         logger.info("store_review_signin outcome=failed")
