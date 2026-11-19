@@ -881,7 +881,7 @@ export interface ModerationAlertStatus {
   delivery_configured: boolean;
 }
 
-export type GrievanceKind = "takedown" | "privacy" | "intimate_imagery" | "government_order" | "other";
+export type GrievanceKind = "takedown" | "privacy" | "intimate_imagery" | "government_order" | "other" | "appeal";
 export interface Grievance {
   id: string;
   reference: string;

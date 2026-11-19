@@ -414,3 +414,54 @@ def test_turnstile_needs_both_keys_or_neither():
     with pytest.raises(ValidationError):
         Settings(turnstile_secret_key="secret-only")
     assert Settings(turnstile_site_key="a", turnstile_secret_key="b").turnstile_site_key == "a"
+
+
+# --- appealing a suspension -------------------------------------------------------
+
+
+async def test_appeal_is_a_category_and_can_be_preselected(app_client):
+    page = (await app_client.get("/grievances")).text
+    assert '<option value="appeal" >Appeal a suspension</option>' in page
+    chosen = (await app_client.get("/grievances?kind=appeal")).text
+    assert '<option value="appeal" selected>Appeal a suspension</option>' in chosen
+    assert "Choose a complaint type" not in chosen
+    # Anything else is ignored rather than echoed.
+    junk = (await app_client.get("/grievances?kind=%3Cscript%3E")).text
+    assert "<script>" not in junk and "Choose a complaint type" in junk
+
+
+async def test_appeal_runs_on_the_ordinary_clock_and_needs_no_link(app_client):
+    response = await app_client.post("/grievances", data=form(kind="appeal", target="",
+                                                              details="I was suspended by mistake."))
+    assert response.status_code == 201, response.text
+    row = await latest(app_client)
+    assert row["kind"] == "appeal" and row["target"] == "" and row["sighting_id"] is None
+    assert row["acknowledge_due_at"] - row["received_at"] == timedelta(hours=settings.grievance_acknowledge_hours)
+    assert row["resolve_due_at"] - row["received_at"] == timedelta(hours=settings.grievance_resolve_hours)
+    assert row["removal_due_at"] is None
+    async with (await _pool(app_client)).acquire() as conn:
+        assert await conn.fetchval("SELECT urgent FROM moderator_alerts") is False
+        # Its acknowledgement is still sent promptly.
+        assert await conn.fetchval("SELECT count(*) FROM moderation_mail") == 1
+        # No escalation reminders, as for "other".
+        await conn.execute("UPDATE grievances SET received_at=now()-interval '30 days', "
+                           "resolve_due_at=now()-interval '1 day'")
+        await moderator_alerts.escalate_deadlines(conn)
+        assert await conn.fetchval("SELECT count(*) FROM moderator_alerts") == 1
+
+
+async def test_other_kinds_still_need_a_link_or_sighting_id(app_client):
+    response = await app_client.post("/grievances", data=form(kind="other", target=""))
+    assert response.status_code == 422
+    assert await latest(app_client) is None
+
+
+async def test_moderators_see_appeals_in_the_grievance_queue(authed_client):
+    client, oid = authed_client
+    await _make_moderator(client, oid)
+    assert (await client.post("/grievances", data=form(kind="appeal", target=""))).status_code == 201
+    (item,) = (await client.get("/moderation/grievances")).json()["items"]
+    assert item["kind"] == "appeal" and item["removal_due_at"] is None
+    resolved = await client.post(f"/moderation/grievances/{item['id']}/action",
+                                 json={"action": "resolve", "reason": "Suspension lifted after review"})
+    assert resolved.json() == {"status": "resolved"}

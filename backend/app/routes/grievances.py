@@ -12,7 +12,7 @@ from app.auth.allowlist import normalize_email
 from app.auth.deps import require_moderator
 from app.config import settings
 from app.deps import get_conn, get_storage
-from app.grievances import Intake, KIND_LABELS, LEGAL_NOTE, clocks, linked_sighting, removal_hours
+from app.grievances import Intake, KIND_LABELS, LEGAL_NOTE, clocks, linked_sighting, removal_hours, urgent_kind
 from app.turnstile import TOKEN_FIELD, TurnstileUnavailable, turnstile_enabled, verify_turnstile
 from app.ids import uuid7
 from app.moderation_ops import action_reason, apply_sighting_action, record_action
@@ -78,12 +78,15 @@ def _form(*, values=None, error=None, status=200):
 <dt>All complaints</dt><dd>Acknowledge: {settings.grievance_acknowledge_hours:g} hours. Resolve: {settings.grievance_resolve_hours / 24:g} days.</dd>
 <dt>Takedown or privacy</dt><dd>Removal review: {settings.grievance_removal_hours:g} hours.</dd>
 <dt>Non-consensual intimate imagery</dt><dd>Urgent removal review: {settings.grievance_intimate_hours:g} hours.</dd>
-<dt>Government or court order</dt><dd>Urgent action review: {settings.grievance_government_hours:g} hours.</dd></dl>'''
+<dt>Government or court order</dt><dd>Urgent action review: {settings.grievance_government_hours:g} hours.</dd>
+<dt>Appeal a suspension</dt><dd>Standard clock: acknowledge and resolve as above.</dd></dl>'''
     return _page(f'''<p>You can send a complaint without an account.</p>{_contact()}{banner}
 <h2>Send a complaint</h2><form method="post" action="/grievances">
 <input type="hidden" name="submission_key" value="{key}">
 <label for="kind">Complaint type</label><select id="kind" name="kind" required>{options}</select>
-<label for="target">Link or sighting ID</label><input id="target" name="target" required maxlength="1000" value="{value('target')}">
+<label for="target">Link or sighting ID</label><input id="target" name="target" maxlength="1000" value="{value('target')}">
+<p class="small">Needed for every type except an appeal. Appealing a suspension? Choose “Appeal a suspension”,
+use the email address of the suspended account as your contact email, and say why the suspension should be lifted.</p>
 <label for="details">Details</label><textarea id="details" name="details" required maxlength="5000" rows="5">{value('details')}</textarea>
 <label for="contact_email">Contact email</label><input id="contact_email" name="contact_email" type="email" required maxlength="254" autocomplete="email" value="{value('contact_email')}">
 <p class="small">Your details and contact email are shared with the moderation team to handle this complaint.
@@ -100,8 +103,9 @@ def _receipt(reference: str, *, status=201):
 
 
 @router.get("/grievances", response_class=HTMLResponse)
-async def grievance_page():
-    return _form()
+async def grievance_page(kind: str | None = Query(None, max_length=40)):
+    # `?kind=appeal` preselects a type, e.g. from the suspended-account screen.
+    return _form(values={"kind": kind} if kind in KIND_LABELS else None)
 
 
 async def _read_form(request: Request) -> dict:
@@ -193,7 +197,7 @@ async def submit_grievance(request: Request):
                                           html=f"<p>We received your IndieDex grievance.</p><p>Reference: <strong>{reference}</strong></p><p>Keep this reference for follow-up. The moderation team will review your complaint.</p>", urgent=True)
             await conn.execute("UPDATE grievances SET acknowledgement_mail_id=$2 WHERE id=$1", gid, mail_id)
             await alert_moderators(conn, event_key=f"grievance:{gid}", category=f"grievance_{body.kind}",
-                                   subject_id=gid, urgent=body.kind != "other")
+                                   subject_id=gid, urgent=urgent_kind(body.kind))
     return _receipt(reference)
 
 

@@ -177,6 +177,7 @@ remain visible.
 | Non-consensual intimate imagery | 24 hours | 7 days | 2 hours |
 | Government or court order | 24 hours | 7 days | 3 hours |
 | Other | 24 hours | 7 days | — |
+| Appeal a suspension | 24 hours | 7 days | — |
 
 These are provisional tracking targets from the task, not a legal conclusion.
 Every deadline and its applicability is labelled for lawyer confirmation on the
@@ -186,7 +187,12 @@ must confirm the scope, start events, exceptions and what counts as completion.
 Deadlines are snapshotted on intake; configuration changes do not rewrite them.
 
 Intimate-imagery and government/order cases sort first. All categories except
-`other` alert immediately; `other` uses the ordinary digest. Filing an
+`other` and `appeal` alert immediately; those two use the ordinary digest and get
+no reminders. An appeal names an account rather than content, so its link field
+may be left empty; the appellant is asked to use the suspended account's email
+address as the contact, which is how a moderator finds the account. Lifting a
+suspension is the existing unban action (with its own reason), then resolving
+the appeal. Filing an
 unauthenticated complaint does not itself hide content: a moderator verifies
 the concern/order and acts, preventing a claimed order from being a public
 take-down switch. Hiding linked content affects the shared capture and records

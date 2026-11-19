@@ -12,10 +12,18 @@ from pydantic import BaseModel, Field, field_validator
 from app.auth.allowlist import normalize_email
 from app.config import settings
 
-GrievanceKind = Literal["takedown", "privacy", "intimate_imagery", "government_order", "other"]
+GrievanceKind = Literal["takedown", "privacy", "intimate_imagery", "government_order", "other", "appeal"]
 KIND_LABELS = {"takedown": "Takedown", "privacy": "Privacy",
                "intimate_imagery": "Non-consensual intimate imagery",
-               "government_order": "Government or court order", "other": "Other"}
+               "government_order": "Government or court order", "other": "Other",
+               "appeal": "Appeal a suspension"}
+# On the ordinary clock: digest alert, no reminders, no removal review.
+# Everything else alerts at once and is escalated as its clocks run down.
+NON_URGENT_KINDS = ("other", "appeal")
+
+
+def urgent_kind(kind: str) -> bool:
+    return kind not in NON_URGENT_KINDS
 LEGAL_NOTE = "Provisional tracking targets: confirm every deadline and its applicability with a lawyer."
 
 
@@ -48,7 +56,8 @@ def linked_sighting(target: str) -> UUID | None:
 class Intake(BaseModel):
     submission_key: UUID
     kind: GrievanceKind
-    target: str = Field(min_length=1, max_length=1000)
+    # Optional for an appeal, which is about an account rather than content.
+    target: str = Field(default="", max_length=1000)
     details: str = Field(min_length=1, max_length=5000)
     contact_email: str = Field(min_length=1, max_length=254)
 
@@ -67,7 +76,11 @@ class Intake(BaseModel):
 
     @field_validator("target")
     @classmethod
-    def url_or_id(cls, value):
+    def url_or_id(cls, value, info):
+        if not value:
+            if info.data.get("kind") == "appeal":
+                return value
+            raise ValueError("Enter a link or sighting ID")
         try:
             UUID(value)
             return value
