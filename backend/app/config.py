@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     session_secret: str = "dev-session-secret"
     magic_link_secret: str = "dev-magic-secret"
 
+    # Both sign-in and account-deletion email tokens, used or unused (#209).
+    # Keep seven days AFTER expiry, then delete on the next successful pass.
+    # Housekeeping runs at startup and hourly; this is separate from account
+    # deletion grace, sessions, email-provider logs and database backups.
+    login_token_retention_days: int = Field(default=7, ge=0)
+    login_token_cleanup_interval_s: float = Field(default=3600.0, gt=0)
+
     s3_endpoint: str = "http://localhost:9000"
     # Host the browser fetches objects from, when it differs from where the
     # server writes them (dev proxy, or a CDN in front of S3). Empty means
