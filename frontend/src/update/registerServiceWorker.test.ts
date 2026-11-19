@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { startServiceWorker } from "./registerServiceWorker";
+import { removeServiceWorkers, startServiceWorker } from "./registerServiceWorker";
 
 vi.mock("@capacitor/core", () => ({ Capacitor: { isNativePlatform: () => false } }));
 
@@ -122,5 +122,23 @@ describe("service-worker startup (#175)", () => {
     expect(f.reg.update).not.toHaveBeenCalled();
     expect(f.win.setInterval).not.toHaveBeenCalled();
     expect(f.reload).not.toHaveBeenCalled();
+  });
+});
+
+describe("native launch clean-up", () => {
+  it("unregisters service workers and deletes only their workbox caches", async () => {
+    const unregister = vi.fn().mockResolvedValue(true);
+    const remove = vi.fn().mockResolvedValue(true);
+    const cacheStorage = {
+      keys: vi.fn().mockResolvedValue(["workbox-precache-v2-https://app/", "indiedex-offline-media"]),
+      delete: remove,
+    };
+    vi.stubGlobal("navigator", { serviceWorker: { getRegistrations: vi.fn().mockResolvedValue([{ unregister }]) } });
+    vi.stubGlobal("caches", cacheStorage);
+    vi.stubGlobal("window", { caches: cacheStorage });
+    await removeServiceWorkers();
+    expect(unregister).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith("workbox-precache-v2-https://app/");
   });
 });

@@ -15,7 +15,7 @@ and the like hold no reload guard).
 | Reload when safe | same, driven by `UpdateBanner.tsx` | on SW takeover: reload if hidden and idle, else prompt; reload once hidden and idle |
 | "Busy" signal | `update/reloadGuard.ts` (`useReloadGuard`) | capture draft, recording, review / report / voice-note sheets, photo-description edit |
 | Headers | `backend/app/static.py` | `no-cache` on `index.html`, `sw.js`, `registerSW.js`, `manifest.webmanifest`; `immutable` on `/assets/*` |
-| Native | `update/registerServiceWorker.ts` | no SW in Capacitor; any existing one is unregistered and its caches cleared |
+| Native | `update/registerServiceWorker.ts` | no SW in Capacitor; any existing one is unregistered and its `workbox-*` caches cleared (other CacheStorage entries are kept) |
 
 New screens that hold unsaved work should call `useReloadGuard(active)`.
 

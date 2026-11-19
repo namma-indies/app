@@ -6,14 +6,24 @@ import {
 } from "./appUpdate";
 import { isBusy, onBusyChange } from "./reloadGuard";
 
-/** The native apps bundle the frontend, so a service worker there only adds a stale second cache. */
-async function removeServiceWorkers(): Promise<void> {
+/**
+ * The native apps bundle the frontend, so a service worker there only adds a
+ * stale second cache. Runs on every native launch.
+ *
+ * Deletes only the service worker's own caches (Workbox names them
+ * `workbox-*`; pwaWorkbox.ts configures no runtime caches with other names).
+ * Any other CacheStorage entry the app adds later is left alone rather than
+ * silently wiped on each launch.
+ */
+export const SERVICE_WORKER_CACHE_PREFIX = "workbox-";
+
+export async function removeServiceWorkers(): Promise<void> {
   if (!("serviceWorker" in navigator)) return;
   const regs = await navigator.serviceWorker.getRegistrations();
   await Promise.all(regs.map((r) => r.unregister()));
   if ("caches" in window) {
     const keys = await caches.keys();
-    await Promise.all(keys.map((k) => caches.delete(k)));
+    await Promise.all(keys.filter((k) => k.startsWith(SERVICE_WORKER_CACHE_PREFIX)).map((k) => caches.delete(k)));
   }
 }
 
