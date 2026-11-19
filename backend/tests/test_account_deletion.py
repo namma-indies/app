@@ -226,6 +226,28 @@ async def test_the_web_page_reveals_nothing_about_who_has_an_account(app_client,
         assert await c.fetchval("SELECT count(*) FROM observers") == 1          # nothing is created
 
 
+@pytest.mark.asyncio
+async def test_the_web_request_does_the_same_work_for_known_and_unknown_addresses(app_client, monkeypatch):
+    """Timing must not say who has an account: the lookup, the token and the
+    send all happen after the response, and the request itself does the same
+    for both."""
+    from app.routes import account
+    queued = []
+
+    async def later(pool, address, slot):
+        queued.append(address)
+    monkeypatch.setattr(account, "_send_deletion_link", later)
+    pool = await _pool(app_client)
+    async with pool.acquire() as c:
+        await c.execute("INSERT INTO observers (id, email, created_via) VALUES ($1,'a@example.org','email')", uuid7())
+        before = await c.fetchval("SELECT count(*) FROM login_tokens")
+    for address in ("a@example.org", "nobody@example.org"):
+        assert (await app_client.post("/account/delete/request", data={"email": address})).status_code == 200
+    assert queued == ["a@example.org", "nobody@example.org"]
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT count(*) FROM login_tokens") == before     # no token in the request
+
+
 @pytest.mark.parametrize("pause", ["interval", "daily", "provider_backoff"])
 async def test_busy_deletion_email_shows_the_same_wait_for_known_and_unknown_addresses(app_client, mail, monkeypatch, pause):
     import re

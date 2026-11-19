@@ -29,7 +29,7 @@ from datetime import datetime
 from html import escape
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Form, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException
 from pydantic import BaseModel
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
@@ -150,8 +150,26 @@ async def web_form() -> HTMLResponse:
       <a href="/support">contact support</a>.</p>""")
 
 
+async def _send_deletion_link(pool, address: str, slot) -> None:
+    """Mail a deletion link if an account uses `address`; nothing otherwise.
+    Runs after the response, so neither branch shows in its timing, and
+    nothing it does can change what the page said."""
+    try:
+        async with pool.acquire() as conn:
+            observer_id = await conn.fetchval(
+                "SELECT id FROM observers WHERE email=$1 AND deleted_at IS NULL", address)
+            if observer_id is None:
+                return
+            token = await issue(conn, observer_id, purpose="delete")
+            await deliver(conn, lambda: send(address, deletion_link(
+                f"{settings.public_base_url}/account/delete/confirm?token={token}")), reserved=slot)
+    except Exception:
+        logger.warning("deletion link not sent")
+
+
 @router.post("/account/delete/request", response_class=HTMLResponse)
-async def web_request(request: Request, email: str = Form(...), conn=Depends(get_conn)) -> HTMLResponse:
+async def web_request(request: Request, background: BackgroundTasks, email: str = Form(...),
+                      conn=Depends(get_conn)) -> HTMLResponse:
     address = normalize_email(email)
     if not address:
         return _html('<p class="err">That doesn\'t look like an email address.</p>'
@@ -169,16 +187,10 @@ async def web_request(request: Request, email: str = Form(...), conn=Depends(get
         return _html(f'<p class="err">{escape(str(exc.detail))}</p>'
                      '<p><a href="/account/delete">Try again</a></p>',
                      status=exc.status_code, headers=exc.headers)
-    observer_id = await conn.fetchval(
-        "SELECT id FROM observers WHERE email=$1 AND deleted_at IS NULL", address)
-    if observer_id is not None:
-        token = await issue(conn, observer_id, purpose="delete")
-        try:
-            await deliver(conn, lambda: send(address, deletion_link(f"{settings.public_base_url}/account/delete/confirm?token={token}")), reserved=slot)
-        except Exception:
-            # The same page either way: an error here, and only here, would say
-            # that an account uses this address.
-            logger.warning("deletion link not sent")
+    # Looked up, and mailed, after the response has gone: done inline, only
+    # for an address with an account, the extra token write and provider call
+    # made that answer measurably slower -- timing that says who has one.
+    background.add_task(_send_deletion_link, request.app.state.pool, address, slot)
     wait = settings.auth_email_cooldown_s
     return _html(f"""<p class="ok">We've processed the request. If an IndieDex account uses
       {escape(address, quote=False)}, check its inbox for a link to confirm deleting it.</p>
