@@ -51,10 +51,10 @@ export default function HeldQueue({ onUnauthorized }: { onUnauthorized: () => vo
   async function ban(item: HeldItem) {
     if (!item.observer_id) return;
     const reason = prompt(`Ban ${item.observer ?? "this person"}? Everything they logged is hidden from everyone, and they can't sign in. You can lift it under STATS. Reason (for the record):`);
-    if (reason === null) return;
+    if (!reason?.trim()) return;
     setBusy(item.capture_id);
     try {
-      await banObserver(item.observer_id, reason.trim() || undefined);
+      await banObserver(item.observer_id, reason.trim());
       setItems((cur) => (cur ?? []).filter((x) => x.observer_id !== item.observer_id));
     } catch (err) {
       if (err instanceof UnauthorizedError) onUnauthorized();
