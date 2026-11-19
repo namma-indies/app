@@ -234,7 +234,7 @@ async def test_the_web_request_does_the_same_work_for_known_and_unknown_addresse
     from app.routes import account
     queued = []
 
-    async def later(pool, address, slot):
+    async def later(pool, address):
         queued.append(address)
     monkeypatch.setattr(account, "_send_deletion_link", later)
     pool = await _pool(app_client)
