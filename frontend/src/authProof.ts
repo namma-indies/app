@@ -24,10 +24,19 @@ export async function solveProof(challenge: string, difficulty: number, expiresI
   throw new Error("The sign-in check timed out. Please try again or sign in by email.");
 }
 
-export async function passcodeProof(): Promise<{ challenge: string; solution: string }> {
+/** Fetch and solve a passcode challenge.
+ *
+ * The difficulty is whatever the challenge says. While someone is guessing
+ * passcodes at scale the server raises it (`escalated`) rather than shutting
+ * the door, and shortens `expires_in` -- the deadline the solver stops at -- so
+ * a slow phone gets "timed out, try again or sign in by email" within a couple
+ * of minutes instead of spinning. `onEscalated` lets the screen say why this
+ * one is slow. */
+export async function passcodeProof(onEscalated?: () => void): Promise<{ challenge: string; solution: string }> {
   const res = await fetch(`${API_BASE}/auth/join/challenge`, { credentials: "include", headers: { Accept: "application/json" } });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? data.detail ?? "The sign-in check is unavailable. Please try again.");
+  if (data.escalated) onEscalated?.();
   const solution = await solveProof(data.challenge, data.difficulty, data.expires_in);
   return { challenge: data.challenge, solution };
 }

@@ -22,6 +22,7 @@ document.querySelector('form[action="/auth/join"]').addEventListener('submit', a
     const res = await fetch('/auth/join/challenge', {headers: {Accept: 'application/json'}});
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || data.detail || 'Please try again.');
+    if (data.escalated) button.textContent = 'Checking… this can take a minute';
     const encoder = new TextEncoder(), deadline = Date.now() + data.expires_in * 1000;
     for (let n = 0; n < 2 ** 32 && Date.now() < deadline; n += 64) {
       const hashes = await Promise.all(Array.from({length: 64}, (_, i) =>
@@ -67,18 +68,36 @@ def _signer() -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(settings.magic_link_secret, salt="passcode-proof-v1")
 
 
-def issue(client: str) -> dict:
+def required_bits(escalated: bool) -> int:
+    return settings.join_pow_bits + (settings.join_pow_escalated_bits if escalated else 0)
+
+
+def issue(client: str, *, escalated: bool = False) -> dict:
+    """A challenge at the current difficulty.
+
+    Escalated (the door-wide wrong-passcode budget is spent), the work is
+    harder and the client is given less time to do it: `expires_in` is the
+    solver's own deadline in every shipped app, so it bounds how long a slow
+    phone, on any version, spins before saying "timed out, try again or sign in
+    by email" -- rather than five minutes of "Checking...". `escalated` lets a
+    current client say why it is slow; an older one ignores it."""
+    bits = required_bits(escalated)
     return {
         "challenge": _signer().dumps({
             "nonce": secrets.token_urlsafe(24), "client": key_hash(client).hex(),
-            "bits": settings.join_pow_bits,
+            "bits": bits,
         }),
-        "difficulty": settings.join_pow_bits,
-        "expires_in": settings.join_pow_ttl_s,
+        "difficulty": bits,
+        "expires_in": (min(settings.join_pow_ttl_s, settings.join_pow_escalated_wait_s)
+                       if escalated else settings.join_pow_ttl_s),
+        "escalated": escalated,
     }
 
 
-async def consume(conn, client: str, challenge: str, solution: str) -> None:
+async def consume(conn, client: str, challenge: str, solution: str, *, min_bits: int | None = None) -> None:
+    """Spend a solved challenge. `min_bits` is the difficulty required now: a
+    genuine challenge issued easier than that (before the door escalated) is
+    Stale -- solve a fresh one -- not a failure, so it never counts as guessing."""
     error = HTTPException(400, "The sign-in check expired or failed. Please try again.")
     if not challenge or len(challenge) > 1024 or not solution.isascii() or not solution.isdecimal() or len(solution) > 12:
         raise error
@@ -100,6 +119,8 @@ async def consume(conn, client: str, challenge: str, solution: str) -> None:
     digest = hashlib.sha256(f"{challenge}:{solution}".encode()).digest()
     if int.from_bytes(digest, "big") >> (256 - bits):
         raise error
+    if min_bits is not None and bits < min_bits:
+        raise Stale()
     used = await conn.fetchval("""INSERT INTO join_pow_uses (challenge_hash, expires_at)
         VALUES ($1, statement_timestamp() + interval '11 minutes')
         ON CONFLICT DO NOTHING RETURNING true""", hashlib.sha256(challenge.encode()).digest())

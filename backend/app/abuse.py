@@ -123,7 +123,7 @@ async def snapshot(conn, hours: int = 24) -> dict:
             coalesce(sum(a.count) FILTER (WHERE a.event='email_throttled'),0)::bigint AS email_throttled,
             coalesce(sum(a.count) FILTER (WHERE a.event='email_failed'),0)::bigint AS email_failed,
             coalesce(sum(a.count) FILTER (WHERE a.event='reviewer_signins'),0)::bigint AS reviewer_signins,
-            coalesce(sum(a.count) FILTER (WHERE a.event='passcode_lockouts'),0)::bigint AS passcode_lockouts
+            coalesce(sum(a.count) FILTER (WHERE a.event='passcode_escalated'),0)::bigint AS passcode_escalated
         FROM generate_series(
             greatest(date_trunc('hour', now(), 'UTC') - make_interval(hours => $1 - 1),
                      date_trunc('hour', $2::timestamptz, 'UTC')),
