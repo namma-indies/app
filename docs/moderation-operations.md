@@ -5,16 +5,18 @@ moderators, staffing a rota and agreeing response targets.
 
 ## Decisions to confirm with Akash
 
-- People/privacy, sexual-content and illegal-content reports are severe. One
-  severe report holds the entire capture off shared surfaces pending review,
-  including a fresh concern following an earlier approval. Exception: a
-  reporter whose earlier report on that capture a moderator already ruled on
-  cannot re-hide it alone; their repeat report reaches the queue (still marked
-  severe) without hiding. Ordinary reports retain the two-distinct-reporter
-  threshold and cannot overturn a ruling. Reports are limited per account
-  (`RL_REPORT_TIMES` per `RL_REPORT_WINDOW_S`, default 30 per hour).
-  Whether *other* accounts' severe reports should re-hide an approved capture
-  remains Akash's policy call.
+- People/privacy, sexual-content and illegal-content reports are severe. Before
+  any moderator ruling, one severe report holds the entire capture off shared
+  surfaces pending review; ordinary reports need two distinct reporters.
+- Re-reports after approval (decided 2026-11): once a moderator has approved
+  or cleared a capture, new reports do not take it down again unless at least
+  `REPORT_REHIDE_MIN_REPORTERS` distinct accounts (default `3`) have reported it
+  since that ruling, whatever their reasons. A reporter already ruled against
+  counts once, however often they report. Every report still reaches the queue
+  (marked "reported again after review"), and severe ones still alert urgently
+  with their own clock. A further ruling starts the count again. Reports are
+  limited per account (`RL_REPORT_TIMES` per `RL_REPORT_WINDOW_S`, default 30
+  per hour).
 - Severe reports target a response within 2 hours; ordinary reports within
   24 hours. These are provisional operational targets, not legal deadlines.
 - Ordinary alerts are digested every 60 minutes; urgent alerts bypass that
@@ -51,6 +53,8 @@ Moderators are always exempt from that one rule.
 | `MODERATION_REMINDER_FRACTION` | Share of a severe-report / urgent-grievance window after which one urgent reminder is sent; a second goes at the deadline | `0.75` |
 | `MODERATION_REMINDER_CHECK_S` | How often deadlines are scanned for reminders | `60` |
 | `MODERATION_MAIL_MAX_ATTEMPTS` | Failed sends before a message is marked undeliverable instead of retried forever | `8` (about two hours of backoff) |
+| `REPORT_REHIDE_MIN_REPORTERS` | Distinct accounts reporting an approved capture since its ruling before it is hidden again | `3` |
+| `SCREENING_TRUSTED_AFTER` | Uploads a new account must have gone public before the next skips the moderator; `0` = new accounts never wait | `0` |
 
 Set contacts privately in deployment settings, never in this public repository.
 No deployment or production configuration changes are part of this PR.
@@ -194,8 +198,8 @@ third-party bot check: adding one is a product/privacy decision for Akash.
 
 ### Product and people decisions for Akash
 
-- Confirm severe-report categories, one-report holding (including after a
-  previous approval), response targets and the 60-minute ordinary digest.
+- Confirm severe-report categories, one-report holding before a ruling, the
+  three-reporter re-hide after one, response targets and the 60-minute digest.
 - Confirm the grievance category-to-clock mapping with a lawyer, including
   whether every privacy complaint needs the 36-hour clock.
 - Name the officer, rota, escalation contacts and coverage for 2/3-hour cases.

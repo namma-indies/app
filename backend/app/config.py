@@ -195,6 +195,11 @@ class Settings(BaseSettings):
     # person flagging a bad batch; caps one account cycling severe holds/alerts.
     rl_report_times: int = Field(default=30, ge=1)
     rl_report_window_s: int = Field(default=3600, ge=1)
+    # Once a moderator has approved/cleared a capture, reports only take it
+    # down again when this many distinct accounts report it after that ruling.
+    # Every report still reaches the queue, and severe ones still alert
+    # urgently. Before any ruling, one severe (or two ordinary) reports hide it.
+    report_rehide_min_reporters: int = Field(default=3, ge=1)
 
     phone_hash_secret: str = "dev-phone-secret"
     # Key for `banned_emails` hashes (security.email_hash, #180), kept apart

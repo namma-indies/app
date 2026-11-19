@@ -2,10 +2,12 @@
 
 Ordinary reports need two distinct reporters before shared surfaces hide a
 capture. People/privacy, sexual-content and illegal-content reports hold it
-on the first report and alert immediately (#198). A fresh severe concern from
-another reporter can hold a previously approved capture again; the reporter a
-moderator already ruled against reaches the queue but cannot re-hide it alone.
-Ordinary reports cannot overturn a ruling. Reports are rate limited per account. All open concerns reach the queue, with an original response clock.
+on the first report and alert immediately (#198). Once a moderator has
+approved or cleared a capture, reports only hide it again when
+`report_rehide_min_reporters` distinct accounts (default 3) have reported it
+since that ruling, whatever the reason; until then they reach the queue, and
+severe ones still alert urgently. Reports are rate limited per account. All
+open concerns reach the queue, with an original response clock.
 
 Moderators are deliberately assigned through observers.trust_tier. Decisions
 require a reason and append an audit entry in the same transaction. No action
@@ -117,17 +119,13 @@ async def report_sighting(
         changed = previous is None or previous["resolved_at"] is not None or (previous["reason"], previous["note"]) != (reason, note)
         if not changed:
             return {"status": "ok", "hidden": sighting["review_status"] != "valid"}
-        # The same account reporting again after a moderator approved the
-        # capture over its earlier report goes to the queue, but cannot hold
-        # the capture by itself again (otherwise one account can re-hide an
-        # approved photo indefinitely). Other reporters keep the severe hold.
-        repeat_after_approval = (
-            sighting["review_status"] == "valid" and sighting["reviewed_at"] is not None
-            and await conn.fetchval(
-                "SELECT EXISTS (SELECT 1 FROM sighting_reports r JOIN sightings s ON s.id=r.sighting_id "
-                "WHERE r.reporter_id=$2 AND COALESCE(r.resolved_at, r.last_resolved_at) IS NOT NULL "
-                "AND (s.id=$1 OR s.capture_id=$3))", sighting_id, observer_id, capture_id))
-        hold_now = reason in SEVERE_REASONS and not repeat_after_approval
+        # After a moderator approved/cleared the capture, a single report (even
+        # a severe one) no longer takes it down: only
+        # `report_rehide_min_reporters` distinct accounts reporting since that
+        # ruling do (open rows are exactly those, as a ruling resolves them
+        # all). This also stops one account re-hiding an approved photo
+        # indefinitely. Before any ruling one severe report still holds it.
+        hold_now = reason in SEVERE_REASONS and sighting["reviewed_at"] is None
         await conn.execute(
             """
             INSERT INTO sighting_reports (sighting_id, reporter_id, reason, note, severe_at)
@@ -149,19 +147,20 @@ async def report_sighting(
             note,
             reason in SEVERE_REASONS,
         )
-        # Ordinary reports keep a human ruling sticky. A new severe concern
-        # takes precedence over an earlier approval until reviewed again. The
-        # whole capture is held, since sibling animals share the photograph.
+        # Distinct accounts with an open report on the capture: before a
+        # ruling, everyone who reported; after one, everyone since. The whole
+        # capture is held, since sibling animals share the photograph.
         await conn.execute(
             "UPDATE sightings SET review_status = 'pending', updated_at = now() "
             "WHERE (id = $1 OR capture_id=(SELECT capture_id FROM sightings WHERE id=$1)) "
-            "AND review_status <> 'rejected' AND ((reviewed_at IS NULL "
-            "AND (SELECT count(DISTINCT r.reporter_id) FROM sighting_reports r JOIN sightings src ON src.id=r.sighting_id "
+            "AND review_status <> 'rejected' AND ($3 OR "
+            "(SELECT count(DISTINCT r.reporter_id) FROM sighting_reports r JOIN sightings src ON src.id=r.sighting_id "
             "WHERE (src.id=$1 OR src.capture_id=(SELECT capture_id FROM sightings WHERE id=$1)) "
-            "AND r.resolved_at IS NULL) >= $2) OR $3)",
+            "AND r.resolved_at IS NULL) >= CASE WHEN reviewed_at IS NULL THEN $2::int ELSE $4::int END)",
             sighting_id,
             HIDE_AT_REPORTS,
             hold_now,
+            settings.report_rehide_min_reporters,
         )
         # Rejecting is already a stronger hold. Fresh severe concerns about a
         # previously approved item still hide it until the next human ruling.
