@@ -19,6 +19,7 @@ from app.photos import process_photo, ProcessedPhoto, thumb_key
 from app import screening
 from app.scoring import recompute_animal_confidence
 from app.reid_recipe import ACTIVE_RECIPE
+from app.ratelimit import mark_replay
 from app.sighting_vectors import save_mean
 from app.social import mark_shared
 from app.storage.s3 import S3Storage
@@ -366,6 +367,7 @@ async def create_sighting(
                 "duplicate submission for client_token=%s; returning sighting=%s",
                 client_token, existing["id"],
             )
+            mark_replay(request)
             return JSONResponse(
                 status_code=201,
                 content={
@@ -682,6 +684,7 @@ async def create_sighting(
             "concurrent duplicate for client_token=%s; returning sighting=%s",
             client_token, winner["id"],
         )
+        mark_replay(request)
         return JSONResponse(
             status_code=201,
             content={

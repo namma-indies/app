@@ -2,23 +2,27 @@ import asyncio
 import json
 
 import asyncpg
+import httpx
 import pytest
-from fastapi import FastAPI, HTTPException
+import pytest_asyncio
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from botocore.exceptions import ClientError
 
-from app.abuse import snapshot
+from app.abuse import snapshot, upload_guard
 from app.auth.email_login import get_or_create_observer_by_email
 from app.config import settings
 from app.email.delivery import deliver, reserve
 from app.ids import uuid7
+from app.ratelimit import REPLAY_HEADER, Limit, check, mark_replay
 from app.security import issue_session
 
 
-async def test_both_upload_doors_share_account_budget_before_body_is_read(authed_client, monkeypatch):
-    client, _ = authed_client
-    monkeypatch.setattr(settings, "rl_upload_hour_times", 2)
-    assert (await client.post("/sighting")).status_code == 422
-    assert (await client.post("/capture")).status_code == 422
+async def test_excess_uploads_are_refused_before_the_body_is_read(authed_client, monkeypatch):
+    client, oid = authed_client
+    monkeypatch.setattr(settings, "rl_upload_hour_times", 1)
+    async with client._transport.app.state.pool.acquire() as conn:
+        await check(conn, f"upload:hour:{oid}", Limit(1, 3600))
     read = False
     async def body():
         nonlocal read
@@ -36,23 +40,119 @@ async def test_both_upload_doors_share_account_budget_before_body_is_read(authed
     assert (await client.post("/capture", headers={"Cookie": f"session={issue_session(other)}"})).status_code == 422
 
 
-async def test_concurrent_uploads_cannot_multiply_the_budget(authed_client, monkeypatch):
+async def test_malformed_uploads_are_not_charged(authed_client, monkeypatch):
     client, _ = authed_client
+    monkeypatch.setattr(settings, "rl_upload_hour_times", 1)
+    for _ in range(3):
+        assert (await client.post("/sighting")).status_code == 422
+        assert (await client.post("/capture")).status_code == 422
+
+
+@pytest_asyncio.fixture
+async def guarded(authed_client):
+    """The guard in front of stand-in routes that answer however the test
+    says, so accepted uploads and replays can be counted without media."""
+    client, oid = authed_client
+    stub = FastAPI()
+    stub.state.pool = client._transport.app.state.pool
+    stub.middleware("http")(upload_guard)
+    answer = {"status": 201, "replay": None}
+
+    async def route(request: Request):
+        headers = {}
+        if answer["replay"] == "state":
+            mark_replay(request)
+        elif answer["replay"] == "header":
+            headers[REPLAY_HEADER] = "1"
+        return JSONResponse({}, status_code=answer["status"], headers=headers)
+
+    for path in ("/sighting", "/capture", "/sighting/{x}/voice-note", "/capture/{x}/voice-note",
+                 "/voice-transcript/{x}/redo", "/elsewhere"):
+        stub.post(path)(route)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=stub), base_url="http://test",
+                                 cookies={"session": issue_session(oid)}) as stub_client:
+        yield stub_client, answer
+
+
+async def test_concurrent_uploads_cannot_multiply_the_budget(guarded, monkeypatch):
+    client, _ = guarded
     monkeypatch.setattr(settings, "rl_upload_hour_times", 3)
     responses = await asyncio.gather(*(client.post("/sighting") for _ in range(16)))
-    assert sum(r.status_code == 422 for r in responses) == 3
+    assert sum(r.status_code == 201 for r in responses) == 3
     assert sum(r.status_code == 429 for r in responses) == 13
     async with client._transport.app.state.pool.acquire() as conn:
         assert await conn.fetchval("SELECT sum(count) FROM abuse_hourly WHERE event='upload_throttled'") == 13
 
 
-async def test_daily_denial_does_not_spend_hourly_capacity(authed_client, monkeypatch):
-    client, _ = authed_client
+async def test_both_upload_doors_share_one_account_budget(guarded, monkeypatch):
+    client, _ = guarded
+    monkeypatch.setattr(settings, "rl_upload_hour_times", 2)
+    assert (await client.post("/sighting")).status_code == 201
+    assert (await client.post("/capture")).status_code == 201
+    assert (await client.post("/sighting")).status_code == 429
+
+
+async def test_daily_denial_does_not_spend_hourly_capacity(guarded, monkeypatch):
+    client, _ = guarded
     monkeypatch.setattr(settings, "rl_upload_day_times", 1)
-    assert (await client.post("/sighting")).status_code == 422
+    assert (await client.post("/sighting")).status_code == 201
     assert (await client.post("/capture")).status_code == 429
     async with client._transport.app.state.pool.acquire() as conn:
         assert {r["hits"] for r in await conn.fetch("SELECT hits FROM rate_limit_buckets")} == {1}
+
+
+@pytest.mark.parametrize("path", ["/sighting/1/voice-note", "/capture/1/voice-note", "/voice-transcript/1/redo"])
+async def test_voice_doors_are_budgeted_too(guarded, monkeypatch, path):
+    client, _ = guarded
+    monkeypatch.setattr(settings, "rl_upload_hour_times", 1)
+    assert (await client.post(path)).status_code == 201
+    assert (await client.post(path)).status_code == 429
+    # Their own buckets: a voice note does not use up a photo upload.
+    assert (await client.post("/sighting")).status_code == 201
+    assert (await client.post("/elsewhere")).status_code == 201
+
+
+@pytest.mark.parametrize("replay", ["state", "header"])
+async def test_replays_of_accepted_uploads_are_not_charged(guarded, monkeypatch, replay):
+    client, answer = guarded
+    monkeypatch.setattr(settings, "rl_upload_hour_times", 1)
+    answer["replay"] = replay
+    for _ in range(3):
+        response = await client.post("/sighting")
+        assert response.status_code == 201
+        assert REPLAY_HEADER not in response.headers
+    answer["replay"] = None
+    assert (await client.post("/sighting")).status_code == 201
+    assert (await client.post("/sighting")).status_code == 429
+
+
+async def test_rejected_requests_are_refunded(guarded, monkeypatch):
+    client, answer = guarded
+    monkeypatch.setattr(settings, "rl_upload_hour_times", 1)
+    answer["status"] = 422
+    for _ in range(3):
+        assert (await client.post("/capture")).status_code == 422
+    answer["status"] = 201
+    assert (await client.post("/capture")).status_code == 201
+    assert (await client.post("/capture")).status_code == 429
+
+
+async def test_uploads_are_capped_per_source_and_for_the_service(guarded, monkeypatch):
+    client, _ = guarded
+    pool = client._transport.app.state.pool
+    others = [uuid7() for _ in range(3)]
+    async with pool.acquire() as conn:
+        for oid in others:
+            await conn.execute("INSERT INTO observers (id) VALUES ($1)", oid)
+    def as_(oid, ip="192.0.2.1"):
+        return {"Cookie": f"session={issue_session(oid)}", "X-Real-IP": ip}
+    monkeypatch.setattr(settings, "rl_upload_ip_hour_times", 2)
+    assert (await client.post("/sighting", headers=as_(others[0]))).status_code == 201
+    assert (await client.post("/sighting", headers=as_(others[1]))).status_code == 201
+    assert (await client.post("/sighting", headers=as_(others[2]))).status_code == 429
+    assert (await client.post("/sighting", headers=as_(others[2], "192.0.2.2"))).status_code == 201
+    monkeypatch.setattr(settings, "rl_upload_global_hour_times", 3)
+    assert (await client.post("/sighting", headers=as_(others[2], "192.0.2.3"))).status_code == 429
 
 
 async def test_email_admission_is_shared_and_rolling(migrated_db, monkeypatch):
