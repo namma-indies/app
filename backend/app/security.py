@@ -17,10 +17,15 @@ def phone_hash(e164: str) -> str:
 
 def email_hash(normalized_email: str) -> str:
     """A keyed hash of an address, for remembering a banned one (#180) without
-    keeping the address. Same key as `phone_hash`, separated by a prefix."""
-    return hmac.new(
-        settings.phone_hash_secret.encode(), b"email:" + normalized_email.encode(), hashlib.sha256
-    ).hexdigest()
+    keeping the address.
+
+    Keyed by `ban_hash_secret`, so rotating `phone_hash_secret` does not
+    silently lift every email ban. Unset, it falls back to
+    `phone_hash_secret` -- the key every ban recorded before it existed was
+    made with -- so those keep matching. Once set, it must never change:
+    rotating it lifts every ban, exactly as rotating the phone key did."""
+    key = settings.ban_hash_secret or settings.phone_hash_secret
+    return hmac.new(key.encode(), b"email:" + normalized_email.encode(), hashlib.sha256).hexdigest()
 
 
 def _session_serializer() -> URLSafeSerializer:

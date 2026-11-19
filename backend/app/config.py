@@ -144,6 +144,12 @@ class Settings(BaseSettings):
     rl_grievance_window_s: int = Field(default=3600, ge=1)
 
     phone_hash_secret: str = "dev-phone-secret"
+    # Key for `banned_emails` hashes (security.email_hash, #180), kept apart
+    # from `phone_hash_secret` so rotating that one does not lift every email
+    # ban. Empty falls back to `phone_hash_secret`, which is what existing bans
+    # were hashed with: set this to the current PHONE_HASH_SECRET value before
+    # ever rotating that, then never change it.
+    ban_hash_secret: str = Field(default="", repr=False)
     session_secret: str = "dev-session-secret"
     magic_link_secret: str = "dev-magic-secret"
 
