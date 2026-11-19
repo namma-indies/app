@@ -235,4 +235,7 @@ REPLAY_HEADER = "x-upload-replay"
 
 
 def mark_replay(request) -> None:
-    request.state.upload_replay = True
+    # Tolerates a stand-in request (handlers are called directly in tests).
+    state = getattr(request, "state", None)
+    if state is not None:
+        state.upload_replay = True
