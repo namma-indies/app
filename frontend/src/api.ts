@@ -411,12 +411,12 @@ export async function unblock(blockId: string): Promise<void> {
 }
 
 /** A moderator's ban (#180): hides everything they logged from everyone. */
-export async function banObserver(observerId: string, reason?: string): Promise<void> {
-  await handleWithDetail(await sendJson(`/moderation/observer/${encodeURIComponent(observerId)}/ban`, "POST", { reason: reason || null }));
+export async function banObserver(observerId: string, reason: string): Promise<void> {
+  await handleWithDetail(await sendJson(`/moderation/observer/${encodeURIComponent(observerId)}/ban`, "POST", { reason }));
 }
 
-export async function unbanObserver(observerId: string): Promise<void> {
-  await handleWithDetail(await sendJson(`/moderation/observer/${encodeURIComponent(observerId)}/unban`, "POST"));
+export async function unbanObserver(observerId: string, reason: string): Promise<void> {
+  await handleWithDetail(await sendJson(`/moderation/observer/${encodeURIComponent(observerId)}/unban`, "POST", { reason }));
 }
 
 /** Delete an upload: the photo or clip, every animal in it, its notes (#54). */
@@ -784,6 +784,9 @@ export async function removeSocialPick(pickId: string): Promise<void> {
  * specific animal sleeps is a different kind of problem from a blurry cat. */
 export type ReportReason =
   | "endangers_dog"
+  | "people_privacy"
+  | "sexual_content"
+  | "illegal_content"
   | "not_a_dog"
   | "wrong_place"
   | "offensive"
@@ -791,6 +794,9 @@ export type ReportReason =
 
 export const REPORT_REASONS: ReportReason[] = [
   "endangers_dog",
+  "people_privacy",
+  "sexual_content",
+  "illegal_content",
   "offensive",
   "not_a_dog",
   "wrong_place",
@@ -802,6 +808,9 @@ export const REPORT_REASONS: ReportReason[] = [
 export function reportReasonLabel(reason: ReportReason, species?: string | null): string {
   switch (reason) {
     case "endangers_dog": return `Puts this ${speciesNoun(species)} at risk`;
+    case "people_privacy": return "People or private information";
+    case "sexual_content": return "Sexual content";
+    case "illegal_content": return "Illegal content";
     case "not_a_dog": return `Not ${speciesWithArticle(species)}`;
     case "offensive": return "Offensive or abusive";
     case "wrong_place": return "Wrong place or time";
@@ -831,6 +840,78 @@ export async function reportSighting(
 
 // --- moderation -------------------------------------------------------------
 
+export interface ModerationAlertStatus {
+  pending_events: number;
+  pending_mail: number;
+  failed_mail: number;
+  recipient_count: number;
+  email_sender: string;
+  delivery_configured: boolean;
+}
+
+export type GrievanceKind = "takedown" | "privacy" | "intimate_imagery" | "government_order" | "other";
+export interface Grievance {
+  id: string;
+  reference: string;
+  kind: GrievanceKind;
+  target: string;
+  sighting_id: string | null;
+  details: string;
+  contact_email: string;
+  status: "open" | "in_review" | "resolved" | "dismissed";
+  received_at: string;
+  acknowledge_due_at: string;
+  resolve_due_at: string;
+  removal_due_at: string | null;
+  acknowledged_at: string | null;
+  acknowledgement_error: string | null;
+  removed_at: string | null;
+  resolved_at: string | null;
+  resolution_reason: string | null;
+  age_seconds: number;
+  acknowledgement_overdue: boolean;
+  resolution_overdue: boolean;
+  removal_overdue: boolean;
+  next_due_at: string | null;
+  legal_confirmation_required: boolean;
+  photos?: { thumb_url: string; photo_url: string }[];
+}
+
+export async function getGrievances(options: { includeClosed?: boolean; reference?: string } = {}): Promise<{ items: Grievance[]; legal_note: string }> {
+  const query = new URLSearchParams();
+  if (options.includeClosed) query.set("include_closed", "true");
+  if (options.reference) query.set("reference", options.reference);
+  return handle(await fetch(`${API_BASE}/moderation/grievances?${query}`, { credentials: "include" }));
+}
+
+export async function decideGrievance(id: string, action: "hide" | "resolve" | "dismiss", reason: string, sightingId?: string): Promise<void> {
+  await handleWithDetail(await sendJson(`/moderation/grievances/${encodeURIComponent(id)}/action`, "POST", {
+    action, reason, sighting_id: sightingId || null,
+  }));
+}
+
+export interface ModerationAction {
+  id: string;
+  moderator_id: string;
+  moderator: string | null;
+  target_kind: "sighting" | "observer" | "capture" | "grievance";
+  target_id: string;
+  action: "hide" | "unhide" | "ban" | "unban" | "approve" | "reject" | "dismiss";
+  reason: string;
+  previous_state: string | null;
+  new_state: string | null;
+  created_at: string;
+}
+
+export async function getModerationAlertStatus(): Promise<ModerationAlertStatus> {
+  return handle<ModerationAlertStatus>(await fetch(`${API_BASE}/moderation/alerts/status`, { credentials: "include" }));
+}
+
+export async function getModerationAudit(before?: string): Promise<{ items: ModerationAction[]; next_cursor: string | null }> {
+  const query = before ? `?before=${encodeURIComponent(before)}` : "";
+  return handle(await fetch(`${API_BASE}/moderation/audit${query}`, { credentials: "include" }));
+}
+
 export interface ModerationItem {
   sighting_id: string;
   captured_at: string;
@@ -845,6 +926,13 @@ export interface ModerationItem {
   thumb_url: string | null;
   /** Who logged it, for a ban (#180). Moderators only. */
   observer_id?: string | null;
+  severe?: boolean;
+  first_reported_at?: string;
+  last_reported_at?: string;
+  age_seconds?: number;
+  response_due_at?: string;
+  overdue?: boolean;
+  reported_after_review?: boolean;
 }
 
 /** Moderators only. Answers 404 for everyone else, so a non-moderator sees the
@@ -860,9 +948,13 @@ export async function getModerationQueue(): Promise<{ items: ModerationItem[] }>
 export async function reviewSighting(
   sightingId: string,
   verdict: "valid" | "rejected",
+  reason: string,
+  action?: "hide" | "unhide" | "approve" | "reject" | "dismiss",
 ): Promise<void> {
   const form = new FormData();
   form.append("verdict", verdict);
+  form.append("reason", reason);
+  if (action) form.append("action", action);
   const res = await fetch(`${API_BASE}/sighting/${sightingId}/review`, {
     method: "POST",
     credentials: "include",
@@ -900,9 +992,11 @@ export async function getFlaggedQueue(): Promise<{ items: FlaggedItem[] }> {
 export async function ruleOnAnimal(
   sightingId: string,
   verdict: "animal" | "no_animal",
+  reason: string,
 ): Promise<void> {
   const form = new FormData();
   form.append("verdict", verdict);
+  form.append("reason", reason);
   const res = await fetch(`${API_BASE}/sighting/${sightingId}/animal`, {
     method: "POST",
     credentials: "include",

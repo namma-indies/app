@@ -408,7 +408,8 @@ async def test_db_shared_reports_and_species_matching(migrated_db, second_specie
     assert not (await report_sighting(ids[0],"offensive",None,oid,conn))["hidden"]
     assert (await report_sighting(ids[1],"offensive",None,second,conn))["hidden"]
     assert await conn.fetchval("SELECT count(*) FROM sightings WHERE capture_id=$1 AND review_status='pending'",cid) == 2
-    await review_sighting(ids[0],"rejected",oid,conn)
+    await review_sighting(ids[0], "rejected", reason="Shared capture reviewed",
+                          action=None, moderator_id=oid, conn=conn)
     assert await conn.fetchval("SELECT count(*) FROM sightings WHERE capture_id=$1 AND review_status='rejected'",cid) == 2
 
 

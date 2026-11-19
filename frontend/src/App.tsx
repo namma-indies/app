@@ -28,7 +28,8 @@ type Tab = "capture" | "dex" | "admin";
 export const HAPTICS_HOLD_MS = 2000;
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("capture");
+  const [tab, setTab] = useState<Tab>(() =>
+    new URLSearchParams(window.location.search).get("tab") === "moderation" ? "admin" : "capture");
   // Display hint only: /stats/observers checks the tier itself and 404s
   // without it, so a forged flag here reveals nothing.
   const [isModerator, setIsModerator] = useState(false);
@@ -188,6 +189,7 @@ export default function App() {
           <h2>Your account has been suspended</h2>
           <p>A moderator has suspended this account. If you think that’s wrong, <a href={`${API_BASE}/support`} target="_blank" rel="noreferrer">contact support</a>.
             You can still delete your account.</p>
+          <a href={`${API_BASE}/grievances`}>Grievances and officer contact</a>
           <button className="link-btn" onClick={() => setDeletingAccount(true)}>delete account</button>
           <button className="link-btn" onClick={() => void signOut()}>sign out</button>
           <LegalLinks />
@@ -253,7 +255,7 @@ export default function App() {
           onUnauthorized={() => { setShowingBlocks(false); setUnauthorized(true); }} />
       )}
       <div className="screen">
-        {tab === "capture" ? (
+        {tab === "capture" || (tab === "admin" && !isModerator) ? (
           <Capture />
         ) : tab === "admin" ? (
           <Admin onUnauthorized={() => setUnauthorized(true)} />

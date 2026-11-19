@@ -9,7 +9,7 @@ import { workboxOptions } from "./pwaWorkbox";
 // Dev-server wiring. Overridable because none of these are universal: port 8000
 // is already taken on some machines, and the bucket name differs per developer.
 //   VITE_API_TARGET=http://localhost:8300 npm run dev
-const API = process.env.VITE_API_TARGET ?? API;
+const API = process.env.VITE_API_TARGET ?? "http://localhost:8000";
 const S3 = process.env.VITE_S3_TARGET ?? "http://localhost:9000";
 const BUCKET = process.env.VITE_S3_BUCKET ?? "indiedex-dev";
 const CERT = { cert: ".certs/dev.crt", key: ".certs/dev.key" };
@@ -83,6 +83,10 @@ export default defineConfig({
       "/policies": { target: API, changeOrigin: true },
       "/support": { target: API, changeOrigin: true },
       "/health": { target: API, changeOrigin: true },
+      "/me": { target: API, changeOrigin: true },
+      "/moderation": { target: API, changeOrigin: true },
+      "/stats": { target: API, changeOrigin: true },
+      "/grievances": { target: API, changeOrigin: true },
 
       // Photos, so the whole app is one HTTPS origin. Otherwise the page is
       // https and MinIO is http, and the browser blocks every image as mixed

@@ -104,6 +104,31 @@ class Settings(BaseSettings):
             raise ValueError("consent requires current terms, privacy and community guidelines versions")
         return self
 
+    # Launch moderation operations (#198). Addresses belong in deployment
+    # settings, never in the repository. Empty retains alerts for later.
+    moderator_alert_emails: str = ""
+    moderation_digest_minutes: int = Field(default=60, ge=1, le=1440)
+    moderation_mail_poll_s: float = Field(default=5, ge=0.1, le=60)
+    # Provisional operational targets; product/coverage must confirm them.
+    moderation_response_hours: float = Field(default=24, gt=0, le=720)
+    moderation_severe_response_hours: float = Field(default=2, gt=0, le=168)
+
+    # Public grievance contact (#199). Honest placeholders until people are
+    # appointed; never commit personal contact details here.
+    grievance_officer_name: str = ""
+    grievance_officer_email: str = ""
+    grievance_officer_contact: str = ""
+    # All provisional: confirm applicability and classification with a lawyer.
+    # Captured on each complaint so changing settings cannot rewrite its clocks.
+    grievance_acknowledge_hours: float = Field(default=24, gt=0, le=720)
+    grievance_resolve_hours: float = Field(default=168, gt=0, le=2160)
+    grievance_removal_hours: float = Field(default=36, gt=0, le=720)
+    grievance_intimate_hours: float = Field(default=2, gt=0, le=168)
+    grievance_government_hours: float = Field(default=3, gt=0, le=168)
+    rl_grievance_ip_times: int = Field(default=20, ge=1)
+    rl_grievance_email_times: int = Field(default=5, ge=1)
+    rl_grievance_window_s: int = Field(default=3600, ge=1)
+
     phone_hash_secret: str = "dev-phone-secret"
     session_secret: str = "dev-session-secret"
     magic_link_secret: str = "dev-magic-secret"

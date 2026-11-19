@@ -7,7 +7,8 @@ import Stats from "./Stats";
  * reports waiting on someone, and what goes out on @nammaindies. The tab only
  * renders for a moderator; every endpoint behind it checks the tier itself. */
 export default function Admin({ onUnauthorized }: { onUnauthorized: () => void }) {
-  const [view, setView] = useState<"numbers" | "flags" | "posts">("numbers");
+  const [view, setView] = useState<"numbers" | "flags" | "posts">(() =>
+    new URLSearchParams(window.location.search).get("tab") === "moderation" ? "flags" : "numbers");
   return (
     <div className="admin">
       <div className="dex-toggle">

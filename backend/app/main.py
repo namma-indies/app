@@ -30,6 +30,7 @@ from app.routes.stats import router as stats_router
 from app.routes.map import router as map_router
 from app.routes.match import router as match_router
 from app.routes.moderation import router as moderation_router
+from app.routes.grievances import router as grievances_router
 from app.routes.photo_metadata import router as photo_metadata_router
 from app.media_jobs import cpu_consumer, router as media_jobs_router
 from app.routes.capture import router as capture_router
@@ -104,10 +105,12 @@ async def lifespan(app: FastAPI):
     # anybody requests account deletion. It must run with optional workers off.
     from app.auth.logintoken import consumer as token_housekeeping
     token_cleaner = asyncio.create_task(token_housekeeping(app.state.pool))
+    from app.moderator_alerts import consumer as moderation_mail_consumer
+    moderator_mail = asyncio.create_task(moderation_mail_consumer(app.state.pool))
     try:
         yield
     finally:
-        for task in (consumer, suggester, purger, token_cleaner):
+        for task in (consumer, suggester, purger, token_cleaner, moderator_mail):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -142,6 +145,7 @@ app.include_router(stats_router)
 app.include_router(places_router)
 app.include_router(match_router)
 app.include_router(moderation_router)
+app.include_router(grievances_router)
 app.include_router(photo_metadata_router)
 app.include_router(media_jobs_router)
 app.include_router(capture_router)

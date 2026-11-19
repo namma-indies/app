@@ -155,9 +155,9 @@ async def test_a_ban_hides_everything_from_everyone_and_ends_the_session(authed_
     before = (await client.get("/stats")).json()["totals"]["sightings"]
 
     _as(client, viewer)
-    assert (await client.post(f"/moderation/observer/{target}/ban", json={})).status_code == 404   # not a moderator
+    assert (await client.post(f"/moderation/observer/{target}/ban", json={"reason": "Reviewed account behaviour"})).status_code == 404   # not a moderator
     _as(client, mod)
-    assert (await client.post(f"/moderation/observer/{mod}/ban", json={})).status_code == 409      # not yourself
+    assert (await client.post(f"/moderation/observer/{mod}/ban", json={"reason": "Reviewed account behaviour"})).status_code == 409      # not yourself
     r = await client.post(f"/moderation/observer/{target}/ban", json={"reason": "harassment"})
     assert r.json() == {"status": "banned"}
     (row,) = [o for o in (await client.get("/stats/observers")).json()["observers"] if o["id"] == str(target)]
@@ -176,7 +176,7 @@ async def test_a_ban_hides_everything_from_everyone_and_ends_the_session(authed_
     assert r.status_code == 403
 
     _as(client, mod)
-    assert (await client.post(f"/moderation/observer/{target}/unban")).json() == {"status": "active"}
+    assert (await client.post(f"/moderation/observer/{target}/unban", json={"reason": "Appeal upheld"})).json() == {"status": "active"}
     _as(client, viewer)
     assert mine in {s["id"] for s in (await client.get("/map")).json()["sightings"]}
     async with pool.acquire() as c:
@@ -194,7 +194,7 @@ async def test_a_ban_outlives_the_banned_persons_account_being_deleted(authed_cl
     await _post(client)
     mod = await _moderator(client)
     _as(client, mod)
-    assert (await client.post(f"/moderation/observer/{target}/ban", json={})).status_code == 200
+    assert (await client.post(f"/moderation/observer/{target}/ban", json={"reason": "Reviewed account behaviour"})).status_code == 200
     # Deleting your account is yours to do, banned or not.
     _as(client, target)
     assert (await client.post("/account/delete", json={"confirm": "delete"})).status_code == 200
@@ -310,7 +310,7 @@ async def test_a_pair_read_before_a_ban_cannot_be_ruled_on_after(authed_client):
     actor, other, bystander, a, b, pid = await _pending_pair(client)
     mod = await _moderator(client)
     _as(client, mod)
-    assert (await client.post(f"/moderation/observer/{other}/ban", json={})).status_code == 200
+    assert (await client.post(f"/moderation/observer/{other}/ban", json={"reason": "Reviewed account behaviour"})).status_code == 200
     for who in (actor, bystander):
         _as(client, who)
         assert (await client.post(f"/proposal/{pid}", data={"verdict": "same"})).status_code == 409
