@@ -48,6 +48,16 @@ QUEUE_SQL = """
            count(*) FILTER (WHERE status='running'), extract(epoch FROM now()-min(created_at))
     FROM transcript_backfill WHERE status IN ('pending','running')
 """
+# Counts only: no references, contacts or content. An unsent acknowledgement
+# counts even after closure, matching the moderator queue.
+GRIEVANCE_SQL = """
+    SELECT count(*) FILTER (WHERE g.resolved_at IS NULL) AS open,
+           count(*) FILTER (WHERE (g.resolved_at IS NULL AND (now() >= g.resolve_due_at
+                    OR (g.removed_at IS NULL AND g.removal_due_at IS NOT NULL AND now() >= g.removal_due_at)))
+                OR (m.sent_at IS NULL AND now() >= g.acknowledge_due_at)) AS overdue
+    FROM grievances g LEFT JOIN moderation_mail m ON m.id = g.acknowledgement_mail_id
+    WHERE g.resolved_at IS NULL OR m.sent_at IS NULL
+"""
 QUEUE_NAMES = ("reid", "transcription", "suggestion", "description",
                "description_backfill", "suggestion_backfill")
 
@@ -123,7 +133,9 @@ async def database_checks(pool):
                     "SELECT coalesce(sum(count),0) FROM operational_errors "
                     "WHERE minute >= now() - $1 * interval '1 second'", WINDOW_S)
             mail = await mail_status(conn)
-            return {"queues": queues, "beats": beats, "errors": int(count), "mail": mail}
+            grievances = dict(await conn.fetchrow(GRIEVANCE_SQL))
+            return {"queues": queues, "beats": beats, "errors": int(count), "mail": mail,
+                    "grievances": grievances}
 
 
 def moderation_mail_check(mail):
@@ -181,6 +193,12 @@ async def detailed_health(request: Request, storage=Depends(get_storage)):
     checks["local_reid_models"] = (local_reid_health()
         if not settings.media_jobs_enabled or settings.media_cpu_fallback_enabled else {"status": "disabled"})
     checks["moderation_mail"] = moderation_mail_check(snapshot["mail"] if snapshot else None)
+    if snapshot is None:
+        checks["grievances"] = {"status": "unknown"}
+    else:
+        g = snapshot["grievances"]
+        checks["grievances"] = {"status": "overdue" if g["overdue"] else "ok",
+                                "open": g["open"], "overdue": g["overdue"]}
     if snapshot is None:
         queues = {name: {"status": "unknown"} for name in QUEUE_NAMES}
         gpu = {"status": "unknown" if required else "disabled"}

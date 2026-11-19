@@ -79,6 +79,9 @@ a size bound rather than a time guarantee; replacement can discard them.
   the oldest unsent message is older than `HEALTH_MODERATION_MAIL_STALE_S`, and
   `failed` while a message given up on after `MODERATION_MAIL_MAX_ATTEMPTS` is
   within `HEALTH_MODERATION_MAIL_FAILED_WINDOW_S`. Counts/ages only.
+- `grievances` reports open and overdue grievance counts (resolution, removal
+  or unsent acknowledgement past its provisional clock) and is `overdue` while
+  any are. No references or contact data.
 - The external checker fetches app HTML plus its first-party JS entry asset,
   public API liveness and detailed health. Redirects/malformed responses fail;
   the health token goes only to the detailed endpoint. This static availability

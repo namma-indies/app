@@ -114,6 +114,65 @@ async def prepare_alerts(conn) -> int:
     return len(rows)
 
 
+REMINDER_SQL = """
+    WITH reports AS (
+        -- One open episode per sighting, as the queue groups it. The clock
+        -- matches moderation_ops.report_clock: the earlier of the ordinary
+        -- and severe targets, from the first unanswered report.
+        SELECT r.sighting_id AS subject_id, min(r.opened_at) AS started_at,
+               LEAST(min(r.opened_at) + $1 * interval '1 hour',
+                     min(r.severe_at) + $2 * interval '1 hour') AS due_at,
+               'report' AS kind, 'severe' AS clock
+        FROM sighting_reports r
+        WHERE r.resolved_at IS NULL
+        GROUP BY r.sighting_id
+        HAVING min(r.severe_at) IS NOT NULL
+    ), grievance_clocks AS (
+        SELECT g.id AS subject_id, g.received_at AS started_at, g.removal_due_at AS due_at,
+               'grievance' AS kind, 'removal' AS clock
+        FROM grievances g
+        WHERE g.resolved_at IS NULL AND g.removed_at IS NULL AND g.removal_due_at IS NOT NULL
+          AND g.kind <> 'other'
+        UNION ALL
+        SELECT g.id, g.received_at, g.resolve_due_at, 'grievance', 'resolve'
+        FROM grievances g
+        WHERE g.resolved_at IS NULL AND g.kind <> 'other'
+    ), due AS (
+        SELECT c.*, CASE WHEN now() >= c.due_at THEN 'overdue' ELSE 'due_soon' END AS stage
+        FROM (SELECT * FROM reports UNION ALL SELECT * FROM grievance_clocks) c
+        WHERE now() >= c.started_at + (c.due_at - c.started_at) * $3
+    ), keyed AS (
+        SELECT subject_id, due_at, kind || '_' || clock || '_' || stage AS category,
+               format('reminder:%s:%s:%s:%s:%s', kind, subject_id, clock,
+                      floor(extract(epoch FROM started_at))::bigint, stage) AS event_key
+        FROM due
+    )
+    INSERT INTO moderator_alerts (id, event_key, category, subject_id, urgent, available_at)
+    SELECT gen_random_uuid(), k.event_key, k.category, k.subject_id, true, now()
+    FROM keyed k
+    WHERE NOT EXISTS (SELECT 1 FROM moderator_alerts a WHERE a.event_key = k.event_key)
+    ORDER BY k.due_at
+    LIMIT 500
+    ON CONFLICT (event_key) DO NOTHING
+"""
+
+
+async def escalate_deadlines(conn) -> int:
+    """Queue one urgent reminder near a deadline and one when it passes.
+
+    Covers severe report episodes and urgent (non-"other") grievances still
+    open. Reuses the alert outbox; stable event keys (per open episode and
+    stage) make every check idempotent across workers and restarts. An item
+    first seen already overdue gets only the overdue reminder. Grievance
+    categories start with grievance_ so the email links the grievance queue.
+    Returns the number of reminders queued.
+    """
+    result = await conn.execute(REMINDER_SQL, float(settings.moderation_response_hours),
+                                float(settings.moderation_severe_response_hours),
+                                float(settings.moderation_reminder_fraction))
+    return int(result.rsplit(" ", 1)[1])
+
+
 async def deliver_one(pool) -> bool:
     # Console is a development logger, not delivery. Keep mail pending until
     # the real sender is selected, including acknowledgement deadline clocks.
@@ -156,9 +215,14 @@ async def deliver_one(pool) -> bool:
 
 
 async def consumer(pool):
+    last_escalation = float("-inf")
+    loop = asyncio.get_running_loop()
     while True:
         try:
             async with pool.acquire() as conn:
+                if loop.time() - last_escalation >= settings.moderation_reminder_check_s:
+                    last_escalation = loop.time()
+                    await escalate_deadlines(conn)
                 await prepare_alerts(conn)
             # Reconsider urgent work after every send, including during a
             # large digest. Network I/O holds no pool connection.

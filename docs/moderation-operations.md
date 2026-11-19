@@ -36,6 +36,8 @@ moderators, staffing a rota and agreeing response targets.
 | `MODERATION_RESPONSE_HOURS` | Ordinary report response target | `24` |
 | `MODERATION_SEVERE_RESPONSE_HOURS` | Severe report response target | `2` |
 | `MODERATION_MAIL_POLL_S` | Idle delivery poll interval | `5` |
+| `MODERATION_REMINDER_FRACTION` | Share of a severe-report / urgent-grievance window after which one urgent reminder is sent; a second goes at the deadline | `0.75` |
+| `MODERATION_REMINDER_CHECK_S` | How often deadlines are scanned for reminders | `60` |
 | `MODERATION_MAIL_MAX_ATTEMPTS` | Failed sends before a message is marked undeliverable instead of retried forever | `8` (about two hours of backoff) |
 
 Set contacts privately in deployment settings, never in this public repository.
@@ -84,6 +86,16 @@ WHERE sent_at IS NULL AND failed_at IS NOT NULL`. Report clocks start at the fir
 or repeating an open report cannot extend its deadline. A ruling closes the
 capture's open reports atomically with audit records for affected sightings.
 Fresh reports open a new clock. Severe reports sort ahead of ordinary ones.
+
+Escalation: while a severe report episode, or an urgent (non-`other`)
+grievance's removal or resolution clock, is still open, the alert consumer
+queues one urgent reminder once `MODERATION_REMINDER_FRACTION` of the window
+has elapsed and one more when it is overdue (an item first seen overdue gets
+only the second). Reminders reuse the alert outbox with stable per-episode
+keys, so restarts and several workers never duplicate them. Ordinary reports
+and `other` grievances get no reminders. Overdue grievances (including an
+unsent acknowledgement past its clock) also degrade the protected
+`/health/detailed` check `grievances`, so the launch monitor pages on them.
 
 `GET /moderation/audit` exposes a cursor-paginated action history only to
 moderators. The ledger is append-only in the database itself: triggers refuse

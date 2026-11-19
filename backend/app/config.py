@@ -130,6 +130,11 @@ class Settings(BaseSettings):
     # hours with the capped exponential backoff) instead of retrying a
     # permanent provider error forever. Failed messages surface in health.
     moderation_mail_max_attempts: int = Field(default=8, ge=1, le=50)
+    # Escalation for severe reports and urgent grievances still open as their
+    # clock runs down: one urgent reminder once this fraction of the window has
+    # elapsed, one more at the deadline. Checked every reminder_check_s.
+    moderation_reminder_fraction: float = Field(default=0.75, gt=0, lt=1)
+    moderation_reminder_check_s: int = Field(default=60, ge=5, le=3600)
 
     # Public grievance contact (#199). Honest placeholders until people are
     # appointed; never commit personal contact details here.
