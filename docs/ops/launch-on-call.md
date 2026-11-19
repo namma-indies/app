@@ -45,7 +45,9 @@ When an alert arrives:
 
 Ordinary alerts send on change and remind at the configured interval, not on
 each count change. GitHub workflow-failure notifications are the fallback for
-broken state/delivery/checker execution; agree/test their recipient too.
+broken state/delivery/checker execution; agree/test their recipient too. A
+checker that silently stops running is caught only by the optional heartbeat
+(`MONITOR_HEARTBEAT_URL`, see launch-monitoring.md) or the daily handover check.
 
 Product questions for the launch owner: coverage hours and outage communication,
 acceptable recovery targets, retention/deletion wording, and any future

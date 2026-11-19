@@ -9,6 +9,9 @@ from scripts import check_launch as monitor
 from scripts.ops_common import OpsError
 
 
+HEARTBEAT = "https://heartbeat.example.test/ping/synthetic"
+
+
 def config():
     return monitor.Config("https://app.example.test", "https://api.example.test",
                           "synthetic-health-secret", "https://alerts.example.test/private-token", "synthetic-state")
@@ -36,10 +39,14 @@ class Services:
         self.queue = "ok"
         self.age = 0
         self.webhook = 200
+        self.heartbeat = 200
         self.notifications = []
         self.requests = []
     def request(self, url, *, token=None, payload=None, sample=False):
         self.requests.append((url, token))
+        if url == HEARTBEAT:
+            assert payload is None and token is None
+            return self.heartbeat, {}, b""
         if url == config().webhook:
             self.notifications.append(payload)
             return self.webhook, {}, b""
@@ -218,3 +225,44 @@ def test_top_level_failure_is_sanitized(monkeypatch, capsys):
     monkeypatch.setattr(monitor, "run", failed)
     assert monitor.main() == 1
     assert capsys.readouterr().err == "launch_monitor: check_failed\n"
+
+
+
+def test_heartbeat_is_pinged_only_after_a_completed_run(services):
+    from dataclasses import replace
+
+    with_beat = replace(config(), heartbeat=HEARTBEAT)
+    state = State()
+    monitor.run(config(), state=state, now=1000)
+    assert HEARTBEAT not in [url for url, _ in services.requests]
+    monitor.run(with_beat, state=state, now=1100)
+    assert [url for url, _ in services.requests].count(HEARTBEAT) == 1
+    # An unhealthy service is still a completed run: alert, then heartbeat.
+    services.app = 503
+    monitor.run(with_beat, state=state, now=1200)
+    assert [url for url, _ in services.requests][-1] == HEARTBEAT
+    # A failed notification means a failed run: no heartbeat.
+    services.app, services.webhook = 200, 500
+    before = [url for url, _ in services.requests].count(HEARTBEAT)
+    with pytest.raises(OpsError, match="notification_failed"):
+        monitor.run(with_beat, state=state, now=1300)
+    assert [url for url, _ in services.requests].count(HEARTBEAT) == before
+    services.webhook, services.heartbeat = 200, 500
+    with pytest.raises(OpsError, match="heartbeat_failed"):
+        monitor.run(with_beat, state=state, now=1400)
+
+
+def test_heartbeat_url_is_optional_and_validated(monkeypatch):
+    env = {"MONITOR_APP_URL": "https://app.example.test", "MONITOR_API_URL": "https://api.example.test",
+           "HEALTH_CHECK_TOKEN": "synthetic", "MONITOR_WEBHOOK_URL": "https://alerts.example.test/x",
+           "MONITOR_STATE_BUCKET": "synthetic"}
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("MONITOR_HEARTBEAT_URL", raising=False)
+    assert monitor.Config.from_env().heartbeat == ""
+    monkeypatch.setenv("MONITOR_HEARTBEAT_URL", HEARTBEAT)
+    assert monitor.Config.from_env().heartbeat == HEARTBEAT
+    assert HEARTBEAT not in repr(monitor.Config.from_env())
+    monkeypatch.setenv("MONITOR_HEARTBEAT_URL", "http://heartbeat.example.test/insecure")
+    with pytest.raises(OpsError, match="configuration_invalid"):
+        monitor.Config.from_env()

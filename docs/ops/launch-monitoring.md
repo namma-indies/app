@@ -157,6 +157,18 @@ workflow edits through normal review. Put these secrets in that environment:
 | `MONITOR_STATE_ACCESS_KEY_ID` | Dedicated state identity |
 | `MONITOR_STATE_SECRET_ACCESS_KEY` | Its secret; no media/backup access |
 | `MONITOR_STATE_ENDPOINT` | Optional custom HTTPS S3 origin; empty uses regional AWS endpoint |
+| `MONITOR_HEARTBEAT_URL` | Optional HTTPS dead-man's-switch URL, pinged (GET) after each completed run |
+
+**Dead-man's switch.** GitHub cron can be delayed, dropped or disabled, and a
+checker that never runs sends nothing. If `MONITOR_HEARTBEAT_URL` is set, the
+checker GETs it at the end of every run that completed (state saved and any
+notification delivered), whether or not services were healthy. Point it at any
+heartbeat/cron-monitoring service that alerts when pings stop arriving; set its
+expected period to the 10-minute schedule plus generous grace (for example
+30–60 minutes) because Actions cron is best effort. No vendor is chosen here:
+choosing one, its recipients and its privacy terms is a #201 decision. A failed
+ping fails the run (`heartbeat_failed`), so workflow-failure notification also
+fires. The URL usually embeds a secret token: keep it in the environment secret.
 
 Environment/repository variables: `MONITOR_STATE_REGION` (default `ap-south-1`)
 and `MONITOR_REMINDER_S` (default `21600`, minimum `600`). The enable switch

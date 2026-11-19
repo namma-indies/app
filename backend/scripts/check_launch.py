@@ -55,6 +55,9 @@ class Config:
     bucket: str = field(repr=False)
     endpoint: str = field(default="", repr=False)
     reminder_s: int = 21600
+    # Optional dead-man's switch: any HTTPS URL that expects a regular ping and
+    # alerts when pings stop (GitHub cron can be delayed, dropped or disabled).
+    heartbeat: str = field(default="", repr=False)
 
     @classmethod
     def from_env(cls):
@@ -68,6 +71,8 @@ class Config:
                 secure_url(os.environ["MONITOR_STATE_ENDPOINT"], base=True)
                     if os.environ.get("MONITOR_STATE_ENDPOINT") else "",
                 int(os.environ.get("MONITOR_REMINDER_S") or "21600"),
+                secure_url(os.environ["MONITOR_HEARTBEAT_URL"])
+                    if os.environ.get("MONITOR_HEARTBEAT_URL") else "",
             )
             if (not result.token or not result.bucket or result.reminder_s < 600
                     or any(ord(c) < 33 or ord(c) > 126 for c in result.token)):
@@ -244,6 +249,17 @@ def notify(webhook, event, checks):
         raise OpsError("notification_failed")
 
 
+def heartbeat(url):
+    """Ping the dead-man's switch. GET with no body: proves this checker ran to
+    completion, nothing about service health (that goes to the webhook)."""
+    try:
+        status, _, _ = request(url)
+    except OpsError:
+        raise OpsError("heartbeat_failed") from None
+    if not 200 <= status < 300:
+        raise OpsError("heartbeat_failed")
+
+
 def run(config, *, state=None, now=None):
     state = state or S3State(config.bucket, config.endpoint)
     previous = state.load()  # Do not spam when durable state cannot be read.
@@ -258,6 +274,11 @@ def run(config, *, state=None, now=None):
     state.save({"version": 1, "checks": checks,
                 "last_notified": now if event else previous["last_notified"]})
     print("launch_monitor: " + (event + " notification sent" if event else "unchanged"))
+    # Only after state is saved and any notification delivered: a run that
+    # failed earlier raises first and sends no heartbeat, so the external
+    # switch alerts when the checker itself stops working.
+    if config.heartbeat:
+        heartbeat(config.heartbeat)
     # Service incidents are delivered by webhook; infrastructure/configuration
     # failures exit nonzero so the workflow itself can be watched separately.
 

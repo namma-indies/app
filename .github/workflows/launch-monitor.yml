@@ -39,6 +39,8 @@ jobs:
           MONITOR_API_URL: ${{ secrets.MONITOR_API_URL }}
           HEALTH_CHECK_TOKEN: ${{ secrets.HEALTH_CHECK_TOKEN }}
           MONITOR_WEBHOOK_URL: ${{ secrets.MONITOR_WEBHOOK_URL }}
+          # Optional dead-man's switch pinged after each successful run.
+          MONITOR_HEARTBEAT_URL: ${{ secrets.MONITOR_HEARTBEAT_URL }}
           MONITOR_STATE_BUCKET: ${{ secrets.MONITOR_STATE_BUCKET }}
           MONITOR_STATE_ENDPOINT: ${{ secrets.MONITOR_STATE_ENDPOINT }}
           AWS_ACCESS_KEY_ID: ${{ secrets.MONITOR_STATE_ACCESS_KEY_ID }}
