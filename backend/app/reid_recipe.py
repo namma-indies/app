@@ -27,8 +27,11 @@ RECIPES = (
         name="stored-webp90-yolo640-miew440-imagenet-l2-mean-v1",
         legacy_pipeline="stored-webp-q90-yolo26x-miewid-msv3-v1",
         multi_pipeline="stored-webp-q90-yolo26x-miewid-msv3-multi-v2",
+        # Re-pinned when the launch stack met #211: GpuInference now also
+        # reports scene signals for upload screening. Detection boxes, crops
+        # and vectors are untouched, so the recipe and both versions stand.
         preprocessing="stored-webp90-yolo640-miew440-imagenet-l2-v1:"
-                      "64d2300c1227f3b082ffbd5be48ece1016a9efe1fc0050e48522e40720100e45",
+                      "e662cfd229d503a7893180d76f218b3afd4435e5386460edaed405c99afff2d6",
     ),
 )
 
