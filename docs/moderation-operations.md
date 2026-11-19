@@ -174,7 +174,11 @@ email automatically. Reference lookup includes closed complaints.
 The moderator-recipient, real sender and public-base settings above are also
 required. Optional intake controls are `RL_GRIEVANCE_IP_TIMES` (20),
 `RL_GRIEVANCE_EMAIL_TIMES` (5) and `RL_GRIEVANCE_WINDOW_S` (3600). These are
-per-window abuse budgets, not people/complaint quotas.
+per-window abuse budgets, not people/complaint quotas. Both are charged before
+and outside the intake transaction, so invalid, conflicting or rolled-back
+attempts still count; an identical retry of an already-saved submission returns
+its receipt without spending the address budget. There is no CAPTCHA or
+third-party bot check: adding one is a product/privacy decision for Akash.
 
 ### Product and people decisions for Akash
 

@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, ValidationError
 from starlette.responses import HTMLResponse
 
+from app.auth.allowlist import normalize_email
 from app.auth.deps import require_moderator
 from app.config import settings
 from app.deps import get_conn, get_storage
@@ -105,6 +106,17 @@ async def _read_form(request: Request) -> dict:
         raise HTTPException(400, "Invalid complaint form") from None
 
 
+async def _charge_email(request: Request, raw) -> None:
+    """Charge the per-address budget in its own statement, outside any intake
+    transaction, so refused, invalid and rolled-back attempts still count."""
+    address = normalize_email(raw[:254]) if isinstance(raw, str) else ""
+    if not address:
+        return
+    async with request.app.state.pool.acquire() as conn:
+        await check(conn, f"grievance:email:{email_hash(address)}",
+                    Limit(settings.rl_grievance_email_times, settings.rl_grievance_window_s))
+
+
 @router.post("/grievances", response_class=HTMLResponse)
 async def submit_grievance(request: Request):
     async with request.app.state.pool.acquire() as conn:
@@ -114,18 +126,23 @@ async def submit_grievance(request: Request):
     try:
         body = Intake.model_validate(values)
     except ValidationError:
+        await _charge_email(request, values.get("contact_email"))
         return _form(values=values, error="Check the type, link or sighting ID, details and contact email, then try again.", status=422)
     digest = body.digest()
     async with request.app.state.pool.acquire() as conn:
+        # Retried submissions return the original receipt without spending the
+        # address budget. They cannot change evidence or queue another email.
+        existing = await conn.fetchrow("SELECT reference,payload_digest FROM grievances WHERE submission_key=$1", body.submission_key)
+    if existing and existing["payload_digest"] == digest:
+        return _receipt(existing["reference"], status=200)
+    await _charge_email(request, body.contact_email)
+    async with request.app.state.pool.acquire() as conn:
         async with conn.transaction():
-            # Retried submissions return the original receipt. They cannot
-            # change evidence or queue another acknowledgement.
             existing = await conn.fetchrow("SELECT reference,payload_digest FROM grievances WHERE submission_key=$1", body.submission_key)
             if existing:
                 if existing["payload_digest"] != digest:
                     return _form(values={**values, "submission_key": str(uuid4())}, error="This form was already submitted. Check the details and send a new complaint.", status=409)
                 return _receipt(existing["reference"], status=200)
-            await check(conn, f"grievance:email:{email_hash(body.contact_email)}", Limit(settings.rl_grievance_email_times, settings.rl_grievance_window_s))
             sid = linked_sighting(body.target)
             # Preserve the opaque reference even if content has already gone.
             # Intake neither validates nor discloses whether the target exists.

@@ -130,6 +130,28 @@ async def test_public_intake_limits_address_and_ip(app_client, monkeypatch):
     assert (await app_client.post("/grievances", data=form(contact_email="other@example.invalid"))).status_code == 429
 
 
+async def test_failed_attempts_still_spend_the_address_and_ip_budgets(app_client, monkeypatch):
+    monkeypatch.setattr(settings, "rl_grievance_email_times", 2)
+    # Invalid submissions (bad target, missing details) are charged to the address.
+    for bad in (form(target="not a link"), form(details="")):
+        assert (await app_client.post("/grievances", data=bad)).status_code == 422
+    r = await app_client.post("/grievances", data=form(contact_email=" Person@Example.invalid "))
+    assert r.status_code == 429
+    async with (await _pool(app_client)).acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM grievances") == 0
+    # A conflicting reuse of a submission key is charged too (it used to roll back).
+    monkeypatch.setattr(settings, "rl_grievance_email_times", 100)
+    first = form(contact_email="second@example.invalid")
+    assert (await app_client.post("/grievances", data=first)).status_code == 201
+    # An identical retry returns the receipt without spending the budget.
+    monkeypatch.setattr(settings, "rl_grievance_email_times", 1)
+    assert (await app_client.post("/grievances", data=first)).status_code == 200
+    assert (await app_client.post("/grievances", data={**first, "details": "Changed"})).status_code == 429
+    # IP budget counts invalid attempts as well.
+    monkeypatch.setattr(settings, "rl_grievance_ip_times", 1)
+    assert (await app_client.post("/grievances", data=form(contact_email="", target="x"))).status_code == 429
+
+
 async def test_queue_and_actions_are_moderator_only(authed_client):
     client, _ = authed_client
     await client.post("/grievances", data=form())
