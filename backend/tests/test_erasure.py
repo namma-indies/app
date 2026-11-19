@@ -595,3 +595,79 @@ async def test_a_takedown_cleared_too_early_comes_back_when_x_answers_uncertain(
     async with pool.acquire() as c:
         row = await c.fetchrow("SELECT x_post_id, caption FROM x_post_purges")
     assert (row["x_post_id"], row["caption"]) == (None, "in flight")
+
+
+async def _public_ids(client, viewer):
+    _as(client, viewer)
+    return {s["id"] for s in (await client.get("/map")).json()["sightings"]}
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_original_takes_the_owners_own_hidden_copy_with_it(authed_client):
+    """A photo logged twice by its owner counts once: the copy is hidden. Deleting
+    the original must not bring the copy back into public view; it goes too."""
+    client, owner = authed_client
+    pool, storage = await _pool(client), get_storage()
+    viewer = await _second_observer(client, "Viewer")
+    _as(client, owner)
+    original = await _post(client, when="2026-07-19T09:00:00Z")
+    copy = await _post(client, when="2026-07-19T09:00:00Z")
+    copy_of_copy = await _post(client, when="2026-07-19T09:00:00Z")
+    async with pool.acquire() as c:
+        await c.execute("UPDATE sightings SET duplicate_of=$2 WHERE id=$1", UUID(copy), UUID(original))
+        await c.execute("UPDATE sightings SET duplicate_of=$2 WHERE id=$1", UUID(copy_of_copy), UUID(copy))
+    assert await _public_ids(client, viewer) == {original}
+
+    _as(client, owner)
+    assert (await client.delete(f"/capture/{original}")).status_code == 204
+    await settled()
+    assert await _public_ids(client, viewer) == set()
+    async with pool.acquire() as c:
+        for sid in (original, copy, copy_of_copy):
+            assert not await c.fetchval("SELECT EXISTS(SELECT 1 FROM sightings WHERE id=$1)", UUID(sid))
+            assert not await c.fetchval("SELECT EXISTS(SELECT 1 FROM captures WHERE id=$1)", UUID(sid))
+        assert await c.fetchval("SELECT count(*) FROM media_purges") == 0
+    for sid in (original, copy, copy_of_copy):
+        assert await storage.list_keys(f"sightings/{sid}/") == []
+
+
+@pytest.mark.asyncio
+async def test_removing_one_animal_takes_its_owners_copy_and_leaves_another_observers(authed_client):
+    client, owner = authed_client
+    pool = await _pool(client)
+    viewer = await _second_observer(client, "Viewer")
+    _as(client, owner)
+    original = await _post(client)
+    mine_copy = await _post(client)
+    _as(client, viewer)
+    their_copy = await _post(client)
+    async with pool.acquire() as c:
+        await c.execute("UPDATE sightings SET duplicate_of=$2 WHERE id=ANY($1::uuid[])",
+                        [UUID(mine_copy), UUID(their_copy)], UUID(original))
+    _as(client, owner)
+    assert (await client.delete(f"/sighting/{original}")).status_code == 204
+    await settled()
+    async with pool.acquire() as c:
+        assert not await c.fetchval("SELECT EXISTS(SELECT 1 FROM sightings WHERE id=$1)", UUID(mine_copy))
+        # Another observer's copy is theirs and comes back (0016; a product
+        # question left open in app/erasure.py).
+        assert await c.fetchval("SELECT duplicate_of FROM sightings WHERE id=$1", UUID(their_copy)) is None
+    assert await _public_ids(client, viewer) == {their_copy}
+
+
+@pytest.mark.asyncio
+async def test_a_copy_in_a_multi_animal_upload_goes_alone(authed_client):
+    """A copy that shares its upload with an animal that is not a copy is
+    removed as one animal; the rest of that upload stays."""
+    client, owner = authed_client
+    pool = await _pool(client)
+    original = await _post(client)
+    cid, brown, black, _ = await _published_two_dogs(client, owner)
+    async with pool.acquire() as c:
+        await c.execute("UPDATE sightings SET duplicate_of=$2 WHERE id=$1", brown, UUID(original))
+    assert (await client.delete(f"/capture/{original}")).status_code == 204
+    await settled()
+    async with pool.acquire() as c:
+        assert not await c.fetchval("SELECT EXISTS(SELECT 1 FROM sightings WHERE id=$1)", brown)
+        assert await c.fetchval("SELECT EXISTS(SELECT 1 FROM sightings WHERE id=$1)", black)
+        assert await c.fetchval("SELECT EXISTS(SELECT 1 FROM captures WHERE id=$1)", cid)
