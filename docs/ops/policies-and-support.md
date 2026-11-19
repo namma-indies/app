@@ -11,7 +11,7 @@ Aswin must configure these backend settings privately before store submission:
 | `TERMS_URL` | Final published Terms of Service URL |
 | `PRIVACY_URL` | Final published Privacy Policy URL (default `https://nammaindies.org/privacy`, the link the app used before) |
 | `COMMUNITY_GUIDELINES_URL` | Final published Community Guidelines URL |
-| `GRIEVANCE_URL` | Published grievance page; use `/grievances` once that route is included |
+| `GRIEVANCE_URL` | Grievance page (default `/grievances`, the form #215 serves from this app) |
 | `SUPPORT_CONTACT_NAME` | Published support team/contact name |
 | `SUPPORT_CONTACT_EMAIL` | Published support inbox (default `nammaindies@gmail.com`, the address the app used before) |
 | `SUPPORT_CONTACT_DETAILS` | Optional other contact details, including line breaks |
@@ -31,9 +31,9 @@ submission. No production configuration is changed by this work.
 The app keeps these links on sign-in, the inbox confirmation, the account row,
 deletion and suspended-account screens. Server-rendered sign-in and every
 deletion result use the same navigation. The PWA leaves support and policy
-routes to the server. The grievance pages from #215 are on a separate launch
-branch; their navigation must use `app.legal_links.legal_links_html()` and
-`LEGAL_LINKS_STYLE` when that branch is synchronized.
+routes to the server. The grievance pages from #215 do not yet show this
+navigation; they should use `app.legal_links.legal_links_html()` and
+`LEGAL_LINKS_STYLE`.
 
 Product questions for Akash: who owns the published support inbox and grievance
 response, and which final document URLs may be submitted to the stores? Legal

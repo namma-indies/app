@@ -74,7 +74,8 @@ class Settings(BaseSettings):
     terms_url: str = ""
     privacy_url: str = "https://nammaindies.org/privacy"
     community_guidelines_url: str = ""
-    grievance_url: str = ""
+    # The grievance form (#215) is served by this app.
+    grievance_url: str = "/grievances"
     support_contact_name: str = ""
     support_contact_email: str = "nammaindies@gmail.com"
     support_contact_details: str = ""

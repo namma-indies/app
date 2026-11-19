@@ -113,4 +113,13 @@ def test_defaults_keep_the_previously_published_privacy_and_support_contact():
     assert defaults.privacy_url == "https://nammaindies.org/privacy"
     assert defaults.support_contact_email == "nammaindies@gmail.com"
     assert defaults.terms_url == defaults.community_guidelines_url == ""
+    assert defaults.grievance_url == "/grievances"
     assert defaults.support_contact_name == defaults.support_contact_details == ""
+
+
+async def test_grievance_link_reaches_the_grievance_page_by_default(app_client, monkeypatch):
+    monkeypatch.setattr(settings, "grievance_url", Settings(_env_file=None).grievance_url)
+    redirect = await app_client.get("/policies/grievance")
+    assert redirect.status_code == 302 and redirect.headers["location"] == "/grievances"
+    page = await app_client.get(redirect.headers["location"])
+    assert page.status_code == 200
