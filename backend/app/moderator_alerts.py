@@ -8,6 +8,7 @@ in an alert; moderators follow the authenticated queue link.
 """
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 from html import escape
 from uuid import UUID
 
@@ -18,6 +19,14 @@ from app.ids import uuid7
 logger = logging.getLogger(__name__)
 MAIL_TIMEOUT_S = 20
 MAIL_LEASE_S = 90
+# India has no daylight saving, so a fixed offset is exact and needs no tz
+# database in the runtime image.
+IST = timezone(timedelta(hours=5, minutes=30), "IST")
+
+
+def local_time(moment: datetime) -> str:
+    """Moderators read alerts in Asia/Kolkata; keep the offset explicit."""
+    return moment.astimezone(IST).strftime("%d %b %Y, %H:%M IST (UTC+05:30)")
 
 
 async def alert_moderators(conn, *, event_key: str, category: str, subject_id: UUID,
@@ -99,7 +108,7 @@ async def prepare_alerts(conn) -> int:
             link = root + "&queue=grievances" if only_grievances else root
             # Counts, machine labels and opaque IDs only: never forward reports,
             # images, precise locations or complainant addresses by email.
-            lines = [f"{r['category']}: {r['subject_id']} ({r['created_at'].isoformat()})" for r in batch]
+            lines = [f"{r['category']}: {r['subject_id']} ({local_time(r['created_at'])})" for r in batch]
             text = f"{len(batch)} item(s) need moderator review.\n\n" + "\n".join(lines) + f"\n\nOpen the moderator queue (sign-in required):\n{link}\n"
             html = f"<p>{len(batch)} item(s) need moderator review.</p><ul>" + "".join(f"<li>{escape(line)}</li>" for line in lines) + f'</ul><p><a href="{escape(link, quote=True)}">Open the moderator queue (sign-in required)</a></p>'
             if grievances and not only_grievances:

@@ -6,6 +6,26 @@ from tests.test_moderation import _make_moderator, _pool, _post, _report
 from tests.test_operational_health import detail, health_client  # noqa: F401
 
 
+def test_alert_times_render_in_india_with_the_offset():
+    from datetime import datetime, timezone
+
+    assert alerts.local_time(datetime(2026, 11, 19, 20, 45, tzinfo=timezone.utc)) == \
+        "20 Nov 2026, 02:15 IST (UTC+05:30)"
+
+
+async def test_alert_email_uses_india_time(migrated_db, monkeypatch):
+    from app.ids import uuid7
+
+    conn = migrated_db
+    monkeypatch.setattr(settings, "moderator_alert_emails", "mod@example.invalid")
+    await alerts.alert_moderators(conn, event_key="t", category="upload_screening", subject_id=uuid7(), urgent=True)
+    await conn.execute("UPDATE moderator_alerts SET created_at='2026-11-19T20:45:00Z'")
+    await alerts.prepare_alerts(conn)
+    text, html = await conn.fetchrow("SELECT body_text, body_html FROM moderation_mail")
+    assert "20 Nov 2026, 02:15 IST (UTC+05:30)" in text and "IST (UTC+05:30)" in html
+    assert "+00:00" not in text
+
+
 async def _reminders(conn):
     return sorted((r["category"], r["urgent"]) for r in await conn.fetch(
         "SELECT category, urgent FROM moderator_alerts WHERE event_key LIKE 'reminder:%'"))
