@@ -20,7 +20,7 @@ vi.mock("./components/ConsentReview", () => ({ default: ({ onAccepted, onDeleteA
 vi.mock("./components/DeleteAccount", () => ({ default: ({ onClose }: { onClose: () => void }) =>
   <div role="dialog" aria-label="Delete account"><button onClick={onClose}>Cancel deletion</button></div> }));
 vi.mock("./offline/queue", () => ({
-  failedCount: async () => 0, flush: vi.fn(async () => {}), setOnFlushed: () => {}, setOnUnauthorized: () => {},
+  nextRetryAt: async () => null, failedCount: async () => 0, flush: vi.fn(async () => {}), setOnFlushed: () => {}, setOnUnauthorized: () => {},
 }));
 vi.mock("./api", async (original) => ({ ...await original<typeof import("./api")>(), getDex: vi.fn(),
   getMe: vi.fn(async () => ({ is_moderator: false })) }));
@@ -74,6 +74,22 @@ it("checks current consent on foreground resume without prompting already accept
   vi.mocked(getAccountConsent).mockResolvedValue({ policy, required: true, accepted_at: null });
   act(() => { document.dispatchEvent(new Event("visibilitychange")); });
   expect(await screen.findByRole("dialog", { name: "Review policies" })).toBeInTheDocument();
+});
+
+it("stops checking on resume once the server says consent is off, until a 428 re-arms it", async () => {
+  vi.mocked(getAccountConsent).mockResolvedValue({ policy: { ...policy, enabled: false }, required: false, accepted_at: null });
+  render(<App />);
+  await screen.findByRole("textbox", { name: "Capture draft" });
+  act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+  await waitFor(() => expect(getAccountConsent).toHaveBeenCalledTimes(1));
+  act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+  act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(getAccountConsent).toHaveBeenCalledTimes(1);
+  act(() => { window.dispatchEvent(new Event(CONSENT_REQUIRED_EVENT)); });
+  await userEvent.click(await screen.findByRole("button", { name: "Accept policies" }));
+  act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+  await waitFor(() => expect(getAccountConsent).toHaveBeenCalledTimes(2));
 });
 
 it("keeps in-app account deletion reachable before consent", async () => {

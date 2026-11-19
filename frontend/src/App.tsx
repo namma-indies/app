@@ -128,10 +128,17 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const required = () => setNeedsConsent(true);
+    // Last policy the server reported. While it says consent is off, resume
+    // skips the round trip: if enforcement is switched on later, the first
+    // API call answers 428 and CONSENT_REQUIRED_EVENT prompts (and re-arms).
+    let consentEnabled: boolean | null = null;
+    const required = () => { consentEnabled = true; setNeedsConsent(true); };
     function resumed() {
-      if (document.visibilityState !== "visible") return;
-      getAccountConsent().then((status) => { if (status.required) required(); }).catch(() => {});
+      if (document.visibilityState !== "visible" || consentEnabled === false) return;
+      getAccountConsent().then((status) => {
+        consentEnabled = status.policy.enabled;
+        if (status.required) required();
+      }).catch(() => {});
     }
     window.addEventListener(CONSENT_REQUIRED_EVENT, required);
     document.addEventListener("visibilitychange", resumed);
