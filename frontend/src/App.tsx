@@ -11,6 +11,7 @@ import HapticsCheck, { HAPTICS_CHECK_PARAM, wantsHapticsCheck } from "./componen
 import { getAccount, getDex, getMe, isAccountRestricted, UnauthorizedError, type Account } from "./api";
 import DeleteAccount from "./components/DeleteAccount";
 import BlockedPeople from "./components/BlockedPeople";
+import LegalLinks from "./components/LegalLinks";
 import { visibilityChanged } from "./visibility";
 import PendingDeletion from "./screens/PendingDeletion";
 import { forgetNoteLanguage } from "./components/NoteLanguagePicker";
@@ -159,10 +160,11 @@ export default function App() {
       <div className="app">
         <div className="empty-state pending-deletion">
           <h2>Your account has been suspended</h2>
-          <p>A moderator has suspended this account. If you think that’s wrong, write to{" "}
-            <a href="mailto:nammaindies@gmail.com">nammaindies@gmail.com</a>. You can still delete your account.</p>
+          <p>A moderator has suspended this account. If you think that’s wrong, <a href={`${API_BASE}/support`} target="_blank" rel="noreferrer">contact support</a>.
+            You can still delete your account.</p>
           <button className="link-btn" onClick={() => setDeletingAccount(true)}>delete account</button>
           <button className="link-btn" onClick={() => void signOut()}>sign out</button>
+          <LegalLinks />
         </div>
         {deletingAccount && (
           <DeleteAccount onClose={() => setDeletingAccount(false)}
@@ -209,23 +211,12 @@ export default function App() {
           sign out
         </button>
       </div>
-      {/* Apple 5.1.1 wants the privacy policy reachable *inside* the app, not
-          only in the store listing, and 1.2 wants published contact details for
-          a UGC app. Both live on one line rather than behind a settings screen
-          this app does not have. */}
-      <div className="legal-row">
-        <a href="https://nammaindies.org/privacy" target="_blank" rel="noreferrer">
-          privacy
-        </a>
-        <span aria-hidden="true"> · </span>
-        <a href="mailto:nammaindies@gmail.com">contact us</a>
-        <span aria-hidden="true"> · </span>
+      <LegalLinks>
         {/* Apple 1.2: blocking abusive users, and undoing it (#180). */}
         <button type="button" className="link-btn legal-link" onClick={() => setShowingBlocks(true)}>blocked people</button>
-        <span aria-hidden="true"> · </span>
         {/* Apple 5.1.1(v): deleting the account has to be in the app, findable. */}
         <button type="button" className="link-btn legal-link" onClick={() => setDeletingAccount(true)}>delete account</button>
-      </div>
+      </LegalLinks>
       {deletingAccount && (
         <DeleteAccount onClose={() => setDeletingAccount(false)}
           onScheduled={(account) => { setDeletingAccount(false); setPendingDeletion(account); }}

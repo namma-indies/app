@@ -950,6 +950,11 @@ button { font-family: inherit; }
 
 /* Required in-app by Apple 5.1.1 (privacy policy) and 1.2 (contact details). */
 .legal-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px 12px;
   padding: 10px 0 14px;
   text-align: center;
   font-size: 0.72rem;

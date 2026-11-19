@@ -23,6 +23,7 @@ from app.auth.magiclink import create_observer
 from app.config import settings
 from app.deps import get_conn
 from app.email.sender import get_sender
+from app.legal_links import LEGAL_LINKS_STYLE, legal_links_html
 from app.ratelimit import check, client_key, email_addr_limit, email_ip_limit, join_limit
 from app.security import email_hash
 
@@ -83,6 +84,7 @@ def _page(*, error: str | None = None, name: str = "", notice: str | None = None
 <title>Join IndieDex</title>
 <style>
 {_STYLE}
+{LEGAL_LINKS_STYLE}
 </style>
 </head>
 <body>
@@ -103,6 +105,7 @@ def _page(*, error: str | None = None, name: str = "", notice: str | None = None
       <input id="passcode" name="passcode" type="password" placeholder="shared code" required autocomplete="off">
       <button type="submit" class="alt">Join with passcode</button>
     </form>
+    {legal_links_html()}
   </div>
 </body>
 </html>"""

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { cancelAccountDeletion, UnauthorizedError, type Account } from "../api";
+import LegalLinks from "../components/LegalLinks";
 
 /**
  * What a person whose account is scheduled for deletion sees instead of the
@@ -44,6 +45,7 @@ export default function PendingDeletion({ account, onKept, onSignOut, onUnauthor
       )}
       {error && <p className="hint place-warning" role="alert">{error}</p>}
       <button className="link-btn" onClick={onSignOut}>sign out</button>
+      <LegalLinks />
     </div>
   );
 }

@@ -1,7 +1,8 @@
 import math
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -51,6 +52,40 @@ class Settings(BaseSettings):
     ses_region: str = "ap-south-1"
     email_from: str = "IndieDex <hello@nammaindies.org>"
     public_base_url: str = "http://localhost:8000"
+
+    # Final documents are published separately. Empty values show an honest
+    # unavailable page; no draft legal text is shipped with the app.
+    terms_url: str = ""
+    privacy_url: str = ""
+    community_guidelines_url: str = ""
+    grievance_url: str = ""
+    support_contact_name: str = ""
+    support_contact_email: str = ""
+    support_contact_details: str = ""
+
+    @field_validator("terms_url", "privacy_url", "community_guidelines_url", "grievance_url")
+    @classmethod
+    def _public_document_url(cls, value: str) -> str:
+        if not value:
+            return value
+        if any(c.isspace() or ord(c) < 32 for c in value) or "\\" in value:
+            raise ValueError("policy URLs must not contain whitespace or backslashes")
+        parts = urlsplit(value)
+        if parts.scheme == "https" and parts.hostname and parts.username is None and parts.password is None:
+            return value
+        # Allows the separately implemented /grievances page on this server.
+        if value.startswith("/") and not value.startswith("//") and not parts.scheme and not parts.netloc:
+            if parts.path.startswith("/policies/"):
+                raise ValueError("a policy URL cannot redirect to another policy redirect")
+            return value
+        raise ValueError("policy URLs must be HTTPS or a path on this server")
+
+    @field_validator("support_contact_email")
+    @classmethod
+    def _support_email(cls, value: str) -> str:
+        if value and ("@" not in value or any(c.isspace() or c in "?#%" for c in value)):
+            raise ValueError("support contact must be an email address without URL parameters")
+        return value
 
     phone_hash_secret: str = "dev-phone-secret"
     session_secret: str = "dev-session-secret"

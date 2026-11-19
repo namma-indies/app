@@ -79,6 +79,8 @@ export default defineConfig({
       // Server-rendered sign-in gate. Without this the SPA shell answers it and
       // the passcode form is unreachable in dev.
       "/join": { target: API, changeOrigin: true },
+      "/policies": { target: API, changeOrigin: true },
+      "/support": { target: API, changeOrigin: true },
       "/health": { target: API, changeOrigin: true },
 
       // Photos, so the whole app is one HTTPS origin. Otherwise the page is

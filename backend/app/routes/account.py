@@ -41,14 +41,12 @@ from app.auth.logintoken import consume, issue, peek
 from app.config import settings
 from app.deps import get_conn
 from app.email.account_mail import deletion_link, deletion_scheduled, send
+from app.legal_links import LEGAL_LINKS_STYLE, legal_links_html
 from app.ratelimit import check, client_key, email_addr_limit, email_ip_limit
 from app.routes.join import _STYLE
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-CONTACT = "nammaindies@gmail.com"
-
 
 # --- in the app ---------------------------------------------------------------
 
@@ -108,6 +106,7 @@ def _html(body: str, *, status: int = 200) -> HTMLResponse:
 <title>Delete your IndieDex account</title>
 <style>
 {_STYLE}
+{LEGAL_LINKS_STYLE}
   .danger {{ background:#a33a24; }}
   ul {{ padding-left:1.1rem; margin:.4rem 0 1.2rem; font-size:.92rem; }}
   .small {{ color:#6b5844; font-size:.82rem; }}
@@ -118,6 +117,7 @@ def _html(body: str, *, status: int = 200) -> HTMLResponse:
     <div class="paw">🐾</div>
     <h1>Delete your account</h1>
     {body}
+    {legal_links_html()}
   </div>
 </body>
 </html>""", status_code=status)
@@ -144,8 +144,8 @@ async def web_form() -> HTMLResponse:
       <input id="email" name="email" type="email" required autocomplete="email">
       <button type="submit" class="danger">Email me a deletion link</button>
     </form>
-    <p class="small">Signed up without an email address? Delete your account from inside the app, or write
-      to <a href="mailto:{CONTACT}">{CONTACT}</a>.</p>""")
+    <p class="small">Signed up without an email address? Delete your account from inside the app, or
+      <a href="/support">contact support</a>.</p>""")
 
 
 @router.post("/account/delete/request", response_class=HTMLResponse)
