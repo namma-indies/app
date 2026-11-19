@@ -668,8 +668,8 @@ async def test_removing_one_animal_takes_its_owners_copy_and_leaves_another_obse
     await settled()
     async with pool.acquire() as c:
         assert not await c.fetchval("SELECT EXISTS(SELECT 1 FROM sightings WHERE id=$1)", UUID(mine_copy))
-        # Another observer's copy is theirs and comes back (0016; a product
-        # question left open in app/erasure.py).
+        # Another observer's copy is theirs and comes back as their own upload
+        # (0016; decided 2026-11, see app/erasure.py).
         assert await c.fetchval("SELECT duplicate_of FROM sightings WHERE id=$1", UUID(their_copy)) is None
     assert await _public_ids(client, viewer) == {their_copy}
 

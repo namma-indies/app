@@ -172,9 +172,11 @@ async def _lock_all(conn, capture_ids: list[UUID]) -> dict[UUID, asyncpg.Record]
 # owner's own -- the same photo picked twice, or replayed by the offline queue
 # (migration 0016, app/identical.py) -- so the owner's copies go with it.
 #
-# TODO(product): another observer's copy of the same photo is still brought
-# back by SET NULL, as 0016 intended ("they did submit it"). Whether it should
-# instead stay hidden, or go too, is a product decision, not taken here.
+# Another observer's copy of the same photo is brought back by SET NULL and
+# surfaces as their own upload. Decided (Akash, 2026-11): keep it -- they did
+# submit it (0016), and one person erasing their upload must not erase
+# someone else's. It still passes every public filter (screening, reports,
+# bans) like any other upload of theirs.
 _OWN_COPIES = """
     WITH RECURSIVE copies AS (
         SELECT c.id, c.capture_id, c.observer_id FROM sightings c JOIN sightings o ON o.id = c.duplicate_of
