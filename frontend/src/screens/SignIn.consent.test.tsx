@@ -6,6 +6,10 @@ import userEvent from "@testing-library/user-event";
 import SignIn from "./SignIn";
 import type { ConsentPolicy } from "../consentApi";
 
+// The passcode door solves a proof-of-work challenge first (#205); stub it so
+// these tests exercise only the agreement.
+vi.mock("../authProof", () => ({ passcodeProof: vi.fn().mockResolvedValue({ challenge: "signed-work", solution: "42" }) }));
+
 let policy: ConsentPolicy;
 const response = (body: unknown, status = 200) => ({ ok: status < 400, status, json: async () => body }) as Response;
 
