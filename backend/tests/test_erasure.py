@@ -597,6 +597,25 @@ async def test_a_takedown_cleared_too_early_comes_back_when_x_answers_uncertain(
     assert (row["x_post_id"], row["caption"]) == (None, "in flight")
 
 
+@pytest.mark.asyncio
+async def test_deleting_an_upload_takes_its_jobs_staging_uploads(authed_client):
+    from app import media_jobs
+    from app.media_purges import staging_prefix
+    client, _ = authed_client
+    pool, storage = await _pool(client), get_storage()
+    mine = await _post(client)
+    async with pool.acquire() as c:
+        await media_jobs.enqueue(c, UUID(mine), "photo")
+        job = await c.fetchval("SELECT id FROM jobs WHERE sighting_id=$1", UUID(mine))
+    prefix = staging_prefix(job)
+    await storage.put(prefix + "lease/crop.webp", b"x", "image/webp")
+    assert (await client.delete(f"/capture/{mine}")).status_code == 204
+    await settled()
+    assert await storage.list_keys(prefix) == []
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT count(*) FROM media_purges") == 0
+
+
 async def _public_ids(client, viewer):
     _as(client, viewer)
     return {s["id"] for s in (await client.get("/map")).json()["sightings"]}

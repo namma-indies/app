@@ -317,6 +317,11 @@ async def _erase_capture_locked(conn, capture, reason: str) -> Erased:
     erased = Erased("capture", cid)
     sightings = [r["id"] for r in await conn.fetch("SELECT id FROM sightings WHERE capture_id=$1", cid)]
     prefixes = _prefixes(cid, sightings)
+    # Its jobs' temporary uploads (media-staging/{job}/): the job rows go with
+    # the capture, and after that nothing could trace them to it.
+    from app.media_purges import staging_prefix
+    prefixes += [staging_prefix(r["id"]) for r in await conn.fetch(
+        "SELECT id FROM jobs WHERE capture_id=$1 OR sighting_id=ANY($2::uuid[]) ORDER BY id", cid, sightings)]
     # Every key a row names, beyond the prefixes: one stored elsewhere would
     # otherwise be left behind with nothing pointing at it.
     named = _photo_keys(r["s3_key"] for r in await conn.fetch(

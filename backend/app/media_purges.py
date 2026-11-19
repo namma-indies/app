@@ -35,7 +35,28 @@ def _owner_id(prefix: str) -> UUID | None:
         return None
 
 
+STAGING = "media-staging/"
+
+
+def staging_prefix(job_id) -> str:
+    """Where a media job's worker uploads its crops and frames before they are
+    published (media_jobs, capture_jobs)."""
+    return f"{STAGING}{job_id}/"
+
+
+async def owe(conn, key: str, reason: str, kind: str = "key") -> None:
+    """Record `key` (or a prefix) as owed a delete, in the caller's transaction."""
+    await conn.execute(
+        "INSERT INTO media_purges (s3_key, reason, kind) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
+        key, reason, kind)
+
+
 async def _in_use(conn, key: str, kind: str) -> bool:
+    if kind == "prefix" and key.startswith(STAGING):
+        # A job a person put back in the queue uploads under its prefix again.
+        job = _owner_id(key)
+        return job is not None and await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM jobs WHERE id=$1 AND status IN ('pending','running'))", job)
     if kind == "prefix":
         owner = _owner_id(key)
         return owner is not None and await conn.fetchval(
