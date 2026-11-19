@@ -28,6 +28,8 @@ from app.deps import get_storage
 from app.detect_reid import DETECTOR_NAME
 from app.ids import uuid7
 from app.photos import thumb_key
+from app import screening
+from app.scene import as_wire, digest_frames, from_wire
 from app.scoring import recompute_animal_confidence, save_detection
 
 PIPELINE_VERSION = "stored-webp-q90-yolo26x-miewid-msv3-v1"
@@ -70,6 +72,11 @@ class FrameResult(WireModel):
     phash: str = Field(pattern=r"^[0-9a-f]{16}$")
     dog_confidence: float = Field(ge=0, le=1)
     cat_confidence: float = Field(ge=0, le=1)
+    # Screening signals (#181, app/scene.py). Optional: a worker that does not
+    # report them yet sends none, and they are stored as "not measured".
+    person: float | None = Field(default=None, ge=0, le=1)
+    person_area: float | None = Field(default=None, ge=0, le=1)
+    indoor: float | None = Field(default=None, ge=0, le=1)
     bbox: tuple[int, int, int, int] | None = None
     vector: list[float] | None = Field(default=None, min_length=EMBED_DIM, max_length=EMBED_DIM)
 
@@ -113,6 +120,7 @@ def token_hash(token: str) -> str:
 
 def completion_digest(body: Completion) -> str:
     content = body.model_dump(mode="json", exclude={"lease_token"})
+    digest_frames(content["frames"])
     content["frames"].sort(key=lambda frame: str(frame["photo_id"]))
     return hashlib.sha256(json.dumps(content, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
@@ -319,7 +327,7 @@ async def complete_job(conn, storage, job_id, body: Completion, *, cpu=False):
             # The validated pipeline pins YOLO26x; `body.model` names only
             # the embedder. Persist even frames with no box or embedding.
             await save_detection(conn, frame.photo_id, frame.dog_confidence,
-                                 frame.cat_confidence, model=DETECTOR_NAME)
+                                 frame.cat_confidence, model=DETECTOR_NAME, scene=from_wire(frame))
             if frame.vector is None:
                 continue
             vecs.append(frame.vector)
@@ -338,6 +346,8 @@ async def complete_job(conn, storage, job_id, body: Completion, *, cpu=False):
         outcome = "ready" if vecs else "no_animal"
         await conn.execute("UPDATE sightings SET dog_confidence=$2,vec_miew=$3::vector,processing_state=$4,phash=COALESCE(phash,$5) WHERE id=$1", sid, max(f.dog_confidence for f in body.frames), mean, outcome, body.frames[0].phash)
         await recompute_animal_confidence(conn, sid)
+        # From the detections just stored (#181).
+        await screening.screen(conn, sighting.get("capture_id"))
         if vecs and sighting["review_status"] != "rejected":
             await resolve_sighting(conn, sid, auto_merge_min=settings.reid_auto_merge_min,
                 propose_min=settings.reid_propose_min, radius_m=settings.reid_radius_m,
@@ -369,6 +379,10 @@ async def fail_job(conn, job_id, body: Failure, *, cpu=False):
             job_id, "pending" if retry else "failed", body.error,
             min(300, 2 ** min(job["attempts"], 8)), None if retry else "failed")
         await conn.execute("UPDATE sightings SET processing_state=$2 WHERE id=$1", job["sighting_id"], "queued" if retry else "failed")
+        if not retry:
+            # Nothing was measured, so screening holds it for a person (#181).
+            await screening.screen(conn, await conn.fetchval(
+                "SELECT capture_id FROM sightings WHERE id=$1", job["sighting_id"]))
         return {"status": "queued" if retry else "failed"}
 
 
@@ -391,7 +405,7 @@ async def cpu_process(pool, storage, job, token):
         vector = await run_in_threadpool(embed_analysis, analysis)
         frames.append(FrameResult(photo_id=source["photo_id"], width=source["width"],
             height=source["height"], phash=source["phash"], dog_confidence=analysis.dog_confidence,
-            cat_confidence=analysis.cat_confidence, bbox=analysis.box,
+            cat_confidence=analysis.cat_confidence, bbox=analysis.box, **as_wire(getattr(analysis, "scene", None)),
             vector=vector.tolist() if vector is not None else None))
     body = Completion(lease_token=token, pipeline_version=PIPELINE_VERSION, model=MODEL_NAME, frames=frames)
     async with pool.acquire() as conn:

@@ -16,10 +16,16 @@ router = APIRouter()
 
 
 def _off_map_reason(row) -> str | None:
+    # A person's decision is the more useful thing to hear, so it wins.
+    if row["review_status"] == "rejected" or row["screening"] == "rejected":
+        return "hidden"
     if row["review_status"] == "pending":
         return "reported"
-    if row["review_status"] == "rejected":
-        return "hidden"
+    # Screening (#181): waiting for a moderator, or not checked yet.
+    if row["screening"] == "held":
+        return "held"
+    if row["screening"] == "pending":
+        return "checking"
     if not row["animal_ok"]:
         return "no_animal"
     return None
@@ -49,6 +55,7 @@ async def get_dex(
             s.processing_state,
             s.capture_id,
             c.processing_state = 'ready' AS details_editable,
+            COALESCE(c.screening, 'clear') AS screening,
             s.species,
             -- A /capture upload keeps its note on the capture, which all its
             -- published sightings share.

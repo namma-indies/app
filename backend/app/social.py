@@ -17,6 +17,7 @@ from datetime import date
 from uuid import UUID
 
 from app.aggregates import coarse_geog
+from app.aggregates import screened
 from app.config import settings
 from app.ids import uuid7
 from app.x_client import XUncertain, prepare_image
@@ -34,7 +35,7 @@ log = logging.getLogger(__name__)
 #
 # The observer is the capture's when there is one, which is the same rule
 # `propose_known_names` uses for credit.
-_POSTABLE_PHOTOS = """
+_POSTABLE_PHOTOS = f"""
     WITH s AS (
         SELECT s.id
         FROM sightings s
@@ -43,6 +44,8 @@ _POSTABLE_PHOTOS = """
         WHERE s.id = $1
           AND s.review_status = 'valid'
           AND s.duplicate_of IS NULL
+          -- Never an upload screening is holding (#181).
+          AND {screened('s')}
           AND s.shared_with_team_at IS NOT NULL
           AND o.social_consent
           AND o.x_handle IS NOT NULL

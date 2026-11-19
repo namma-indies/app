@@ -7,6 +7,7 @@ from uuid import UUID
 
 from app.detect import load_upright
 from app.photos import process_photo
+from app.scene import as_wire
 from app.tracking import CaptureAnalysis
 
 
@@ -101,7 +102,7 @@ def prepare_capture(adapter, job: dict, directory: str, raw: list[bytes]) -> Pre
             raise ValueError("invalid evidence timestamp")
         frames.append((frame.source_id, dict(**source, timestamp_ms=timestamp,
             width=frame.width, height=frame.height, dog_confidence=frame.dog_confidence,
-            cat_confidence=frame.cat_confidence)))
+            cat_confidence=frame.cat_confidence, **as_wire(getattr(frame, "scene", None)))))
         image = load_upright(source_files[frame.source_id].read_bytes())
         if image.size != (frame.width, frame.height):
             raise ValueError("source dimensions changed")

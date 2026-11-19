@@ -11,7 +11,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from app.aggregates import owner_active
+from app.aggregates import owner_active, screened
 from app.auth.deps import require_moderator, require_observer
 from app.deps import get_conn, get_storage
 from app.ids import uuid7
@@ -220,7 +220,7 @@ async def queue(
         f"""
         (SELECT sp.*, p.s3_key,
                 (s.review_status <> 'valid' OR s.duplicate_of IS NOT NULL
-                 OR s.shared_with_team_at IS NULL) AS gone
+                 OR s.shared_with_team_at IS NULL OR NOT {screened('s')}) AS gone
          FROM social_picks sp
          JOIN sightings s ON s.id = sp.sighting_id
          JOIN photos p ON p.id = sp.photo_id
@@ -228,7 +228,7 @@ async def queue(
         UNION ALL
         (SELECT sp.*, p.s3_key,
                 (s.review_status <> 'valid' OR s.duplicate_of IS NOT NULL
-                 OR s.shared_with_team_at IS NULL) AS gone
+                 OR s.shared_with_team_at IS NULL OR NOT {screened('s')}) AS gone
          FROM social_picks sp
          JOIN sightings s ON s.id = sp.sighting_id
          JOIN photos p ON p.id = sp.photo_id

@@ -165,7 +165,7 @@ async def main() -> int:
             # Outside any swallowing try: a failure here should abort loudly,
             # not be mistaken for "photo not scored".
             await save_detection(conn, row["id"], found.dog_confidence,
-                                 found.cat_confidence)
+                                 found.cat_confidence, scene=getattr(found, "scene", None))
             log.info("  [%d/%d] %s dog=%.3f cat=%.3f", i, len(pending), row["id"],
                      found.dog_confidence, found.cat_confidence)
 
