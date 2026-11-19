@@ -55,30 +55,60 @@ async def _delete(storage, key: str, kind: str) -> None:
 async def purge(pool, storage, key: str, *, timeout: float = PURGE_TIMEOUT_S) -> bool:
     """Delete one owed object, or everything under one owed prefix, and its
     record. False if the store refused or did not answer in time; it then
-    stays recorded, with the error."""
-    async with pool.acquire() as conn, conn.transaction():
-        await lock_key(conn, key)
-        kind = await conn.fetchval("SELECT kind FROM media_purges WHERE s3_key=$1", key)
-        if kind is None:
-            return True                                   # done already, or taken back by a save
-        if await _in_use(conn, key, kind):
-            await conn.execute("DELETE FROM media_purges WHERE s3_key=$1", key)
-            return True                                   # something live points at it again
+    stays recorded, with the error.
+
+    No transaction is open while the store is asked: the key's lock is taken
+    at session level instead, so a save of the same key still waits for it
+    (`lock_key` is the same advisory lock), but nothing holds row locks or a
+    snapshot across a slow list or delete. The pool resets a connection's
+    advisory locks when it is returned, so a cancelled purge cannot leak one."""
+    lock = "media:" + key
+    async with pool.acquire() as conn:
+        await conn.execute("SELECT pg_advisory_lock(hashtextextended($1, 0))", lock)
         try:
-            await asyncio.wait_for(_delete(storage, key, kind), timeout)
-        except Exception as error:
-            # Logged by key and type, never by content.
-            logger.warning("media left for purging: key=%s (%s)", key, type(error).__name__)
-            await conn.execute("UPDATE media_purges SET attempts=attempts+1, last_error=$2 WHERE s3_key=$1",
-                               key, type(error).__name__)
-            return False
-        await conn.execute("DELETE FROM media_purges WHERE s3_key=$1", key)
-        return True
+            kind = await conn.fetchval("SELECT kind FROM media_purges WHERE s3_key=$1", key)
+            if kind is None:
+                return True                               # done already, or taken back by a save
+            if await _in_use(conn, key, kind):
+                await conn.execute("DELETE FROM media_purges WHERE s3_key=$1", key)
+                return True                               # something live points at it again
+            try:
+                await asyncio.wait_for(_delete(storage, key, kind), timeout)
+            except Exception as error:
+                # Logged by key and type, never by content.
+                logger.warning("media left for purging: key=%s (%s)", key, type(error).__name__)
+                await conn.execute("UPDATE media_purges SET attempts=attempts+1, last_error=$2 WHERE s3_key=$1",
+                                   key, type(error).__name__)
+                return False
+            await conn.execute("DELETE FROM media_purges WHERE s3_key=$1", key)
+            return True
+        finally:
+            await conn.execute("SELECT pg_advisory_unlock(hashtextextended($1, 0))", lock)
+
+
+_gate: tuple[asyncio.AbstractEventLoop, asyncio.Semaphore] | None = None
+
+
+def _semaphore() -> asyncio.Semaphore:
+    """At most `media_purge_concurrency` background purges at once, per loop."""
+    global _gate
+    loop = asyncio.get_running_loop()
+    if _gate is None or _gate[0] is not loop:
+        from app.config import settings
+        _gate = (loop, asyncio.Semaphore(settings.media_purge_concurrency))
+    return _gate[1]
+
+
+async def _purge_gated(pool, storage, key: str) -> bool:
+    async with _semaphore():
+        return await purge(pool, storage, key)
 
 
 def purge_later(pool, storage, key: str) -> None:
-    """Purge after the response has gone: nobody waits on the store."""
-    task = asyncio.get_running_loop().create_task(purge(pool, storage, key))
+    """Purge after the response has gone: nobody waits on the store. Queued
+    behind `media_purge_concurrency`, so an account erasing thousands of
+    uploads cannot take the whole pool."""
+    task = asyncio.get_running_loop().create_task(_purge_gated(pool, storage, key))
     _running.add(task)
     task.add_done_callback(_running.discard)
 

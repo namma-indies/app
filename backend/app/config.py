@@ -187,6 +187,11 @@ class Settings(BaseSettings):
     # for accounts whose time is up.
     account_deletion_grace_days: int = 7
     account_purge_interval_s: float = 300.0
+    # How many object-store purges (app/media_purges.py) run at once in the
+    # background. Each holds a pool connection (no transaction) while it waits
+    # on the store, so this bounds what an erased account with thousands of
+    # uploads can take from the pool (default size 10).
+    media_purge_concurrency: int = Field(default=2, ge=1, le=8)
     social_posting_enabled: bool = False
     x_api_key: str = ""
     x_api_secret: str = ""
