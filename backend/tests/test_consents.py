@@ -22,6 +22,9 @@ def policy(monkeypatch):
         "community_guidelines_version": "guidelines-one", "consent_minimum_age": None,
         "email_allowlist_domains": "example.invalid", "email_allowlist_addresses": "",
         "public_base_url": "http://test",
+        # #205's per-address cooldown would refuse the repeat sign-ins these
+        # tests make; test_ratelimit.py covers it.
+        "auth_email_cooldown_s": 0,
     }.items():
         monkeypatch.setattr(settings, key, value)
     sent = []
@@ -69,10 +72,25 @@ def link_path(link):
     return value.path + "?" + value.query
 
 
+async def _proof(client) -> dict:
+    """Solve the passcode door's proof-of-work (#205), as conftest's
+    `passcode_form` does, so these tests reach the agreement check."""
+    import hashlib
+    import itertools
+
+    response = await client.get("/auth/join/challenge")
+    assert response.status_code == 200, response.text
+    work = response.json()
+    for n in itertools.count():
+        digest = hashlib.sha256(f"{work['challenge']}:{n}".encode()).digest()
+        if not int.from_bytes(digest, "big") >> (256 - work["difficulty"]):
+            return {"challenge": work["challenge"], "solution": str(n)}
+
+
 async def join(client, fields=None, *, name="Tester"):
     return await client.post("/auth/join", headers={"Accept": "application/json"},
                              data={"name": name, "passcode": settings.join_passcode,
-                                   **(payload() if fields is None else fields)})
+                                   **(payload() if fields is None else fields), **(await _proof(client))})
 
 
 async def signup(client, fields=None, *, address="person@example.invalid"):
