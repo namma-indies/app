@@ -57,6 +57,26 @@ describe("Deleting from the Journal viewer (#54)", () => {
     expect(deleteCapture).not.toHaveBeenCalled();
   });
 
+  it.each(["queued", "processing", "failed", "needs_review", "no_animal"] as const)(
+    "deletes an upload that is not a sighting (%s) from its Journal entry", async (state) => {
+      const ask = vi.spyOn(window, "confirm").mockReturnValue(true);
+      vi.mocked(deleteCapture).mockResolvedValue();
+      vi.mocked(getDex).mockResolvedValue({ sightings: [] });
+      vi.mocked(getMe).mockResolvedValue({ is_moderator: false } as Awaited<ReturnType<typeof getMe>>);
+      vi.mocked(getMap).mockResolvedValue({ sightings: [] });
+      vi.mocked(getCaptures).mockResolvedValueOnce({ sightings: [
+        { capture_id: "u1", processing_state: state, captured_at: "2026-09-24T16:29:00Z", note: null, sighting_ids: [] }] })
+        .mockResolvedValue({ sightings: [] });
+      render(<Dex onUnauthorized={() => {}} />);
+      await userEvent.click(await screen.findByRole("button", { name: "JOURNAL" }));
+      await userEvent.click(await screen.findByRole("button", { name: "Delete photo" }));
+      expect(ask).toHaveBeenCalledWith(DELETE_PHOTO_WARNING);
+      expect(deleteCapture).toHaveBeenCalledWith("u1");
+      expect(deleteSighting).not.toHaveBeenCalled();
+      await waitFor(() => expect(screen.queryByRole("button", { name: "Delete photo" })).not.toBeInTheDocument());
+      expect(screen.queryByText(/review sheet/)).not.toBeInTheDocument();     // the tap did not open the review
+    });
+
   it("says so when it fails, and keeps the viewer open", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     vi.mocked(deleteCapture).mockRejectedValue(new HttpError(503));
