@@ -597,9 +597,22 @@ export interface MatchSide {
   /** All contributing query views; one matched photo on the gallery side. */
   photos?: MatchPhoto[];
   species?: "dog" | "cat" | null;
-  /** The viewer logged this side. Nothing about where it was taken is sent
-   * for either side (issue #45). */
+  /** The viewer logged this side. */
   mine?: boolean;
+  /** Where this side was taken, at exactly the precision /map gives this
+   * viewer (issue #45): exact for their own sighting, the grid cell centre for
+   * anyone else's, and null when there is no location or none they may see.
+   * Older servers omit it. */
+  location?: PairLocation | null;
+}
+
+/** A shown coordinate and what it means; mirrors app/precision.py `Located`. */
+export interface PairLocation {
+  lat: number;
+  lng: number;
+  precision: "exact" | "area";
+  /** Width of the cell an "area" point stands for; null when exact. */
+  cell_m: number | null;
 }
 
 /** A pair the model thinks might be one dog, awaiting a human. */
@@ -610,6 +623,9 @@ export interface Proposal {
   score: number;
   a: MatchSide;
   b: MatchSide;
+  /** Metres between the two locations *as shown*, never between exact points
+   * the server withheld. Null when either side has no location. */
+  distance_m?: number | null;
 }
 
 export interface ProposalsResponse {
@@ -1207,7 +1223,7 @@ export interface AbuseSignals {
   collection_started_at: string;
   hours: { hour: string; signups: number; failed_signins: number; auth_throttled: number;
     uploads: number; upload_throttled: number; email_throttled: number; email_failed: number;
-    signup_spike: boolean; signin_spike: boolean; reviewer_signins?: number; passcode_lockouts?: number }[];
+    signup_spike: boolean; signin_spike: boolean; reviewer_signins?: number; passcode_escalated?: number }[];
   upload_spikes: { id: string; display_name: string | null; recent: number; previous: number }[];
   email_capacity: { daily_budget: number; reserved_last_24h: number; accepted_last_24h: number;
     send_interval_s: number; retry_at: string | null };

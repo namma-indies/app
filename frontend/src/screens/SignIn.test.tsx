@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 // Consent UI is covered in SignIn.consent.test; these check auth transport.
@@ -10,6 +10,7 @@ vi.mock("../components/useSignupConsent", () => ({
     values: {}, fields: null, refresh: vi.fn() }),
 }));
 import SignIn from "./SignIn";
+import { passcodeProof } from "../authProof";
 
 vi.mock("../authProof", () => ({ passcodeProof: vi.fn().mockResolvedValue({ challenge: "signed-work", solution: "42" }) }));
 
@@ -125,5 +126,33 @@ describe("SignIn", () => {
     expect(form.get("secret")).toBe("a-review-code-for-tests");
     expect(form.has("email")).toBe(false);
     expect(signedIn).toHaveBeenCalledOnce();
+  });
+
+  it("says why the passcode check is slow while the server has made it harder", async () => {
+    let finish: (v: { challenge: string; solution: string }) => void = () => {};
+    vi.mocked(passcodeProof).mockImplementationOnce((onEscalated) => {
+      onEscalated?.();
+      return new Promise((resolve) => { finish = resolve; });
+    });
+    const signedIn = vi.fn();
+    render(<SignIn onSignedIn={signedIn} />);
+    await userEvent.click(screen.getByText("Use a passcode"));
+    await userEvent.type(screen.getByLabelText("Your name"), "tester");
+    await userEvent.type(screen.getByLabelText("Passcode"), "secret");
+    await userEvent.click(screen.getByText("Join with passcode"));
+    expect(await screen.findByRole("status")).toHaveTextContent(/takes longer than usual/);
+    expect(screen.getByText("Checking…")).toBeInTheDocument();
+    finish({ challenge: "signed-work", solution: "42" });
+    await waitFor(() => expect(signedIn).toHaveBeenCalledOnce());
+    expect(screen.queryByText(/takes longer than usual/)).not.toBeInTheDocument();
+  });
+
+  it("shows no slow-check notice for an ordinary passcode join", async () => {
+    render(<SignIn onSignedIn={vi.fn()} />);
+    await userEvent.click(screen.getByText("Use a passcode"));
+    await userEvent.type(screen.getByLabelText("Your name"), "tester");
+    await userEvent.type(screen.getByLabelText("Passcode"), "secret");
+    await userEvent.click(screen.getByText("Join with passcode"));
+    expect(screen.queryByText(/takes longer than usual/)).not.toBeInTheDocument();
   });
 });

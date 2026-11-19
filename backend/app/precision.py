@@ -166,3 +166,23 @@ def resolve_precision(
         return Located(lat=lat, lng=lng, precision="exact")
     clat, clng = coarsen(lat, lng, cell_m)
     return Located(lat=clat, lng=clng, precision="area", cell_m=cell_m)
+
+
+# Mean Earth radius. A pair card says "about 1.4 km apart", not a survey.
+_EARTH_R_M = 6_371_008.8
+
+
+def distance_m(a: Located, b: Located) -> int:
+    """Great-circle distance between two *shown* coordinates, to the 10 m.
+
+    Takes `Located`, not raw floats, on purpose: the only coordinates it can
+    be handed are ones that have already been through `resolve_precision`. A
+    distance from the viewer's exact point to someone else's exact point would
+    place theirs on a circle around yours -- a few such pairs and it is pinned
+    -- so it is measured to their cell centre, which they are already shown.
+    """
+    p1, p2 = math.radians(a.lat), math.radians(b.lat)
+    dp, dl = p2 - p1, math.radians(b.lng - a.lng)
+    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    d = 2 * _EARTH_R_M * math.asin(min(1.0, math.sqrt(h)))
+    return int(round(d / 10.0)) * 10

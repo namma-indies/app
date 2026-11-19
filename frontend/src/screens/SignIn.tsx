@@ -41,6 +41,8 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   const [name, setName] = useState("");
   const [passcode, setPasscode] = useState("");
   const [busy, setBusy] = useState(false);
+  // The server made the passcode check harder for now (someone is guessing).
+  const [slowCheck, setSlowCheck] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState<string | null>(null);
   const consent = useSignupConsent(mode === "passcode");
@@ -95,8 +97,9 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
     e.preventDefault();
     setBusy(true);
     setError(null);
+    setSlowCheck(false);
     try {
-      const proof = await passcodeProof();
+      const proof = await passcodeProof(() => setSlowCheck(true));
       const data = await post("/auth/join", { name, passcode, ...consent.values, ...proof });
       // The session cookie is already set on that response; re-probe rather
       // than assuming, so the app and the server agree on who we are.
@@ -105,6 +108,7 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
       setError(err instanceof Error ? err.message : "The sign-in check failed. Please try again.");
     } finally {
       setBusy(false);
+      setSlowCheck(false);
     }
   }
 
@@ -206,6 +210,12 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
             <button className="btn btn-primary" type="submit" disabled={busy || !consent.ready}>
               {busy ? "Checking…" : "Join with passcode"}
             </button>
+            {busy && slowCheck && (
+              <p className="hint" role="status">
+                Lots of sign-in attempts right now, so this check takes longer than
+                usual — up to a minute or two on some phones. Email sign-in is quicker.
+              </p>
+            )}
           </form>
           <p className="hint">
             Using your email as your name means your sightings follow you when

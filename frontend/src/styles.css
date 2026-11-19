@@ -876,6 +876,27 @@ button { font-family: inherit; }
   color: var(--muted); margin-top: 0.25rem;
 }
 
+/* Where the two photos were taken. The map is context for the reviewer's
+   eye, so it stays small and does not take input. */
+.pair-where { margin-top: 0.6rem; text-align: center; }
+.pair-map {
+  height: 150px; border: 3px solid var(--line); border-radius: 3px;
+  background: var(--frame); overflow: hidden; position: relative;
+}
+.pair-map-canvas { position: absolute; inset: 0; }
+.pair-pin {
+  width: 22px; height: 22px; border-radius: 50%; display: flex;
+  align-items: center; justify-content: center;
+  font-family: "Silkscreen", monospace; font-size: 0.6rem;
+  background: var(--accent); color: var(--panel); border: 2px solid var(--line);
+  box-shadow: 1px 1px 0 var(--shadow);
+}
+.pair-distance {
+  font-family: "Silkscreen", monospace; font-size: 0.55rem; margin-top: 0.4rem;
+}
+.pair-when { font-size: 0.75rem; color: var(--muted); }
+.pair-note { font-size: 0.7rem; color: var(--muted); margin-top: 0.15rem; }
+
 .match-score {
   font-family: "Silkscreen", monospace; font-size: 0.46rem; color: var(--muted);
   text-align: center; margin: 0.5rem 0;

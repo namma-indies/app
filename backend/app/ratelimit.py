@@ -140,6 +140,33 @@ async def cooldown(conn, key: str, seconds: float) -> None:
         raise throttled(row["wait"], "Please wait before requesting another link.")
 
 
+async def raise_flag(conn, key: str, seconds: float) -> bool:
+    """Hold a flag up for `seconds`; True only for the call that raised it.
+
+    A raised flag keeps its expiry: raising it again does not extend it, so
+    a flag set for "the rest of this window" ends with the window."""
+    if not settings.rate_limit_enabled:
+        return False
+    row = await conn.fetchrow("""
+        INSERT INTO rate_limit_buckets (key_hash, hits, expires_at)
+        VALUES ($1, 1, statement_timestamp() + make_interval(secs => $2))
+        ON CONFLICT (key_hash) DO UPDATE SET
+            hits = CASE WHEN rate_limit_buckets.expires_at <= statement_timestamp() THEN 1 ELSE 2 END,
+            expires_at = CASE WHEN rate_limit_buckets.expires_at <= statement_timestamp()
+                THEN EXCLUDED.expires_at ELSE rate_limit_buckets.expires_at END
+        RETURNING hits
+    """, key_hash(f"flag:{key}"), max(float(seconds), 1.0))
+    return row["hits"] == 1
+
+
+async def flag_raised(conn, key: str) -> bool:
+    if not settings.rate_limit_enabled:
+        return False
+    return bool(await conn.fetchval(
+        "SELECT true FROM rate_limit_buckets WHERE key_hash = $1 AND expires_at > statement_timestamp()",
+        key_hash(f"flag:{key}")))
+
+
 async def check_backoff(conn, key: str) -> None:
     if not settings.rate_limit_enabled:
         return

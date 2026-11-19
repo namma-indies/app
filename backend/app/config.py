@@ -609,6 +609,17 @@ class Settings(BaseSettings):
     # No third-party script, cookie, service or transfer of visitor data.
     join_pow_bits: int = Field(default=16, ge=8, le=22)
     join_pow_ttl_s: int = Field(default=300, ge=30, le=600)
+    # Added to join_pow_bits while the door-wide wrong-passcode budget below
+    # is exhausted: every extra bit doubles the work, so +4 is ~16x per guess
+    # for whoever is guessing, and seconds rather than minutes for a person.
+    # The sum may not pass 22, the most the app's solver (and proof.consume)
+    # will accept -- an older app handed more would refuse the challenge.
+    join_pow_escalated_bits: int = Field(default=4, ge=0, le=14)
+    # How long a client is told it has to solve an escalated challenge. The
+    # app's solver stops at this deadline with "timed out -- try again or sign
+    # in by email", so it bounds how long anyone, on any app version, sits on
+    # "Checking...". The server still accepts a solution for join_pow_ttl_s.
+    join_pow_escalated_wait_s: int = Field(default=120, ge=30, le=600)
     rl_join_challenge_times: int = Field(default=60, ge=1, le=1000)
 
     # Admission happens before multipart parsing, keyed by account, shared by
@@ -674,7 +685,9 @@ class Settings(BaseSettings):
     rl_join_times: int = 10
     rl_join_window_s: int = 900
     # The same budget for the whole door, across every source. Exhausting it
-    # shuts the passcode door (email sign-in stays open) until the window ends.
+    # does not shut the door: for the rest of the window every passcode join
+    # needs join_pow_escalated_bits more proof-of-work, moderators see it on
+    # the abuse-signals screen, and correct passcodes keep getting in.
     rl_join_global_wrong_times: int = Field(default=100, ge=1)
     rl_join_global_wrong_window_s: int = Field(default=3600, ge=60)
     # Successful passcode joins per source per day: a leaked code must not
@@ -742,6 +755,15 @@ class Settings(BaseSettings):
         secret = self.store_review_secret.get_secret_value()
         if self.store_review_enabled and (not secret.isascii() or not 32 <= len(secret) <= 512):
             raise ValueError("STORE_REVIEW_ENABLED requires a random ASCII STORE_REVIEW_SECRET of 32 to 512 characters")
+        return self
+
+    @model_validator(mode="after")
+    def _escalated_proof_is_solvable(self):
+        if self.join_pow_bits + self.join_pow_escalated_bits > 22:
+            raise ValueError(
+                f"join_pow_bits + join_pow_escalated_bits = "
+                f"{self.join_pow_bits + self.join_pow_escalated_bits}; the app's solver "
+                "accepts at most 22")
         return self
 
     @model_validator(mode="after")

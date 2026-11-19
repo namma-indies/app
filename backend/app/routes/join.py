@@ -27,8 +27,8 @@ from app.email.delivery import check_capacity, deliver, reserve
 from app.abuse import record
 from app.legal_links import LEGAL_LINKS_STYLE, legal_links_html, support_contact_phrase
 from app.ratelimit import (Limit, check, check_backoff, clear_failures, client_key, consume_limit,
-                           cooldown, email_addr_limit, email_ip_day_limit, email_ip_limit, join_global_limit, join_limit,
-                           join_success_limit, record_failure, refund)
+                           cooldown, email_addr_limit, email_ip_day_limit, email_ip_limit, flag_raised,
+                           join_global_limit, join_limit, join_success_limit, raise_flag, record_failure, refund)
 from app.security import email_hash
 
 logger = logging.getLogger(__name__)
@@ -157,34 +157,47 @@ async def join_challenge(request: Request, conn=Depends(get_conn)):
     client = client_key(request)
     await check(conn, f"challenge:ip:{client}", Limit(settings.rl_join_challenge_times, 60))
     await check_backoff(conn, f"join:ip:{client}")
-    return JSONResponse(proof.issue(client), headers={"Cache-Control": "no-store"})
+    escalated = await flag_raised(conn, _ESCALATED)
+    return JSONResponse(proof.issue(client, escalated=escalated), headers={"Cache-Control": "no-store"})
 
 
 _GLOBAL_GUESSES = "join:wrong-passcode:global"
+# Up while the door-wide budget is spent, until that budget's window ends.
+_ESCALATED = "join:pow-escalated"
 
 
-async def _charge_guess(conn, failure_key: str) -> None:
+async def _charge_guess(conn, failure_key: str) -> float | None:
     """Spend one unit of this source's budget and one of the whole door's.
 
-    The global budget is the backstop against a guessing run spread over
-    many addresses: once wrong passcodes exhaust it, the passcode door is
-    shut for the rest of its window for everyone (email sign-in is
-    unaffected), and moderators see it on the abuse-signals screen."""
+    The per-source budget refuses (429) once spent. The door-wide one is the
+    backstop against a guessing run spread over many addresses, and it does
+    not refuse anyone: a door that shuts for everyone hands any attacker a
+    way to lock every field tester out. Returns, when the door-wide budget is
+    over, how long its window has left -- for `_escalate`, if this guess
+    turns out wrong."""
     async with conn.transaction():
         await check(conn, failure_key, join_limit())
         try:
-            hits = await check(conn, _GLOBAL_GUESSES, join_global_limit())
+            await check(conn, _GLOBAL_GUESSES, join_global_limit())
         except HTTPException as exc:
-            closed = exc
-        else:
-            if hits == settings.rl_join_global_wrong_times:
-                logger.warning("passcode door: global wrong-passcode budget reached; "
-                               "passcode joins are refused until the window ends")
-            return
-    # Outside the rolled-back transaction, so the signal itself survives.
-    await record(conn, "passcode_lockouts")
-    raise HTTPException(429, "Passcode sign-in is paused for now. Sign in by email, or try again in "
-                        f"{closed.headers['Retry-After']} seconds.", headers=closed.headers)
+            # The per-source charge above stands: this is not a refusal.
+            return float(exc.headers["Retry-After"])
+    return None
+
+
+async def _escalate(conn, window_left_s: float) -> None:
+    """A wrong passcode past the door-wide budget. For the rest of that
+    budget's window every passcode join needs `join_pow_escalated_bits` more
+    proof-of-work -- ~16x per guess for a guessing run, a few seconds for a
+    person -- and correct passcodes keep getting in. Each such guess is a
+    signal on the abuse screen; the log says so once per window."""
+    first = await raise_flag(conn, _ESCALATED, window_left_s)
+    await record(conn, "passcode_escalated")
+    if first:
+        logger.warning(
+            "passcode door: global wrong-passcode budget exceeded; proof-of-work raised "
+            "from %d to %d bits for %d s. Correct passcodes still get in.",
+            settings.join_pow_bits, proof.required_bits(True), window_left_s)
 
 
 @router.post("/auth/join")
@@ -204,7 +217,8 @@ async def join_submit(
     try:
         await check_backoff(conn, failure_key)
         try:
-            await proof.consume(conn, client, challenge, solution)
+            await proof.consume(conn, client, challenge, solution,
+                                min_bits=proof.required_bits(await flag_raised(conn, _ESCALATED)))
         except proof.Stale:
             # Expired, issued to another address, or already spent: ask for
             # a new proof, but nothing here looks like guessing.
@@ -218,10 +232,12 @@ async def join_submit(
         # between a read and a write. A correct passcode gets its charge back
         # below, so the budgets are still spent by wrong guesses only -- a
         # dozen field testers joining from one carrier NAT is not an attack.
-        await _charge_guess(conn, failure_key)
+        over_budget = await _charge_guess(conn, failure_key)
     except HTTPException as exc:
         return _limited(request, exc, display_name)
     if not hmac.compare_digest(passcode.encode(), settings.join_passcode.encode()):
+        if over_budget is not None:
+            await _escalate(conn, over_budget)
         try:
             await record_failure(conn, failure_key, after=settings.auth_ip_backoff_after)
         except HTTPException as exc:

@@ -58,7 +58,7 @@ describe("matches inside the Dogs tab", () => {
     await userEvent.click(await screen.findByText("DOGS"));
     await userEvent.click(await screen.findByText("1 MATCH WAITING"));
     expect(await screen.findByText(/2026-10-01 · YOUR PHOTO/)).toBeInTheDocument();
-    expect(screen.getByText("2026-10-09")).toBeInTheDocument();
+    expect(screen.getByText("B · 2026-10-09")).toBeInTheDocument();
 
     // After the verdict the dogs list is refetched and now has them in it.
     vi.mocked(getDogs).mockResolvedValue({ dogs: [dog], propose_min: 0.4 });
