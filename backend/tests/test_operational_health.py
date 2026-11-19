@@ -314,3 +314,48 @@ async def test_restore_drill_last_pass_is_visible(health_client, monkeypatch, re
     assert check["age_s"] == (drill["age_s"] if drill else None)
     if status not in ("ok", "disabled"):
         assert response.status_code == 503
+
+
+
+async def test_write_probe_detects_a_read_only_database(health_client, monkeypatch):
+    pool = health_client._transport.app.state.pool
+    check = (await detail(health_client)).json()["checks"]["database_write"]
+    assert check == {"status": "ok"}
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM health_write_probe") == 1
+        db = await conn.fetchval("SELECT current_database()")
+        await conn.execute(f'ALTER DATABASE "{db}" SET default_transaction_read_only = on')
+    try:
+        # New sessions pick the setting up; existing pooled ones do not.
+        await pool.expire_connections()
+        response = await detail(health_client)
+        assert response.status_code == 503
+        assert response.json()["checks"]["database_write"]["status"] == "read_only"
+        # The read-only probes still answer.
+        assert response.json()["checks"]["database"]["status"] == "ok"
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute("SET default_transaction_read_only = off")
+            await conn.execute(f'ALTER DATABASE "{db}" RESET default_transaction_read_only')
+        await pool.expire_connections()
+
+
+async def test_disk_check_reports_size_and_low_free_space(health_client, monkeypatch, tmp_path):
+    check = (await detail(health_client)).json()["checks"]["database_disk"]
+    assert check["status"] == "disabled" and check["db_size_bytes"] > 0
+    monkeypatch.setattr(settings, "health_db_size_max_bytes", 1024)
+    check = (await detail(health_client)).json()["checks"]["database_disk"]
+    assert check["status"] == "low"
+    monkeypatch.setattr(settings, "health_db_size_max_bytes", 0)
+    monkeypatch.setattr(settings, "health_db_disk_path", str(tmp_path))
+    check = (await detail(health_client)).json()["checks"]["database_disk"]
+    assert check["status"] == "ok" and 0 < check["free_ratio"] <= 1 and check["total_bytes"] > 0
+    class Full:
+        f_bavail, f_frsize, f_blocks = 1, 4096, 1000
+    monkeypatch.setattr("app.routes.health.os.statvfs", lambda path: Full)
+    response = await detail(health_client)
+    assert response.json()["checks"]["database_disk"]["status"] == "low" and response.status_code == 503
+    def absent(path):
+        raise FileNotFoundError(path)
+    monkeypatch.setattr("app.routes.health.os.statvfs", absent)
+    assert (await detail(health_client)).json()["checks"]["database_disk"]["status"] == "unavailable"

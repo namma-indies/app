@@ -54,6 +54,19 @@ a size bound rather than a time guarantee; replacement can discard them.
 - Database access includes pool acquisition, queue queries, capability ages
   and error counts. Independent S3 probes run concurrently. Every probe has
   its own timeout; unrelated results remain available when one fails.
+- `database_write` upserts one fixed row (`health_write_probe`) in a read-write
+  transaction under the same short timeout. The other database probes are
+  read-only and cannot see a database that has gone read-only (recovery,
+  `default_transaction_read_only`) or cannot write (full disk); this reports
+  `read_only`, `full` or `unavailable`.
+- `database_disk` always reports the database's size (`pg_database_size`),
+  `low` when it reaches `HEALTH_DB_SIZE_MAX_BYTES` (if set). Free space on the
+  Postgres volume is not readable through SQL without superuser shell-outs, so
+  it is read with `statvfs` on `HEALTH_DB_DISK_PATH`: optionally mount the
+  Postgres data volume **read-only** into the API container (for example
+  `<pg-volume>:/pgdata:ro`, set `HEALTH_DB_DISK_PATH=/pgdata`); below
+  `HEALTH_DB_DISK_MIN_FREE_RATIO` free it is `low`. With neither configured the
+  check is `disabled` and the write probe remains the backstop.
 - Local ONNX presence is checked when legacy CPU re-ID or CPU fallback is in
   use. Model names/presence are private. The maintenance scripts use
   `uv run python -m app.model_health` locally; seeding also checks local liveness.
@@ -105,6 +118,9 @@ configuration changes are Aswin's private deployment procedure.
 | `HEALTH_QUEUE_STALE_S` | `1800` | Oldest live job; **starting value to tune against actual durations** |
 | `HEALTH_BACKFILL_STALE_S` | `86400` | Enabled backfill age; tune to batch size/rate |
 | `HEALTH_BACKUP_STALE_S` | `129600` | 36-hour backup freshness |
+| `HEALTH_DB_DISK_PATH` | empty/off | Read-only mount of the Postgres data volume in the API container, for free space |
+| `HEALTH_DB_DISK_MIN_FREE_RATIO` | `0.10` | Free-space fraction below which `database_disk` is `low` |
+| `HEALTH_DB_SIZE_MAX_BYTES` | `0`/off | Database size at which `database_disk` is `low` |
 | `HEALTH_RESTORE_DRILL_REQUIRED` | `false` | Degrade when the last drill pass is missing/stale |
 | `HEALTH_RESTORE_DRILL_STALE_S` | `691200` | Eight days since the last drill pass |
 | `HEALTH_MODERATION_MAIL_STALE_S` | `3600` | Oldest unsent moderation/grievance mail |

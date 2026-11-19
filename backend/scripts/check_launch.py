@@ -25,10 +25,11 @@ STATE_KEY = "monitoring/launch-state.json"
 QUEUES = ("reid", "transcription", "suggestion", "description",
           "description_backfill", "suggestion_backfill")
 DEPENDENCIES = ("database", "object_storage", "database_backup", "local_reid_models", "gpu_worker", "errors",
-                "moderation_mail", "grievances", "restore_drill")
+                "moderation_mail", "grievances", "restore_drill", "database_write", "database_disk")
 CHECKS = ("app", "api", "detailed_health", *DEPENDENCIES, *("queue_" + q for q in QUEUES))
 STATUSES = {"ok", "unavailable", "unknown", "invalid", "unauthorized", "disabled",
-            "paused", "stale", "missing", "unconfigured", "elevated", "failed", "overdue"}
+            "paused", "stale", "missing", "unconfigured", "elevated", "failed", "overdue",
+            "read_only", "full", "low"}
 HEALTHY = {"ok", "disabled", "paused"}
 
 

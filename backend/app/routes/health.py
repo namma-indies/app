@@ -1,6 +1,7 @@
 """Public liveness and authenticated, bounded operational diagnostics."""
 import asyncio
 import hmac
+import os
 from typing import Literal
 from uuid import UUID
 
@@ -134,8 +135,58 @@ async def database_checks(pool):
                     "WHERE minute >= now() - $1 * interval '1 second'", WINDOW_S)
             mail = await mail_status(conn)
             grievances = dict(await conn.fetchrow(GRIEVANCE_SQL))
+            size = await conn.fetchval("SELECT pg_database_size(current_database())")
             return {"queues": queues, "beats": beats, "errors": int(count), "mail": mail,
-                    "grievances": grievances}
+                    "grievances": grievances, "db_size_bytes": int(size)}
+
+
+async def database_write_check(pool):
+    """The read-only probe cannot see a read-only (standby/recovery,
+    default_transaction_read_only) or full database. Upsert one fixed row in a
+    read-write transaction with the same short timeout."""
+    import asyncpg
+
+    try:
+        async with asyncio.timeout(settings.health_check_timeout_s):
+            async with pool.acquire() as conn, conn.transaction():
+                await conn.fetchval("SELECT set_config('statement_timeout', $1, true)",
+                                    str(int(settings.health_check_timeout_s * 1000)))
+                await conn.execute(
+                    "INSERT INTO health_write_probe (id, touched_at) VALUES (1, now()) "
+                    "ON CONFLICT (id) DO UPDATE SET touched_at = EXCLUDED.touched_at")
+        return {"status": "ok"}
+    except asyncpg.ReadOnlySQLTransactionError:
+        return {"status": "read_only"}
+    except asyncpg.DiskFullError:
+        return {"status": "full"}
+    except Exception:
+        return {"status": "unavailable"}
+
+
+def database_disk_check(size_bytes):
+    result = {"db_size_bytes": size_bytes}
+    status = "disabled"
+    limit = settings.health_db_size_max_bytes
+    if limit and size_bytes is not None:
+        status = "low" if size_bytes >= limit else "ok"
+        result["db_size_max_bytes"] = limit
+    path = settings.health_db_disk_path
+    if path:
+        try:
+            stat = os.statvfs(path)
+            free = stat.f_bavail * stat.f_frsize
+            total = stat.f_blocks * stat.f_frsize
+            ratio = free / total if total else 0.0
+            result.update(free_bytes=free, total_bytes=total, free_ratio=round(ratio, 4),
+                          min_free_ratio=settings.health_db_disk_min_free_ratio)
+            if ratio < settings.health_db_disk_min_free_ratio:
+                status = "low"
+            elif status == "disabled":
+                status = "ok"
+        except OSError:
+            status = "unavailable"
+    result["status"] = status
+    return result
 
 
 def moderation_mail_check(mail):
@@ -201,12 +252,14 @@ async def detailed_health(request: Request, storage=Depends(get_storage)):
         except Exception:
             return None
 
-    snapshot, object_storage, database_backup, restore_drill = await asyncio.gather(
-        database(), storage_check(storage), backup_check(storage), restore_drill_check(storage))
+    snapshot, object_storage, database_backup, restore_drill, database_write = await asyncio.gather(
+        database(), storage_check(storage), backup_check(storage), restore_drill_check(storage),
+        database_write_check(request.app.state.pool))
     required = expected_capabilities()
     checks = {"database": {"status": "unavailable" if snapshot is None else "ok"},
               "object_storage": object_storage, "database_backup": database_backup,
-              "restore_drill": restore_drill}
+              "restore_drill": restore_drill, "database_write": database_write,
+              "database_disk": database_disk_check(snapshot["db_size_bytes"] if snapshot else None)}
     checks["local_reid_models"] = (local_reid_health()
         if not settings.media_jobs_enabled or settings.media_cpu_fallback_enabled else {"status": "disabled"})
     checks["moderation_mail"] = moderation_mail_check(snapshot["mail"] if snapshot else None)

@@ -181,6 +181,14 @@ class Settings(BaseSettings):
     # Last restore-drill pass (monitoring/restore-drill.json, written by the
     # drill with --record-pass). Not required by default: until the drill is
     # enabled the check reports "disabled" with the age if one exists.
+    # Database disk. Free space is not visible through SQL without superuser
+    # shell-outs, so it is read with statvfs on a path where the Postgres data
+    # volume is mounted read-only into the API container (empty = not checked).
+    # Below the ratio is "low". The database's own size is always reported and
+    # compared to health_db_size_max_bytes when that is set (0 = off).
+    health_db_disk_path: str = ""
+    health_db_disk_min_free_ratio: float = Field(default=0.10, ge=0, le=0.9)
+    health_db_size_max_bytes: int = Field(default=0, ge=0)
     health_restore_drill_required: bool = False
     health_restore_drill_stale_s: int = Field(default=691200, ge=3600, le=7776000)
     health_moderation_mail_stale_s: int = Field(default=3600, ge=60, le=604800)
