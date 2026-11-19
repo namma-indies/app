@@ -17,8 +17,10 @@ async def photo(conn, sid, key, vector=None):
     pid = uuid7()
     await conn.execute("INSERT INTO photos(id,sighting_id,s3_key) VALUES($1,$2,$3)", pid, sid, key)
     if vector is not None:
-        await conn.execute("""INSERT INTO embeddings(id,photo_id,model,dim,vec_miew)
-            VALUES($1,$2,$3,$4,$5::vector)""", uuid7(), pid, MODEL_NAME, EMBED_DIM, _to_pgvector(vector))
+        from app.reid_recipe import ACTIVE_RECIPE
+        await conn.execute("""INSERT INTO embeddings(id,photo_id,model,dim,vec_miew,recipe)
+            VALUES($1,$2,$3,$4,$5::vector,$6)""", uuid7(), pid, MODEL_NAME, EMBED_DIM,
+            _to_pgvector(vector), ACTIVE_RECIPE)
     return pid
 
 

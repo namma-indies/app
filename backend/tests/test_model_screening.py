@@ -4,6 +4,7 @@ It can only add a hold. An upload the detector cleared waits, hidden, for the
 model's look, at most `screening_model_wait_s`; after that it shows on the
 detector's verdict, and a later hold from the model still takes it down.
 """
+from app.reid_recipe import ACTIVE_RECIPE
 import json
 from uuid import UUID
 
@@ -229,8 +230,8 @@ async def test_two_uploads_waiting_on_the_model_still_pair_and_show_once_both_cl
         for sid in (first, second):
             assert await c.fetchval("SELECT screening FROM captures WHERE id=$1",
                                     await _capture_of(pool, sid)) == "checking"
-            await c.execute(f"""INSERT INTO embeddings (id, photo_id, model, dim, vec_miew)
-                                SELECT $1, id, $2, {EMBED_DIM}, array_fill(0.1::real, ARRAY[{EMBED_DIM}])::vector
+            await c.execute(f"""INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, recipe)
+                                SELECT $1, id, $2, {EMBED_DIM}, array_fill(0.1::real, ARRAY[{EMBED_DIM}])::vector, '{ACTIVE_RECIPE}'
                                 FROM photos WHERE sighting_id=$3""", uuid7(), MODEL_NAME, UUID(sid))
         outcome = await resolve_sighting(c, UUID(second), auto_merge_min=1.01, propose_min=0.5, radius_m=1000.0,
                                          max_candidates=5, new_uuid=uuid7)

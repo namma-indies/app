@@ -70,3 +70,42 @@ async def test_uploads_in_flight_at_deploy_are_screened_not_published(scratch_db
         "queued": "pending", "processing": "pending", "needs_review": "pending"}
     assert got[legacy_in_flight] == "pending"
 
+
+@pytest.mark.asyncio
+async def test_recipe_tagging_is_metadata_only_and_untagged_vectors_are_refused(scratch_db):
+    """0044: existing MiewID vectors read as the baseline recipe without a
+    table rewrite; anything else is untagged; a new untagged vector fails."""
+    from app.reid_recipe import ACTIVE_RECIPE
+    url, upgrade = scratch_db
+    upgrade("0043_model_screening")
+    conn = await asyncpg.connect(url)
+    vec = "[" + ",".join(["0.01"] * 2152) + "]"
+    try:
+        sid = uuid4()
+        await conn.execute("INSERT INTO sightings (id, captured_at) VALUES ($1, now())", sid)
+        photos = [uuid4() for _ in range(2)]
+        for pid in photos:
+            await conn.execute("INSERT INTO photos (id, sighting_id, s3_key) VALUES ($1, $2, 'k')", pid, sid)
+        await conn.execute("INSERT INTO embeddings (id, photo_id, model, dim, vec_miew) "
+                           "VALUES ($1, $2, 'miewid-msv3', 2152, $3::vector)", uuid4(), photos[0], vec)
+        await conn.execute("INSERT INTO embeddings (id, photo_id, model, dim, vec_miew) "
+                           "VALUES ($1, $2, 'older-model', 2152, $3::vector)", uuid4(), photos[1], vec)
+        before = await conn.fetchval("SELECT relfilenode FROM pg_class WHERE relname = 'embeddings'")
+    finally:
+        await conn.close()
+    upgrade("0044_reid_recipe")
+    conn = await asyncpg.connect(url)
+    try:
+        tags = {r["photo_id"]: r["recipe"] for r in await conn.fetch("SELECT photo_id, recipe FROM embeddings")}
+        assert tags == {photos[0]: ACTIVE_RECIPE, photos[1]: None}
+        # Not rewritten: same storage file as before the column was added.
+        assert await conn.fetchval("SELECT relfilenode FROM pg_class WHERE relname = 'embeddings'") == before
+        assert await conn.fetchval("SELECT column_default FROM information_schema.columns "
+                                   "WHERE table_name = 'embeddings' AND column_name = 'recipe'") is None
+        other = uuid4()
+        await conn.execute("INSERT INTO photos (id, sighting_id, s3_key) VALUES ($1, $2, 'k')", other, sid)
+        with pytest.raises(asyncpg.CheckViolationError):
+            await conn.execute("INSERT INTO embeddings (id, photo_id, model, dim, vec_miew) "
+                               "VALUES ($1, $2, 'miewid-msv3', 2152, $3::vector)", uuid4(), other, vec)
+    finally:
+        await conn.close()

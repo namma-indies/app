@@ -8,6 +8,7 @@ These use synthetic vectors, so they assert the arithmetic and the storage
 contract, never MiewID's judgement.
 """
 
+from app.reid_recipe import ACTIVE_RECIPE
 import numpy as np
 import pytest
 
@@ -163,8 +164,8 @@ async def test_a_clip_is_not_thin_evidence(app_client):
                 v = v / np.linalg.norm(v)
                 vecs.append(v)
                 await conn.execute(
-                    f"INSERT INTO embeddings (id, photo_id, model, dim, vec_miew) "
-                    f"VALUES ($1,$2,$3,$4,$5::vector({EMBED_DIM}))",
+                    f"INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, recipe) "
+                    f"VALUES ($1,$2,$3,$4,$5::vector({EMBED_DIM}),'{ACTIVE_RECIPE}')",
                     uuid7(), pid, MODEL_NAME, EMBED_DIM,
                     "[" + ",".join(f"{float(x):.7g}" for x in v) + "]")
             await _save_mean_vector(pool, sid, vecs)

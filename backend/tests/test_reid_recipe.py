@@ -103,7 +103,7 @@ async def test_stale_mean_never_overrides_active_frame_evidence(authed_client, m
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model,recipe", [("other-model", ACTIVE_RECIPE),
-                                         (embed.MODEL_NAME, "old-recipe"), (embed.MODEL_NAME, None)])
+                                         (embed.MODEL_NAME, "old-recipe")])
 async def test_only_inactive_vectors_are_pending_and_cannot_match(authed_client, model, recipe):
     client, oid = authed_client
     async with client._transport.app.state.pool.acquire() as conn:
@@ -118,6 +118,17 @@ async def test_only_inactive_vectors_are_pending_and_cannot_match(authed_client,
     body = (await client.get(f"/sighting/{query}/match")).json()
     assert body["status"] == "pending"
     assert body["candidates"] == body["proposals"] == []
+
+
+@pytest.mark.asyncio
+async def test_an_untagged_miewid_vector_is_refused(authed_client):
+    """Migration 0044: a writer that forgets the recipe fails loudly rather
+    than writing a vector no active-recipe query will ever read."""
+    import asyncpg
+    client, oid = authed_client
+    async with client._transport.app.state.pool.acquire() as conn:
+        with pytest.raises(asyncpg.CheckViolationError):
+            await sighting(conn, oid, unit(4), model=embed.MODEL_NAME, recipe=None)
 
 
 @pytest.mark.asyncio

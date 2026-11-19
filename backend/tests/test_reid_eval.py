@@ -276,8 +276,10 @@ async def db_encounter(conn, oid, day, *, cosine=1.0, verified=True, located=Fal
     if cosine is not None:
         v = np.zeros(EMBED_DIM, dtype=np.float32)
         v[:2] = [cosine, np.sqrt(1-cosine*cosine)]
-        await conn.execute("""INSERT INTO embeddings(id,photo_id,model,dim,vec_miew,created_at)
-            VALUES($1,$2,$3,$4,$5::vector,$6)""", uuid7(),pid,MODEL_NAME,EMBED_DIM,_to_pgvector(v),created+timedelta(seconds=1))
+        from app.reid_recipe import ACTIVE_RECIPE
+        await conn.execute("""INSERT INTO embeddings(id,photo_id,model,dim,vec_miew,created_at,recipe)
+            VALUES($1,$2,$3,$4,$5::vector,$6,$7)""", uuid7(),pid,MODEL_NAME,EMBED_DIM,_to_pgvector(v),
+            created+timedelta(seconds=1),ACTIVE_RECIPE)
     return sid, pid
 
 

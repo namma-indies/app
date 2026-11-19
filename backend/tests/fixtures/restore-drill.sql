@@ -7,9 +7,10 @@ VALUES ('00000000-0000-4000-8000-000000000003', '00000000-0000-4000-8000-0000000
 INSERT INTO photos(id, sighting_id, s3_key, width, height)
 VALUES ('00000000-0000-4000-8000-000000000004', '00000000-0000-4000-8000-000000000003',
         'sightings/synthetic/photo.webp', 32, 32);
-INSERT INTO embeddings(id, photo_id, model, dim, vec_miew)
+INSERT INTO embeddings(id, photo_id, model, dim, vec_miew, recipe)
 VALUES ('00000000-0000-4000-8000-000000000005', '00000000-0000-4000-8000-000000000004',
-        'miewid-msv3', 2152, ('[1,' || array_to_string(array_fill(0, ARRAY[2151]), ',') || ']')::vector);
+        'miewid-msv3', 2152, ('[1,' || array_to_string(array_fill(0, ARRAY[2151]), ',') || ']')::vector,
+        'stored-webp90-yolo640-miew440-imagenet-l2-mean-v1');
 INSERT INTO confirmations(id, sighting_id, individual_id, observer_id, verdict)
 VALUES ('00000000-0000-4000-8000-000000000006', '00000000-0000-4000-8000-000000000003',
         '00000000-0000-4000-8000-000000000002', '00000000-0000-4000-8000-000000000001', 'same');

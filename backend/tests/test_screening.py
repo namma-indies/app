@@ -6,6 +6,7 @@ daily social post -- while its owner still has it, and that approving it puts
 it back exactly. The second proves what gets held, through the real upload
 route with the detector stubbed.
 """
+from app.reid_recipe import ACTIVE_RECIPE
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -140,8 +141,8 @@ async def test_two_uploads_held_at_once_still_pair_and_the_pair_shows_once_both_
         # Two different photos of one dog: the same vector, not the same file.
         await c.execute("UPDATE photos SET content_sha256 = NULL")
         for sid in (first, second):
-            await c.execute(f"""INSERT INTO embeddings (id, photo_id, model, dim, vec_miew)
-                                SELECT $1, id, $2, {EMBED_DIM}, array_fill(0.1::real, ARRAY[{EMBED_DIM}])::vector
+            await c.execute(f"""INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, recipe)
+                                SELECT $1, id, $2, {EMBED_DIM}, array_fill(0.1::real, ARRAY[{EMBED_DIM}])::vector, '{ACTIVE_RECIPE}'
                                 FROM photos WHERE sighting_id=$3""", uuid7(), MODEL_NAME, UUID(sid))
             await c.execute("UPDATE captures SET screening='held' WHERE id=$1", await _capture_of(pool, sid))
         outcome = await resolve_sighting(c, UUID(second), auto_merge_min=1.01, propose_min=0.5, radius_m=1000.0,
@@ -173,8 +174,8 @@ async def test_a_rejected_upload_is_never_searched(authed_client):
     mine = await _post(client)
     pool = await _pool(client)
     async with pool.acquire() as c:
-        await c.execute(f"""INSERT INTO embeddings (id, photo_id, model, dim, vec_miew)
-                            SELECT $1, id, $2, {EMBED_DIM}, array_fill(0.1::real, ARRAY[{EMBED_DIM}])::vector
+        await c.execute(f"""INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, recipe)
+                            SELECT $1, id, $2, {EMBED_DIM}, array_fill(0.1::real, ARRAY[{EMBED_DIM}])::vector, '{ACTIVE_RECIPE}'
                             FROM photos WHERE sighting_id=$3""", uuid7(), MODEL_NAME, UUID(mine))
         lat, lng = await c.fetchrow("SELECT ST_Y(geog::geometry), ST_X(geog::geometry) FROM sightings WHERE id=$1",
                                     UUID(mine))
@@ -210,8 +211,8 @@ async def test_a_clean_copy_of_a_rejected_upload_is_not_folded_into_it(authed_cl
                             [await _capture_of(pool, s) for s in (rejected, copy)])
         from app.embed import EMBED_DIM, MODEL_NAME
         for sid in (rejected, copy):         # resolution only runs on an embedded upload
-            await c.execute(f"""INSERT INTO embeddings (id, photo_id, model, dim, vec_miew)
-                                SELECT $1, id, $2, {EMBED_DIM}, array_fill(0.1::real, ARRAY[{EMBED_DIM}])::vector
+            await c.execute(f"""INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, recipe)
+                                SELECT $1, id, $2, {EMBED_DIM}, array_fill(0.1::real, ARRAY[{EMBED_DIM}])::vector, '{ACTIVE_RECIPE}'
                                 FROM photos WHERE sighting_id=$3""", uuid7(), MODEL_NAME, UUID(sid))
         await c.execute("UPDATE sightings SET individual_id = NULL, duplicate_of = NULL, match_status = 'unmatched'")
         await c.execute("UPDATE captures SET screening = 'rejected' WHERE id = $1", await _capture_of(pool, rejected))

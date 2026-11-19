@@ -4,6 +4,7 @@ A block hides each person from the other on every surface, both ways and
 silently, and changes nothing for anyone else. A ban hides someone from
 everyone and ends their sessions.
 """
+from app.reid_recipe import ACTIVE_RECIPE
 import json
 import re
 from uuid import UUID
@@ -86,8 +87,8 @@ async def test_match_candidates_leave_out_a_blocked_persons_sightings(authed_cli
     async with pool.acquire() as c:
         photo = await c.fetchval("SELECT id FROM photos WHERE sighting_id=$1", UUID(theirs))
         from app.embed import EMBED_DIM
-        await c.execute(f"""INSERT INTO embeddings (id, photo_id, model, dim, vec_miew)
-                            SELECT $1, id, $2, {EMBED_DIM}, array_fill(0.1::real, ARRAY[{EMBED_DIM}])::vector
+        await c.execute(f"""INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, recipe)
+                            SELECT $1, id, $2, {EMBED_DIM}, array_fill(0.1::real, ARRAY[{EMBED_DIM}])::vector, '{ACTIVE_RECIPE}'
                             FROM photos WHERE sighting_id=$3""", uuid7(), match.MODEL_NAME, UUID(mine))
     async def one_candidate(*args, **kwargs):
         return [Candidate(sighting_id=UUID(theirs), photo_id=photo, individual_id=None, similarity=0.9,
