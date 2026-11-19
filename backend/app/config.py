@@ -68,13 +68,15 @@ class Settings(BaseSettings):
     public_base_url: str = "http://localhost:8000"
 
     # Final documents are published separately. Empty values show an honest
-    # unavailable page; no draft legal text is shipped with the app.
+    # unavailable page; no draft legal text is shipped with the app. The
+    # privacy and support defaults are what the app linked to before these
+    # became settings, so deploying them changes nothing visible.
     terms_url: str = ""
-    privacy_url: str = ""
+    privacy_url: str = "https://nammaindies.org/privacy"
     community_guidelines_url: str = ""
     grievance_url: str = ""
     support_contact_name: str = ""
-    support_contact_email: str = ""
+    support_contact_email: str = "nammaindies@gmail.com"
     support_contact_details: str = ""
 
     @field_validator("terms_url", "privacy_url", "community_guidelines_url", "grievance_url")

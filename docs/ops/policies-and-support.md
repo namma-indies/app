@@ -9,11 +9,11 @@ Aswin must configure these backend settings privately before store submission:
 | Setting | Value to supply |
 | --- | --- |
 | `TERMS_URL` | Final published Terms of Service URL |
-| `PRIVACY_URL` | Final published Privacy Policy URL |
+| `PRIVACY_URL` | Final published Privacy Policy URL (default `https://nammaindies.org/privacy`, the link the app used before) |
 | `COMMUNITY_GUIDELINES_URL` | Final published Community Guidelines URL |
 | `GRIEVANCE_URL` | Published grievance page; use `/grievances` once that route is included |
 | `SUPPORT_CONTACT_NAME` | Published support team/contact name |
-| `SUPPORT_CONTACT_EMAIL` | Published support inbox |
+| `SUPPORT_CONTACT_EMAIL` | Published support inbox (default `nammaindies@gmail.com`, the address the app used before) |
 | `SUPPORT_CONTACT_DETAILS` | Optional other contact details, including line breaks |
 
 Policy URLs accept HTTPS or a path on this server. The stable app routes are

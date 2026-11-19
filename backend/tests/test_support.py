@@ -104,3 +104,13 @@ async def test_expired_deletion_page_keeps_policy_links(app_client):
     response = await app_client.get("/account/delete/confirm?token=invalid")
     assert response.status_code == 401
     assert_links(response.text)
+
+
+def test_defaults_keep_the_previously_published_privacy_and_support_contact():
+    # Before these became settings the app hard-coded both; a deploy that
+    # leaves them unset must not turn them into "not configured" pages.
+    defaults = Settings(_env_file=None)
+    assert defaults.privacy_url == "https://nammaindies.org/privacy"
+    assert defaults.support_contact_email == "nammaindies@gmail.com"
+    assert defaults.terms_url == defaults.community_guidelines_url == ""
+    assert defaults.support_contact_name == defaults.support_contact_details == ""
