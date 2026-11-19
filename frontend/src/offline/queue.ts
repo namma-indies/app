@@ -6,6 +6,7 @@ import { openDB, type IDBPDatabase } from "idb";
 import { postCapture } from "../captureApi";
 import { UPLOAD_COMPLETE_EVENT } from "../processing";
 import { newClientToken } from "../clientToken";
+import { requestConsent } from "../consentEvents";
 import { HttpError, postSighting, UnauthorizedError, type PostSightingInput } from "../api";
 
 const DB_NAME = "indiedex-queue";
@@ -140,13 +141,13 @@ export async function discardFailed(id: number): Promise<void> {
 /** A permanent failure means retrying without user action can't succeed:
  * the request was rejected (4xx), not merely unreachable. 401 gets its own
  * branch since it's a `UnauthorizedError` instance rather than a `HttpError`.
- * 408 (request timeout) and 429 (rate limited) are 4xx but are meant to be
+ * 408 (request timeout), 428 (review policies) and 429 (rate limited) can be
  * retried -- 429 especially, since a queue drain hammering the server is
  * exactly the case that would trigger it. */
 function isPermanentFailure(err: unknown): boolean {
   if (err instanceof UnauthorizedError) return true;
   if (err instanceof HttpError) {
-    if (err.status === 408 || err.status === 429) return false;
+    if (err.status === 408 || err.status === 428 || err.status === 429) return false;
     return err.status >= 400 && err.status < 500;
   }
   return false;
@@ -214,6 +215,10 @@ export async function flush(): Promise<void> {
             }));
           }
         } catch (err) {
+          if (err instanceof HttpError && err.status === 428) {
+            requestConsent();
+            break; // Keep every queued byte/token pending until acceptance.
+          }
           if (isPermanentFailure(err)) {
             // Write back `stored`, not the reconstructed item: persisting the
             // rebuilt Blobs would downgrade the record to the legacy shape.

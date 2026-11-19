@@ -4,6 +4,7 @@ from fastapi import Depends, HTTPException
 from starlette.requests import Request
 
 from app.deps import get_conn as _get_conn
+from app.consent import CONSENT_REQUIRED, needs_consent
 from app.security import issue_session, read_session
 
 SESSION_COOKIE = "session"
@@ -42,11 +43,16 @@ async def _account_state(request: Request) -> tuple[UUID, str | None]:
     async with request.app.state.pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT deleted_at, deletion_requested_at, banned_at FROM observers WHERE id = $1", observer_id)
+        consent_missing = (row is not None and row["deleted_at"] is None
+                           and row["banned_at"] is None and row["deletion_requested_at"] is None
+                           and await needs_consent(conn, observer_id))
     if row is None or row["deleted_at"] is not None:
         raise HTTPException(status_code=401)
     if row["banned_at"] is not None:
         return observer_id, SUSPENDED
-    return observer_id, PENDING_DELETION if row["deletion_requested_at"] is not None else None
+    if row["deletion_requested_at"] is not None:
+        return observer_id, PENDING_DELETION
+    return observer_id, CONSENT_REQUIRED if consent_missing else None
 
 
 async def require_observer(request: Request) -> UUID:
@@ -57,6 +63,8 @@ async def require_observer(request: Request) -> UUID:
     when it goes and keep it (`require_account`). A banned one gets 403
     `account_suspended`, and may still reach /account to delete it."""
     observer_id, only_account = await _account_state(request)
+    if only_account == CONSENT_REQUIRED:
+        raise HTTPException(428, CONSENT_REQUIRED, headers={"Cache-Control": "no-store"})
     if only_account:
         raise HTTPException(status_code=403, detail=only_account)
     return observer_id

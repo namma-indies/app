@@ -87,6 +87,23 @@ class Settings(BaseSettings):
             raise ValueError("support contact must be an email address without URL parameters")
         return value
 
+    # Enable only after finalized public documents and matching client flows
+    # are available. Versions are opaque publication identifiers, never drafts.
+    consent_enabled: bool = False
+    terms_version: str = Field(default="", max_length=100)
+    privacy_version: str = Field(default="", max_length=100)
+    community_guidelines_version: str = Field(default="", max_length=100)
+    # A self-assertion only; no birth date is collected. Product decides N.
+    consent_minimum_age: int | None = Field(default=None, ge=1, le=120)
+
+    @model_validator(mode="after")
+    def _consent_has_versions(self):
+        if self.consent_enabled and not all(value.strip() for value in (
+            self.terms_version, self.privacy_version, self.community_guidelines_version,
+        )):
+            raise ValueError("consent requires current terms, privacy and community guidelines versions")
+        return self
+
     phone_hash_secret: str = "dev-phone-secret"
     session_secret: str = "dev-session-secret"
     magic_link_secret: str = "dev-magic-secret"

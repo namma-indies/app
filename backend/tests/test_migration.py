@@ -54,7 +54,7 @@ async def test_login_tokens_table_shape(migrated_db):
         "WHERE table_name='login_tokens'")}
     assert cols == {
         'token_hash': 'NO', 'observer_id': 'NO', 'expires_at': 'NO',
-        'used_at': 'YES', 'created_at': 'NO', 'purpose': 'NO',
+        'used_at': 'YES', 'created_at': 'NO', 'purpose': 'NO', 'signup_consent': 'YES',
     }
 
 

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { API_BASE } from "../apiBase";
 import LegalLinks from "../components/LegalLinks";
+import { useSignupConsent } from "../components/useSignupConsent";
 
 /** The gate an unauthenticated visitor lands on.
  *
@@ -39,6 +40,7 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState<string | null>(null);
+  const consent = useSignupConsent(mode === "passcode");
 
   async function post(path: string, body: Record<string, string>) {
     setBusy(true);
@@ -54,6 +56,7 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
       // a proxy error page). Say so rather than throwing a parse error.
       const data = await res.json().catch(() => null);
       if (!res.ok || !data?.ok) {
+        if (data?.consent_required) consent.refresh(data.consent);
         setError(data?.error ?? "Something went wrong. Try again in a moment.");
         return null;
       }
@@ -68,13 +71,13 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
 
   async function submitEmail(e: React.FormEvent) {
     e.preventDefault();
-    const data = await post("/auth/email", { email });
+    const data = await post("/auth/email", { email, ...consent.values });
     if (data) setSent(data.message);
   }
 
   async function submitPasscode(e: React.FormEvent) {
     e.preventDefault();
-    const data = await post("/auth/join", { name, passcode });
+    const data = await post("/auth/join", { name, passcode, ...consent.values });
     // The session cookie is already set on that response; re-probe rather
     // than assuming, so the app and the server agree on who we are.
     if (data) onSignedIn();
@@ -93,6 +96,9 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
         <button className="btn btn-secondary" onClick={() => { setSent(null); setEmail(""); }}>
           Use a different address
         </button>
+        {consent.policy?.enabled && !consent.creating && (
+          <button className="link-btn" onClick={() => { consent.setCreating(true); setSent(null); }}>Create an account</button>
+        )}
         <LegalLinks />
       </div>
     );
@@ -123,10 +129,16 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
               required
               disabled={busy}
             />
-            <button className="btn btn-primary" type="submit" disabled={busy}>
+            {consent.fields}
+            <button className="btn btn-primary" type="submit" disabled={busy || !consent.ready}>
               {busy ? "Sending…" : "Email me a link"}
             </button>
           </form>
+          {consent.policy?.enabled && (
+            <button type="button" className="link-btn" onClick={() => consent.setCreating(!consent.creating)}>
+              {consent.creating ? "Sign in with an existing account" : "New here? Create an account"}
+            </button>
+          )}
           <div className="signin-or">or</div>
           <button className="btn btn-secondary" onClick={() => { setMode("passcode"); setError(null); }}>
             Use a passcode
@@ -156,7 +168,8 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
               required
               disabled={busy}
             />
-            <button className="btn btn-primary" type="submit" disabled={busy}>
+            {consent.fields}
+            <button className="btn btn-primary" type="submit" disabled={busy || !consent.ready}>
               {busy ? "Joining…" : "Join with passcode"}
             </button>
           </form>

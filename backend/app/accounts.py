@@ -52,6 +52,7 @@ OBSERVER_REFERENCES: dict[tuple[str, str], str] = {
     ("sightings", "observer_id"): "erased",
     ("voice_notes", "observer_id"): "erased",
     ("login_tokens", "observer_id"): "erased",
+    ("account_consents", "observer_id"): "erased",
     ("sighting_reports", "reporter_id"): "erased",
     # Name claims they made go (Q4); a name the community adopted would stay,
     # unattributed -- nothing adopts names yet.
@@ -232,6 +233,7 @@ async def _finish(pool, storage, observer_id: UUID) -> list[str]:
         await conn.execute("DELETE FROM sighting_reports WHERE reporter_id=$1", observer_id)
         await conn.execute("DELETE FROM observer_blocks WHERE blocker_id=$1 OR blocked_id=$1", observer_id)
         await conn.execute("DELETE FROM login_tokens WHERE observer_id=$1", observer_id)
+        await conn.execute("DELETE FROM account_consents WHERE observer_id=$1", observer_id)
         await conn.execute(
             "DELETE FROM individual_names WHERE proposed_by=$1 AND status IN ('proposed','rejected')", observer_id)
         emptied = ", ".join(f"{c} = NULL" for c, how in OBSERVER_COLUMNS.items() if how == "emptied")

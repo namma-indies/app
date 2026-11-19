@@ -1,6 +1,6 @@
 import { API_BASE } from "./apiBase";
 import type { HeardText } from "./components/Transcript";
-import { buildSightingForm, HttpError, UnauthorizedError, type LaterNote, type PostSightingInput, type SightingAttrs } from "./api";
+import { buildSightingForm, HttpError, responseError, UnauthorizedError, type LaterNote, type PostSightingInput, type SightingAttrs } from "./api";
 
 export type CaptureState = "queued" | "processing" | "needs_review" | "ready" | "no_animal" | "failed" | "legacy";
 export interface CaptureSummary {
@@ -127,7 +127,7 @@ export function adaptCapture(wire: WireCapture): CaptureDetail {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { ...init, credentials: "include" });
   if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok) throw new HttpError(res.status);
+  if (!res.ok) throw responseError(res);
   return res.json() as Promise<T>;
 }
 
