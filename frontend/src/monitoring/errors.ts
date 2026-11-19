@@ -1,3 +1,5 @@
+import { API_BASE } from "../apiBase";
+
 /** First-party error signals only. Never send the event, message, stack or URL. */
 export function startErrorMonitoring(enabled: boolean): () => void {
   if (!enabled) return () => {};
@@ -6,12 +8,15 @@ export function startErrorMonitoring(enabled: boolean): () => void {
     const now = performance.now();
     if (now - lastSent < 60_000 || !navigator.onLine) return;
     lastSent = now;
-    // Same-origin cookies supply auth. Failures are swallowed, not retried or
-    // queued offline: monitoring must not create a rejection loop or new data.
+    // The session cookie supplies auth. API_BASE is empty on the web and the
+    // API origin in native (Capacitor) builds, where a relative path would hit
+    // the bundled app instead -- hence "include", as every other API call uses.
+    // Failures are swallowed, not retried or queued offline: monitoring must
+    // not create a rejection loop or new data.
     try {
-      void fetch("/monitoring/client-error", {
+      void fetch(`${API_BASE}/monitoring/client-error`, {
         method: "POST",
-        credentials: "same-origin",
+        credentials: "include",
         referrerPolicy: "no-referrer",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ kind }),
