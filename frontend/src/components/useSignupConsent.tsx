@@ -26,7 +26,11 @@ export function useSignupConsent(passcode: boolean) {
     policy,
     creating,
     setCreating,
-    ready: !!policy && (!required || consentComplete(policy, answers)),
+    // Without the policy (still loading, endpoint down, older server) only the
+    // plain email sign-in may go ahead: it sends create_account=false, which
+    // never creates an account while consent is enforced. Creating, and
+    // passcode joins (which always create), wait for the policy.
+    ready: policy ? (!required || consentComplete(policy, answers)) : (!passcode && !creating),
     values: {
       create_account: creating ? "true" : "false",
       ...(required && policy ? consentFormValues(policy, answers) : {}),

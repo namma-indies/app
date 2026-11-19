@@ -124,10 +124,26 @@ describe("signup agreement", () => {
     vi.mocked(fetch).mockRejectedValue(new TypeError("offline"));
     render(<SignIn onSignedIn={vi.fn()} />);
     expect(await screen.findByRole("alert")).toHaveTextContent("Couldn’t load the current policies");
-    expect(screen.getByRole("button", { name: "Email me a link" })).toBeDisabled();
-    expect(posted("/auth/email")).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "New here? Create an account" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Use a passcode" }));
+    expect(screen.getByRole("button", { name: "Join with passcode" })).toBeDisabled();
+    expect(posted("/auth/join")).toHaveLength(0);
     vi.mocked(fetch).mockResolvedValue(response(policy));
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Email me a link" })).toBeEnabled());
+    await screen.findByRole("checkbox", { name: /I agree to the Terms of Service and Community Guidelines/ });
+  });
+
+  it("still lets an existing account sign in by email when the policy can't be loaded", async () => {
+    vi.mocked(fetch).mockImplementation(async (path) => String(path).endsWith("/auth/consent")
+      ? response({ detail: "bad gateway" }, 502) : response({ ok: true, message: "Follow the instructions in your inbox." }));
+    render(<SignIn onSignedIn={vi.fn()} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn’t load the current policies");
+    await userEvent.type(screen.getByLabelText("Email"), "person@example.invalid");
+    const submit = screen.getByRole("button", { name: "Email me a link" });
+    expect(submit).toBeEnabled();
+    await userEvent.click(submit);
+    const body = posted("/auth/email")[0][1]?.body as URLSearchParams;
+    expect(body.get("create_account")).toBe("false");
+    expect(body.has("agree_terms_and_guidelines")).toBe(false);
   });
 });
