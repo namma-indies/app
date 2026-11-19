@@ -137,14 +137,14 @@ async def test_a_vanished_upload_writes_no_marker(tmp_path, monkeypatch):
 def test_counts_file_is_validated_and_becomes_a_manifest(tmp_path):
     import json
 
-    good = {"schema_head": "0046_moderation_fixes", "counts": {t: 3 for t in backup_db.MANIFEST_TABLES}}
+    good = {"schema_head": "0047_moderation_fixes", "counts": {t: 3 for t in backup_db.MANIFEST_TABLES}}
     path = tmp_path / "counts.json"
     path.write_text(json.dumps(good))
     counts = backup_db.read_counts(str(path))
     when = datetime(2026, 11, 19, 19, 30, tzinfo=timezone.utc)
     key = backup_db._key(when)
     manifest = json.loads(backup_db.manifest(key, 5000, when, counts))
-    assert manifest["key"] == key and manifest["schema_head"] == "0046_moderation_fixes"
+    assert manifest["key"] == key and manifest["schema_head"] == "0047_moderation_fixes"
     assert manifest["counts"]["sightings"] == 3 and manifest["created_at"].startswith("2026-11-19T19:30")
     assert backup_db.manifest_key(key) == key.removesuffix(".dump") + ".json"
     for bad in ({**good, "counts": {"sightings": 3}}, {**good, "schema_head": ""},
