@@ -362,6 +362,44 @@ async def test_the_daily_post_reads_the_model_wait_when_it_asks(authed_client, m
         assert await postable_photos(c, UUID(mine)) != []
 
 
+@pytest.mark.asyncio
+async def test_rejecting_a_held_upload_undoes_its_automatic_links_only(authed_client):
+    """Held uploads are matched on purpose; a reject undoes the links that came
+    from that and leaves the clean partner's identity alone."""
+    client, owner = authed_client
+    held, clean, pool, mod, viewer = await _identical_pair(client, "held", "clear")
+    await _resolve(pool, held)
+    await _resolve(pool, clean)
+    async with pool.acquire() as c:
+        dog = await c.fetchval("SELECT individual_id FROM sightings WHERE id = $1", UUID(held))
+        assert dog is not None and dog == await c.fetchval(
+            "SELECT individual_id FROM sightings WHERE id = $1", UUID(clean))
+        assert await c.fetchval("SELECT count(*) FROM auto_links WHERE sighting_id = $1", UUID(held)) == 1
+    _as(client, mod)
+    await client.post(f"/moderation/capture/{await _capture_of(pool, held)}/screening", json={"verdict": "reject"})
+    async with pool.acquire() as c:
+        row = await c.fetchrow("SELECT individual_id, match_status FROM sightings WHERE id = $1", UUID(held))
+        assert (row["individual_id"], row["match_status"]) == (None, "unmatched")
+        assert await c.fetchval("SELECT count(*) FROM auto_links WHERE sighting_id = $1", UUID(held)) == 0
+        assert await c.fetchval("SELECT individual_id FROM sightings WHERE id = $1", UUID(clean)) == dog
+
+
+@pytest.mark.asyncio
+async def test_rejecting_an_upload_keeps_a_link_a_person_confirmed(authed_client):
+    client, owner = authed_client
+    held, clean, pool, mod, viewer = await _identical_pair(client, "approved", "clear")
+    await _resolve(pool, held)
+    await _resolve(pool, clean)
+    async with pool.acquire() as c:
+        dog = await c.fetchval("SELECT individual_id FROM sightings WHERE id = $1", UUID(held))
+        await c.execute("INSERT INTO confirmations (id, sighting_id, individual_id, verdict) VALUES ($1,$2,$3,'same')",
+                        uuid7(), UUID(held), dog)
+    _as(client, mod)
+    await client.post(f"/moderation/capture/{await _capture_of(pool, held)}/screening", json={"verdict": "reject"})
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT individual_id FROM sightings WHERE id = $1", UUID(held)) == dog
+
+
 # --- what gets held ---------------------------------------------------------------
 
 

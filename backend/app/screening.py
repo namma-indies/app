@@ -281,11 +281,48 @@ async def settle_identities(conn, capture_id: UUID, state: str) -> None:
 
     Copies (app.identical): a clean upload marked a copy of this one is judged
     again, so it never stays hidden behind a rejected original.
+
+    Links (reject only): a held upload is searched on purpose, so it may have
+    been linked to a dog while it waited -- by the identical-photo rule or a
+    score over `reid_auto_merge_min`. Rejected content must not seed
+    identities, so those links are undone. A link a person confirmed (a `same`
+    verdict naming the sighting) stays: that is a human decision, and a ruling
+    about the upload's content is not one about which dog it is. Partners
+    linked *to* it keep their identity: each passed screening on its own. An
+    upload approved again later is not re-linked here; it is in the match
+    queue again like any unlinked sighting.
     """
     from app.identical import settle_copies_after_ruling
     from app.matching import lock_matching
     await lock_matching(conn)
+    if state == "rejected":
+        await unlink_automatic(conn, capture_id)
     await settle_copies_after_ruling(conn, capture_id, state)
+
+
+async def unlink_automatic(conn, capture_id: UUID) -> list[UUID]:
+    """Undo every identity link of this upload's sightings that no person
+    confirmed. Returns the sightings unlinked. Caller holds `lock_matching`."""
+    rows = await conn.fetch(
+        """
+        UPDATE sightings s SET individual_id = NULL, match_status = 'unmatched', updated_at = now()
+        WHERE s.capture_id = $1 AND s.individual_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM confirmations cf
+              LEFT JOIN match_proposals mp ON mp.id = cf.proposal_id
+              WHERE cf.verdict = 'same'
+                AND (cf.sighting_id = s.id OR mp.candidate_sighting_id = s.id))
+        RETURNING s.id
+        """,
+        capture_id,
+    )
+    unlinked = [r["id"] for r in rows]
+    if unlinked:
+        # The record of a link that no longer exists. Re-made, with a new row,
+        # if the rule links the sighting again.
+        await conn.execute("DELETE FROM auto_links WHERE sighting_id = ANY($1::uuid[])", unlinked)
+        logger.info("capture=%s rejected: unlinked %d automatic identity link(s)", capture_id, len(unlinked))
+    return unlinked
 
 
 class ScreeningVerdict(BaseModel):
