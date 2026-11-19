@@ -239,6 +239,16 @@ async def _finish(pool, storage, observer_id: UUID) -> list[str]:
         await conn.execute("DELETE FROM account_consents WHERE observer_id=$1", observer_id)
         await conn.execute(
             "DELETE FROM individual_names WHERE proposed_by=$1 AND status IN ('proposed','rejected')", observer_id)
+        # Passcode observers absorbed into this account at sign-in
+        # (email_login.absorb_passcode_observers) were retired, not erased,
+        # and testers were told to type their email as the name: that name
+        # is this person's address, and goes with it.
+        email = await conn.fetchval("SELECT email FROM observers WHERE id=$1", observer_id)
+        if email:
+            await conn.execute(
+                """UPDATE observers SET display_name = NULL, updated_at = now()
+                   WHERE created_via = 'passcode' AND email IS NULL AND deleted_at IS NOT NULL
+                     AND lower(btrim(display_name)) = lower(btrim($1))""", email)
         emptied = ", ".join(f"{c} = NULL" for c, how in OBSERVER_COLUMNS.items() if how == "emptied")
         await conn.execute(
             f"UPDATE observers SET {emptied}, social_consent = false, deleted_at = now(), updated_at = now() "

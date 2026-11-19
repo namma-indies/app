@@ -460,3 +460,61 @@ async def test_cpu_fallback_persists_cat_analysis(migrated_db, monkeypatch):
     assert row["dog"] == pytest.approx(0.02)
     assert row["cat"] == pytest.approx(0.91)
     assert await migrated_db.fetchval("SELECT animal_confidence FROM sightings WHERE id=$1", job["sighting_id"]) == pytest.approx(0.91)
+
+
+# --- a finished job's media-staging/ uploads are owed a delete ----------------
+
+async def _owed(conn):
+    return {r["s3_key"]: r["kind"] for r in await conn.fetch("SELECT s3_key, kind FROM media_purges")}
+
+
+@pytest.mark.asyncio
+async def test_a_completed_job_owes_its_staging_prefix_and_a_rejected_one_does_not(migrated_db, monkeypatch):
+    from app.media_purges import staging_prefix
+    conn = migrated_db
+    job, body = await scored_job(conn, monkeypatch)
+    stale = body.model_copy(update={"lease_token": "z" * 43})
+    with pytest.raises(HTTPException):
+        await jobs.complete_job(conn, None, job["id"], stale)
+    assert await _owed(conn) == {}
+    await jobs.complete_job(conn, SimpleNamespace(publish_checked=AsyncMock()), job["id"], body)
+    assert await _owed(conn) == {staging_prefix(job["id"]): "prefix"}
+
+
+@pytest.mark.asyncio
+async def test_only_a_final_failure_owes_the_staging_prefix(migrated_db, monkeypatch):
+    from app.media_purges import staging_prefix
+    conn = migrated_db
+    job, body = await scored_job(conn, monkeypatch)
+    failure = jobs.Failure(lease_token=body.lease_token, error="model unavailable")
+    assert (await jobs.fail_job(conn, job["id"], failure))["status"] == "queued"
+    assert await _owed(conn) == {}                          # retried: the next lease uploads there
+    await conn.execute("UPDATE jobs SET run_after=now() WHERE id=$1", job["id"])
+    job, token = await jobs.claim_job(conn, "test")
+    final = jobs.Failure(lease_token=token, error="bad media", retryable=False)
+    assert (await jobs.fail_job(conn, job["id"], final))["status"] == "failed"
+    assert await _owed(conn) == {staging_prefix(job["id"]): "prefix"}
+
+
+@pytest.mark.asyncio
+async def test_a_staging_prefix_is_purged_unless_its_job_is_queued_again(migrated_db, monkeypatch):
+    import asyncpg
+    from app.deps import get_storage
+    from app.media_purges import owe, purge, staging_prefix
+    conn = migrated_db
+    job, _ = await scored_job(conn, monkeypatch)
+    storage, prefix = get_storage(), staging_prefix(job["id"])
+    await storage.put(prefix + "lease/a.webp", b"x", "image/webp")
+    pool = await asyncpg.create_pool(settings.test_database_url, min_size=1, max_size=2)
+    try:
+        await owe(conn, prefix, "test", "prefix")
+        assert await purge(pool, storage, prefix)                          # still running: kept
+        assert await storage.list_keys(prefix) == [prefix + "lease/a.webp"]
+        assert await _owed(conn) == {}
+        await conn.execute("UPDATE jobs SET status='done' WHERE id=$1", job["id"])
+        await owe(conn, prefix, "test", "prefix")
+        assert await purge(pool, storage, prefix)
+        assert await storage.list_keys(prefix) == []
+        assert await _owed(conn) == {}
+    finally:
+        await pool.close()

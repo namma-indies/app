@@ -169,6 +169,10 @@ configuration, consistently across workers, and deploy the migrations:
 
 1. Non-default, stable `SESSION_SECRET`, `MAGIC_LINK_SECRET`, `PHONE_HASH_SECRET`
    and `JOIN_PASSCODE`, with #42 or equivalent public-deployment enforcement.
+   Banned email addresses are hashed with `BAN_HASH_SECRET`, falling back to
+   `PHONE_HASH_SECRET` while it is unset. Before ever rotating
+   `PHONE_HASH_SECRET`, set `BAN_HASH_SECRET` to its current value, or every
+   email ban is lifted; never rotate `BAN_HASH_SECRET` itself.
 2. `EMAIL_SENDER=ses`, the verified `EMAIL_FROM`, the confirmed `SES_REGION`,
    and the correct public HTTPS origin in `PUBLIC_BASE_URL`.
 3. `EMAIL_DAILY_BUDGET` and `EMAIL_SEND_INTERVAL_S` chosen from the live SES

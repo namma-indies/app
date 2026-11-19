@@ -23,7 +23,7 @@ from app.scene import digest_frames, from_wire
 from app.deps import get_storage
 from app.ids import uuid7
 from app.media_jobs import (Claim, EMBED_DIM, Failure, Lease, MODEL_NAME, heartbeat_job,
-    locked_lease, payload_of, require_gpu, token_hash, vector_text)
+    locked_lease, owe_staging, payload_of, purge_staging_later, require_gpu, token_hash, vector_text)
 from app.photos import thumb_key
 from app.reid_recipe import ACTIVE_RECIPE
 from app.scoring import save_detection
@@ -51,6 +51,7 @@ async def claim_capture_job(conn, owner, *, cpu=False):
         if job["attempts"] >= settings.media_max_attempts:
             await conn.execute("UPDATE jobs SET status='failed',terminal_outcome='failed',lease_token_hash=NULL,lease_expires_at=NULL,last_error='lease retry limit reached',updated_at=now() WHERE id=$1",job["id"])
             await conn.execute("UPDATE captures SET processing_state='failed',updated_at=now() WHERE id=$1",job["capture_id"])
+            await owe_staging(conn,job["id"])
             return None
         job = await conn.fetchrow("""UPDATE jobs SET status='running',attempts=attempts+1,lease_token_hash=$2,
             lease_owner=$3,lease_expires_at=now()+$4*interval '1 second',payload='{}',updated_at=now()
@@ -227,13 +228,16 @@ async def complete_capture_job(conn,storage,job_id,body: MultiCompletion,*,cpu=F
         if not await conn.fetchval("SELECT lease_expires_at>clock_timestamp() FROM jobs WHERE id=$1",job_id):
             raise HTTPException(409,"lease expired during completion")
         await conn.execute("UPDATE jobs SET status='done',completion_digest=$2,terminal_outcome=$3,updated_at=now() WHERE id=$1",job_id,digest,outcome)
+        await owe_staging(conn,job_id)
         return {"status":"done","outcome":outcome,"replayed":False}
 
 
 @router.post("/{job_id}/complete")
 async def complete(job_id: UUID,body: MultiCompletion,request: Request,storage=Depends(get_storage)):
     async with request.app.state.pool.acquire() as conn:
-        return await complete_capture_job(conn,storage,job_id,body)
+        result = await complete_capture_job(conn,storage,job_id,body)
+    purge_staging_later(request.app.state.pool,storage,job_id)
+    return result
 
 
 async def fail_capture_job(conn,job_id,body: Failure,*,cpu=False):
@@ -247,10 +251,13 @@ async def fail_capture_job(conn,job_id,body: Failure,*,cpu=False):
         if not retry:
             # Nothing was measured, so screening holds it for a person (#181).
             await screening.screen(conn,job["capture_id"])
+            await owe_staging(conn,job_id)
         return {"status":"queued" if retry else "failed"}
 
 
 @router.post("/{job_id}/fail")
-async def fail(job_id: UUID,body: Failure,request: Request):
+async def fail(job_id: UUID,body: Failure,request: Request,storage=Depends(get_storage)):
     async with request.app.state.pool.acquire() as conn:
-        return await fail_capture_job(conn,job_id,body)
+        result = await fail_capture_job(conn,job_id,body)
+    purge_staging_later(request.app.state.pool,storage,job_id)
+    return result

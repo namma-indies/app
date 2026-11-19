@@ -161,6 +161,12 @@ class Settings(BaseSettings):
     rl_grievance_window_s: int = Field(default=3600, ge=1)
 
     phone_hash_secret: str = "dev-phone-secret"
+    # Key for `banned_emails` hashes (security.email_hash, #180), kept apart
+    # from `phone_hash_secret` so rotating that one does not lift every email
+    # ban. Empty falls back to `phone_hash_secret`, which is what existing bans
+    # were hashed with: set this to the current PHONE_HASH_SECRET value before
+    # ever rotating that, then never change it.
+    ban_hash_secret: str = Field(default="", repr=False)
     session_secret: str = "dev-session-secret"
     magic_link_secret: str = "dev-magic-secret"
 
@@ -204,6 +210,11 @@ class Settings(BaseSettings):
     # for accounts whose time is up.
     account_deletion_grace_days: int = 7
     account_purge_interval_s: float = 300.0
+    # How many object-store purges (app/media_purges.py) run at once in the
+    # background. Each holds a pool connection (no transaction) while it waits
+    # on the store, so this bounds what an erased account with thousands of
+    # uploads can take from the pool (default size 10).
+    media_purge_concurrency: int = Field(default=2, ge=1, le=8)
     social_posting_enabled: bool = False
     x_api_key: str = ""
     x_api_secret: str = ""

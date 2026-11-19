@@ -172,6 +172,14 @@ class XClient:
             raise XUncertain(f"post accepted without an id: {r.text[:300]}") from exc
 
 
+def x_configured() -> bool:
+    """All four X credentials are set. Takedowns depend on this, not on
+    `social_posting_enabled`: turning posting off must not leave posts of
+    deleted photos up on X."""
+    return all((settings.x_api_key, settings.x_api_secret,
+                settings.x_access_token, settings.x_access_token_secret))
+
+
 def x_client_from_settings() -> XClient:
     return XClient(settings.x_api_key, settings.x_api_secret,
                    settings.x_access_token, settings.x_access_token_secret)

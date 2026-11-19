@@ -29,7 +29,7 @@ from app.config import settings  # noqa: E402
 from app.db import effective_dsn  # noqa: E402
 from app.social import RunResult, purge_x_owed, run_daily  # noqa: E402
 from app.storage.s3 import storage_from_settings  # noqa: E402
-from app.x_client import x_client_from_settings  # noqa: E402
+from app.x_client import x_client_from_settings, x_configured  # noqa: E402
 
 NEEDS_A_PERSON = {"failed", "blocked_by_uncertain"}
 
@@ -47,8 +47,10 @@ async def main() -> int:
     enabled = settings.social_posting_enabled
     pool = await asyncpg.create_pool(effective_dsn(), min_size=1, max_size=2)
     try:
-        if enabled:
-            # Posts made from photos deleted since are taken down first (app/erasure.py).
+        if x_configured():
+            # Posts made from photos deleted since are taken down first
+            # (app/erasure.py) -- even with posting off: switching posting off
+            # must not leave a deleted photo's post up on X.
             deleted, owed = await purge_x_owed(pool, x_client_from_settings())
             if deleted or owed:
                 print(f"x posts deleted: {deleted} still owed: {owed}")

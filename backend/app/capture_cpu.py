@@ -63,3 +63,5 @@ async def cpu_process_capture(pool,storage,job,token):
         frames=frames,instances=instances,needs_review=analysis.requires_review)
     async with pool.acquire() as conn:
         await complete_capture_job(conn,storage,job["id"],body,cpu=True)
+    from app.media_jobs import purge_staging_later
+    purge_staging_later(pool,storage,job["id"])

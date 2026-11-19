@@ -178,6 +178,7 @@ async def claim_job(conn, owner: str, *, cpu: bool = False):
         if job["attempts"] >= settings.media_max_attempts:
             await conn.execute("UPDATE jobs SET status='failed',terminal_outcome='failed',lease_token_hash=NULL,lease_expires_at=NULL,last_error='lease retry limit reached',updated_at=now() WHERE id=$1", job["id"])
             await conn.execute("UPDATE sightings SET processing_state='failed' WHERE id=$1", job["sighting_id"])
+            await owe_staging(conn, job["id"])
             return None
         job = await conn.fetchrow(
             """UPDATE jobs SET status='running',attempts=attempts+1, lease_token_hash=$2,
@@ -363,13 +364,29 @@ async def complete_job(conn, storage, job_id, body: Completion, *, cpu=False):
         if not live:
             raise HTTPException(409, "lease expired during completion")
         await conn.execute("UPDATE jobs SET status='done',completion_digest=$2,terminal_outcome=$3,updated_at=now() WHERE id=$1", job_id, digest, outcome)
+        await owe_staging(conn, job_id)
         return {"status": "done", "outcome": outcome, "replayed": False}
+
+
+async def owe_staging(conn, job_id) -> None:
+    """A finished job's temporary uploads are owed a delete, recorded in the
+    transaction that finishes it (docs/ops/media-deletion.md)."""
+    from app.media_purges import owe, staging_prefix
+    await owe(conn, staging_prefix(job_id), "job_finished", "prefix")
+
+
+def purge_staging_later(pool, storage, job_id) -> None:
+    """Try what `owe_staging` recorded now; nothing if nothing was."""
+    from app.media_purges import purge_later, staging_prefix
+    purge_later(pool, storage, staging_prefix(job_id))
 
 
 @router.post("/{job_id}/complete")
 async def complete(job_id: UUID, body: Completion, request: Request, storage=Depends(get_storage)):
     async with request.app.state.pool.acquire() as conn:
-        return await complete_job(conn, storage, job_id, body)
+        result = await complete_job(conn, storage, job_id, body)
+    purge_staging_later(request.app.state.pool, storage, job_id)
+    return result
 
 
 async def fail_job(conn, job_id, body: Failure, *, cpu=False):
@@ -387,13 +404,16 @@ async def fail_job(conn, job_id, body: Failure, *, cpu=False):
             # Nothing was measured, so screening holds it for a person (#181).
             await screening.screen(conn, await conn.fetchval(
                 "SELECT capture_id FROM sightings WHERE id=$1", job["sighting_id"]))
+            await owe_staging(conn, job_id)
         return {"status": "queued" if retry else "failed"}
 
 
 @router.post("/{job_id}/fail")
-async def fail(job_id: UUID, body: Failure, request: Request):
+async def fail(job_id: UUID, body: Failure, request: Request, storage=Depends(get_storage)):
     async with request.app.state.pool.acquire() as conn:
-        return await fail_job(conn, job_id, body)
+        result = await fail_job(conn, job_id, body)
+    purge_staging_later(request.app.state.pool, storage, job_id)
+    return result
 
 
 async def cpu_process(pool, storage, job, token):
@@ -414,6 +434,7 @@ async def cpu_process(pool, storage, job, token):
     body = Completion(lease_token=token, pipeline_version=PIPELINE_VERSION, model=MODEL_NAME, frames=frames)
     async with pool.acquire() as conn:
         await complete_job(conn, storage, job["id"], body, cpu=True)
+    purge_staging_later(pool, storage, job["id"])
 
 
 async def cpu_consumer(pool, storage):
@@ -450,6 +471,7 @@ async def cpu_consumer(pool, storage):
                         from app.capture_jobs import fail_capture_job
                         fail = fail_capture_job if job["pipeline_version"] == MULTI_PIPELINE_VERSION else fail_job
                         await fail(conn, job["id"], Failure(lease_token=token, error="CPU analysis failed"), cpu=True)
+                purge_staging_later(pool, storage, job["id"])
             finally:
                 for task in (work, heartbeat_task):
                     task.cancel()

@@ -78,16 +78,23 @@ const ownBusy = (s: Sighting) => isProcessing(s.processing_state) || (s.later_no
   || (s.voice_transcripts ?? []).some((t) => t.reading)
   || s.photo_description?.status === "describing";
 
-const UNFINISHED = new Set<CaptureSummary["processing_state"]>(["queued", "processing", "failed", "needs_review"]);
+// "no_animal" is listed too: it never becomes a sighting, so this entry is the
+// only place its contributor can see it, and delete it.
+const UNFINISHED = new Set<CaptureSummary["processing_state"]>(["queued", "processing", "failed", "needs_review", "no_animal"]);
 
 /** An upload that is not a sighting yet. One that needs its contributor stands
  * out, in the Journal where their sightings are, rather than as a banner over
- * the map. */
-function UploadEntry({ capture, onReview }: { capture: CaptureSummary; onReview: () => void }) {
+ * the map. Each can be deleted here, as a sighting can in its viewer (#54). */
+function UploadEntry({ capture, onReview, onDeleted, onUnauthorized }: {
+  capture: CaptureSummary;
+  onReview: () => void;
+  onDeleted: () => void;
+  onUnauthorized: () => void;
+}) {
   const needsYou = capture.processing_state === "needs_review";
   return (
     <article className={needsYou ? "spec upload-entry needs-review" : "spec upload-entry"}
-      aria-label={needsYou ? "Upload that needs you" : "Upload in progress"}
+      aria-label={needsYou ? "Upload that needs you" : isProcessing(capture.processing_state) ? "Upload in progress" : "Unfinished upload"}
       onClick={needsYou ? onReview : undefined}>
       <div className="frame">
         {capture.thumb_url ? <img src={capture.thumb_url} alt="your upload" /> : <div className="media-placeholder">No preview yet</div>}
@@ -100,6 +107,10 @@ function UploadEntry({ capture, onReview }: { capture: CaptureSummary; onReview:
           <button className="link-btn" onClick={(event) => { event.stopPropagation(); onReview(); }}>Separate the animals</button>
         </> : <div className="processing-status">{processingLabel(capture.processing_state)}</div>}
         <div className="line">taken {formatWhen(capture.captured_at)}</div>
+        <div onClick={(event) => event.stopPropagation()}>
+          <DeleteSighting captureId={capture.capture_id} animalsInPhoto={0}
+            onDeleted={onDeleted} onUnauthorized={onUnauthorized} />
+        </div>
       </div>
     </article>
   );
@@ -119,8 +130,8 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
   const sharedFeed = useProcessingFeed(getMap, view === "map" && scope === "everyone", onUnauthorized);
   const captureFeed = useProcessingFeed(getCaptures, view === "map" || view === "journal", onUnauthorized, true);
   // Only uploads that are not yet sightings get a Journal entry of their own.
-  // A finished one is already there as its sightings, and one with no animal
-  // in it has nothing left to do.
+  // A finished one is already there as its sightings; one with no animal in it
+  // is listed so it can be deleted.
   const pendingUploads = (captureFeed.data ?? []).filter((capture) => UNFINISHED.has(capture.processing_state));
   const [reviewCaptureId, setReviewCaptureId] = useState<string | null>(null);
   const childSignature = (captureFeed.data ?? []).flatMap((capture) => capture.sighting_ids).sort().join(",");
@@ -303,7 +314,10 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
           </div>
           {captureFeed.error && <p className="hint" role="alert">Couldn't load upload progress. <button onClick={captureFeed.refresh}>Try again</button></p>}
           {captureFeed.paused && <p className="hint">Upload processing is still pending. <button onClick={captureFeed.refresh}>Check uploads again</button></p>}
-          {pendingUploads.map((capture) => <UploadEntry key={capture.capture_id} capture={capture} onReview={() => setReviewCaptureId(capture.capture_id)} />)}
+          {pendingUploads.map((capture) => <UploadEntry key={capture.capture_id} capture={capture}
+            onReview={() => setReviewCaptureId(capture.capture_id)}
+            onDeleted={() => { captureFeed.refresh(); ownFeed.refresh(); }}
+            onUnauthorized={onUnauthorized} />)}
           {shown.map((s) => (
             <div key={s.id} className="spec" onClick={() => setSelected(s.id)}>
               <div className="frame">

@@ -294,8 +294,9 @@ async def run_daily(pool, storage, client, *, today: date, enabled: bool) -> Run
 #
 # A post made from a photo that has since been deleted (app/erasure.py) is
 # recorded in `x_post_purges` in the same transaction as the erasure. Deleting
-# it is tried once straight after, when posting is configured, and again by
-# every daily run (scripts/post_daily.py) until X confirms.
+# it is tried once straight after, whenever X credentials are configured (even
+# with posting switched off), and again by every daily run
+# (scripts/post_daily.py) until X confirms.
 
 _x_running: set[asyncio.Task] = set()
 
@@ -329,11 +330,12 @@ async def purge_x_owed(pool, client) -> tuple[int, int]:
 
 
 def purge_x_later(pool, post_id: str) -> None:
-    """Try the delete after the response, when posting is set up here at all.
-    Otherwise the record waits for the daily run."""
-    if not settings.social_posting_enabled:
+    """Try the delete after the response, whenever X credentials are set here
+    -- whether or not posting is switched on, since a post already made still
+    has to come down. Otherwise the record waits for the daily run."""
+    from app.x_client import x_client_from_settings, x_configured
+    if not x_configured():
         return
-    from app.x_client import x_client_from_settings
     task = asyncio.get_running_loop().create_task(purge_x_post(pool, x_client_from_settings(), post_id))
     _x_running.add(task)
     task.add_done_callback(_x_running.discard)

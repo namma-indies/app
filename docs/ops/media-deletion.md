@@ -11,7 +11,8 @@ private ops repo, not here: this repo is public.
 
 | Deleted | Owed from the bucket | Recorded in |
 |---|---|---|
-| a whole upload ("Delete photo") | everything under `captures/{capture_id}/` and `sightings/{sighting_id}/` | `media_purges`, `kind='prefix'` |
+| a whole upload ("Delete photo") | everything under `captures/{capture_id}/` and `sightings/{sighting_id}/`, and its jobs' `media-staging/{job_id}/` | `media_purges`, `kind='prefix'` |
+| a GPU/CPU job that finished, or failed for good | its temporary uploads under `media-staging/{job_id}/` | `media_purges`, `kind='prefix'` |
 | one animal of a photo with several ("Remove this dog") | its crop and thumbnail, and its voice notes | `media_purges`, `kind='key'` |
 | a voice note added later (#159) | its audio | `media_purges`, `kind='key'` |
 | a photo that was posted to X | the post on X | `x_post_purges` |
@@ -59,7 +60,8 @@ Added to the API user's policy:
       "Action": "s3:DeleteObject",
       "Resource": [
         "arn:aws:s3:::<media-bucket>/sightings/*",
-        "arn:aws:s3:::<media-bucket>/captures/*"
+        "arn:aws:s3:::<media-bucket>/captures/*",
+        "arn:aws:s3:::<media-bucket>/media-staging/*"
       ]
     },
     {
@@ -67,7 +69,7 @@ Added to the API user's policy:
       "Effect": "Allow",
       "Action": "s3:ListBucket",
       "Resource": "arn:aws:s3:::<media-bucket>",
-      "Condition": {"StringLike": {"s3:prefix": ["sightings/*", "captures/*", "erasures/*"]}}
+      "Condition": {"StringLike": {"s3:prefix": ["sightings/*", "captures/*", "media-staging/*", "erasures/*"]}}
     }
   ]
 }
@@ -87,33 +89,20 @@ aws s3api put-bucket-versioning --bucket <media-bucket> \
   --versioning-configuration Status=Enabled
 ```
 
-**3. Lifecycle rules** (one configuration; `put-bucket-lifecycle-configuration`
-replaces the whole set, so merge with the existing `backups/` expiry rule
-first: `aws s3api get-bucket-lifecycle-configuration --bucket <media-bucket>`):
+**3. Lifecycle rule for old versions** (added to the same configuration as
+the staging rule below; `put-bucket-lifecycle-configuration` replaces the
+whole set, so merge with what is there first:
+`aws s3api get-bucket-lifecycle-configuration --bucket <media-bucket>`):
 
 ```json
 {
-  "Rules": [
-    {
-      "ID": "media-noncurrent-14d",
-      "Filter": {"Prefix": ""},
-      "Status": "Enabled",
-      "NoncurrentVersionExpiration": {"NoncurrentDays": 14},
-      "Expiration": {"ExpiredObjectDeleteMarker": true}
-    },
-    {
-      "ID": "media-staging-1d",
-      "Filter": {"Prefix": "media-staging/"},
-      "Status": "Enabled",
-      "Expiration": {"Days": 1}
-    }
-  ]
+  "ID": "media-noncurrent-14d",
+  "Filter": {"Prefix": ""},
+  "Status": "Enabled",
+  "NoncurrentVersionExpiration": {"NoncurrentDays": 14},
+  "Expiration": {"ExpiredObjectDeleteMarker": true}
 }
 ```
-
-`media-staging/` holds the GPU worker's temporary uploads, keyed by job rather
-than by owner. Once a job's row is gone nothing can trace them to an upload, so
-expiry is the only way they leave.
 
 With versioning on, `backups/` keeps old versions for 14 days as well. Check
 the existing backup expiry still says what the privacy policy says.
@@ -121,6 +110,27 @@ the existing backup expiry still says what the privacy policy says.
 To undo a mistaken delete within the window, restore the previous version:
 `aws s3api list-object-versions --bucket <media-bucket> --prefix captures/<id>/`
 and copy the wanted `VersionId` back over the key.
+
+## Always: expire `media-staging/` after a day (option A or B)
+
+`media-staging/` holds the GPU worker's temporary uploads (crops and clip
+frames before they are published), keyed by job rather than by owner. The app
+records a job's staging prefix as owed in `media_purges` when the job finishes
+or fails for good, or when its upload is deleted, and tries it straight away;
+under option A that waits for `scripts/purge_media.py`. Anything missed (a
+job abandoned mid-lease, a crash before the record) can no longer be traced to
+an upload once the job's row is gone, so this expiry rule is the backstop and
+is needed whichever option is chosen. Merge it into the bucket's lifecycle
+configuration (with the `backups/` rule, and option B's rule if used):
+
+```json
+{
+  "ID": "media-staging-1d",
+  "Filter": {"Prefix": "media-staging/"},
+  "Status": "Enabled",
+  "Expiration": {"Days": 1}
+}
+```
 
 ## Decision U2: the erasure ledger (backup restores)
 
