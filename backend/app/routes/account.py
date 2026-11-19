@@ -42,9 +42,10 @@ from app.auth.logintoken import consume, issue, peek
 from app.config import settings
 from app.deps import get_conn
 from app.email.account_mail import deletion_link, deletion_scheduled, send
-from app.email.delivery import deliver, reserve
+from app.email.delivery import check_capacity, deliver
 from app.legal_links import LEGAL_LINKS_STYLE, legal_links_html
-from app.ratelimit import check, client_key, cooldown, email_addr_limit, email_ip_limit
+from app.ratelimit import (check, client_key, cooldown, delete_request_limit, email_addr_limit,
+                           email_ip_day_limit, email_ip_limit)
 from app.routes.join import _STYLE
 
 logger = logging.getLogger(__name__)
@@ -61,20 +62,20 @@ async def get_account(observer_id: UUID = Depends(require_account), conn=Depends
     return await accounts.state(conn, observer_id)
 
 
-async def _notify(conn, observer_id: UUID, when: datetime) -> None:
+async def _notify(conn, pool, observer_id: UUID, when: datetime) -> None:
     """The notice that deletion is scheduled. Best effort: deletion never
     waits on the mail, and a person with no address gets the app's screen."""
     email = await conn.fetchval("SELECT email FROM observers WHERE id=$1", observer_id)
     if not email:
         return
     try:
-        await deliver(conn, lambda: send(email, deletion_scheduled(when)))
+        await deliver(pool, lambda: send(email, deletion_scheduled(when)), purpose="account")
     except Exception:
         logger.warning("deletion notice not sent for observer=%s", observer_id)
 
 
 @router.post("/account/delete")
-async def delete_account(body: DeleteBody, observer_id: UUID = Depends(require_account), conn=Depends(get_conn)):
+async def delete_account(request: Request, body: DeleteBody, observer_id: UUID = Depends(require_account), conn=Depends(get_conn)):
     if body.confirm.strip().lower() != "delete":
         raise HTTPException(422, 'type "delete" to confirm')
     async with conn.transaction():
@@ -83,7 +84,7 @@ async def delete_account(body: DeleteBody, observer_id: UUID = Depends(require_a
         raise HTTPException(401)
     when, new = scheduled
     if new:
-        await _notify(conn, observer_id, when)
+        await _notify(conn, request.app.state.pool, observer_id, when)
     return await accounts.state(conn, observer_id)
 
 
@@ -151,30 +152,42 @@ async def web_form() -> HTMLResponse:
 
 
 @router.post("/account/delete/request", response_class=HTMLResponse)
-async def web_request(request: Request, email: str = Form(...), conn=Depends(get_conn)) -> HTMLResponse:
+async def web_request(request: Request, email: str = Form(...)) -> HTMLResponse:
     address = normalize_email(email)
     if not address:
         return _html('<p class="err">That doesn\'t look like an email address.</p>'
                      '<p><a href="/account/delete">Try again</a></p>', status=400)
-    try:
-        await check(conn, f"delete:ip:{client_key(request)}", email_ip_limit())
-        async with conn.transaction():
-            await cooldown(conn, f"delete:addr:{address}", settings.auth_email_cooldown_s)
-            await check(conn, f"delete:addr:{address}", email_addr_limit())
-            # Reserve before lookup, including unknown addresses: responses
-            # about shared capacity must not reveal account membership.
-            slot = await reserve(conn)
-    except HTTPException as exc:
-        await record(conn, "email_throttled")
-        return _html(f'<p class="err">{escape(str(exc.detail))}</p>'
-                     '<p><a href="/account/delete">Try again</a></p>',
-                     status=exc.status_code, headers=exc.headers)
-    observer_id = await conn.fetchval(
-        "SELECT id FROM observers WHERE email=$1 AND deleted_at IS NULL", address)
-    if observer_id is not None:
-        token = await issue(conn, observer_id, purpose="delete")
+    # The pool, not a request-long connection: the send may wait on the
+    # provider's rate or retry without holding one.
+    pool = request.app.state.pool
+    client = client_key(request)
+    async with pool.acquire() as conn:
         try:
-            await deliver(conn, lambda: send(address, deletion_link(f"{settings.public_base_url}/account/delete/confirm?token={token}")), reserved=slot)
+            await check(conn, f"delete:ip:{client}", email_ip_limit())
+            await check(conn, f"email-day:ip:{client}", email_ip_day_limit())
+            async with conn.transaction():
+                await cooldown(conn, f"delete:addr:{address}", settings.auth_email_cooldown_s)
+                await check(conn, f"delete:addr:{address}", email_addr_limit())
+                # Every request, known address or not, is admitted the same
+                # way: this cheap counter of its own, and a look at provider
+                # capacity that spends nothing. Only a real send (below, for
+                # an address with an account) spends provider budget, and
+                # account mail has its own cap that cannot reach the share
+                # held back for sign-in links.
+                await check(conn, "delete:requests:global", delete_request_limit())
+                await check_capacity(conn, "account")
+        except HTTPException as exc:
+            await record(conn, "email_throttled")
+            return _html(f'<p class="err">{escape(str(exc.detail))}</p>'
+                         '<p><a href="/account/delete">Try again</a></p>',
+                         status=exc.status_code, headers=exc.headers)
+        observer_id = await conn.fetchval(
+            "SELECT id FROM observers WHERE email=$1 AND deleted_at IS NULL", address)
+        token = await issue(conn, observer_id, purpose="delete") if observer_id is not None else None
+    if token is not None:
+        try:
+            await deliver(pool, lambda: send(address, deletion_link(
+                f"{settings.public_base_url}/account/delete/confirm?token={token}")), purpose="account")
         except Exception:
             # The same page either way: an error here, and only here, would say
             # that an account uses this address.
@@ -208,7 +221,7 @@ async def web_confirm_page(token: str, conn=Depends(get_conn)) -> HTMLResponse:
 
 
 @router.post("/account/delete/confirm", response_class=HTMLResponse)
-async def web_confirm(token: str = Form(...), conn=Depends(get_conn)) -> HTMLResponse:
+async def web_confirm(request: Request, token: str = Form(...), conn=Depends(get_conn)) -> HTMLResponse:
     async with conn.transaction():
         observer_id = await consume(conn, token, purpose="delete")
         scheduled = await accounts.request(conn, observer_id, "web") if observer_id else None
@@ -217,7 +230,7 @@ async def web_confirm(token: str = Form(...), conn=Depends(get_conn)) -> HTMLRes
                      '<p><a href="/account/delete">Ask for a new one</a></p>', status=401)
     when, new = scheduled
     if new:
-        await _notify(conn, observer_id, when)
+        await _notify(conn, request.app.state.pool, observer_id, when)
     return _html(f"""<p class="ok">Your account will be deleted on {when:%d %B %Y}.</p>
       <p class="sub">Your sightings are hidden from everyone now. To keep your account, sign in to the
         IndieDex app before then and tap <strong>Keep my account</strong>.</p>""")

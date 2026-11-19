@@ -4,7 +4,7 @@ import hmac
 import secrets
 
 from fastapi import HTTPException
-from itsdangerous import BadData, URLSafeTimedSerializer
+from itsdangerous import BadData, SignatureExpired, URLSafeTimedSerializer
 
 from app.config import settings
 from app.ratelimit import key_hash
@@ -53,6 +53,16 @@ document.querySelector('form[action="/auth/join"]').addEventListener('submit', a
 """
 
 
+class Stale(HTTPException):
+    """A proof we issued, signed correctly, that can no longer be used: it
+    expired, was issued to another address, or was already spent. Nothing
+    about it suggests guessing, so it never counts toward backoff -- the
+    client just needs a fresh challenge."""
+
+    def __init__(self) -> None:
+        super().__init__(400, "The sign-in check expired. Please try again.")
+
+
 def _signer() -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(settings.magic_link_secret, salt="passcode-proof-v1")
 
@@ -74,10 +84,16 @@ async def consume(conn, client: str, challenge: str, solution: str) -> None:
         raise error
     try:
         data = _signer().loads(challenge, max_age=settings.join_pow_ttl_s)
+    except SignatureExpired:
+        raise Stale() from None
     except BadData:
         raise error from None
-    if not isinstance(data, dict) or not hmac.compare_digest(str(data.get("client", "")), key_hash(client).hex()):
+    if not isinstance(data, dict):
         raise error
+    if not hmac.compare_digest(str(data.get("client", "")), key_hash(client).hex()):
+        # Ours, but issued to another address: a phone that moved from wifi
+        # to mobile data mid-solve, most likely.
+        raise Stale()
     bits = data.get("bits")
     if not isinstance(bits, int) or not 8 <= bits <= 22:
         raise error
@@ -88,4 +104,4 @@ async def consume(conn, client: str, challenge: str, solution: str) -> None:
         VALUES ($1, statement_timestamp() + interval '11 minutes')
         ON CONFLICT DO NOTHING RETURNING true""", hashlib.sha256(challenge.encode()).digest())
     if not used:
-        raise error
+        raise Stale()

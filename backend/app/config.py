@@ -60,10 +60,31 @@ class Settings(BaseSettings):
     # Conservative defaults, not a claim about this account's live quota.
     # Reserve headroom for every other sender using the same SES region.
     email_daily_budget: int = Field(default=200, ge=1, le=1_000_000)
-    email_send_interval_s: float = Field(default=1.0, ge=0.05, le=60)
+    # Account mail (deletion links and notices) has its own cap, and may never
+    # use the share of the daily budget held back for sign-in links: a stream
+    # of deletion requests must not lock people out of signing in.
+    email_account_daily_budget: int = Field(default=40, ge=1, le=1_000_000)
+    email_signin_floor_fraction: float = Field(default=0.5, ge=0, le=1)
+    # Provider rate as a shared token bucket. SES's per-second rate for this
+    # account is in ops (about 14/s); 10 leaves headroom for other senders.
+    # A send that finds the bucket briefly empty waits up to max_wait_s
+    # (without holding a database connection) instead of being told "busy".
+    email_send_rate_per_s: float = Field(default=10.0, gt=0, le=1000)
+    email_send_burst: int = Field(default=10, ge=1, le=1000)
+    email_send_max_wait_s: float = Field(default=2.0, ge=0, le=10)
+    # Requests that may ask for mail, per source per day (IPv6: per /64),
+    # across sign-in and deletion. Counted before the address is looked up.
+    rl_email_ip_day_times: int = Field(default=100, ge=1)
+    # Deletion-link requests across all sources per day. Counted for every
+    # request, known address or not, so the answer never depends on whether
+    # an account exists -- while unknown addresses spend no provider budget.
+    rl_delete_request_day_times: int = Field(default=200, ge=1)
     email_send_attempts: int = Field(default=3, ge=1, le=5)
     email_backoff_max_s: int = Field(default=60, ge=1, le=300)
     email_quota_backoff_s: int = Field(default=3600, ge=60, le=86400)
+    # SES refusing for the whole account (suspended, sending paused, MAIL FROM
+    # domain unverified) needs a human; stop calling it meanwhile.
+    email_account_pause_s: int = Field(default=3600, ge=60, le=86400)
     email_from: str = "IndieDex <hello@nammaindies.org>"
     public_base_url: str = "http://localhost:8000"
 
@@ -485,6 +506,13 @@ class Settings(BaseSettings):
     auth_backoff_base_s: int = Field(default=5, ge=1, le=60)
     auth_backoff_max_s: int = Field(default=900, ge=60, le=3600)
     auth_failure_window_s: int = Field(default=3600, ge=3600, le=86400)
+    # Every route key is an IP, and one carrier NAT is many people: backoff on
+    # an IP key starts only after this many failures in the window.
+    auth_ip_backoff_after: int = Field(default=10, ge=1, le=100)
+    # Sign-in link consumption: tokens are high-entropy, so no failure
+    # backoff -- only this plain per-source window.
+    rl_consume_times: int = Field(default=60, ge=1, le=10000)
+    rl_consume_window_s: int = Field(default=900, ge=60, le=86400)
     # First-party SHA-256 proof-of-work, required on every passcode join.
     # No third-party script, cookie, service or transfer of visitor data.
     join_pow_bits: int = Field(default=16, ge=8, le=22)
@@ -492,9 +520,15 @@ class Settings(BaseSettings):
     rl_join_challenge_times: int = Field(default=60, ge=1, le=1000)
 
     # Admission happens before multipart parsing, keyed by account, shared by
-    # /sighting and /capture. Counts requests, including retries and bad forms.
+    # /sighting and /capture (voice-note and re-transcription doors have
+    # buckets of their own at the same sizes). Replays of an accepted upload
+    # and requests the route turns away (4xx) are refunded.
     rl_upload_hour_times: int = Field(default=60, ge=1, le=10000)
     rl_upload_day_times: int = Field(default=200, ge=1, le=100000)
+    # Per source address (IPv6: per /64) and for the whole service, across
+    # every guarded door. Generous: one carrier NAT is many field testers.
+    rl_upload_ip_hour_times: int = Field(default=600, ge=1)
+    rl_upload_global_hour_times: int = Field(default=5000, ge=1)
     abuse_signup_warn_hour: int = Field(default=20, ge=1)
     abuse_signin_warn_hour: int = Field(default=50, ge=1)
     abuse_upload_spike_hour: int = Field(default=20, ge=1)
@@ -547,6 +581,13 @@ class Settings(BaseSettings):
     # join from one carrier NAT in a quarter of an hour.
     rl_join_times: int = 10
     rl_join_window_s: int = 900
+    # The same budget for the whole door, across every source. Exhausting it
+    # shuts the passcode door (email sign-in stays open) until the window ends.
+    rl_join_global_wrong_times: int = Field(default=100, ge=1)
+    rl_join_global_wrong_window_s: int = Field(default=3600, ge=60)
+    # Successful passcode joins per source per day: a leaked code must not
+    # let one source mint accounts without end.
+    rl_join_success_ip_day_times: int = Field(default=50, ge=1)
 
     # Read the client IP from X-Real-IP, which Caddy sets from the real peer
     # and overwrites on every request (deploy/Caddyfile -- verified against

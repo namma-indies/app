@@ -136,7 +136,7 @@ async def test_success_is_logged_and_counted_without_a_secret(app_client, enable
     assert "store_review_signin outcome=success" in caplog.text
     assert CODE not in caplog.text
     async with app_client._transport.app.state.pool.acquire() as conn:
-        assert await conn.fetchval("SELECT count FROM abuse_hourly WHERE event='reviewer_signins'") == 1
+        assert await conn.fetchval("SELECT sum(count) FROM abuse_hourly WHERE event='reviewer_signins'") == 1
 
 
 async def test_logout_clears_both_credentials(app_client, enabled):

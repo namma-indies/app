@@ -20,9 +20,11 @@ router = APIRouter()
 
 
 async def record(conn, event: str) -> None:
-    await conn.execute("""INSERT INTO abuse_hourly (hour, event)
-        VALUES (date_trunc('hour', statement_timestamp(), 'UTC'), $1)
-        ON CONFLICT (hour, event) DO UPDATE SET count = abuse_hourly.count + 1""", event)
+    # Sharded by backend like the creation triggers (0046), so concurrent
+    # callers rarely queue on one row.
+    await conn.execute("""INSERT INTO abuse_hourly (hour, event, shard)
+        VALUES (date_trunc('hour', statement_timestamp(), 'UTC'), $1, pg_backend_pid() % 16)
+        ON CONFLICT (hour, event, shard) DO UPDATE SET count = abuse_hourly.count + 1""", event)
 
 
 async def sweep(pool) -> None:
@@ -72,7 +74,8 @@ async def snapshot(conn, hours: int = 24) -> dict:
             coalesce(sum(a.count) FILTER (WHERE a.event='upload_throttled'),0)::bigint AS upload_throttled,
             coalesce(sum(a.count) FILTER (WHERE a.event='email_throttled'),0)::bigint AS email_throttled,
             coalesce(sum(a.count) FILTER (WHERE a.event='email_failed'),0)::bigint AS email_failed,
-            coalesce(sum(a.count) FILTER (WHERE a.event='reviewer_signins'),0)::bigint AS reviewer_signins
+            coalesce(sum(a.count) FILTER (WHERE a.event='reviewer_signins'),0)::bigint AS reviewer_signins,
+            coalesce(sum(a.count) FILTER (WHERE a.event='passcode_lockouts'),0)::bigint AS passcode_lockouts
         FROM generate_series(
             greatest(date_trunc('hour', now(), 'UTC') - make_interval(hours => $1 - 1),
                      date_trunc('hour', $2::timestamptz, 'UTC')),
@@ -106,7 +109,7 @@ async def snapshot(conn, hours: int = 24) -> dict:
         "upload_spikes": [{**dict(r), "id": str(r["id"])} for r in spikes],
         "email_capacity": {"daily_budget": settings.email_daily_budget,
                            "reserved_last_24h": capacity["reserved"], "accepted_last_24h": capacity["accepted"],
-                           "send_interval_s": settings.email_send_interval_s,
+                           "send_interval_s": 1 / settings.email_send_rate_per_s,
                            "retry_at": retry_at.isoformat() if retry_at else None},
         "thresholds": {"signups_per_hour": settings.abuse_signup_warn_hour,
                        "failed_signins_per_hour": settings.abuse_signin_warn_hour,

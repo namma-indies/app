@@ -7,6 +7,7 @@ Keys are domain-separated HMACs: neither addresses nor IPs are stored here.
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import logging
 import math
 from dataclasses import dataclass
@@ -29,13 +30,29 @@ def key_hash(key: str) -> bytes:
     return hmac.digest(settings.phone_hash_secret.encode(), f"rate-limit:{key}".encode(), hashlib.sha256)
 
 
+def _network(host: str) -> str:
+    """One key per IPv4 address, one per IPv6 /64.
+
+    A single IPv6 subscriber is routinely handed a whole /64, so keying the
+    full address would give one caller 2**64 independent budgets."""
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    if addr.version == 6:
+        if addr.ipv4_mapped is not None:
+            return str(addr.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{addr}/64", strict=False))
+    return str(addr)
+
+
 def client_key(request: Request) -> str:
     """Only trust the header Caddy overwrites, and only in that topology."""
     if settings.trust_proxy_header:
         real = request.headers.get("x-real-ip")
         if real:
-            return real.strip()
-    return request.client.host if request.client else "unknown"
+            return _network(real.strip())
+    return _network(request.client.host) if request.client else "unknown"
 
 
 def throttled(seconds: float, message: str = "Too many requests.") -> HTTPException:
@@ -43,32 +60,43 @@ def throttled(seconds: float, message: str = "Too many requests.") -> HTTPExcept
     return HTTPException(429, f"{message} Try again in {wait} seconds.", headers={"Retry-After": str(wait)})
 
 
-async def cleanup(conn) -> None:
-    # Bounded, indexed sweeps; live budgets are never evicted to make room.
+async def cleanup(conn) -> int:
+    """One bounded, indexed sweep; returns how many rows went. Live budgets
+    are never evicted to make room."""
+    swept = 0
     for table in ("rate_limit_buckets", "auth_failures", "join_pow_uses"):
-        await conn.execute(f"""DELETE FROM {table} WHERE ctid IN (
+        status = await conn.execute(f"""DELETE FROM {table} WHERE ctid IN (
             SELECT ctid FROM {table} WHERE expires_at <= statement_timestamp()
             ORDER BY expires_at LIMIT 64 FOR UPDATE SKIP LOCKED
         )""")
+        swept += int(status.split()[-1])
+    return swept
 
 
 async def sweeper(pool) -> None:
-    """Also expire idle state when nobody is making new requests."""
+    """The only place expired state is deleted: requests never pay for it.
+    Keeps sweeping while there is a backlog, so a burst of one-off keys
+    cannot outgrow a once-a-minute pass."""
     while True:
         try:
             async with pool.acquire() as conn:
-                await cleanup(conn)
+                for _ in range(100):
+                    if not await cleanup(conn):
+                        break
         except Exception:
             logger.warning("rate-limit cleanup failed; will retry")
         await asyncio.sleep(60)
 
 
-async def check(conn, key: str, limit: Limit, *, amount: int = 1) -> None:
+async def check(conn, key: str, limit: Limit, *, amount: int = 1) -> int:
+    """Charge `amount` against the window; returns the hits now counted.
+
+    Expired rows are reset in place by the upsert and swept by `sweeper`, so
+    a request never pays for housekeeping."""
     if not settings.rate_limit_enabled:
-        return
+        return 0
     if limit.times < 1 or limit.window_s < 1 or amount < 1:
         raise ValueError("rate limits and amounts must be positive")
-    await cleanup(conn)
     row = await conn.fetchrow("""
         INSERT INTO rate_limit_buckets (key_hash, hits, expires_at)
         VALUES ($1, $3, to_timestamp((floor(extract(epoch FROM statement_timestamp()) / $2) + 1) * $2))
@@ -81,6 +109,18 @@ async def check(conn, key: str, limit: Limit, *, amount: int = 1) -> None:
     """, key_hash(f"window:{limit.window_s}:{key}"), limit.window_s, amount, limit.times)
     if row["hits"] > limit.times:
         raise throttled(row["wait"])
+    return row["hits"]
+
+
+async def refund(conn, key: str, limit: Limit, *, amount: int = 1) -> None:
+    """Give back a charge that turned out not to count (a correct passcode, an
+    upload replay). Charging first and refunding after keeps concurrent
+    requests bounded by the budget at every instant."""
+    if not settings.rate_limit_enabled:
+        return
+    await conn.execute("""UPDATE rate_limit_buckets SET hits = greatest(hits - $2, 0)
+        WHERE key_hash = $1 AND expires_at > statement_timestamp()""",
+        key_hash(f"window:{limit.window_s}:{key}"), amount)
 
 
 async def cooldown(conn, key: str, seconds: float) -> None:
@@ -110,10 +150,15 @@ async def check_backoff(conn, key: str) -> None:
         raise throttled(wait, "Too many failed sign-in attempts.")
 
 
-async def record_failure(conn, key: str) -> None:
-    """Record even the failure starting a lockout; commit before raising."""
+async def record_failure(conn, key: str, *, after: int | None = None) -> None:
+    """Record even the failure starting a lockout; commit before raising.
+
+    `after` is how many failures are free before backoff starts. Keys that are
+    an IP address pass `settings.auth_ip_backoff_after`: one carrier NAT is
+    many people, and a low threshold there punishes all of them."""
     if not settings.rate_limit_enabled:
         return
+    after = settings.auth_backoff_after if after is None else after
     async with conn.transaction():
         failures = await conn.fetchval("""
             INSERT INTO auth_failures (key_hash, failures, blocked_until, expires_at)
@@ -124,9 +169,9 @@ async def record_failure(conn, key: str) -> None:
                 expires_at = EXCLUDED.expires_at
             RETURNING failures
         """, key_hash(key), settings.auth_failure_window_s)
-        delay = 0 if failures < settings.auth_backoff_after else min(
+        delay = 0 if failures < after else min(
             settings.auth_backoff_max_s,
-            settings.auth_backoff_base_s * 2 ** min(20, failures - settings.auth_backoff_after))
+            settings.auth_backoff_base_s * 2 ** min(20, failures - after))
         await conn.execute("""UPDATE auth_failures
             SET blocked_until = statement_timestamp() + make_interval(secs => $2)
             WHERE key_hash = $1""", key_hash(key), delay)
@@ -160,3 +205,34 @@ def email_ip_limit() -> Limit:
 
 def join_limit() -> Limit:
     return Limit(settings.rl_join_times, settings.rl_join_window_s)
+
+
+def join_global_limit() -> Limit:
+    return Limit(settings.rl_join_global_wrong_times, settings.rl_join_global_wrong_window_s)
+
+
+def join_success_limit() -> Limit:
+    return Limit(settings.rl_join_success_ip_day_times, 86400)
+
+
+def consume_limit() -> Limit:
+    return Limit(settings.rl_consume_times, settings.rl_consume_window_s)
+
+
+def email_ip_day_limit() -> Limit:
+    return Limit(settings.rl_email_ip_day_times, 86400)
+
+
+def delete_request_limit() -> Limit:
+    return Limit(settings.rl_delete_request_day_times, 86400)
+
+
+# An upload route says "this was a replay of something already accepted" so
+# the upload guard can give the budget back: retrying a queued photo must not
+# cost the person twice. Routes with the request mark its state; routes
+# without one set this header, which the guard strips before replying.
+REPLAY_HEADER = "x-upload-replay"
+
+
+def mark_replay(request) -> None:
+    request.state.upload_replay = True

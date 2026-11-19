@@ -443,3 +443,31 @@ async def test_a_deletion_asked_for_after_carry_over_selected_the_account_cannot
         owner = await c.fetchval("SELECT observer_id FROM sightings WHERE id=$1", UUID(mine))
         pending = await c.fetchval("SELECT count(*) FROM account_deletions WHERE status='scheduled'")
     assert scheduled is None and owner == email_account and pending == 0
+
+
+async def test_unknown_addresses_spend_no_provider_budget_on_the_deletion_page(app_client, mail, monkeypatch):
+    """The page answers identically; only a real send spends real budget."""
+    monkeypatch.setattr(settings, "email_sender", "ses")
+    pool = await _pool(app_client)
+    for n in range(3):
+        reply = await app_client.post("/account/delete/request", data={"email": f"nobody{n}@example.test"})
+        assert reply.status_code == 200
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM email_send_attempts") == 0
+        await conn.execute("INSERT INTO observers (id,email,created_via) VALUES ($1,'known@example.test','email')", uuid7())
+    assert (await app_client.post("/account/delete/request", data={"email": "known@example.test"})).status_code == 200
+    async with pool.acquire() as conn:
+        assert await conn.fetch("SELECT purpose FROM email_send_attempts") == [("account",)]
+
+
+async def test_a_flood_of_deletion_requests_cannot_spend_signin_budget(app_client, mail, monkeypatch):
+    monkeypatch.setattr(settings, "email_sender", "ses")
+    monkeypatch.setattr(settings, "auth_email_cooldown_s", 1)
+    monkeypatch.setattr(settings, "rl_delete_request_day_times", 2)
+    for n in range(2):
+        assert (await app_client.post("/account/delete/request", data={"email": f"x{n}@example.test"})).status_code == 200
+    third = await app_client.post("/account/delete/request", data={"email": "x9@example.test"})
+    assert third.status_code == 429
+    pool = await _pool(app_client)
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM email_send_attempts") == 0

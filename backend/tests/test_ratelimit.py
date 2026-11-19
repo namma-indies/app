@@ -173,3 +173,41 @@ async def test_stats_is_limited_per_observer(authed_client, monkeypatch):
     for _ in range(2):
         assert (await client.get("/stats")).status_code == 200
     assert (await client.get("/stats")).status_code == 429
+
+
+def test_ipv6_clients_are_keyed_by_their_slash_64(monkeypatch):
+    """One subscriber is handed a whole /64; per-address keys would give one
+    caller 2**64 budgets."""
+    monkeypatch.setattr(settings, "trust_proxy_header", True)
+    a = client_key(_request({"X-Real-IP": "2001:db8:1:2::1"}))
+    b = client_key(_request({"X-Real-IP": "2001:db8:1:2:ffff:ffff:ffff:ffff"}))
+    c = client_key(_request({"X-Real-IP": "2001:db8:1:3::1"}))
+    assert a == b == "2001:db8:1:2::/64"
+    assert c != a
+    assert client_key(_request({"X-Real-IP": "::ffff:203.0.113.9"})) == "203.0.113.9"
+    assert client_key(_request(client=("2001:db8::7", 1))) == "2001:db8::/64"
+    assert client_key(_request({"X-Real-IP": "203.0.113.9"})) == "203.0.113.9"
+
+
+async def test_a_check_does_no_housekeeping(migrated_db):
+    """The sweeper owns expiry; a request should not pay three DELETEs."""
+    await migrated_db.execute("INSERT INTO rate_limit_buckets VALUES (decode('aa','hex'),1,now()-interval '1 second')")
+    await check(migrated_db, "k", Limit(5, 60))
+    assert await migrated_db.fetchval(
+        "SELECT count(*) FROM rate_limit_buckets WHERE key_hash=decode('aa','hex')") == 1
+
+
+async def test_an_expired_window_resets_in_place(migrated_db):
+    await check(migrated_db, "k", Limit(1, 60))
+    await migrated_db.execute("UPDATE rate_limit_buckets SET expires_at=now()-interval '1 second'")
+    assert await check(migrated_db, "k", Limit(1, 60)) == 1
+
+
+async def test_refund_returns_a_charge(migrated_db):
+    from app.ratelimit import refund
+    limit = Limit(1, 60)
+    await check(migrated_db, "k", limit)
+    await refund(migrated_db, "k", limit)
+    await check(migrated_db, "k", limit)
+    with pytest.raises(Exception):
+        await check(migrated_db, "k", limit)

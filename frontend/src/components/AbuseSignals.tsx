@@ -7,9 +7,11 @@ export default function AbuseSignals({ data }: { data: Signals }) {
     {latest && <p className="stats-note">This hour: {latest.signups} accounts created, {latest.failed_signins} failed sign-ins,
       and {latest.uploads} uploads accepted. {latest.upload_throttled} upload requests and {latest.email_throttled} email attempts hit limits.</p>}
     {!!latest?.reviewer_signins && <p className="stats-note">{latest.reviewer_signins} store reviewer sign-ins this hour.</p>}
+    {!!latest?.passcode_lockouts && <p role="status">The passcode door is paused: too many wrong passcodes
+      across all sources. {latest.passcode_lockouts} passcode joins were refused this hour; email sign-in still works.</p>}
     {latest?.signup_spike && <p role="status">Account creation is above the alert threshold.</p>}
     {latest?.signin_spike && <p role="status">Failed sign-ins are above the alert threshold.</p>}
-    <p className="stats-note">Account creation includes addresses awaiting email verification. Failed sign-ins include throttled attempts.
+    <p className="stats-note">Account creation includes addresses awaiting email verification. Failed sign-ins are refused passcodes, codes and links.
       Signals start {new Date(data.collection_started_at).toLocaleString()}; they do not trigger moderation automatically.</p>
     <details><summary>Hourly activity</summary>
       <table className="stats-table"><thead><tr><th>HOUR</th><th>ACCOUNTS</th><th>FAILED SIGN-INS</th><th>UPLOADS</th><th>UPLOADS HELD</th></tr></thead>
