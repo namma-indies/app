@@ -212,10 +212,11 @@ class ClientError(BaseModel):
 
 
 @router.post("/monitoring/client-error", status_code=204)
-async def client_error(body: ClientError, observer_id: UUID = Depends(require_observer)):
+async def client_error(request: Request, body: ClientError, observer_id: UUID = Depends(require_observer)):
     if not settings.ops_error_monitoring_enabled:
         raise HTTPException(404, "not found")
-    check(f"client-errors:obs:{observer_id}", Limit(10, 900))
+    async with request.app.state.pool.acquire() as conn:
+        await check(conn, f"client-errors:obs:{observer_id}", Limit(10, 900))
     # Validate the two fixed client categories but persist a single aggregate.
     # Never retain the observer, payload, browser, URL, message or stack.
     errors.record("client_error")

@@ -107,7 +107,9 @@ async def _read_form(request: Request) -> dict:
 
 @router.post("/grievances", response_class=HTMLResponse)
 async def submit_grievance(request: Request):
-    check(f"grievance:ip:{client_key(request)}", Limit(settings.rl_grievance_ip_times, settings.rl_grievance_window_s))
+    async with request.app.state.pool.acquire() as conn:
+        await check(conn, f"grievance:ip:{client_key(request)}",
+                    Limit(settings.rl_grievance_ip_times, settings.rl_grievance_window_s))
     values = await _read_form(request)
     try:
         body = Intake.model_validate(values)
@@ -123,7 +125,7 @@ async def submit_grievance(request: Request):
                 if existing["payload_digest"] != digest:
                     return _form(values={**values, "submission_key": str(uuid4())}, error="This form was already submitted. Check the details and send a new complaint.", status=409)
                 return _receipt(existing["reference"], status=200)
-            check(f"grievance:email:{email_hash(body.contact_email)}", Limit(settings.rl_grievance_email_times, settings.rl_grievance_window_s))
+            await check(conn, f"grievance:email:{email_hash(body.contact_email)}", Limit(settings.rl_grievance_email_times, settings.rl_grievance_window_s))
             sid = linked_sighting(body.target)
             # Preserve the opaque reference even if content has already gone.
             # Intake neither validates nor discloses whether the target exists.
