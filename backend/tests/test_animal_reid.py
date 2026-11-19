@@ -8,6 +8,7 @@ an identity that no later decision can unpick -- so this is the one place
 where getting it wrong is not reversible.
 """
 
+from app.reid_recipe import ACTIVE_RECIPE
 import numpy as np
 import pytest
 
@@ -50,8 +51,8 @@ async def _embedded_sighting(conn, oid, *, conf, vec_seed=0.1):
     await conn.execute(
         "INSERT INTO photos (id, sighting_id, s3_key) VALUES ($1,$2,'k')", pid, sid)
     await conn.execute(
-        "INSERT INTO embeddings (id, photo_id, model, dim, vec_miew) "
-        "VALUES ($1,$2,$3,$4,$5::vector)",
+        "INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, recipe) "
+        f"VALUES ($1,$2,$3,$4,$5::vector,'{ACTIVE_RECIPE}')",
         uuid7(), pid, MODEL_NAME, EMBED_DIM, _lit(_vec(vec_seed)))
     return sid
 

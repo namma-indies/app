@@ -4,6 +4,7 @@ The interesting cases are the ones where a dog is assembled from sightings that
 disagree -- different observers, different attributes, one of them merged away.
 """
 
+from app.reid_recipe import ACTIVE_RECIPE
 import io
 
 import pytest
@@ -233,8 +234,8 @@ async def _embed(client, sighting_id, vec):
             "SELECT id FROM photos WHERE sighting_id=$1::uuid ORDER BY created_at LIMIT 1",
             sighting_id)
         await c.execute(
-            "INSERT INTO embeddings (id, photo_id, model, dim, vec_miew) "
-            f"VALUES ($1,$2,$3,$4,$5::vector({EMBED_DIM})) "
+            "INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, recipe) "
+            f"VALUES ($1,$2,$3,$4,$5::vector({EMBED_DIM}),'{ACTIVE_RECIPE}') "
             "ON CONFLICT (photo_id, model) DO UPDATE SET vec_miew = EXCLUDED.vec_miew",
             uuid7(), pid, MODEL_NAME, EMBED_DIM, _lit(vec))
 

@@ -8,6 +8,7 @@ photo picked twice -- including stepping aside when the clip holds more than
 one animal and a copy cannot say which is which.
 """
 
+from app.reid_recipe import ACTIVE_RECIPE
 import hashlib
 import io
 from datetime import datetime, timezone
@@ -41,8 +42,8 @@ async def _clip_sighting(conn, oid, *, clip=CLIP, seed=1, frames=3):
             "INSERT INTO photos (id, sighting_id, s3_key) VALUES ($1,$2,$3)",
             pid, sid, f"sightings/{sid}/{pid}.webp")
         await conn.execute(
-            f"INSERT INTO embeddings (id, photo_id, model, dim, vec_miew) "
-            f"VALUES ($1,$2,$3,$4,$5::vector({EMBED_DIM}))",
+            f"INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, recipe) "
+            f"VALUES ($1,$2,$3,$4,$5::vector({EMBED_DIM}),'{ACTIVE_RECIPE}')",
             uuid7(), pid, MODEL_NAME, EMBED_DIM, _lit(_unit(seed)))
     await conn.execute(
         "UPDATE captures SET clip_sha256=$1 WHERE id=(SELECT capture_id FROM sightings WHERE id=$2)",
@@ -78,8 +79,8 @@ async def _clip_capture(conn, oid, *, clip=CLIP, seeds=(1,)):
                VALUES ($1,$2,$3,$4,$5,$6,'dog',0.9,'[0,0,1,1]','[0,0,1,1]')""",
             iid, cid, frame, crop, sid, f"track-{n}")
         await conn.execute(
-            f"INSERT INTO embeddings (id, photo_id, instance_id, model, dim, vec_miew) "
-            f"VALUES ($1,$2,$3,$4,$5,$6::vector({EMBED_DIM}))",
+            f"INSERT INTO embeddings (id, photo_id, instance_id, model, dim, vec_miew, recipe) "
+            f"VALUES ($1,$2,$3,$4,$5,$6::vector({EMBED_DIM}),'{ACTIVE_RECIPE}')",
             uuid7(), crop, iid, MODEL_NAME, EMBED_DIM, _lit(_unit(seed)))
         sids.append(sid)
     return sids

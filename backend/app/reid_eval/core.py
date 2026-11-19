@@ -10,7 +10,7 @@ import math
 import random
 from collections import Counter, defaultdict
 
-from .schema import STAGES, validate_metrics, validate_snapshot
+from .schema import CAVEATS, STAGES, validate_metrics, validate_snapshot
 
 
 class Groups:
@@ -25,6 +25,29 @@ class Groups:
     def join(self, a, b):
         a, b = self.find(a), self.find(b)
         self.parent[max(a, b)] = min(a, b)
+
+
+def near_hash_pairs(hashes, distance):
+    """Index pairs (i, j) whose perceptual hashes differ in at most `distance`
+    bits -- exactly those, without comparing every pair.
+
+    Pigeonhole banding: split each hash into distance+1 bands; two hashes within
+    `distance` bits agree on at least one band, so only hashes sharing a band
+    value are compared. `hashes` is a list of (value, bit_length).
+    """
+    buckets = defaultdict(list)
+    for index, (value, bits) in enumerate(hashes):
+        bands = distance + 1
+        for band in range(bands):
+            low, high = band * bits // bands, (band + 1) * bits // bands
+            buckets[bits, band, (value >> low) & ((1 << (high - low)) - 1)].append(index)
+    found = set()
+    for members in buckets.values():
+        for x, i in enumerate(members):
+            for j in members[x + 1:]:
+                if (i, j) not in found and (hashes[i][0] ^ hashes[j][0]).bit_count() <= distance:
+                    found.add((i, j))
+    return found
 
 
 def copy_families(observations, photos, phash_distance=4):
@@ -45,11 +68,9 @@ def copy_families(observations, photos, phash_distance=4):
                 previous = hashes.setdefault(sha, sid)
                 groups.join(previous, sid)
             if phash:
-                value = int(phash, 16)
-                for other, other_sid in perceptual:
-                    if (value ^ other).bit_count() <= phash_distance:
-                        groups.join(sid, other_sid)
-                perceptual.append((value, sid))
+                perceptual.append((int(phash, 16), 4 * len(phash), sid))
+    for i, j in near_hash_pairs([(value, bits) for value, bits, _ in perceptual], phash_distance):
+        groups.join(perceptual[i][2], perceptual[j][2])
     return {sid: groups.find(sid) for sid in groups.parent}
 
 
@@ -73,7 +94,6 @@ def label_graph(data):
 def split_plan(data, roots=None, conflicts=None):
     """Time holdout; a copy family spanning its boundary is quarantined.
 
-    Development folds group both human-positive components and copy families.
     Earlier gallery context can be read by a later holdout query; gallery rows
     are not training examples. No holdout query is scored by default.
     """
@@ -84,28 +104,18 @@ def split_plan(data, roots=None, conflicts=None):
     at = max(0, len(times) - math.ceil(len(times) * meta["holdout_fraction"]))
     cutoff = times[at] if times else 0
     families = defaultdict(list)
-    groups = Groups(row["id"] for row in rows)
-    components = {}
     for row in rows:
         families[row["copy_family"]].append(row)
-        previous = components.setdefault(roots[row["id"]], row["id"])
-        groups.join(previous, row["id"])
     plan = {}
     for family in families.values():
         crossing = min(r["created_ms"] for r in family) < cutoff <= max(r["created_ms"] for r in family)
         for row in family:
-            groups.join(family[0]["id"], row["id"])
             plan[row["id"]] = ("quarantined" if crossing or row["id"] in conflicts else
                                 "holdout" if row["created_ms"] >= cutoff else "development")
-    dev_groups = sorted({groups.find(sid) for sid, part in plan.items() if part == "development"})
-    random.Random(meta["seed"]).shuffle(dev_groups)
-    folds = {root: index % int(meta["folds"]) for index, root in enumerate(dev_groups)}
-    assignments = {sid: {"split": part, "fold": folds[groups.find(sid)] if part == "development" else None}
-                   for sid, part in plan.items()}
+    assignments = {sid: {"split": part} for sid, part in plan.items()}
     counts = Counter(plan.values())
     return assignments, {"development": counts["development"], "holdout": counts["holdout"],
-                         "quarantined": counts["quarantined"], "components": len(dev_groups),
-                         "folds": int(meta["folds"]), "cutoff_ms": cutoff}
+                         "quarantined": counts["quarantined"], "cutoff_ms": cutoff}
 
 
 def ranking_metrics(ranked, relevant):
@@ -150,6 +160,10 @@ def independent(q, c):
     return (q["capture_id"] is not None and c["capture_id"] is not None
             and q["capture_id"] != c["capture_id"] and q["captured_day"] != c["captured_day"]
             and q["copy_family"] != c["copy_family"])
+
+
+def junk(q, c, same_identity):
+    return c["copy_family"] == q["copy_family"] or (same_identity and not independent(q, c))
 
 
 def ranked(pairs, observations, score_key, *, policy=False):
@@ -204,7 +218,12 @@ def evaluate(data, *, split="development", decision_id=None):
         relevant = {p["candidate"] for p in query_pairs
                     if roots[p["candidate"]] == group and observations[p["candidate"]]["verified"]
                     and independent(query, observations[p["candidate"]])}
-        model = ranked(query_pairs, observations, "model_score")
+        # Standard re-ID junk: a copy of the query, or the same animal in a
+        # non-independent encounter (same capture or day), is neither a hit
+        # nor a miss for the model. Kept in the policy replay, which is about
+        # what a reviewer would actually be shown.
+        model = [p for p in ranked(query_pairs, observations, "model_score")
+                 if not junk(query, observations[p["candidate"]], roots[p["candidate"]] == group)]
         ann = ranked(query_pairs, observations, "ann_score", policy=True)
         exact = ranked(query_pairs, observations, "policy_score", policy=True)
         ann_ranks = {p["candidate"]: rank for rank, p in enumerate(ann, 1)}
@@ -283,7 +302,11 @@ def evaluate(data, *, split="development", decision_id=None):
     result = {
         "schema": 1, "snapshot_id": meta["snapshot_id"], "recipe_id": meta["recipe_id"],
         "policy_id": meta["policy_id"],
-        "protocol": {key: meta[key] for key in ("threshold", "cap", "ann_shortlist", "phash_distance", "holdout_fraction", "seed", "folds", "versioning")},
+        "protocol": {key: meta[key] for key in ("threshold", "cap", "ann_shortlist", "phash_distance", "holdout_fraction", "seed", "ann_replay", "versioning")},
+        # Always true of v0: vector availability is `embeddings.created_at`,
+        # which a re-embed upsert resets, so a re-embedded gallery looks newer
+        # than it was and drops out of earlier queries.
+        "caveats": sorted(CAVEATS),
         "status": "inconclusive" if len(coverage) < 20 or len({r[0] for r in coverage}) < 2 or meta["truncated"] else "observational",
         "split": split, "replay": meta["replay"], "label_scope": "existing_verdicts",
         "inventory": inventory,

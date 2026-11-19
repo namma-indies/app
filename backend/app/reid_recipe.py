@@ -7,6 +7,27 @@ worker, without changing any of the modules it hashes.
 
 This is not worker attestation. Weight/source digests in completion payloads
 still need a separate worker update before a second recipe is deployed.
+
+BEFORE BUMPING ACTIVE_RECIPE: CAPTURE PHOTOS HAVE NO RE-EMBED PATH YET
+--------------------------------------------------------------------------
+Every read filters on the active recipe, so a bump makes every vector made
+under the old one invisible to matching until it is re-made. Two gaps stand
+in the way, and a bump must close both first:
+
+* `scripts/backfill_embeddings.py` only re-embeds /sighting photos
+  (`p.capture_id IS NULL`). A /capture (v2) vector is of a *crop* the worker
+  cut from a source frame by its own detection, so the API cannot re-make it
+  from the stored photo the way the backfill does; that needs a worker job
+  that re-runs crop + embed for existing captures and writes rows with the
+  new recipe. Until it exists, every /capture sighting drops out of matching
+  on a bump.
+* `captures.publish_groups` upserts the sighting mean (`vec_miew`) on
+  conflict, so a capture re-published under the new recipe overwrites the
+  cached mean; that is the intended path for such a job, but nothing calls
+  it for old captures today.
+
+Not fixed here because it is a worker feature, not a tag: it needs a job
+type, a lease and a completion contract (#226).
 """
 
 from dataclasses import dataclass

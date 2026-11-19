@@ -468,6 +468,16 @@ class Settings(BaseSettings):
     # more than asking for a yes/no the contributor cannot answer confidently.
     reid_thin_evidence_frames: int = 4
 
+    # --- re-ID evaluation snapshot (scripts/reid_eval.py) -------------------
+    # Per-statement ceiling inside the snapshot's read-only transaction, so a
+    # pathological plan is cut off rather than holding a snapshot open for
+    # hours. Overridable per run with --statement-timeout-ms.
+    reid_eval_statement_timeout_ms: int = Field(default=120_000, ge=1_000)
+    # How many index rows the ANN replay may walk per probe for a located
+    # query before giving up, the stand-in for pgvector's iterative-scan cap
+    # (hnsw.max_scan_tuples, default 20,000).
+    reid_eval_ann_walk: int = Field(default=20_000, ge=50)
+
     # --- animal presence ---------------------------------------------------
     # A sighting whose photos score below this does not appear on /map, /dogs,
     # the public counts, or in re-ID candidate search. It stays in its owner's

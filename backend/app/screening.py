@@ -45,6 +45,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.auth.deps import require_moderator
+from app.aggregates import capture_public
 from app.config import settings
 from app.deps import get_conn, get_storage
 from app.detect_reid import DETECTOR_NAME
@@ -110,10 +111,11 @@ async def reasons_for(conn, capture_id: UUID, observer_id: UUID | None) -> list[
     if any((p["indoor"] or 0) >= settings.screening_indoor_min for p in photos):
         reasons.append("indoor")
     if observer_id is not None and settings.screening_trusted_after > 0:
+        # Shown means what `screened` shows, `checking` past its wait included.
         row = await conn.fetchrow(
-            """SELECT o.trust_tier = 'moderator' AS moderator,
+            f"""SELECT o.trust_tier = 'moderator' AS moderator,
                       (SELECT count(*) FROM captures c
-                       WHERE c.observer_id = o.id AND c.id <> $2 AND c.screening IN ('clear','approved')) AS shown
+                       WHERE c.observer_id = o.id AND c.id <> $2 AND {capture_public('c')}) AS shown
                FROM observers o WHERE o.id = $1""", observer_id, capture_id)
         if row is not None and not row["moderator"] and row["shown"] < settings.screening_trusted_after:
             reasons.append("new_account")
@@ -274,6 +276,55 @@ async def held_frames(
     ]}
 
 
+async def settle_identities(conn, capture_id: UUID, state: str) -> None:
+    """What a ruling changes for identities. In the ruling's transaction.
+
+    Copies (app.identical): a clean upload marked a copy of this one is judged
+    again, so it never stays hidden behind a rejected original.
+
+    Links (reject only): a held upload is searched on purpose, so it may have
+    been linked to a dog while it waited -- by the identical-photo rule or a
+    score over `reid_auto_merge_min`. Rejected content must not seed
+    identities, so those links are undone. A link a person confirmed (a `same`
+    verdict naming the sighting) stays: that is a human decision, and a ruling
+    about the upload's content is not one about which dog it is. Partners
+    linked *to* it keep their identity: each passed screening on its own. An
+    upload approved again later is not re-linked here; it is in the match
+    queue again like any unlinked sighting.
+    """
+    from app.identical import settle_copies_after_ruling
+    from app.matching import lock_matching
+    await lock_matching(conn)
+    if state == "rejected":
+        await unlink_automatic(conn, capture_id)
+    await settle_copies_after_ruling(conn, capture_id, state)
+
+
+async def unlink_automatic(conn, capture_id: UUID) -> list[UUID]:
+    """Undo every identity link of this upload's sightings that no person
+    confirmed. Returns the sightings unlinked. Caller holds `lock_matching`."""
+    rows = await conn.fetch(
+        """
+        UPDATE sightings s SET individual_id = NULL, match_status = 'unmatched', updated_at = now()
+        WHERE s.capture_id = $1 AND s.individual_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM confirmations cf
+              LEFT JOIN match_proposals mp ON mp.id = cf.proposal_id
+              WHERE cf.verdict = 'same'
+                AND (cf.sighting_id = s.id OR mp.candidate_sighting_id = s.id))
+        RETURNING s.id
+        """,
+        capture_id,
+    )
+    unlinked = [r["id"] for r in rows]
+    if unlinked:
+        # The record of a link that no longer exists. Re-made, with a new row,
+        # if the rule links the sighting again.
+        await conn.execute("DELETE FROM auto_links WHERE sighting_id = ANY($1::uuid[])", unlinked)
+        logger.info("capture=%s rejected: unlinked %d automatic identity link(s)", capture_id, len(unlinked))
+    return unlinked
+
+
 class ScreeningVerdict(BaseModel):
     verdict: Literal["approve", "reject"]
 
@@ -299,6 +350,7 @@ async def rule_on_upload(
             capture_id, state, moderator_id)
         if updated is None:
             raise HTTPException(status_code=404, detail="no held upload")
+        await settle_identities(conn, capture_id, state)
         await record_moderator_action(conn, moderator_id=moderator_id, action=f"upload_{state}",
                                       capture_id=capture_id)
     return {"status": "ok", "screening": state}

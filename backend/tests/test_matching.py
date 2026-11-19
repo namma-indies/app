@@ -10,6 +10,7 @@ No model is involved: vectors are synthetic, so the tests run everywhere and
 assert on retrieval behaviour rather than on MiewID's judgement.
 """
 
+from app.reid_recipe import ACTIVE_RECIPE
 import numpy as np
 import pytest
 
@@ -53,8 +54,8 @@ async def _sighting(conn, observer_id, vec, *, lat=None, lng=None):
         pid, sid, f"k/{pid}.webp",
     )
     await conn.execute(
-        "INSERT INTO embeddings (id, photo_id, model, dim, vec_miew) "
-        "VALUES ($1,$2,$3,$4,$5::vector)",
+        "INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, recipe) "
+        f"VALUES ($1,$2,$3,$4,$5::vector,'{ACTIVE_RECIPE}')",
         eid, pid, MODEL_NAME, EMBED_DIM,
         "[" + ",".join(f"{float(x):.7g}" for x in vec) + "]",
     )
@@ -154,8 +155,8 @@ async def test_one_row_per_candidate_sighting(migrated_db):
         )
         v = _unit(extra)
         await migrated_db.execute(
-            "INSERT INTO embeddings (id, photo_id, model, dim, vec_miew) "
-            "VALUES ($1,$2,$3,$4,$5::vector)",
+            "INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, recipe) "
+            f"VALUES ($1,$2,$3,$4,$5::vector,'{ACTIVE_RECIPE}')",
             eid, pid, MODEL_NAME, EMBED_DIM,
             "[" + ",".join(f"{float(x):.7g}" for x in v) + "]",
         )
@@ -217,8 +218,8 @@ async def test_a_clip_is_not_asked_for_another_clip(migrated_db):
         )
         v = _unit(extra)
         await migrated_db.execute(
-            "INSERT INTO embeddings (id, photo_id, model, dim, vec_miew) "
-            "VALUES ($1,$2,$3,$4,$5::vector)",
+            "INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, recipe) "
+            f"VALUES ($1,$2,$3,$4,$5::vector,'{ACTIVE_RECIPE}')",
             eid, pid, MODEL_NAME, EMBED_DIM,
             "[" + ",".join(f"{float(x):.7g}" for x in v) + "]",
         )

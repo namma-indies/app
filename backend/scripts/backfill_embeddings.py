@@ -29,6 +29,12 @@ including v2 animal crops. This happens even when no photos need embedding.
 `--resolve` keeps its existing scope: newly embedded sightings only. Rebuilding
 old means is not a proposal sweep; that waits for cannot-link enforcement.
 
+NOT A RECIPE-BUMP TOOL FOR /capture PHOTOS. `PENDING_SQL` skips every photo
+with a `capture_id`: a v2 capture's vectors are of crops the worker cut by its
+own detection, which this script cannot reproduce from the stored photo. After
+a bump of `ACTIVE_RECIPE` those sightings stay unmatchable until a worker
+re-embed path exists -- see the warning in app/reid_recipe.py before bumping.
+
 Deliberately serial. Embedding is CPU-bound ONNX and this runs against the same
 box that serves requests; a parallel backfill would compete with live uploads
 for the same cores. `--sleep` throttles it further if it needs to run during

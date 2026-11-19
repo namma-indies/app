@@ -94,14 +94,24 @@ def screened(alias: str = "s") -> str:
     state added later, does not show. Next to `owner_active` wherever a
     surface shows someone else's sightings.
     """
+    return (f"EXISTS (SELECT 1 FROM captures cs WHERE cs.id = {alias}.capture_id"
+            f" AND {capture_public('cs')})")
+
+
+def capture_public(alias: str = "c") -> str:
+    """The upload (a `captures` row) is past screening: what `screened` asks
+    of a sighting's capture, for queries that start from the capture.
+
+    Reads the wait when called, so build SQL with it at query time, never into
+    a module-level constant.
+    """
     wait = float(settings.screening_model_wait_s)
     # `checking`: the detector cleared it and the local model is looking. It
     # shows once the model has had its time, so a model that is down never
     # blanks the map (app/model_screening.py).
-    return (f"EXISTS (SELECT 1 FROM captures cs WHERE cs.id = {alias}.capture_id"
-            f" AND (cs.screening IN ('clear','approved')"
-            f" OR (cs.screening = 'checking'"
-            f" AND cs.screened_at <= now() - {wait!r}::float8 * interval '1 second')))")
+    return (f"({alias}.screening IN ('clear','approved')"
+            f" OR ({alias}.screening = 'checking'"
+            f" AND {alias}.screened_at <= now() - {wait!r}::float8 * interval '1 second'))")
 
 
 def not_rejected_upload(alias: str = "s") -> str:

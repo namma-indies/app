@@ -17,8 +17,10 @@ async def photo(conn, sid, key, vector=None):
     pid = uuid7()
     await conn.execute("INSERT INTO photos(id,sighting_id,s3_key) VALUES($1,$2,$3)", pid, sid, key)
     if vector is not None:
-        await conn.execute("""INSERT INTO embeddings(id,photo_id,model,dim,vec_miew)
-            VALUES($1,$2,$3,$4,$5::vector)""", uuid7(), pid, MODEL_NAME, EMBED_DIM, _to_pgvector(vector))
+        from app.reid_recipe import ACTIVE_RECIPE
+        await conn.execute("""INSERT INTO embeddings(id,photo_id,model,dim,vec_miew,recipe)
+            VALUES($1,$2,$3,$4,$5::vector,$6)""", uuid7(), pid, MODEL_NAME, EMBED_DIM,
+            _to_pgvector(vector), ACTIVE_RECIPE)
     return pid
 
 
@@ -96,6 +98,7 @@ async def test_old_proposal_keeps_earliest_photo_fallback(authed_client):
     assert got["a"]["photo_id"] == str(first_a)
     assert got["b"]["photo_id"] == str(first_b)
     assert got["b"]["matched"] is False
+    assert got["b"]["matched_removed"] is False  # never recorded, not removed
     assert len(got["a"]["photos"]) == len(got["b"]["photos"]) == 1
 
 
@@ -104,15 +107,17 @@ async def test_deleted_gallery_evidence_falls_back_without_deleting_the_proposal
     client, oid = authed_client
     async with client._transport.app.state.pool.acquire() as conn:
         a, b = await sighting(conn, oid), await sighting(conn, oid)
-        await photo(conn, a, "query.webp")
+        query = await photo(conn, a, "query.webp")
         first = await photo(conn, b, "gallery-first.webp")
         best = await photo(conn, b, "gallery-best.webp")
-        pid = await proposal(conn, a, b, matched_photo_id=best)
+        pid = await proposal(conn, a, b, matched_photo_id=best, query_photo_ids=[query])
         await conn.execute("DELETE FROM photos WHERE id=$1", best)
     got = (await client.get("/proposals")).json()["proposals"][0]
     assert got["id"] == str(pid)
     assert got["b"]["photo_id"] == str(first)
     assert got["b"]["matched"] is False
+    assert got["b"]["matched_removed"] is True
+    assert got["a"]["matched_removed"] is False
 
 
 @pytest.mark.asyncio
@@ -129,3 +134,23 @@ async def test_evidence_ids_cannot_expose_an_unrelated_sighting(authed_client):
     assert [p["photo_id"] for p in got["a"]["photos"]] == [str(own)]
     assert got["b"]["photo_id"] == str(gallery)
     assert "unrelated.webp" not in response.text
+
+
+@pytest.mark.parametrize("recorded", ["empty", "all_deleted"])
+@pytest.mark.asyncio
+async def test_query_side_is_never_blank_when_no_recorded_view_is_left(authed_client, recorded):
+    """An empty evidence list, or one whose photos were all deleted, falls back
+    to the earliest photo like an old proposal: never a blank side with
+    "same" still pressable."""
+    client, oid = authed_client
+    async with client._transport.app.state.pool.acquire() as conn:
+        a, b = await sighting(conn, oid), await sighting(conn, oid)
+        gone = await photo(conn, a, "query-gone.webp")
+        first_a = await photo(conn, a, "query-left.webp")
+        best = await photo(conn, b, "gallery.webp")
+        ids = [] if recorded == "empty" else [gone]
+        await proposal(conn, a, b, matched_photo_id=best, query_photo_ids=ids)
+        await conn.execute("DELETE FROM photos WHERE id=$1", gone)
+    got = (await client.get("/proposals")).json()["proposals"][0]
+    assert got["a"]["photo_id"] == str(first_a)
+    assert [p["photo_id"] for p in got["a"]["photos"]] == [str(first_a)]

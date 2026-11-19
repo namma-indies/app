@@ -11,6 +11,7 @@ the fixture says, because what is under test is the linking, not the hashing.
 The hashing has its own tests at the bottom.
 """
 
+from app.reid_recipe import ACTIVE_RECIPE
 import hashlib
 import io
 
@@ -66,8 +67,8 @@ async def _sighting(conn, oid, *, sha=SHA, seed=1, individual_id=None,
         "INSERT INTO photos (id, sighting_id, s3_key, content_sha256) VALUES ($1,$2,$3,$4)",
         pid, sid, f"sightings/{sid}/{pid}.webp", sha)
     await conn.execute(
-        f"INSERT INTO embeddings (id, photo_id, model, dim, vec_miew) "
-        f"VALUES ($1,$2,$3,$4,$5::vector({EMBED_DIM}))",
+        f"INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, recipe) "
+        f"VALUES ($1,$2,$3,$4,$5::vector({EMBED_DIM}),'{ACTIVE_RECIPE}')",
         uuid7(), pid, MODEL_NAME, EMBED_DIM, _lit(_unit(seed)))
     return sid
 
@@ -99,8 +100,8 @@ async def _capture(conn, oid, *, sha=SHA, seeds=(1,)):
                VALUES ($1,$2,$3,$4,$5,$6,'dog',0.9,'[0,0,1,1]','[0,0,1,1]')""",
             iid, cid, src, crop, sid, f"track-{n}")
         await conn.execute(
-            f"INSERT INTO embeddings (id, photo_id, instance_id, model, dim, vec_miew) "
-            f"VALUES ($1,$2,$3,$4,$5,$6::vector({EMBED_DIM}))",
+            f"INSERT INTO embeddings (id, photo_id, instance_id, model, dim, vec_miew, recipe) "
+            f"VALUES ($1,$2,$3,$4,$5,$6::vector({EMBED_DIM}),'{ACTIVE_RECIPE}')",
             uuid7(), crop, iid, MODEL_NAME, EMBED_DIM, _lit(_unit(seed)))
         sids.append(sid)
     return sids

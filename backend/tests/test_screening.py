@@ -6,6 +6,7 @@ daily social post -- while its owner still has it, and that approving it puts
 it back exactly. The second proves what gets held, through the real upload
 route with the detector stubbed.
 """
+from app.reid_recipe import ACTIVE_RECIPE
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -59,6 +60,14 @@ async def test_a_held_upload_is_on_no_shared_surface_until_a_moderator_approves_
     pool = await _pool(client)
     async with pool.acquire() as c:   # so the daily post may take their photo
         await c.execute("UPDATE observers SET social_consent=true, x_handle='owner_handle' WHERE id=$1", owner)
+        # Every fixture upload is the same file, and a ruling now re-judges
+        # copies (app.identical). Make the fixture a state the identical-photo
+        # rule can leave: only `copy` shares the owner's bytes, and a copy is
+        # always of the same dog as its original.
+        await c.execute("UPDATE photos SET content_sha256 = 'bytes-' || sighting_id::text "
+                        "WHERE sighting_id = ANY($1::uuid[])", [UUID(w["theirs"]), UUID(w["pending"])])
+        await c.execute("UPDATE sightings SET individual_id = $2, match_status = 'confirmed' WHERE id = $1",
+                        UUID(w["copy"]), w["dog"])
     before = await _public(client, viewer)
     assert _mentions(before["map"], mine) and _mentions(before["proposals"], mine)
     assert before["dogs"][0]["sighting_count"] == 2 and before["postable"][mine]
@@ -132,8 +141,8 @@ async def test_two_uploads_held_at_once_still_pair_and_the_pair_shows_once_both_
         # Two different photos of one dog: the same vector, not the same file.
         await c.execute("UPDATE photos SET content_sha256 = NULL")
         for sid in (first, second):
-            await c.execute(f"""INSERT INTO embeddings (id, photo_id, model, dim, vec_miew)
-                                SELECT $1, id, $2, {EMBED_DIM}, array_fill(0.1::real, ARRAY[{EMBED_DIM}])::vector
+            await c.execute(f"""INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, recipe)
+                                SELECT $1, id, $2, {EMBED_DIM}, array_fill(0.1::real, ARRAY[{EMBED_DIM}])::vector, '{ACTIVE_RECIPE}'
                                 FROM photos WHERE sighting_id=$3""", uuid7(), MODEL_NAME, UUID(sid))
             await c.execute("UPDATE captures SET screening='held' WHERE id=$1", await _capture_of(pool, sid))
         outcome = await resolve_sighting(c, UUID(second), auto_merge_min=1.01, propose_min=0.5, radius_m=1000.0,
@@ -165,8 +174,8 @@ async def test_a_rejected_upload_is_never_searched(authed_client):
     mine = await _post(client)
     pool = await _pool(client)
     async with pool.acquire() as c:
-        await c.execute(f"""INSERT INTO embeddings (id, photo_id, model, dim, vec_miew)
-                            SELECT $1, id, $2, {EMBED_DIM}, array_fill(0.1::real, ARRAY[{EMBED_DIM}])::vector
+        await c.execute(f"""INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, recipe)
+                            SELECT $1, id, $2, {EMBED_DIM}, array_fill(0.1::real, ARRAY[{EMBED_DIM}])::vector, '{ACTIVE_RECIPE}'
                             FROM photos WHERE sighting_id=$3""", uuid7(), MODEL_NAME, UUID(mine))
         lat, lng = await c.fetchrow("SELECT ST_Y(geog::geometry), ST_X(geog::geometry) FROM sightings WHERE id=$1",
                                     UUID(mine))
@@ -202,8 +211,8 @@ async def test_a_clean_copy_of_a_rejected_upload_is_not_folded_into_it(authed_cl
                             [await _capture_of(pool, s) for s in (rejected, copy)])
         from app.embed import EMBED_DIM, MODEL_NAME
         for sid in (rejected, copy):         # resolution only runs on an embedded upload
-            await c.execute(f"""INSERT INTO embeddings (id, photo_id, model, dim, vec_miew)
-                                SELECT $1, id, $2, {EMBED_DIM}, array_fill(0.1::real, ARRAY[{EMBED_DIM}])::vector
+            await c.execute(f"""INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, recipe)
+                                SELECT $1, id, $2, {EMBED_DIM}, array_fill(0.1::real, ARRAY[{EMBED_DIM}])::vector, '{ACTIVE_RECIPE}'
                                 FROM photos WHERE sighting_id=$3""", uuid7(), MODEL_NAME, UUID(sid))
         await c.execute("UPDATE sightings SET individual_id = NULL, duplicate_of = NULL, match_status = 'unmatched'")
         await c.execute("UPDATE captures SET screening = 'rejected' WHERE id = $1", await _capture_of(pool, rejected))
@@ -214,6 +223,182 @@ async def test_a_clean_copy_of_a_rejected_upload_is_not_folded_into_it(authed_cl
     _as(client, viewer)
     shown = (await client.get("/map")).json()["sightings"]
     assert _mentions(shown, copy) and not _mentions(shown, rejected)
+
+
+async def _identical_pair(client, older_state, newer_state):
+    """Two observers upload the same file; the older upload is resolved first.
+    Returns (older, newer, pool, moderator, viewer)."""
+    from app.embed import EMBED_DIM, MODEL_NAME
+    from app.reid_recipe import ACTIVE_RECIPE
+    other, viewer, mod = await _second_observer(client, "Other"), await _second_observer(client, "Viewer"), \
+        await _moderator(client)
+    older = await _post(client)
+    _as(client, other)
+    newer = await _post(client)
+    pool = await _pool(client)
+    async with pool.acquire() as c:
+        for sid in (older, newer):
+            await c.execute(f"""INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, recipe)
+                                SELECT $1, id, $2, {EMBED_DIM}, array_fill(0.1::real, ARRAY[{EMBED_DIM}])::vector, $4
+                                FROM photos WHERE sighting_id=$3""", uuid7(), MODEL_NAME, UUID(sid), ACTIVE_RECIPE)
+        await c.execute("UPDATE sightings SET individual_id = NULL, duplicate_of = NULL, match_status = 'unmatched'")
+        for sid, state in ((older, older_state), (newer, newer_state)):
+            await c.execute("UPDATE captures SET screening = $2 WHERE id = $1", await _capture_of(pool, sid), state)
+    return older, newer, pool, mod, viewer
+
+
+async def _resolve(pool, sid):
+    from app.matching import resolve_sighting
+    async with pool.acquire() as c:
+        await resolve_sighting(c, UUID(sid), auto_merge_min=1.01, propose_min=0.5, radius_m=1000.0,
+                               max_candidates=5, new_uuid=uuid7)
+
+
+async def _copy_of(pool, sid):
+    async with pool.acquire() as c:
+        found = await c.fetchval("SELECT duplicate_of FROM sightings WHERE id = $1", UUID(sid))
+    return str(found) if found else None
+
+
+@pytest.mark.parametrize("verdict", ["reject", "approve"])
+@pytest.mark.asyncio
+async def test_a_clean_copy_is_never_hidden_behind_a_held_original(authed_client, verdict):
+    """Held original first, clean copy second: the copy counts at once, and a
+    ruling on the original settles which of the two is the copy."""
+    client, owner = authed_client
+    held, clean, pool, mod, viewer = await _identical_pair(client, "held", "clear")
+    await _resolve(pool, held)
+    await _resolve(pool, clean)
+    assert await _copy_of(pool, clean) is None, "a clean upload waits on someone else's moderation"
+    _as(client, viewer)
+    assert _mentions((await client.get("/map")).json()["sightings"], clean)
+
+    _as(client, mod)
+    r = await client.post(f"/moderation/capture/{await _capture_of(pool, held)}/screening",
+                          json={"verdict": verdict})
+    assert r.status_code == 200
+    _as(client, viewer)
+    shown = (await client.get("/map")).json()["sightings"]
+    if verdict == "reject":
+        assert _mentions(shown, clean) and not _mentions(shown, held)
+        assert await _copy_of(pool, clean) is None
+    else:
+        # Both public now: the photo counts once, as for any two clean copies.
+        assert await _copy_of(pool, clean) == held
+        assert _mentions(shown, held) and not _mentions(shown, clean)
+
+
+@pytest.mark.parametrize("verdict", ["reject", "approve"])
+@pytest.mark.asyncio
+async def test_a_held_later_copy_of_a_clean_upload_is_its_copy(authed_client, verdict):
+    """Clean original first, held copy second: the held one is the copy, and
+    either ruling leaves the clean original showing."""
+    client, owner = authed_client
+    clean, held, pool, mod, viewer = await _identical_pair(client, "clear", "held")
+    await _resolve(pool, clean)
+    await _resolve(pool, held)
+    assert await _copy_of(pool, held) == clean
+    _as(client, mod)
+    await client.post(f"/moderation/capture/{await _capture_of(pool, held)}/screening", json={"verdict": verdict})
+    _as(client, viewer)
+    shown = (await client.get("/map")).json()["sightings"]
+    assert _mentions(shown, clean) and not _mentions(shown, held)
+    assert await _copy_of(pool, held) == clean and await _copy_of(pool, clean) is None
+
+
+@pytest.mark.asyncio
+async def test_rejecting_an_original_releases_its_copies(authed_client):
+    """A copy marked while its original was still pending (and later held)
+    counts again once the original is rejected, rather than vanishing with it."""
+    client, owner = authed_client
+    held, clean, pool, mod, viewer = await _identical_pair(client, "pending", "clear")
+    await _resolve(pool, held)
+    await _resolve(pool, clean)
+    assert await _copy_of(pool, clean) == held       # pending settles by itself, so it may stand for it
+    async with pool.acquire() as c:
+        await c.execute("UPDATE captures SET screening = 'held' WHERE id = $1", await _capture_of(pool, held))
+    _as(client, mod)
+    await client.post(f"/moderation/capture/{await _capture_of(pool, held)}/screening", json={"verdict": "reject"})
+    assert await _copy_of(pool, clean) is None
+    _as(client, viewer)
+    assert _mentions((await client.get("/map")).json()["sightings"], clean)
+
+
+@pytest.mark.parametrize("minutes_ago, trusted_now", [(30, True), (1, False)])
+@pytest.mark.asyncio
+async def test_uploads_showing_after_the_model_wait_count_towards_trust(migrated_db, screening_on,
+                                                                         monkeypatch, minutes_ago, trusted_now):
+    """The new-account count is of uploads others can see: `checking` past its
+    wait shows (aggregates.screened), so it counts; one still waiting does not."""
+    from app.screening import reasons_for
+    monkeypatch.setattr(settings, "screening_trusted_after", 2)
+    monkeypatch.setattr(settings, "screening_model_wait_s", 600)
+    conn, oid = migrated_db, uuid7()
+    await conn.execute("INSERT INTO observers(id) VALUES($1)", oid)
+    for _ in range(2):
+        await conn.execute("""INSERT INTO captures (id, observer_id, kind, captured_at, screening, screened_at)
+            VALUES ($1, $2, 'photo', now(), 'checking', now() - $3 * interval '1 minute')""",
+                           uuid7(), oid, minutes_ago)
+    new = uuid7()
+    await conn.execute("INSERT INTO captures (id, observer_id, kind, captured_at) VALUES ($1,$2,'photo',now())",
+                       new, oid)
+    assert ("new_account" not in await reasons_for(conn, new, oid)) is trusted_now
+
+
+@pytest.mark.asyncio
+async def test_the_daily_post_reads_the_model_wait_when_it_asks(authed_client, monkeypatch):
+    """Not frozen at import: changing the wait changes what may be posted."""
+    from app.social import postable_photos
+    client, owner = authed_client
+    mine = await _post(client, share_with_team="true")
+    pool = await _pool(client)
+    async with pool.acquire() as c:
+        await c.execute("UPDATE observers SET social_consent=true, x_handle='owner_handle' WHERE id=$1", owner)
+        await c.execute("UPDATE sightings SET shared_with_team_at = now() WHERE id = $1", UUID(mine))
+        await c.execute("UPDATE captures SET screening='checking', screened_at = now() - interval '5 minutes' "
+                        "WHERE id=$1", await _capture_of(pool, mine))
+        monkeypatch.setattr(settings, "screening_model_wait_s", 600)
+        assert await postable_photos(c, UUID(mine)) == []
+        monkeypatch.setattr(settings, "screening_model_wait_s", 60)
+        assert await postable_photos(c, UUID(mine)) != []
+
+
+@pytest.mark.asyncio
+async def test_rejecting_a_held_upload_undoes_its_automatic_links_only(authed_client):
+    """Held uploads are matched on purpose; a reject undoes the links that came
+    from that and leaves the clean partner's identity alone."""
+    client, owner = authed_client
+    held, clean, pool, mod, viewer = await _identical_pair(client, "held", "clear")
+    await _resolve(pool, held)
+    await _resolve(pool, clean)
+    async with pool.acquire() as c:
+        dog = await c.fetchval("SELECT individual_id FROM sightings WHERE id = $1", UUID(held))
+        assert dog is not None and dog == await c.fetchval(
+            "SELECT individual_id FROM sightings WHERE id = $1", UUID(clean))
+        assert await c.fetchval("SELECT count(*) FROM auto_links WHERE sighting_id = $1", UUID(held)) == 1
+    _as(client, mod)
+    await client.post(f"/moderation/capture/{await _capture_of(pool, held)}/screening", json={"verdict": "reject"})
+    async with pool.acquire() as c:
+        row = await c.fetchrow("SELECT individual_id, match_status FROM sightings WHERE id = $1", UUID(held))
+        assert (row["individual_id"], row["match_status"]) == (None, "unmatched")
+        assert await c.fetchval("SELECT count(*) FROM auto_links WHERE sighting_id = $1", UUID(held)) == 0
+        assert await c.fetchval("SELECT individual_id FROM sightings WHERE id = $1", UUID(clean)) == dog
+
+
+@pytest.mark.asyncio
+async def test_rejecting_an_upload_keeps_a_link_a_person_confirmed(authed_client):
+    client, owner = authed_client
+    held, clean, pool, mod, viewer = await _identical_pair(client, "approved", "clear")
+    await _resolve(pool, held)
+    await _resolve(pool, clean)
+    async with pool.acquire() as c:
+        dog = await c.fetchval("SELECT individual_id FROM sightings WHERE id = $1", UUID(held))
+        await c.execute("INSERT INTO confirmations (id, sighting_id, individual_id, verdict) VALUES ($1,$2,$3,'same')",
+                        uuid7(), UUID(held), dog)
+    _as(client, mod)
+    await client.post(f"/moderation/capture/{await _capture_of(pool, held)}/screening", json={"verdict": "reject"})
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT individual_id FROM sightings WHERE id = $1", UUID(held)) == dog
 
 
 # --- what gets held ---------------------------------------------------------------

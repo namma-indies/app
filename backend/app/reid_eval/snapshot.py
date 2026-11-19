@@ -8,7 +8,7 @@ import asyncio
 import inspect
 import json
 from collections import defaultdict
-from uuid import NAMESPACE_OID, uuid5
+from uuid import NAMESPACE_OID, UUID, uuid5
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -59,31 +59,54 @@ async def score_frames(conn, probes, frames):
     return {r["id"]: float(r["score"]) for r in rows}
 
 
-async def ann_frames(conn, probes, frames, *, located):
-    """The same halfvec expression and shortlist as production, on earlier data.
+async def ann_frames(conn, probes, frames, *, located, recipe):
+    """Replay production's ANN walk, then keep what was eligible for this query.
 
-    Eligibility, vicinity, species and capture checks already selected these
-    frame IDs. This adds the availability restriction production had at the
-    time; current-state gaps are still labelled counterfactual in the report.
+    Production asks the whole HNSW index for the nearest frames of the active
+    model and recipe and filters while walking (find_candidates). Restricting
+    this query to the eligible IDs instead would let the planner fetch them by
+    primary key and sort them exactly, and ANN loss would be zero by
+    construction. So the walk runs over the whole index with only the model and
+    recipe filter, and eligibility (vicinity, species, capture, availability)
+    is applied to what it returns, in the order it returned it:
+
+    * no location: iterative scan off, the production LIMIT. HNSW yields at
+      most ef_search rows and the filter thins them, as in production.
+    * located: iterative scan on (relaxed order), as production, walking up
+      to `reid_eval_ann_walk` rows and keeping the first ANN_SHORTLIST
+      eligible ones -- production's iterative scan stops at the same point.
+
+    Still counterfactual: the index holds today's rows, not the query's day.
     """
     if not probes or not frames:
         return set()
+    eligible = {r["embedding_id"] for r in frames}
     await conn.execute("SET LOCAL hnsw.iterative_scan = " + ("relaxed_order" if located else "off"))
-    ids, result = [r["embedding_id"] for r in frames], set()
+    walk = max(ANN_SHORTLIST, int(settings.reid_eval_ann_walk)) if located else ANN_SHORTLIST
+    recipe_filter, args = ("AND e.recipe=$3", [recipe]) if recipe is not None else ("", [])
+    result = set()
     for probe in probes:
         hits = await conn.fetch(f"""SELECT e.id FROM embeddings e
-            WHERE e.id=ANY($1::uuid[]) AND e.vec_miew IS NOT NULL
+            WHERE e.model=$1 {recipe_filter} AND e.vec_miew IS NOT NULL
             ORDER BY e.vec_miew::halfvec({EMBED_DIM}) <=> $2::halfvec({EMBED_DIM})
-            LIMIT {ANN_SHORTLIST}""", ids, _to_pgvector(probe))
-        result.update(r["id"] for r in hits)
+            LIMIT {walk}""", MODEL_NAME, _to_pgvector(probe), *args)
+        kept = [r["id"] for r in hits if r["id"] in eligible]
+        result.update(kept[:ANN_SHORTLIST])
     return result
 
 
-async def take_snapshot(conn, *, limit=0, phash_distance=4, seed=189, folds=5, holdout_fraction=.3, sleep=0.0):
-    if limit < 0 or sleep < 0 or not 0 <= phash_distance <= 64 or folds < 2 or not 0 < holdout_fraction < 1:
+async def take_snapshot(conn, *, limit=0, phash_distance=4, seed=189, holdout_fraction=.3, sleep=0.0,
+                        statement_timeout_ms=None):
+    """Pairs are built for verified queries only: the inventory needs counts,
+    and only a verified query is ever scored. Each statement runs under
+    `statement_timeout_ms` (default `reid_eval_statement_timeout_ms`)."""
+    timeout = int(statement_timeout_ms if statement_timeout_ms is not None
+                  else settings.reid_eval_statement_timeout_ms)
+    if limit < 0 or sleep < 0 or not 0 <= phash_distance <= 64 or not 0 < holdout_fraction < 1 or timeout < 1:
         raise ValueError("invalid snapshot settings")
     recipe = active_recipe()
     async with conn.transaction(isolation="repeatable_read", readonly=True):
+        await conn.execute(f"SET LOCAL statement_timeout = {timeout}")
         clock = await conn.fetchrow("""SELECT extract(epoch FROM transaction_timestamp())*1000 AS ms,
             current_setting('transaction_read_only') AS readonly""")
         if clock["readonly"] != "on":
@@ -160,6 +183,7 @@ async def take_snapshot(conn, *, limit=0, phash_distance=4, seed=189, folds=5, h
         families = copy_families(observations, [dict(p) for p in photos], phash_distance)
         for row in observations:
             row["copy_family"] = families[row["id"]]
+        queries = [UUID(r["id"]) for r in observations if r["verified"]]
         reach = settings.reid_radius_m + settings.reid_slack_m()
         def nearby(q, c):
             return f"CASE WHEN {q}.geog IS NULL THEN TRUE WHEN {c}.geog IS NULL THEN FALSE ELSE ST_DWithin({coarse_geog(q+'.geog')},{coarse_geog(c+'.geog')},$2::float8) END"
@@ -171,8 +195,8 @@ async def take_snapshot(conn, *, limit=0, phash_distance=4, seed=189, folds=5, h
                     AND sibling.individual_id=c.individual_id AND c.individual_id IS NOT NULL)) AS capture_ok,
                 CASE WHEN q.observer_id IS NULL OR c.observer_id IS NULL THEN 'unknown'
                     WHEN q.observer_id=c.observer_id THEN 'same' ELSE 'different' END AS observer_relation
-            FROM sightings q CROSS JOIN sightings c WHERE q.id=ANY($1::uuid[]) AND c.id=ANY($1::uuid[])
-                AND (c.created_at,c.id)<(q.created_at,q.id) ORDER BY q.created_at,q.id,c.id""", ids, reach)
+            FROM sightings q CROSS JOIN sightings c WHERE q.id=ANY($1::uuid[]) AND c.id=ANY($3::uuid[])
+                AND (c.created_at,c.id)<(q.created_at,q.id) ORDER BY q.created_at,q.id,c.id""", queries, reach, ids)
         pairs_by_query = defaultdict(list)
         by_id = {r["id"]: r for r in observations}
         available = {}
@@ -192,7 +216,8 @@ async def take_snapshot(conn, *, limit=0, phash_distance=4, seed=189, folds=5, h
                              if by_id[qid]["probe"] == "mean" else model_scores)
             eligible = [f for p in pairs if by_id[p["candidate"]]["eligible"] and p["within_reach"]
                         and p["species_ok"] and p["capture_ok"] for f in available[qid, p["candidate"]]]
-            hits = await ann_frames(conn, probes[qid], eligible, located=by_id[qid]["geo"] == "located")
+            hits = await ann_frames(conn, probes[qid], eligible, located=by_id[qid]["geo"] == "located",
+                                    recipe=recipe if versioned else None)
             for pair in pairs:
                 earlier = available[qid, pair["candidate"]]
                 pair["model_score"] = max((model_scores[f["embedding_id"]] for f in earlier
@@ -209,7 +234,8 @@ async def take_snapshot(conn, *, limit=0, phash_distance=4, seed=189, folds=5, h
             FROM confirmations cf JOIN match_proposals mp ON mp.id=cf.proposal_id
             JOIN sightings a ON a.id=cf.sighting_id JOIN sightings b ON b.id=mp.candidate_sighting_id
             LEFT JOIN observers reviewer ON reviewer.id=cf.observer_id
-            WHERE a.id=ANY($1::uuid[]) AND b.id=ANY($1::uuid[]) AND a.id<>b.id""", ids)
+            WHERE a.id=ANY($1::uuid[]) AND b.id=ANY($1::uuid[]) AND a.id<>b.id
+                AND cf.verdict IN ('same','different')""", ids)
         orphan_labels = await conn.fetchval("""SELECT count(*) FROM confirmations cf
             LEFT JOIN match_proposals mp ON mp.id=cf.proposal_id
             WHERE mp.id IS NULL OR mp.candidate_sighting_id IS NULL""")
@@ -224,7 +250,7 @@ async def take_snapshot(conn, *, limit=0, phash_distance=4, seed=189, folds=5, h
                     "policy_id": str(uuid5(NAMESPACE_OID, policy_source)),
                     "as_of_ms": float(clock["ms"]), "threshold": settings.reid_propose_min, "cap": settings.reid_max_candidates,
                     "ann_shortlist": ANN_SHORTLIST, "phash_distance": phash_distance, "holdout_fraction": holdout_fraction,
-                    "seed": seed, "folds": folds, "versioning": "versioned" if versioned else "baseline_unversioned",
+                    "seed": seed, "ann_replay": "whole_index_walk", "versioning": "versioned" if versioned else "baseline_unversioned",
                     "replay": "counterfactual_current_state", "orphan_labels": orphan_labels, "truncated": total > len(rows)},
                 "observations": observations, "pairs": [p for ps in pairs_by_query.values() for p in ps],
                 "labels": [{"a": str(r["a"]), "b": str(r["b"]), "verdict": r["verdict"], "source": r["source"]} for r in labels]}

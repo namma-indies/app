@@ -18,6 +18,16 @@ a repeatable-read, read-only transaction. It has no default connection to the
 application database. Use a private output directory and `nice` plus `--sleep`
 to keep the serial CPU work out of the application's way.
 
+**Run it against a streaming replica or a restored backup, not the primary.**
+The snapshot holds one long repeatable-read transaction and runs a vector walk
+per verified query; on the primary that pins old row versions and competes
+with uploads. The command refuses any server that is not in recovery unless
+`--allow-primary` is given. A restored backup is a primary as far as Postgres
+can tell, so it needs the flag too; pointing it at production's primary should
+be a deliberate, off-hours decision. Every statement runs under
+`statement_timeout` (`REID_EVAL_STATEMENT_TIMEOUT_MS`, default 120 s, or
+`--statement-timeout-ms`), so a bad plan fails the run instead of dragging on.
+
 ```sh
 uv run python scripts/reid_eval.py snapshot --out SNAPSHOT.json --sleep 0.05
 uv run python scripts/reid_eval.py score --snap SNAPSHOT.json --out METRICS.json
@@ -33,7 +43,9 @@ fixture Postgres, synthetic vectors and fabricated labels, without media.
 
 ## Populations and truth
 
-The inventory includes every sighting, even without a vector. The verified
+The inventory includes every sighting, even without a vector. Pairs are
+built only for verified queries, the only ones ever scored: the inventory
+needs counts, not an all-against-all matrix. The verified
 population is deliberately conservative: an explicit positive moderator
 animal override, or involvement in a human `same` verdict. A negative animal
 override wins. A contributor publishing a detector-generated group is not
@@ -64,13 +76,22 @@ They describe retrieval of known positives under incomplete labels.
 Model mode uses max cosine over per-frame pairs, without vicinity, species,
 candidate cap or threshold; the base gallery eligibility still applies. Policy
 mode uses the resolver's cached mean when usable, otherwise its per-frame
-probe. I-2 tags are used automatically once that code/schema is present;
+probe. Model top-1/top-5/mAP drop junk candidates, as is standard in re-ID:
+a copy of the query, or the same animal in a non-independent encounter (same
+capture or same day). They are neither hits nor misses for the model. The
+policy replay keeps them, because a reviewer would be shown them. I-2 tags are used automatically once that code/schema is present;
 code/schema disagreement fails closed. Until then, baseline means are marked
 untagged and recipe provenance is explicitly unversioned.
 
 Gallery uploads precede the query, and gallery vectors must be available by
-the query's last recorded vector time. Halfvec ANN uses the production cast
-expression and shortlist size, then pgvector's exact cosine re-ranking. Exact
+the query's last recorded vector time. Halfvec ANN replays production's query
+shape: a walk of the whole index for the active model and recipe, with the
+production cast expression, shortlist size and iterative-scan setting, then
+the query's eligibility applied to what the walk returned, in order (located
+queries walk up to `REID_EVAL_ANN_WALK` rows, default 20,000). Restricting the
+walk to eligible IDs would be planned as a primary-key fetch and an exact
+sort, making ANN loss zero by construction. The index holds today's rows, so
+this too is counterfactual. Exact
 and ANN coverage are both reported. Vicinity and its reverse ordering are
 computed only between `coarse_point` cell centres in SQL. Neither coordinates
 nor distances enter the snapshot.
@@ -86,7 +107,10 @@ counterfactual ranking. Species, media kind, pipeline, video-recipe path,
 location availability and observer relation appear as aggregate slices.
 
 All replay is labelled **counterfactual current state**. Vector creation times
-are the availability proxy; commit times, earlier vector versions, historical
+are the availability proxy, and every metrics file carries the caveat
+`availability_reset_by_reembed`: a re-embed upsert resets `created_at`, so a
+re-embedded gallery frame looks newer than it was and drops out of earlier
+queries; commit times, earlier vector versions, historical
 eligibility, identity membership and queue contents were not fully recorded.
 The source fingerprint identifies current code/configuration, not the weights
 that generated historical vectors. V0 cannot reconstruct those missing facts.
@@ -97,15 +121,19 @@ score ties are ordered by candidate UUID for reproducibility.
 ## Leakage, uncertainty and decisions
 
 Exact content hashes, source-photo hashes, same-capture membership and near
-perceptual hashes group copy families before splitting. The default near-copy
+perceptual hashes group copy families before splitting. Near hashes are found
+by pigeonhole banding (distance + 1 bands; only hashes sharing a band are
+compared), which finds exactly the all-pairs answer without comparing all
+pairs. The default near-copy
 Hamming distance is four: a conservative engineering choice, not a dog-identity
 threshold. Inspect family sizes before a real comparison; scene similarities
 can over-group unrelated animals and reduce effective sample size.
 
 The most recent 30% of encounter times are reserved. Development queries are
 strictly earlier than the cutoff. A copy family spanning that boundary is
-quarantined. Development folds keep human-positive components and copy
-families together; historical gallery context is not a fitted example.
+quarantined. Historical gallery context is not a fitted example. (v0 had
+cross-validation folds that nothing consumed; they are gone until a fitted
+policy needs them.)
 
 Scoring defaults to development only. Holdout scoring requires both
 `--split holdout` and `--decision-id` with the UUID of a predeclared decision.
