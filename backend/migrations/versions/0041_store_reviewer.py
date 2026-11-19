@@ -1,12 +1,12 @@
 """One permanently marked store-reviewer account.
 
-Revision ID: 0036_store_reviewer
-Revises: 0035_signup_controls
+Revision ID: 0041_store_reviewer
+Revises: 0040_signup_controls
 """
 from alembic import op
 
-revision = "0036_store_reviewer"
-down_revision = "0035_signup_controls"
+revision = "0041_store_reviewer"
+down_revision = "0040_signup_controls"
 branch_labels = None
 depends_on = None
 

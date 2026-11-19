@@ -1,12 +1,12 @@
 """Shared email capacity and aggregate abuse signals.
 
-Revision ID: 0035_signup_controls
-Revises: 0034_auth_limits
+Revision ID: 0040_signup_controls
+Revises: 0039_auth_limits
 """
 from alembic import op
 
-revision = "0035_signup_controls"
-down_revision = "0034_auth_limits"
+revision = "0040_signup_controls"
+down_revision = "0039_auth_limits"
 branch_labels = None
 depends_on = None
 

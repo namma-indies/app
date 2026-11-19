@@ -7,8 +7,8 @@ backfill, never assert their provenance by attaching a tag to an old cache.
 
 from alembic import op
 
-revision = "0034_reid_recipe"
-down_revision = "0033_blocking"
+revision = "0044_reid_recipe"
+down_revision = "0043_model_screening"
 branch_labels = None
 depends_on = None
 

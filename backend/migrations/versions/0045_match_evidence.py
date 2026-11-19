@@ -7,8 +7,8 @@ gallery evidence becomes NULL without removing a human verdict's audit trail.
 
 from alembic import op
 
-revision = "0034_match_evidence"
-down_revision = "0033_blocking"
+revision = "0045_match_evidence"
+down_revision = "0044_reid_recipe"
 branch_labels = None
 depends_on = None
 

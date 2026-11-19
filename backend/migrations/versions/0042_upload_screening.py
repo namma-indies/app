@@ -21,8 +21,8 @@ the capture, so a new upload is never public before it is screened.
 animals, for the screening rules (`app.screening`). NULL is "not measured" (an
 older row, or a worker that does not report them yet), not zero.
 
-Revision ID: 0034_upload_screening
-Revises: 0033_blocking
+Revision ID: 0042_upload_screening
+Revises: 0041_store_reviewer
 Create Date: 2026-11-03
 
 """
@@ -30,8 +30,8 @@ from typing import Sequence, Union
 
 from alembic import op
 
-revision: str = "0034_upload_screening"
-down_revision: Union[str, None] = "0033_blocking"
+revision: str = "0042_upload_screening"
+down_revision: Union[str, None] = "0041_store_reviewer"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

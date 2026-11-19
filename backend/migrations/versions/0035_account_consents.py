@@ -1,14 +1,14 @@
 """Versioned terms/guidelines agreement and privacy acknowledgment.
 
-Revision ID: 0034_account_consents
-Revises: 0033_blocking
+Revision ID: 0035_account_consents
+Revises: 0034_token_housekeeping
 """
 from typing import Sequence, Union
 
 from alembic import op
 
-revision: str = "0034_account_consents"
-down_revision: Union[str, None] = "0033_blocking"
+revision: str = "0035_account_consents"
+down_revision: Union[str, None] = "0034_token_housekeeping"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

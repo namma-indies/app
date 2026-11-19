@@ -2,9 +2,8 @@
 
 Consent enforcement defaults off while the documents are finalized. This code
 does not contain or publish legal text. Ship together with #222's policy links
-and support routes, and synchronize the migration number with main before the
-launch stack lands. This branch starts at `0034_account_consents` after
-`0033_blocking`.
+and support routes. In the linearized launch stack the migration is
+`0035_account_consents`, after `0034_token_housekeeping`.
 
 Aswin must set these privately once the approved documents are published:
 

@@ -1,12 +1,12 @@
 """Shared auth budgets and single-use passcode proof-of-work.
 
-Revision ID: 0034_auth_limits
-Revises: 0033_blocking
+Revision ID: 0039_auth_limits
+Revises: 0038_operational_health
 """
 from alembic import op
 
-revision = "0034_auth_limits"
-down_revision = "0033_blocking"
+revision = "0039_auth_limits"
+down_revision = "0038_operational_health"
 branch_labels = None
 depends_on = None
 

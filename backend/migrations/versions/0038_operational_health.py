@@ -1,8 +1,8 @@
 """Private operational health, without request or animal data (#200 / #187)."""
 from alembic import op
 
-revision = "0034_operational_health"
-down_revision = "0033_blocking"
+revision = "0038_operational_health"
+down_revision = "0037_grievances"
 branch_labels = None
 depends_on = None
 

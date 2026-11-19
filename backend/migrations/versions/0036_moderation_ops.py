@@ -1,12 +1,12 @@
 """Durable moderation alerts, open-report clocks and an action ledger (#198).
 
-Revision ID: 0034_moderation_ops
-Revises: 0033_blocking
+Revision ID: 0036_moderation_ops
+Revises: 0035_account_consents
 """
 from alembic import op
 
-revision = "0034_moderation_ops"
-down_revision = "0033_blocking"
+revision = "0036_moderation_ops"
+down_revision = "0035_account_consents"
 branch_labels = None
 depends_on = None
 

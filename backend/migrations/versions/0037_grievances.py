@@ -1,12 +1,12 @@
 """Public grievance intake and provisional deadline clocks (#199).
 
-Revision ID: 0035_grievances
-Revises: 0034_moderation_ops
+Revision ID: 0037_grievances
+Revises: 0036_moderation_ops
 """
 from alembic import op
 
-revision = "0035_grievances"
-down_revision = "0034_moderation_ops"
+revision = "0037_grievances"
+down_revision = "0036_moderation_ops"
 branch_labels = None
 depends_on = None
 

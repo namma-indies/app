@@ -9,8 +9,8 @@ model's answer then clears it or holds it, even if it is showing by then.
 `upload_screens`: one model look per upload, leased to the worker like a photo
 description.
 
-Revision ID: 0035_model_screening
-Revises: 0034_upload_screening
+Revision ID: 0043_model_screening
+Revises: 0042_upload_screening
 Create Date: 2026-11-03
 
 """
@@ -18,8 +18,8 @@ from typing import Sequence, Union
 
 from alembic import op
 
-revision: str = "0035_model_screening"
-down_revision: Union[str, None] = "0034_upload_screening"
+revision: str = "0043_model_screening"
+down_revision: Union[str, None] = "0042_upload_screening"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
