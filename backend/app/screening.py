@@ -274,6 +274,18 @@ async def held_frames(
     ]}
 
 
+async def settle_identities(conn, capture_id: UUID, state: str) -> None:
+    """What a ruling changes for identities. In the ruling's transaction.
+
+    Copies (app.identical): a clean upload marked a copy of this one is judged
+    again, so it never stays hidden behind a rejected original.
+    """
+    from app.identical import settle_copies_after_ruling
+    from app.matching import lock_matching
+    await lock_matching(conn)
+    await settle_copies_after_ruling(conn, capture_id, state)
+
+
 class ScreeningVerdict(BaseModel):
     verdict: Literal["approve", "reject"]
 
@@ -299,6 +311,7 @@ async def rule_on_upload(
             capture_id, state, moderator_id)
         if updated is None:
             raise HTTPException(status_code=404, detail="no held upload")
+        await settle_identities(conn, capture_id, state)
         await record_moderator_action(conn, moderator_id=moderator_id, action=f"upload_{state}",
                                       capture_id=capture_id)
     return {"status": "ok", "screening": state}
