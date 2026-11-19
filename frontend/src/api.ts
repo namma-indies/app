@@ -904,10 +904,12 @@ export interface Grievance {
   photos?: { thumb_url: string; photo_url: string }[];
 }
 
-export async function getGrievances(options: { includeClosed?: boolean; reference?: string } = {}): Promise<{ items: Grievance[]; legal_note: string }> {
+export async function getGrievances(options: { includeClosed?: boolean; reference?: string; offset?: number } = {}): Promise<{
+  items: Grievance[]; legal_note: string; total?: number; next_offset?: number | null }> {
   const query = new URLSearchParams();
   if (options.includeClosed) query.set("include_closed", "true");
   if (options.reference) query.set("reference", options.reference);
+  if (options.offset) query.set("offset", String(options.offset));
   return handle(await fetch(`${API_BASE}/moderation/grievances?${query}`, { credentials: "include" }));
 }
 

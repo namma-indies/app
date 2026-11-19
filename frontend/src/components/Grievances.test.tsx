@@ -23,6 +23,21 @@ function complaint(over: Partial<Grievance> = {}): Grievance {
     next_due_at: "2026-01-01T02:00:00Z", legal_confirmation_required: true, ...over };
 }
 
+it("pages through a long queue without duplicating rows", async () => {
+  vi.mocked(getGrievances)
+    .mockResolvedValueOnce({ items: [complaint()], legal_note: legalNote, total: 3, next_offset: 1 })
+    .mockResolvedValueOnce({ items: [complaint(), complaint({ id: "second", reference: "NI-SECOND" })],
+      legal_note: legalNote, total: 3, next_offset: null });
+  render(<Grievances onUnauthorized={() => {}} />);
+  expect(await screen.findByText(/Showing 1 of 3 complaints/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "MORE COMPLAINTS" }));
+  expect(await screen.findByText(/NI-SECOND/)).toBeInTheDocument();
+  expect(getGrievances).toHaveBeenLastCalledWith({ includeClosed: false, reference: undefined, offset: 1 });
+  expect(screen.getAllByText(/NI-REFERENCE/)).toHaveLength(1);
+  expect(screen.queryByRole("button", { name: "MORE COMPLAINTS" })).toBeNull();
+  expect(screen.getByText(/Showing 2 of 3 complaints/)).toBeInTheDocument();
+});
+
 it("shows the reference, urgent type, overdue clocks and acknowledgement failures", async () => {
   vi.mocked(getGrievances).mockResolvedValue({ items: [complaint({ acknowledgement_error: "TimeoutError" })], legal_note: legalNote });
   render(<Grievances onUnauthorized={() => {}} />);

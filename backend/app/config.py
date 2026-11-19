@@ -151,6 +151,8 @@ class Settings(BaseSettings):
     rl_grievance_ip_times: int = Field(default=20, ge=1)
     rl_grievance_email_times: int = Field(default=5, ge=1)
     rl_grievance_window_s: int = Field(default=3600, ge=1)
+    # Moderator grievance queue page; older pages are fetched on demand.
+    grievance_queue_page_size: int = Field(default=100, ge=1, le=500)
     # Reports per observer per window, across all sightings. Generous for a
     # person flagging a bad batch; caps one account cycling severe holds/alerts.
     rl_report_times: int = Field(default=30, ge=1)

@@ -255,3 +255,20 @@ async def test_photo_erasure_keeps_the_complaint_and_opaque_reference(authed_cli
     response = await client.get("/moderation/grievances", params={"reference": complaint["reference"]})
     assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
     assert response.json()["items"][0]["photos"] == []
+
+
+async def test_moderator_queue_pages_instead_of_truncating(authed_client, monkeypatch):
+    client, oid = authed_client
+    await _make_moderator(client, oid)
+    monkeypatch.setattr(settings, "grievance_queue_page_size", 2)
+    for kind in ("other", "privacy", "intimate_imagery", "takedown", "government_order"):
+        assert (await client.post("/grievances", data=form(kind=kind))).status_code == 201
+    seen, offset = [], 0
+    while offset is not None:
+        page = (await client.get("/moderation/grievances", params={"offset": offset})).json()
+        assert page["total"] == 5 and len(page["items"]) <= 2
+        seen += [item["kind"] for item in page["items"]]
+        offset = page["next_offset"]
+    assert len(seen) == 5 and set(seen) == {"other", "privacy", "intimate_imagery", "takedown", "government_order"}
+    assert set(seen[:2]) == {"intimate_imagery", "government_order"}
+    assert (await client.get("/moderation/grievances", params={"offset": -1})).status_code == 422

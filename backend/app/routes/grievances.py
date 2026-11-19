@@ -156,8 +156,21 @@ async def submit_grievance(request: Request):
 
 @router.get("/moderation/grievances")
 async def grievance_queue(response: Response, include_closed: bool = False, reference: str | None = Query(None, max_length=40),
+                          offset: int = Query(0, ge=0, le=1_000_000),
                           _mod: UUID = Depends(require_moderator), conn=Depends(get_conn), storage=Depends(get_storage)):
+    """Most urgent first, a page at a time; `next_offset` fetches the rest.
+
+    Offset rather than keyset: the sort key is the next unmet clock, which moves
+    as acknowledgements send and decisions land, so no stable cursor exists.
+    A refresh starts again from the top.
+    """
     response.headers["Cache-Control"] = "no-store"
+    page = settings.grievance_queue_page_size
+    ref = reference.strip().upper() if reference else None
+    total = await conn.fetchval(
+        "SELECT count(*) FROM grievances g LEFT JOIN moderation_mail m ON m.id=g.acknowledgement_mail_id "
+        "WHERE ($1 OR g.resolved_at IS NULL OR m.sent_at IS NULL OR $2::text IS NOT NULL) "
+        "AND ($2::text IS NULL OR g.reference=$2)", include_closed, ref)
     rows = await conn.fetch(
         "SELECT g.*,m.sent_at AS acknowledged_at,m.last_error AS acknowledgement_error, "
         "ARRAY(SELECT p.s3_key FROM photos p WHERE p.sighting_id=g.sighting_id ORDER BY p.created_at,p.id) AS photo_keys "
@@ -168,13 +181,17 @@ async def grievance_queue(response: Response, include_closed: bool = False, refe
         "ORDER BY (g.kind IN ('intimate_imagery','government_order')) DESC, "
         "LEAST(CASE WHEN m.sent_at IS NULL THEN g.acknowledge_due_at END,"
         "CASE WHEN g.resolved_at IS NULL THEN g.resolve_due_at END,"
-        "CASE WHEN g.resolved_at IS NULL AND g.removed_at IS NULL THEN g.removal_due_at END),g.received_at,g.id LIMIT 200",
-        include_closed, reference.strip().upper() if reference else None)
+        "CASE WHEN g.resolved_at IS NULL AND g.removed_at IS NULL THEN g.removal_due_at END),g.received_at,g.id "
+        "LIMIT $3 OFFSET $4",
+        include_closed, ref, page + 1, offset)
+    more = len(rows) > page
+    rows = rows[:page]
     keys = list(dict.fromkeys(key for r in rows for original in r["photo_keys"] for key in (thumb_key(original), original)))
     signed = dict(zip(keys, await storage.urls(keys)))
     return {"items": [{**{k: v for k, v in dict(r).items() if k not in {"payload_digest", "submission_key", "photo_keys"}},
                        "photos": [{"thumb_url": signed[thumb_key(k)], "photo_url": signed[k]} for k in r["photo_keys"]],
-                       **clocks(r)} for r in rows], "legal_note": LEGAL_NOTE}
+                       **clocks(r)} for r in rows], "legal_note": LEGAL_NOTE,
+            "total": total, "next_offset": offset + page if more else None}
 
 
 class GrievanceAction(BaseModel):

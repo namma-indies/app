@@ -17,6 +17,9 @@ export default function Grievances({ onUnauthorized }: { onUnauthorized: () => v
   const [reference, setReference] = useState("");
   const [search, setSearch] = useState("");
   const [now, setNow] = useState(Date.now);
+  const [nextOffset, setNextOffset] = useState<number | null>(null);
+  const [total, setTotal] = useState<number | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   useReloadGuard(busy !== null || Object.values(reasons).some((value) => !!value.trim())
     || Object.keys(targets).length > 0 || reference.trim().toUpperCase() !== search);
 
@@ -24,10 +27,27 @@ export default function Grievances({ onUnauthorized }: { onUnauthorized: () => v
     try {
       const result = await getGrievances({ includeClosed, reference: search || undefined });
       setItems(result.items); setLegalNote(result.legal_note); setFailed(false);
+      setNextOffset(result.next_offset ?? null); setTotal(result.total ?? null);
     } catch (e) {
       if (e instanceof UnauthorizedError) onUnauthorized();
       else setFailed(true);
     }
+  }
+  async function loadMore() {
+    if (nextOffset === null) return;
+    setLoadingMore(true);
+    try {
+      const result = await getGrievances({ includeClosed, reference: search || undefined, offset: nextOffset });
+      // The order can shift between pages as clocks complete; never show a row twice.
+      setItems((cur) => {
+        const seen = new Set((cur ?? []).map((item) => item.id));
+        return [...(cur ?? []), ...result.items.filter((item) => !seen.has(item.id))];
+      });
+      setNextOffset(result.next_offset ?? null); setTotal(result.total ?? null); setFailed(false);
+    } catch (e) {
+      if (e instanceof UnauthorizedError) onUnauthorized();
+      else setFailed(true);
+    } finally { setLoadingMore(false); }
   }
   useEffect(() => { void load(); }, [includeClosed, search]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -117,5 +137,9 @@ export default function Grievances({ onUnauthorized }: { onUnauthorized: () => v
         </div>
       </>}
     </article>)}
+    {items !== null && total !== null && total > items.length && <p className="mod-ops-notice">
+      Showing {items.length} of {total} complaints.</p>}
+    {nextOffset !== null && <button className="link-btn" disabled={loadingMore} onClick={() => void loadMore()}>
+      {loadingMore ? "LOADING…" : "MORE COMPLAINTS"}</button>}
   </div>;
 }
