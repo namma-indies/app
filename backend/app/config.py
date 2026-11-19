@@ -2,7 +2,7 @@ import math
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,7 +23,7 @@ def pair_slack_m(cell_m: float) -> float:
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
 
     database_url: str = "postgresql://postgres:dev@localhost:5432/indiedex"
     database_url_sync: str = "postgresql+psycopg://postgres:dev@localhost:5432/indiedex"
@@ -42,14 +42,28 @@ class Settings(BaseSettings):
     # no allowlist. A flag of its own rather than "empty allowlist means
     # everyone", because `is_allowed` fails closed on purpose -- inverting that
     # would make deleting a line in `.env` a silent public launch. Opening the
-    # door should take a deliberate act. Requires SES production access, granted
-    # 2026-08-01 (50k/day, any recipient).
+    # door should take a deliberate act. Requires SES production access and
+    # confirmation of the live regional sending quotas; comments are not quotas.
     email_open_signup: bool = False
+
+    # A separate store-review door. No inbox, one non-moderator account.
+    store_review_enabled: bool = False
+    store_review_secret: SecretStr = SecretStr("")
+    rl_store_review_times: int = Field(default=5, ge=1, le=100)
+    rl_store_review_window_s: int = Field(default=900, ge=60, le=3600)
 
     # "console" (default) prints the link to the log; "ses" actually sends.
     # Fails safe: any other value means console.
     email_sender: str = "console"
     ses_region: str = "ap-south-1"
+    ses_configuration_set: str = ""
+    # Conservative defaults, not a claim about this account's live quota.
+    # Reserve headroom for every other sender using the same SES region.
+    email_daily_budget: int = Field(default=200, ge=1, le=1_000_000)
+    email_send_interval_s: float = Field(default=1.0, ge=0.05, le=60)
+    email_send_attempts: int = Field(default=3, ge=1, le=5)
+    email_backoff_max_s: int = Field(default=60, ge=1, le=300)
+    email_quota_backoff_s: int = Field(default=3600, ge=60, le=86400)
     email_from: str = "IndieDex <hello@nammaindies.org>"
     public_base_url: str = "http://localhost:8000"
 
@@ -433,11 +447,30 @@ class Settings(BaseSettings):
     geocode_timeout_s: float = Field(default=8.0, gt=0, le=60)
 
     # --- rate limiting -----------------------------------------------------
-    # In-process fixed windows. The container runs a single uvicorn with no
-    # --workers, so the counts are exact. Two consequences, neither a bug but
-    # both worth knowing: limits reset on deploy, and adding --workers would
-    # silently multiply every limit below by the worker count.
+    # Postgres-backed: shared across processes and retained across deploys.
     rate_limit_enabled: bool = True
+
+    # A separate rolling cooldown, even when the fixed address window has room.
+    auth_email_cooldown_s: int = Field(default=60, ge=1, le=3600)
+    # Third failure starts at 5 seconds, doubling to 15 minutes. A blocked
+    # request does not extend the block; an hour without failure resets it.
+    auth_backoff_after: int = Field(default=3, ge=1, le=20)
+    auth_backoff_base_s: int = Field(default=5, ge=1, le=60)
+    auth_backoff_max_s: int = Field(default=900, ge=60, le=3600)
+    auth_failure_window_s: int = Field(default=3600, ge=3600, le=86400)
+    # First-party SHA-256 proof-of-work, required on every passcode join.
+    # No third-party script, cookie, service or transfer of visitor data.
+    join_pow_bits: int = Field(default=16, ge=8, le=22)
+    join_pow_ttl_s: int = Field(default=300, ge=30, le=600)
+    rl_join_challenge_times: int = Field(default=60, ge=1, le=1000)
+
+    # Admission happens before multipart parsing, keyed by account, shared by
+    # /sighting and /capture. Counts requests, including retries and bad forms.
+    rl_upload_hour_times: int = Field(default=60, ge=1, le=10000)
+    rl_upload_day_times: int = Field(default=200, ge=1, le=100000)
+    abuse_signup_warn_hour: int = Field(default=20, ge=1)
+    abuse_signin_warn_hour: int = Field(default=50, ge=1)
+    abuse_upload_spike_hour: int = Field(default=20, ge=1)
 
     # Generous. Exists so a runaway client cannot spin the database, not to
     # ration anything.
@@ -543,6 +576,13 @@ class Settings(BaseSettings):
         if self.reid_cell_slack_m is None:
             return pair_slack_m(self.map_coarsen_cell_m)
         return self.reid_cell_slack_m
+
+    @model_validator(mode="after")
+    def _store_review_has_secret(self):
+        secret = self.store_review_secret.get_secret_value()
+        if self.store_review_enabled and (not secret.isascii() or not 32 <= len(secret) <= 512):
+            raise ValueError("STORE_REVIEW_ENABLED requires a random ASCII STORE_REVIEW_SECRET of 32 to 512 characters")
+        return self
 
     @model_validator(mode="after")
     def _slack_covers_the_cell(self):

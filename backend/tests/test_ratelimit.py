@@ -1,15 +1,10 @@
-"""Fixed-window counters, and the two ways they go wrong.
-
-The first is memory: a map keyed by client IP with no bound is itself the
-denial-of-service. The second is the key: if a client can choose it, the
-limiter is decoration. Both have tests here.
-"""
+"""Shared budgets, expiry and correctly keyed public and authenticated routes."""
 
 import pytest
 from starlette.requests import Request
 
 from app.config import settings
-from app.ratelimit import Limit, check, client_key, reset
+from app.ratelimit import Limit, check, client_key
 
 
 def _request(headers=None, client=("10.0.0.1", 1234)) -> Request:
@@ -17,39 +12,32 @@ def _request(headers=None, client=("10.0.0.1", 1234)) -> Request:
     return Request({"type": "http", "headers": raw, "client": client, "method": "GET", "path": "/"})
 
 
-@pytest.fixture(autouse=True)
-def _clean():
-    reset()
-    yield
-    reset()
-
-
-def test_allows_up_to_the_limit_then_refuses():
+async def test_allows_up_to_the_limit_then_refuses(migrated_db):
     limit = Limit(times=3, window_s=60)
     for _ in range(3):
-        check("k", limit)
+        await check(migrated_db, "k", limit)
     with pytest.raises(Exception) as exc:
-        check("k", limit)
+        await check(migrated_db, "k", limit)
     assert exc.value.status_code == 429
     assert int(exc.value.headers["Retry-After"]) > 0
 
 
-def test_keys_have_independent_budgets():
+async def test_keys_have_independent_budgets(migrated_db):
     limit = Limit(times=1, window_s=60)
-    check("a", limit)
-    check("b", limit)
+    await check(migrated_db, "a", limit)
+    await check(migrated_db, "b", limit)
     with pytest.raises(Exception):
-        check("a", limit)
+        await check(migrated_db, "a", limit)
 
 
-def test_the_store_stays_bounded_under_many_keys():
-    """Otherwise the limiter is the attack: one request per forged key."""
-    from app.ratelimit import _counter
-
-    limit = Limit(times=10, window_s=60)
-    for i in range(_counter._max_keys + 500):
-        check(f"key-{i}", limit)
-    assert len(_counter._hits) <= _counter._max_keys
+async def test_expired_keys_are_swept_without_evicting_live_budgets(migrated_db):
+    from app.ratelimit import cleanup
+    await check(migrated_db, "live", Limit(1, 3600))
+    await migrated_db.execute("INSERT INTO rate_limit_buckets VALUES (decode('aa','hex'),1,now()-interval '1 second')")
+    await cleanup(migrated_db)
+    assert await migrated_db.fetchval("SELECT count(*) FROM rate_limit_buckets") == 1
+    with pytest.raises(Exception):
+        await check(migrated_db, "live", Limit(1, 3600))
 
 
 def test_client_ip_ignores_headers_when_no_proxy_is_trusted(monkeypatch):
@@ -86,16 +74,18 @@ def test_without_the_header_every_caller_shares_one_key(monkeypatch):
     assert a == b == "172.18.0.4"
 
 
-def test_disabling_the_limiter_is_a_single_switch(monkeypatch):
+async def test_disabling_the_limiter_is_a_single_switch(monkeypatch, migrated_db):
     monkeypatch.setattr(settings, "rate_limit_enabled", False)
     limit = Limit(times=1, window_s=60)
     for _ in range(5):
-        check("k", limit)
+        await check(migrated_db, "k", limit)
 
 
 async def test_the_email_endpoint_stops_sending_after_the_limit(app_client, monkeypatch):
     """The endpoint this change exists for: it had no throttle at all."""
     monkeypatch.setattr(settings, "rl_email_addr_times", 2)
+    monkeypatch.setattr(settings, "auth_email_cooldown_s", 0)
+    monkeypatch.setattr(settings, "email_allowlist_domains", "example.test")
     sent = []
 
     class _Sender:
@@ -106,19 +96,19 @@ async def test_the_email_endpoint_stops_sending_after_the_limit(app_client, monk
 
     for _ in range(2):
         resp = await app_client.post(
-            "/auth/email", data={"email": "akash@dognosis.tech"},
+            "/auth/email", data={"email": "alex@example.test"},
             headers={"accept": "application/json"},
         )
         assert resp.status_code == 200
     resp = await app_client.post(
-        "/auth/email", data={"email": "akash@dognosis.tech"},
+        "/auth/email", data={"email": "alex@example.test"},
         headers={"accept": "application/json"},
     )
     assert resp.status_code == 429
     assert len(sent) == 2
 
 
-async def test_many_people_may_join_from_one_carrier_nat(app_client, monkeypatch):
+async def test_many_people_may_join_from_one_carrier_nat(app_client, monkeypatch, passcode_form):
     """Field testers recruited over WhatsApp are on mobile data, and Indian
     carriers put many subscribers behind one public address. Counting correct
     passcodes would make an onboarding push look like an attack."""
@@ -126,25 +116,25 @@ async def test_many_people_may_join_from_one_carrier_nat(app_client, monkeypatch
     for i in range(6):
         resp = await app_client.post(
             "/auth/join",
-            data={"name": f"tester{i}", "passcode": settings.join_passcode},
+            data=await passcode_form(app_client, name=f"tester{i}", passcode=settings.join_passcode),
             headers={"accept": "application/json"},
         )
         assert resp.status_code == 200, f"tester {i} was turned away"
 
 
-async def test_wrong_passcodes_still_run_out(app_client, monkeypatch):
+async def test_wrong_passcodes_still_run_out(app_client, monkeypatch, passcode_form):
     """The budget exists; it is just spent by guesses rather than by people."""
     monkeypatch.setattr(settings, "rl_join_times", 2)
     for _ in range(2):
         resp = await app_client.post(
             "/auth/join",
-            data={"name": "x", "passcode": "wrong"},
+            data=await passcode_form(app_client, name="x", passcode="wrong"),
             headers={"accept": "application/json"},
         )
         assert resp.status_code == 401
     resp = await app_client.post(
         "/auth/join",
-        data={"name": "x", "passcode": "wrong"},
+        data=await passcode_form(app_client, name="x", passcode="wrong"),
         headers={"accept": "application/json"},
     )
     assert resp.status_code == 429
@@ -155,6 +145,8 @@ async def test_one_inbox_is_protected_even_from_many_sources(app_client, monkeyp
     than the per-IP one on purpose -- an IP is not a person, an address is."""
     monkeypatch.setattr(settings, "rl_email_addr_times", 2)
     monkeypatch.setattr(settings, "rl_email_ip_times", 100)
+    monkeypatch.setattr(settings, "auth_email_cooldown_s", 0)
+    monkeypatch.setattr(settings, "email_allowlist_domains", "example.test")
 
     class _Sender:
         async def send(self, address, link):
@@ -164,12 +156,12 @@ async def test_one_inbox_is_protected_even_from_many_sources(app_client, monkeyp
 
     for _ in range(2):
         resp = await app_client.post(
-            "/auth/email", data={"email": "akash@dognosis.tech"},
+            "/auth/email", data={"email": "alex@example.test"},
             headers={"accept": "application/json"},
         )
         assert resp.status_code == 200
     resp = await app_client.post(
-        "/auth/email", data={"email": "akash@dognosis.tech"},
+        "/auth/email", data={"email": "alex@example.test"},
         headers={"accept": "application/json"},
     )
     assert resp.status_code == 429

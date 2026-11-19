@@ -28,7 +28,7 @@ from collections import OrderedDict
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.auth.deps import require_observer
 from app.config import settings
@@ -103,13 +103,15 @@ async def search_config(observer_id: UUID = Depends(require_observer)):
 
 @router.get("/places")
 async def search_places(
+    request: Request,
     q: str = Query(min_length=2, max_length=200),
     lat: float | None = Query(None, ge=-90, le=90),
     lng: float | None = Query(None, ge=-180, le=180),
     observer_id: UUID = Depends(require_observer),
 ):
     global _last_request
-    check(f"obs:{observer_id}:places", search_limit())
+    async with request.app.state.pool.acquire() as conn:
+        await check(conn, f"obs:{observer_id}:places", search_limit())
     query = " ".join(q.split())
     near = None
     if lat is not None and lng is not None and settings.map_coarsen_cell_m > 0:

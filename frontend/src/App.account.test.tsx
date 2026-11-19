@@ -15,7 +15,7 @@ vi.mock("./screens/SignIn", () => ({ default: ({ onSignedIn }: { onSignedIn: () 
   <button onClick={onSignedIn}>signed in</button> }));
 vi.mock("./components/Celebration", () => ({ default: () => null }));
 vi.mock("./offline/queue", () => ({
-  failedCount: async () => 0, flush: async () => {}, setOnFlushed: () => {}, setOnUnauthorized: () => {},
+  nextRetryAt: async () => null, failedCount: async () => 0, flush: async () => {}, setOnFlushed: () => {}, setOnUnauthorized: () => {},
 }));
 vi.mock("./api", async (original) => {
   const real = await original<typeof import("./api")>();

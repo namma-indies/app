@@ -11,6 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.abuse import router as abuse_router, sweep as abuse_sweep, upload_guard
 from app.db import effective_dsn
 from app.deps import get_storage
 from app.logprivacy import PlaceSearchAccessFilter
@@ -18,6 +19,7 @@ from app.static import FrontendStaticFiles
 from app.routes.auth import router as auth_router
 from app.routes.health import router as health_router
 from app.operational_errors import ErrorCaptureMiddleware, errors, flush_loop
+from app.routes.store_review import router as store_review_router
 from app.routes.dex import router as dex_router
 from app.routes.dogs import router as dogs_router
 from app.routes.erase import router as erase_router
@@ -74,6 +76,8 @@ configure_logging()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if settings.email_open_signup and (settings.email_sender != "ses" or not settings.rate_limit_enabled):
+        raise RuntimeError("Open sign-up requires EMAIL_SENDER=ses and RATE_LIMIT_ENABLED=true")
     # asyncpg defaults to max_size=10, and this pool is shared by two very
     # different consumers: request handlers (which hold a connection for the
     # whole request via the get_conn dependency) and the background tasks that
@@ -114,10 +118,14 @@ async def lifespan(app: FastAPI):
     moderator_mail = asyncio.create_task(moderation_mail_consumer(app.state.pool))
     error_flusher = (asyncio.create_task(flush_loop(app.state.pool))
                      if settings.ops_error_monitoring_enabled else None)
+    from app.ratelimit import sweeper as limiter_sweeper
+    limiter_cleanup = asyncio.create_task(limiter_sweeper(app.state.pool))
+    abuse_cleanup = asyncio.create_task(abuse_sweep(app.state.pool))
     try:
         yield
     finally:
-        for task in (consumer, suggester, purger, token_cleaner, moderator_mail, error_flusher):
+        for task in (consumer, suggester, purger, token_cleaner, moderator_mail, error_flusher,
+                     limiter_cleanup, abuse_cleanup):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -130,6 +138,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(ErrorCaptureMiddleware)
+app.middleware("http")(upload_guard)
+app.include_router(abuse_router)
 # The native iOS app's webview loads from capacitor://localhost -- a real
 # cross-origin request the web PWA (same-origin) never had to make. Only
 # that scheme is allowed; the web app doesn't need CORS at all.
@@ -139,9 +149,11 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Retry-After"],
 )
 app.include_router(auth_router)
 app.include_router(health_router)
+app.include_router(store_review_router)
 app.include_router(join_router)
 app.include_router(support_router)
 app.include_router(consent_router)

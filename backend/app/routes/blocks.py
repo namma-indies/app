@@ -35,7 +35,7 @@ router = APIRouter()
 async def block(sighting_id: UUID, observer_id: UUID = Depends(require_observer), conn=Depends(get_conn)):
     """Block whoever logged this sighting. 404 for your own, or one you cannot
     see -- which includes one by someone already blocked either way."""
-    check(f"block:obs:{observer_id}", block_limit())
+    await check(conn, f"block:obs:{observer_id}", block_limit())
     async with conn.transaction():
         for _ in range(3):
             other = await conn.fetchval(

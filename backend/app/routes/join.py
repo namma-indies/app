@@ -2,7 +2,7 @@ import hmac
 import logging
 from html import escape
 
-from fastapi import APIRouter, Depends, Form
+from fastapi import APIRouter, Depends, Form, HTTPException, Query
 from starlette.requests import Request
 from starlette.responses import (
     HTMLResponse,
@@ -15,14 +15,19 @@ from app.auth.allowlist import is_allowed, normalize_email
 from app.auth.deps import clear_session_cookie, set_session_cookie
 from app.auth.email_login import absorb_passcode_observers
 from app.auth.logintoken import issue as issue_login_token
+from app.auth import proof
+from app.auth.audit import audit_failures
 from app.config import settings
 from app.consent import (ConsentRequired, ConsentSubmission, consent_form, consume_email_token,
                          current_policy, email_account, passcode_account)
 from app.consent_html import CONSENT_STYLE, consent_fields, email_signup_fields
 from app.deps import get_conn
 from app.email.sender import get_sender
+from app.email.delivery import deliver, reserve
+from app.abuse import record
 from app.legal_links import LEGAL_LINKS_STYLE, legal_links_html
-from app.ratelimit import check, client_key, email_addr_limit, email_ip_limit, join_limit
+from app.ratelimit import (Limit, check, check_backoff, clear_failures, client_key,
+                           cooldown, email_addr_limit, email_ip_limit, join_limit, record_failure)
 from app.security import email_hash
 
 logger = logging.getLogger(__name__)
@@ -73,7 +78,9 @@ def _page(*, error: str | None = None, name: str = "", notice: str | None = None
     elif error:
         banner = f'<p class="err">{escape(error, quote=False)}</p>'
     else:
-        banner = '<p class="sub">Closed pilot — sign in with your work email, or use the shared passcode.</p>'
+        intro = ("Sign in with your email, or use the shared passcode." if settings.email_open_signup
+                 else "Closed pilot — sign in with an invited email, or use the shared passcode.")
+        banner = f'<p class="sub">{intro}</p>'
 
     return f"""<!doctype html>
 <html lang="en">
@@ -84,7 +91,6 @@ def _page(*, error: str | None = None, name: str = "", notice: str | None = None
 <style>
 {_STYLE}
 {LEGAL_LINKS_STYLE}
-
 {CONSENT_STYLE}
 </style>
 </head>
@@ -94,8 +100,8 @@ def _page(*, error: str | None = None, name: str = "", notice: str | None = None
     <h1>IndieDex</h1>
     {banner}
     <form method="post" action="/auth/email">
-      <label for="email">Work email</label>
-      <input id="email" name="email" type="email" value="{escape(email)}" placeholder="you@example.invalid" required autocomplete="email">
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" value="{escape(email)}" placeholder="you@example.org" required autocomplete="email">
       {email_signup_fields(signup)}
       <button type="submit">Email me a link</button>
     </form>
@@ -110,6 +116,7 @@ def _page(*, error: str | None = None, name: str = "", notice: str | None = None
     </form>
     {legal_links_html()}
   </div>
+{proof.FORM_SCRIPT}
 </body>
 </html>"""
 
@@ -129,6 +136,10 @@ def _fail(request: Request, *, error: str, status: int, name: str = "", email: s
     return HTMLResponse(_page(error=error, name=name, email=email, signup=signup), status_code=status, headers=headers)
 
 
+def _limited(request: Request, exc: HTTPException, name: str = "") -> Response:
+    return _fail(request, error=str(exc.detail), status=exc.status_code, name=name, headers=exc.headers)
+
+
 def _email_sent(request: Request, message: str) -> Response:
     if _wants_json(request):
         return JSONResponse({"ok": True, "message": message}, headers={"Cache-Control": "no-store"})
@@ -140,22 +151,48 @@ async def join_page(signup: bool = False) -> HTMLResponse:
     return HTMLResponse(_page(signup=signup), headers={"Cache-Control": "no-store"})
 
 
+@router.get("/auth/join/challenge")
+async def join_challenge(request: Request, conn=Depends(get_conn)):
+    client = client_key(request)
+    await check(conn, f"challenge:ip:{client}", Limit(settings.rl_join_challenge_times, 60))
+    await check_backoff(conn, f"join:ip:{client}")
+    return JSONResponse(proof.issue(client), headers={"Cache-Control": "no-store"})
+
+
 @router.post("/auth/join")
+@audit_failures
 async def join_submit(
     request: Request,
-    name: str = Form(...),
-    passcode: str = Form(...),
+    name: str = Form(..., max_length=200),
+    passcode: str = Form(..., max_length=512),
+    challenge: str = Form("", max_length=1024),
+    solution: str = Form("", max_length=12),
     consent: ConsentSubmission = Depends(consent_form),
     conn=Depends(get_conn),
 ):
     display_name = name.strip()
-    if not hmac.compare_digest(passcode, settings.join_passcode):
+    failure_key = f"join:ip:{client_key(request)}"
+    try:
+        await check_backoff(conn, failure_key)
+        try:
+            await proof.consume(conn, client_key(request), challenge, solution)
+        except HTTPException:
+            await check(conn, failure_key, join_limit())
+            await record_failure(conn, failure_key)
+            raise
+    except HTTPException as exc:
+        return _limited(request, exc, display_name)
+    if not hmac.compare_digest(passcode.encode(), settings.join_passcode.encode()):
         # Counted here rather than at the top of the handler so the budget is
         # spent by *wrong* guesses only. The threat is someone walking a
         # keyspace against a shared code; a dozen field testers joining from
         # one carrier NAT during an onboarding push is the opposite of that,
         # and a limiter that cannot tell them apart blocks the wrong one.
-        check(f"join:ip:{client_key(request)}", join_limit())
+        try:
+            await check(conn, failure_key, join_limit())
+            await record_failure(conn, failure_key)
+        except HTTPException as exc:
+            return _limited(request, exc, display_name)
         return _fail(
             request,
             error="Wrong passcode — check with whoever invited you.",
@@ -165,6 +202,7 @@ async def join_submit(
     if not display_name:
         return _fail(request, error="Please enter your name.", status=400)
 
+    await clear_failures(conn, failure_key)
     try:
         observer_id = await passcode_account(conn, display_name, consent)
     except ConsentRequired as exc:
@@ -198,18 +236,29 @@ async def logout(request: Request):
 
 
 @router.post("/auth/email")
-async def email_submit(request: Request, email: str = Form(...), create_account: bool = Form(False),
+@audit_failures
+async def email_submit(request: Request, email: str = Form(..., max_length=320), create_account: bool = Form(False),
                        consent: ConsentSubmission = Depends(consent_form), conn=Depends(get_conn)):
+    failure_key = f"email:ip:{client_key(request)}"
+    try:
+        await check(conn, failure_key, email_ip_limit())
+        await check_backoff(conn, failure_key)
+    except HTTPException as exc:
+        return _limited(request, exc)
     address = normalize_email(email)
     if not address:
+        try:
+            await record_failure(conn, failure_key)
+        except HTTPException as exc:
+            return _limited(request, exc)
         return _fail(request, error="That doesn't look like an email address.", status=400)
-    # Two keys, not one. IP alone lets a rotating attacker hammer a single
-    # inbox, and lets one office NAT lock out everyone behind it; address
-    # alone does nothing against a script walking a list. Both are fixed
-    # windows -- this is dampening, not a lockout.
-    check(f"email:ip:{client_key(request)}", email_ip_limit())
-    check(f"email:addr:{address}", email_addr_limit())
+    # IP admission is above; address cooldown/window and provider capacity
+    # reserve together below, so a busy provider cannot consume inbox credit.
     if not is_allowed(address):
+        try:
+            await record_failure(conn, failure_key)
+        except HTTPException as exc:
+            return _limited(request, exc)
         # Told plainly, not silently swallowed: the allowlist is a domain, not
         # a secret, and silent failure just generates "did it send?" pings.
         return _fail(
@@ -227,18 +276,33 @@ async def email_submit(request: Request, email: str = Form(...), create_account:
         )
     try:
         async with conn.transaction():
+            await cooldown(conn, f"email:addr:{address}", settings.auth_email_cooldown_s)
+            await check(conn, f"email:addr:{address}", email_addr_limit())
+            # Reserved before the account lookup so an address with no account
+            # gets the same throttling and provider-busy answers as one with.
+            slot = await reserve(conn)
             observer_id, pending = await email_account(conn, address, consent, creating=create_account)
             token = (await issue_login_token(conn, observer_id,
                      signup_consent=pending.model_dump_json() if pending else None)) if observer_id else None
     except ConsentRequired as exc:
         return _fail(request, error=exc.detail, status=428, email=address, signup=True, consent_required=True)
+    except HTTPException as exc:
+        await record(conn, "email_throttled")
+        return _limited(request, exc)
     message = ("Check your email. If an account uses that address, a sign-in link is on its way."
                if settings.consent_enabled else f"Check your email — a sign-in link is on its way to {address}.")
     if observer_id is None:
         return _email_sent(request, message)
     link = f"{settings.public_base_url}/auth/email/consume?token={token}"
     try:
-        await get_sender().send(address, link)
+        await deliver(conn, lambda: get_sender().send(address, link), reserved=slot)
+    except HTTPException as exc:
+        # The address cooldown has committed. Never promise a provider retry
+        # sooner than this inbox is allowed to request another link.
+        wait = max(settings.auth_email_cooldown_s, int((exc.headers or {}).get("Retry-After", "60")))
+        message = ("The email provider is busy." if exc.status_code == 429 else "We couldn't send that email.")
+        return _fail(request, error=f"{message} Try again in {wait} seconds.", status=exc.status_code,
+                     headers={"Retry-After": str(wait)})
     except Exception:
         # Never let a sender failure surface as a bare 500. SES refusing a
         # message (suppressed recipient, throttling, misconfiguration) is an
@@ -246,7 +310,7 @@ async def email_submit(request: Request, email: str = Form(...), create_account:
         # the button is broken -- which is exactly what happened once, for two
         # days, when sandbox rejected an unverified recipient. The detail goes
         # to the log; the reader gets something actionable.
-        logger.exception("login email send failed for %s", address)
+        logger.error("login email sender failed")
         return _fail(
             request,
             error="We couldn't send that email just now. Try again in a moment — "
@@ -259,13 +323,24 @@ async def email_submit(request: Request, email: str = Form(...), create_account:
 
 
 @router.get("/auth/email/consume")
-async def email_consume(token: str, conn=Depends(get_conn)):
+@audit_failures
+async def email_consume(request: Request, token: str = Query(max_length=512), conn=Depends(get_conn)):
+    failure_key = f"consume:ip:{client_key(request)}"
+    try:
+        await check_backoff(conn, failure_key)
+    except HTTPException as exc:
+        return _limited(request, exc)
     observer_id = await consume_email_token(conn, token)
     if observer_id is None:
+        try:
+            await record_failure(conn, failure_key)
+        except HTTPException as exc:
+            return _limited(request, exc)
         return HTMLResponse(
             _page(error="That link has expired or was already used. Request a new one."),
             status_code=401,
         )
+    await clear_failures(conn, failure_key)
     # Carry-over happens *here*, not at submit: consuming the link is the first
     # moment we know this person actually controls the address. Testers were
     # told to use their work email as their passcode-door name, so anything

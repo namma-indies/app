@@ -1,6 +1,6 @@
 import { API_BASE } from "./apiBase";
 import type { HeardText } from "./components/Transcript";
-import { buildSightingForm, HttpError, responseError, UnauthorizedError, type LaterNote, type PostSightingInput, type SightingAttrs } from "./api";
+import { buildSightingForm, HttpError, responseError, retryAfterSeconds, UnauthorizedError, type LaterNote, type PostSightingInput, type SightingAttrs } from "./api";
 
 export type CaptureState = "queued" | "processing" | "needs_review" | "ready" | "no_animal" | "failed" | "legacy";
 export interface CaptureSummary {
