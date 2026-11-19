@@ -294,3 +294,123 @@ async def test_moderator_queue_pages_instead_of_truncating(authed_client, monkey
     assert len(seen) == 5 and set(seen) == {"other", "privacy", "intimate_imagery", "takedown", "government_order"}
     assert set(seen[:2]) == {"intimate_imagery", "government_order"}
     assert (await client.get("/moderation/grievances", params={"offset": -1})).status_code == 422
+
+
+# --- optional Cloudflare Turnstile ------------------------------------------------
+
+TOKEN = "XXXX.DUMMY.TOKEN.never-logged"
+
+
+@pytest.fixture
+def turnstile(monkeypatch):
+    """Turnstile on, with siteverify answered by `calls`' handler."""
+    import httpx
+    from app import turnstile as ts
+    monkeypatch.setattr(settings, "turnstile_site_key", "1x00000000000000000000AA")
+    monkeypatch.setattr(settings, "turnstile_secret_key", "1x0000000000000000000000000000000AA")
+    state = {"calls": [], "answer": lambda request: httpx.Response(200, json={"success": True})}
+
+    def handler(request):
+        state["calls"].append(request)
+        return state["answer"](request)
+    monkeypatch.setattr(ts, "_transport", httpx.MockTransport(handler))
+    return state
+
+
+async def test_turnstile_is_off_by_default_and_changes_nothing(app_client):
+    assert settings.turnstile_site_key == "" and settings.turnstile_secret_key == ""
+    page = await app_client.get("/grievances")
+    assert "challenges.cloudflare.com" not in page.text
+    assert "challenges.cloudflare.com" not in page.headers["content-security-policy"]
+    assert (await app_client.post("/grievances", data=form())).status_code == 201
+
+
+async def test_turnstile_renders_the_widget_and_allows_it_in_the_csp(app_client, turnstile):
+    page = await app_client.get("/grievances")
+    assert 'class="cf-turnstile" data-sitekey="1x00000000000000000000AA"' in page.text
+    assert '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' in page.text
+    csp = page.headers["content-security-policy"]
+    assert "script-src https://challenges.cloudflare.com" in csp and "frame-src https://challenges.cloudflare.com" in csp
+    assert "frame-ancestors 'none'" in csp and "default-src 'none'" in csp
+    assert settings.turnstile_secret_key not in page.text
+
+
+async def test_turnstile_token_is_verified_server_side_before_saving(app_client, turnstile, caplog):
+    from urllib.parse import parse_qs
+    response = await app_client.post("/grievances", data=form(**{"cf-turnstile-response": TOKEN}))
+    assert response.status_code == 201, response.text
+    (call,) = turnstile["calls"]
+    assert str(call.url) == "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+    sent = parse_qs(call.content.decode())
+    assert sent == {"secret": [settings.turnstile_secret_key], "response": [TOKEN]}
+    # A browser retry of the saved complaint gets its receipt back without a
+    # second (single-use) verification.
+    row = await latest(app_client)
+    assert row is not None
+    assert TOKEN not in caplog.text
+
+
+@pytest.mark.parametrize("token", [None, "", "x" * 2049])
+async def test_turnstile_missing_or_oversized_token_is_refused_without_a_call(app_client, turnstile, token):
+    fields = form() if token is None else form(**{"cf-turnstile-response": token})
+    response = await app_client.post("/grievances", data=fields)
+    assert response.status_code == 400 and "bot check" in response.text
+    assert turnstile["calls"] == [] and await latest(app_client) is None
+
+
+async def test_turnstile_failed_check_saves_nothing(app_client, turnstile, caplog):
+    import httpx
+    turnstile["answer"] = lambda request: httpx.Response(
+        200, json={"success": False, "error-codes": ["timeout-or-duplicate"]})
+    response = await app_client.post("/grievances", data=form(**{"cf-turnstile-response": TOKEN}))
+    assert response.status_code == 400 and "Complete the check" in response.text
+    assert await latest(app_client) is None
+    async with (await _pool(app_client)).acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM moderation_mail") == 0
+    assert TOKEN not in caplog.text
+
+
+@pytest.mark.parametrize("failure", ["timeout", "network", "server", "garbage", "bad_secret"])
+async def test_turnstile_fails_closed_with_a_retry_message(app_client, turnstile, caplog, failure):
+    import httpx
+
+    def answer(request):
+        if failure == "timeout":
+            raise httpx.ReadTimeout("slow", request=request)
+        if failure == "network":
+            raise httpx.ConnectError("down", request=request)
+        if failure == "server":
+            return httpx.Response(502)
+        if failure == "garbage":
+            return httpx.Response(200, text="<html>")
+        return httpx.Response(200, json={"success": False, "error-codes": ["invalid-input-secret"]})
+    turnstile["answer"] = answer
+    body = form(**{"cf-turnstile-response": TOKEN})
+    response = await app_client.post("/grievances", data=body)
+    assert response.status_code == 503 and "send the complaint again" in response.text
+    assert await latest(app_client) is None
+    assert TOKEN not in caplog.text and settings.turnstile_secret_key not in caplog.text
+    # The form comes back filled in, ready to retry.
+    assert "This needs a private review." in response.text
+
+
+async def test_turnstile_retry_of_a_saved_complaint_returns_its_receipt(app_client, turnstile):
+    import httpx
+    body = form(**{"cf-turnstile-response": TOKEN})
+    first = await app_client.post("/grievances", data=body)
+    assert first.status_code == 201
+    # The spent token would now fail; the identical retry never asks.
+    turnstile["answer"] = lambda request: httpx.Response(200, json={"success": False, "error-codes": ["timeout-or-duplicate"]})
+    again = await app_client.post("/grievances", data=body)
+    assert again.status_code == 200 and reference(again) == reference(first)
+    assert len(turnstile["calls"]) == 1
+
+
+def test_turnstile_needs_both_keys_or_neither():
+    from pydantic import ValidationError
+    from app.config import Settings
+    with pytest.raises(ValidationError):
+        Settings(turnstile_site_key="site-only")
+    with pytest.raises(ValidationError):
+        Settings(turnstile_secret_key="secret-only")
+    assert Settings(turnstile_site_key="a", turnstile_secret_key="b").turnstile_site_key == "a"

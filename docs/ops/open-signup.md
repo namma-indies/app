@@ -12,7 +12,9 @@ one budget; deploying does not reset it. Database failure refuses the request.
 `RATE_LIMIT_ENABLED=true` is required for launch.
 
 The passcode door requires first-party SHA-256 proof-of-work on **every** join.
-There is no captcha vendor, third-party script or transfer of visitor data.
+There is no captcha vendor, third-party script or transfer of visitor data on
+sign-in. (Only the public grievance form can optionally use Cloudflare
+Turnstile, off by default; see `docs/moderation-operations.md`.)
 The work is signed, bound to the client IP, expires after five minutes, and can
 be used once across all workers. This changes the passcode protocol: older
 native bundles must update to use that door; email sign-in remains available.

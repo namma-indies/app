@@ -215,8 +215,34 @@ required. Optional intake controls are `RL_GRIEVANCE_IP_TIMES` (20),
 per-window abuse budgets, not people/complaint quotas. Both are charged before
 and outside the intake transaction, so invalid, conflicting or rolled-back
 attempts still count; an identical retry of an already-saved submission returns
-its receipt without spending the address budget. There is no CAPTCHA or
-third-party bot check: adding one is a product/privacy decision for Akash.
+its receipt without spending the address budget.
+
+### Optional bot check (Cloudflare Turnstile)
+
+Off by default. With `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` both empty
+the form is exactly as described above. Startup refuses one without the other.
+To switch it on:
+
+1. In the Cloudflare dashboard, Turnstile → Add widget: name it, add the public
+   hostname that serves `/grievances` (and any staging host), mode "Managed".
+2. Set the site key and secret key privately in deployment settings on every
+   API worker. Never commit either; the site key is rendered into the page, the
+   secret is not.
+3. Deploy and load `/grievances`: the check appears above "Send complaint".
+
+When on, the page loads Turnstile's script and frame from
+`https://challenges.cloudflare.com` (its CSP allows exactly that origin for
+`script-src` and `frame-src`), and the token is verified server-side against
+siteverify before anything is saved, with `TURNSTILE_TIMEOUT_S` (default 5 s).
+It fails closed: a missing or failed check returns the filled-in form asking
+the person to complete the check; an unreachable or erroring siteverify (or a
+rejected secret, logged at error level) returns it with a "try again" message.
+Nothing is saved and no email is charged or queued in either case. The token
+and secret are never logged. An identical browser retry of an already-saved
+complaint still gets its receipt without a second check. Cloudflare's test keys
+(`1x00000000000000000000AA` / `1x0000000000000000000000000000000AA`, always pass)
+are fine for staging. Turnstile sends the visitor's browser signals to
+Cloudflare: mention it in the privacy policy before switching it on.
 
 ### Product and people decisions for Akash
 

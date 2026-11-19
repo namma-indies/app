@@ -149,6 +149,12 @@ class Settings(BaseSettings):
         return value
 
     @model_validator(mode="after")
+    def _turnstile_both_or_neither(self):
+        if bool(self.turnstile_site_key.strip()) != bool(self.turnstile_secret_key.strip()):
+            raise ValueError("set both TURNSTILE_SITE_KEY and TURNSTILE_SECRET_KEY, or neither")
+        return self
+
+    @model_validator(mode="after")
     def _consent_has_versions(self):
         if self.consent_enabled and not all(value.strip() for value in (
             self.terms_version, self.privacy_version, self.community_guidelines_version,
@@ -189,6 +195,14 @@ class Settings(BaseSettings):
     rl_grievance_ip_times: int = Field(default=20, ge=1)
     rl_grievance_email_times: int = Field(default=5, ge=1)
     rl_grievance_window_s: int = Field(default=3600, ge=1)
+    # Optional Cloudflare Turnstile bot check on the public grievance form
+    # (docs/moderation-operations.md). Both empty (the default) = off, and
+    # the form behaves exactly as without it. Set both or neither: the site
+    # key is public (rendered into the page), the secret is a private
+    # deployment setting. Verification fails closed.
+    turnstile_site_key: str = ""
+    turnstile_secret_key: str = ""
+    turnstile_timeout_s: float = Field(default=5, gt=0, le=30)
     # Moderator grievance queue page; older pages are fetched on demand.
     grievance_queue_page_size: int = Field(default=100, ge=1, le=500)
     # Reports per observer per window, across all sightings. Generous for a
