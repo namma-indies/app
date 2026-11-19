@@ -131,3 +131,23 @@ async def test_evidence_ids_cannot_expose_an_unrelated_sighting(authed_client):
     assert [p["photo_id"] for p in got["a"]["photos"]] == [str(own)]
     assert got["b"]["photo_id"] == str(gallery)
     assert "unrelated.webp" not in response.text
+
+
+@pytest.mark.parametrize("recorded", ["empty", "all_deleted"])
+@pytest.mark.asyncio
+async def test_query_side_is_never_blank_when_no_recorded_view_is_left(authed_client, recorded):
+    """An empty evidence list, or one whose photos were all deleted, falls back
+    to the earliest photo like an old proposal: never a blank side with
+    "same" still pressable."""
+    client, oid = authed_client
+    async with client._transport.app.state.pool.acquire() as conn:
+        a, b = await sighting(conn, oid), await sighting(conn, oid)
+        gone = await photo(conn, a, "query-gone.webp")
+        first_a = await photo(conn, a, "query-left.webp")
+        best = await photo(conn, b, "gallery.webp")
+        ids = [] if recorded == "empty" else [gone]
+        await proposal(conn, a, b, matched_photo_id=best, query_photo_ids=ids)
+        await conn.execute("DELETE FROM photos WHERE id=$1", gone)
+    got = (await client.get("/proposals")).json()["proposals"][0]
+    assert got["a"]["photo_id"] == str(first_a)
+    assert [p["photo_id"] for p in got["a"]["photos"]] == [str(first_a)]

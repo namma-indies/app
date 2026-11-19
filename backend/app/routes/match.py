@@ -218,10 +218,12 @@ async def list_proposals(
         JOIN sightings b ON b.id = mp.candidate_sighting_id
         -- Keep one row per proposal. New proposals show their recorded
         -- evidence; historical ones fall back to the earliest photo.
+        -- A recorded view first; the earliest photo when none was recorded
+        -- (NULL, or an empty list) or every recorded one is gone, so a card
+        -- is never blank while "same" can still be pressed.
         LEFT JOIN LATERAL (
             SELECT id FROM photos WHERE sighting_id = a.id
-              AND (mp.query_photo_ids IS NULL OR id = ANY(mp.query_photo_ids))
-            ORDER BY created_at, id LIMIT 1
+            ORDER BY (id = ANY(COALESCE(mp.query_photo_ids, '{{}}'::uuid[]))) DESC, created_at, id LIMIT 1
         ) pa ON TRUE
         LEFT JOIN LATERAL (
             SELECT id FROM photos WHERE sighting_id = b.id
@@ -276,7 +278,7 @@ async def list_proposals(
     # Only sign evidence belonging to the expected side, including when an old
     # proposal has lost its original photo. Array IDs never grant photo access.
     allowed = {(r["a_id"], pid) for r in rows
-               for pid in (r["query_photo_ids"] or [r["a_photo_id"]])}
+               for pid in (*(r["query_photo_ids"] or []), r["a_photo_id"])}
     allowed.update((r["b_id"], r["b_photo_id"]) for r in rows)
     photos = [p for p in photos if (p["sighting_id"], p["id"]) in allowed]
     keys = list(dict.fromkeys(key for p in photos
@@ -296,8 +298,11 @@ async def list_proposals(
     def side(r, name):
         primary = evidence(r[f"{name}_photo_id"], r[f"{name}_id"])
         ids = r["query_photo_ids"] if name == "a" else None
-        views = [view for pid in (ids or [r[f"{name}_photo_id"]])
+        views = [view for pid in (ids or [])
                  if (view := evidence(pid, r[f"{name}_id"])) is not None]
+        if not views and primary is not None:
+            # Nothing recorded, or every recorded view since deleted.
+            views = [primary]
         return {"sighting_id": str(r[f"{name}_id"]),
                 "species": r[f"{name}_species"],
                 "date": r[f"{name}_when"].date().isoformat(),
