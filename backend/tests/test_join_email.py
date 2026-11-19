@@ -318,3 +318,28 @@ async def test_logout_without_a_session_is_harmless(app_client):
     r = await app_client.post("/auth/logout", headers=JSON)
     assert r.status_code == 200
     assert r.json()["ok"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("support_email, expected", [
+    ("help@example.invalid", "write to help@example.invalid"),
+    ("", "contact us through the Support page"),
+])
+async def test_suspended_address_is_pointed_at_the_configured_support_contact(
+        app_client, monkeypatch, support_email, expected):
+    from app.config import settings
+    from app.main import app
+    from app.security import email_hash
+    monkeypatch.setattr(settings, "support_contact_email", support_email)
+    address = "banned@example.test"
+    async with app.state.pool.acquire() as c:
+        await c.execute("INSERT INTO banned_emails (email_hmac) VALUES ($1) ON CONFLICT DO NOTHING",
+                        email_hash(address))
+    try:
+        r = await app_client.post("/auth/email", data={"email": address}, headers=JSON)
+        assert r.status_code == 403
+        assert expected in r.json()["error"]
+        assert "nammaindies@gmail.com" not in r.json()["error"]
+    finally:
+        async with app.state.pool.acquire() as c:
+            await c.execute("DELETE FROM banned_emails WHERE email_hmac = $1", email_hash(address))

@@ -25,7 +25,7 @@ from app.deps import get_conn
 from app.email.sender import get_sender
 from app.email.delivery import deliver, reserve
 from app.abuse import record
-from app.legal_links import LEGAL_LINKS_STYLE, legal_links_html
+from app.legal_links import LEGAL_LINKS_STYLE, legal_links_html, support_contact_phrase
 from app.ratelimit import (Limit, check, check_backoff, clear_failures, client_key,
                            cooldown, email_addr_limit, email_ip_limit, join_limit, record_failure)
 from app.security import email_hash
@@ -271,7 +271,7 @@ async def email_submit(request: Request, email: str = Form(..., max_length=320),
         # silent failure would only bring them back to try again.
         return _fail(
             request,
-            error="This account has been suspended. If you think that's wrong, write to nammaindies@gmail.com.",
+            error=f"This account has been suspended. If you think that's wrong, {support_contact_phrase()}.",
             status=403,
         )
     try:
