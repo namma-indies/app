@@ -6,7 +6,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.capture_contracts import MULTI_PIPELINE_VERSION, MultiCompletion, MultiURLRequest
 from app.scene import as_wire
-from app.capture_jobs import capture_sources, complete_capture_job, multi_lease, upload_urls
+from app.capture_jobs import capture_sources, complete_capture_job, grouping_policy, multi_lease, upload_urls
 from app.media_jobs import MODEL_NAME, payload_of
 from app.photos import process_photo, thumb_key
 
@@ -33,9 +33,10 @@ async def cpu_process_capture(pool,storage,job,token):
         if total > 256 * 1024 * 1024:
             raise ValueError("capture input exceeds byte budget")
         raw.append(data)
-    analysis = await run_in_threadpool(analyse_photos,raw)
+    analysis = await run_in_threadpool(lambda: analyse_photos(raw,policy=grouping_policy()))
     track_ids = {iid:t.track_id for t in analysis.tracks for iid in t.instance_ids}
     frames,instances = [],[]
+    evidence_index = {}
     for ordinal,frame in enumerate(analysis.frames):
         source = sources[ordinal]
         frames.append(dict(photo_id=source["photo_id"],width=source["width"],height=source["height"],
@@ -58,9 +59,16 @@ async def cpu_process_capture(pool,storage,job,token):
             instances.append(dict(index=index,source_photo_id=source["photo_id"],track_id=track_ids[instance.instance_id],
                 species=det.species,confidence=det.confidence,bbox=bbox,crop_bbox=det.crop_box,
                 width=photo.width,height=photo.height,phash=photo.phash,
+                dog_score=det.dog_score,cat_score=det.cat_score,
                 vector=instance.vector.tolist() if instance.vector is not None else None))
+            evidence_index[instance.instance_id] = index
+    tracks = [dict(track_id=t.track_id,species=t.species,species_uncertain=t.species_uncertain,
+        species_share=max(0.5,min(1.0,t.species_share)),confidence=max(0.0,min(1.0,t.confidence)),
+        confident=t.confident,representative_index=evidence_index[t.representative_instance_id],
+        reasons=list(t.reasons)) for t in analysis.tracks]
     body = MultiCompletion(lease_token=token,pipeline_version=MULTI_PIPELINE_VERSION,model=MODEL_NAME,
-        frames=frames,instances=instances,needs_review=analysis.requires_review)
+        frames=frames,instances=instances,needs_review=analysis.requires_review,
+        tracks=tracks,grouping_policy=analysis.tracking_policy)
     async with pool.acquire() as conn:
         await complete_capture_job(conn,storage,job["id"],body,cpu=True)
     from app.media_jobs import purge_staging_later

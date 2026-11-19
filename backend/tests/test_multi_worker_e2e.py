@@ -54,8 +54,9 @@ class MemoryObjects:
 
 
 class Session:
-    def __init__(self, detector=False):
+    def __init__(self, detector=False, same_look=False):
         self.detector = detector
+        self.same_look = same_look
         self.calls = 0
 
     def disable_fallback(self):
@@ -73,7 +74,7 @@ class Session:
             return [np.array([[[40, 100, 240, 500, .85, 16],
                               [400, 200, 500, 400, .9, 16]]], dtype=np.float32)]
         vector = np.zeros((1, 2152), dtype=np.float32)
-        vector[0, (self.calls - 1) % 2] = 1
+        vector[0, 0 if self.same_look else (self.calls - 1) % 2] = 1
         return [vector]
 
 
@@ -97,9 +98,12 @@ class LoseFirstCompletion(httpx.AsyncBaseTransport):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("media_kind, sample_count", [("photo", 1), ("photo", 2), ("video", 4)])
+@pytest.mark.parametrize("media_kind, sample_count, same_look", [
+    ("photo", 1, False), ("photo", 2, False), ("photo", 2, True), ("video", 4, False), ("video", 4, True)])
 async def test_multi_worker_lost_response_then_owner_publication(
-        authed_client, monkeypatch, tmp_path, media_kind, sample_count):
+        authed_client, monkeypatch, tmp_path, media_kind, sample_count, same_look):
+    """Two dogs that look different publish on their own (Akash, 2026-11-19);
+    two that look alike wait for the owner, with the grouping filled in."""
     client, owner = authed_client
     app = client._transport.app
     objects = MemoryObjects()
@@ -120,7 +124,9 @@ async def test_multi_worker_lost_response_then_owner_publication(
             writer = imageio.get_writer(str(path), fps=2, codec="libx264", macro_block_size=1)
             try:
                 for index in range(sample_count):
-                    writer.append_data(np.full((640, 640, 3), 80 + index * 10, dtype=np.uint8))
+                    # Distinct frames: the diversity filter drops near-duplicates.
+                    writer.append_data(np.random.default_rng(index).integers(
+                        0, 255, (640, 640, 3), dtype=np.uint8))
             finally:
                 writer.close()
             files = [("video", ("short.mp4", path.read_bytes(), "video/mp4"))]
@@ -151,7 +157,7 @@ async def test_multi_worker_lost_response_then_owner_publication(
         assert (await client.get(f"/capture/{capture_id}")).status_code == 404
         client.cookies.set("session", original_session)
 
-        detector, embedder = Session(detector=True), Session()
+        detector, embedder = Session(detector=True), Session(same_look=same_look)
         adapter = GpuInference(detector, embedder, Identity("a" * 64, "b" * 64, "synthetic"),
             limits=Limits(max_tracking_frames=sample_count) if media_kind == "video" else None)
         transport = LoseFirstCompletion(app)
@@ -168,8 +174,14 @@ async def test_multi_worker_lost_response_then_owner_publication(
 
         status = (await client.get(f"/capture/{capture_id}")).json()
         assert len(status["instances"]) == 2 * sample_count
-        if sample_count > 1:
+        assert len(status["animal_hints"]) == len(status["groups"])
+        if sample_count > 1 and not same_look:
+            assert status["processing_state"] == "ready"
+            assert sorted(len(g["instance_ids"]) for g in status["groups"]) == [sample_count] * 2
+            assert all(h["confident"] for h in status["animal_hints"])
+        if sample_count > 1 and same_look:
             assert status["processing_state"] == "needs_review"
+            assert not all(h["confident"] for h in status["animal_hints"])
             assert not status["sighting_ids"]
             assert (await client.get("/map")).json()["sightings"] == []
             # Left and right animal evidence stays separate even across views.
@@ -212,7 +224,7 @@ async def test_multi_worker_lost_response_then_owner_publication(
                 by_animal.setdefault(row["sighting_id"], set()).add(row["vec"])
             assert len(by_animal) == 2
             assert all(len(vectors) == 1 for vectors in by_animal.values())
-            assert len(set.union(*by_animal.values())) == 2
+            assert len(set.union(*by_animal.values())) == (1 if same_look else 2)
         monkeypatch.setattr(settings, "multi_animal_enabled", False)
         disabled_replay = await client.post("/capture", data=data, files=files)
         assert disabled_replay.status_code == 201 and disabled_replay.json()["duplicate"]

@@ -85,6 +85,7 @@ REFERENCES: dict[tuple[str, str, str], str] = {
     ("voice_notes", "capture_id", "captures"): "c",
     ("photo_descriptions", "capture_id", "captures"): "c",
     ("upload_screens", "capture_id", "captures"): "c",
+    ("capture_tracks", "capture_id", "captures"): "c",
     # -> photos
     ("embeddings", "photo_id", "photos"): "c",
     ("detections", "photo_id", "photos"): "c",
@@ -92,10 +93,12 @@ REFERENCES: dict[tuple[str, str, str], str] = {
     ("animal_instances", "evidence_photo_id", "photos"): "c",
     ("social_picks", "photo_id", "photos"): "c",
     ("match_proposals", "matched_photo_id", "photos"): "n",  # evidence can go; the verdict stays (#220)
+    ("sightings", "cover_photo_id", "photos"): "n",  # the sighting picks no cover then (0049)
     # -> animal_instances
     ("embeddings", "instance_id", "animal_instances"): "c",
     ("detail_suggestions", "instance_id", "animal_instances"): "c",
     ("match_proposals", "matched_instance_id", "animal_instances"): "n",
+    ("capture_tracks", "representative_instance_id", "animal_instances"): "n",
     # -> voice_notes, voice_transcripts, photo_descriptions
     ("transcription_jobs", "note_id", "voice_notes"): "c",
     ("voice_transcripts", "note_id", "voice_notes"): "c",

@@ -71,7 +71,7 @@ async def get_dex(
         -- p.id breaks the tie: photos of one sighting share created_at exactly
         -- (single transaction, constant now()), so without it the order of a
         -- sighting's photos is arbitrary and can differ between requests.
-        ORDER BY s.captured_at DESC, p.created_at ASC, p.id ASC
+        ORDER BY s.captured_at DESC, s.id, (p.id IS NOT DISTINCT FROM s.cover_photo_id) DESC, p.created_at ASC, p.id ASC
         """,
         observer_id,
     )
