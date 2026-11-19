@@ -36,11 +36,22 @@ function controllerHarness(opts: { busy?: boolean; hidden?: boolean } = {}) {
 }
 
 describe("createUpdateController", () => {
-  it("reloads straight away when nothing is in progress", () => {
-    const h = controllerHarness();
+  it("reloads straight away when the page is in the background and idle", () => {
+    const h = controllerHarness({ hidden: true });
     h.c.updateReady();
     expect(h.reload).toHaveBeenCalledTimes(1);
     expect(h.setPrompt).not.toHaveBeenCalled();
+  });
+
+  it("prompts rather than reloading a visible page, even with no guard held", () => {
+    // Unguarded actions (a match verdict, typing "delete") must not be cut off.
+    const h = controllerHarness();
+    h.c.updateReady();
+    expect(h.reload).not.toHaveBeenCalled();
+    expect(h.setPrompt).toHaveBeenCalledWith(true);
+    h.state.hidden = true;
+    h.c.visibilityChanged();
+    expect(h.reload).toHaveBeenCalledTimes(1);
   });
 
   it("shows the prompt instead of reloading while work is in progress", () => {
@@ -58,7 +69,7 @@ describe("createUpdateController", () => {
   });
 
   it("never reloads twice", () => {
-    const h = controllerHarness();
+    const h = controllerHarness({ hidden: true });
     h.c.updateReady();
     h.c.reloadNow();
     h.c.updateReady();

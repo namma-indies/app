@@ -9,7 +9,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function fixture(readyState = "complete", controlled = true) {
+function fixture(readyState = "complete", controlled = true, visibilityState = "hidden") {
   const oldWorker = controlled ? {} : null;
   const reg = Object.assign(new EventTarget(), {
     active: oldWorker,
@@ -24,14 +24,17 @@ function fixture(readyState = "complete", controlled = true) {
   const win = Object.assign(new EventTarget(), {
     location: { reload }, setInterval: vi.fn(() => 1), clearInterval: vi.fn(),
   });
-  const doc = Object.assign(new EventTarget(), { readyState, visibilityState: "visible" });
+  // Hidden by default: these cases test noticing a takeover, observed as the
+  // reload a backgrounded idle page gets. A visible page prompts instead.
+  const doc = Object.assign(new EventTarget(), { readyState, visibilityState });
+  const setPrompt = vi.fn();
   vi.stubGlobal("window", win);
   vi.stubGlobal("document", doc);
   vi.stubGlobal("navigator", { serviceWorker: container });
   return {
-    reg, container, win, reload,
+    reg, container, win, reload, doc, setPrompt,
     start() {
-      const handle = startServiceWorker(vi.fn());
+      const handle = startServiceWorker(setPrompt);
       stops.push(handle.stop);
       return handle;
     },
@@ -84,6 +87,18 @@ describe("service-worker startup (#175)", () => {
     expect(f.reload).not.toHaveBeenCalled();
     f.reg.dispatchEvent(new Event("updatefound"));
     f.takeControl();
+    expect(f.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("prompts on a visible page and reloads only once it is backgrounded", async () => {
+    const f = fixture("complete", true, "visible");
+    f.start();
+    await settled();
+    f.takeControl();
+    expect(f.reload).not.toHaveBeenCalled();
+    expect(f.setPrompt).toHaveBeenCalledWith(true);
+    f.doc.visibilityState = "hidden";
+    f.doc.dispatchEvent(new Event("visibilitychange"));
     expect(f.reload).toHaveBeenCalledTimes(1);
   });
 

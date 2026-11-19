@@ -2,8 +2,8 @@
 //
 // The service worker (skipWaiting + clientsClaim) swaps itself in on its own,
 // but the *page* keeps running the JS it already loaded. This module notices
-// the swap, then reloads the page when that loses nothing, or asks first when
-// it would. It also makes the page go looking for new versions: the browser
+// the swap, then reloads the page while it is in the background and idle, and
+// otherwise shows a prompt. It also makes the page go looking for new versions: the browser
 // only checks on navigation, and an installed PWA is resumed, not navigated.
 
 export const CHECK_INTERVAL_MS = 30 * 60 * 1000;
@@ -43,7 +43,11 @@ export function createUpdateController(deps: UpdateDeps): UpdateController {
 
   function evaluate() {
     if (!ready || reloading) return;
-    if (!deps.isBusy()) {
+    // Only a page out of sight reloads by itself. A visible one may be in the
+    // middle of something no reload guard covers (a match verdict, typing
+    // "delete", a moderation action), so it gets the prompt and reloads on
+    // the user's tap or once it is backgrounded while idle.
+    if (deps.isHidden() && !deps.isBusy()) {
       reload();
     } else {
       deps.setPrompt(true);
