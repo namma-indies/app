@@ -163,6 +163,90 @@ Default temporary data capacity is 2 GiB tmpfs with a 3 GiB memory limit; adjust
 `--max-age-hours` permits an explicit historical rehearsal, not a silent waiver
 of freshness in scheduled health checks.
 
+## Restoring — step by step
+
+The half that only ever runs on the worst day, so read it before you need it.
+Everything in `<angle brackets>` is a placeholder; the real values live in
+private ops. Run on the app host from `<app-checkout>`, with
+`C="sudo docker compose -f docker-compose.prod.yml"`. The drill above is the
+rehearsal of steps 1–3; steps 4–7 only happen in a real recovery, with the
+operator's authorisation.
+
+**1. Choose and fetch a backup** with the separate operator read identity
+(`<restore-read-profile>`: List on `backups/`, Get on `backups/*`). The API's
+own identity can no longer read dumps.
+
+```sh
+aws --profile <restore-read-profile> s3api list-objects-v2 \
+  --bucket <backup-bucket> --prefix backups/indiedex- --query 'Contents[].[Key,Size]' --output text
+aws --profile <restore-read-profile> s3 cp \
+  s3://<backup-bucket>/backups/indiedex-<YYYYMMDDTHHMMSSZ>.dump /tmp/restore.dump
+aws --profile <restore-read-profile> s3 cp \
+  s3://<backup-bucket>/backups/indiedex-<YYYYMMDDTHHMMSSZ>.json /tmp/restore.manifest.json
+head -c 5 /tmp/restore.dump; echo   # must print PGDMP
+```
+
+Optionally prove it first in isolation:
+`python backend/scripts/restore_db_drill.py --archive /tmp/restore.dump --manifest /tmp/restore.manifest.json`.
+
+**2. Restore into a new, separate database** — never over the live one:
+
+```sh
+$C cp /tmp/restore.dump db:/tmp/restore.dump
+$C exec -T db createdb -U postgres indiedex_restored < /dev/null
+$C exec -T db pg_restore --exit-on-error --single-transaction --no-owner \
+  -U postgres -d indiedex_restored /tmp/restore.dump < /dev/null
+```
+
+Errors mentioning a *table* mean stop. The archive creates the `postgis` and
+`vector` extensions itself.
+
+**3. Check the numbers against the manifest, not the exit code:**
+
+```sh
+$C exec -T db psql -U postgres -d indiedex_restored -XqAt -v ON_ERROR_STOP=1 \
+  -c "$(cat deploy/backup-manifest.sql)" < /dev/null
+cat /tmp/restore.manifest.json
+```
+
+Schema head must match and counts should be within a few rows. An embedding
+count of zero means the vectors did not come across and re-ID would be inert.
+
+**4. Stop writes**, then swap the databases (keeping the old one):
+
+```sh
+$C stop app
+$C exec -T db psql -U postgres -v ON_ERROR_STOP=1 \
+  -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='indiedex' AND pid<>pg_backend_pid()" \
+  -c "ALTER DATABASE indiedex RENAME TO indiedex_before_restore_<YYYYMMDD>" \
+  -c "ALTER DATABASE indiedex_restored RENAME TO indiedex" < /dev/null
+```
+
+**5. Replay the erasure ledger** from the backup's `created_at` (in the
+manifest) and complete purges, **before** traffic. Dry-run first, then apply:
+
+```sh
+$C run --rm --no-deps --entrypoint "" app sh -c \
+  'cd /app/backend && uv run python scripts/replay_erasures.py --since <backup-created-at>'
+$C run --rm --no-deps --entrypoint "" app sh -c \
+  'cd /app/backend && uv run python scripts/replay_erasures.py --since <backup-created-at> --apply'
+```
+
+Then reconcile the items in "Actual disaster recovery" below.
+
+**6. Bring the app back** (the entrypoint applies any newer migrations):
+
+```sh
+$C start app
+curl -s https://<app-origin>/health
+curl -s -H "Authorization: Bearer <health-token>" https://<app-origin>/health/detailed
+```
+
+**7. Clean up** once satisfied: `rm -f /tmp/restore.dump /tmp/restore.manifest.json`,
+`$C exec -T db rm -f /tmp/restore.dump < /dev/null`, and drop
+`indiedex_before_restore_<YYYYMMDD>` only after the operator agrees. Take a
+fresh backup and record the event privately.
+
 ## Actual disaster recovery
 
 The drill never promotes its database. The private operator recovery procedure
