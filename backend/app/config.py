@@ -142,6 +142,10 @@ class Settings(BaseSettings):
     rl_grievance_ip_times: int = Field(default=20, ge=1)
     rl_grievance_email_times: int = Field(default=5, ge=1)
     rl_grievance_window_s: int = Field(default=3600, ge=1)
+    # Reports per observer per window, across all sightings. Generous for a
+    # person flagging a bad batch; caps one account cycling severe holds/alerts.
+    rl_report_times: int = Field(default=30, ge=1)
+    rl_report_window_s: int = Field(default=3600, ge=1)
 
     phone_hash_secret: str = "dev-phone-secret"
     session_secret: str = "dev-session-secret"

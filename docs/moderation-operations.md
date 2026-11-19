@@ -7,8 +7,14 @@ moderators, staffing a rota and agreeing response targets.
 
 - People/privacy, sexual-content and illegal-content reports are severe. One
   severe report holds the entire capture off shared surfaces pending review,
-  including a fresh concern following an earlier approval. Ordinary reports
-  retain the two-distinct-reporter threshold and cannot overturn a ruling.
+  including a fresh concern following an earlier approval. Exception: a
+  reporter whose earlier report on that capture a moderator already ruled on
+  cannot re-hide it alone; their repeat report reaches the queue (still marked
+  severe) without hiding. Ordinary reports retain the two-distinct-reporter
+  threshold and cannot overturn a ruling. Reports are limited per account
+  (`RL_REPORT_TIMES` per `RL_REPORT_WINDOW_S`, default 30 per hour).
+  Whether *other* accounts' severe reports should re-hide an approved capture
+  remains Akash's policy call.
 - Severe reports target a response within 2 hours; ordinary reports within
   24 hours. These are provisional operational targets, not legal deadlines.
 - Ordinary alerts are digested every 60 minutes; urgent alerts bypass that

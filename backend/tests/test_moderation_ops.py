@@ -71,13 +71,50 @@ async def test_severe_concern_after_approval_holds_again_with_a_new_clock(authed
         old_opened = await conn.fetchval("SELECT opened_at FROM sighting_reports")
     assert (await client.post(f"/sighting/{sid}/review", data={"verdict": "valid", "reason": "Concern addressed"})).status_code == 200
     assert (await client.get("/moderation/queue")).json()["items"] == []
+    # A different person's fresh severe concern holds it again.
+    _become(client, await _observer(client))
     await _report(client, sid, reason="sexual_content")
+    _become(client, oid)
     assert await _status(client, sid) == "pending"
     item = (await client.get("/moderation/queue")).json()["items"][0]
     assert item["reported_after_review"]
     async with (await _pool(client)).acquire() as conn:
-        assert await conn.fetchval("SELECT opened_at FROM sighting_reports") > old_opened
+        assert await conn.fetchval("SELECT max(opened_at) FROM sighting_reports") > old_opened
         assert await conn.fetchval("SELECT count(*) FROM moderator_alerts") == 2
+
+
+async def test_same_reporter_after_approval_queues_without_rehiding(authed_client):
+    client, oid = authed_client
+    sid = await _post(client)
+    reporter = await _observer(client)
+    _become(client, reporter)
+    assert (await _report(client, sid, reason="people_privacy")).json()["hidden"] is True
+    _become(client, oid)
+    await _make_moderator(client, oid)
+    assert (await client.post(f"/sighting/{sid}/review", data={"verdict": "valid", "reason": "Checked"})).status_code == 200
+    _become(client, reporter)
+    for reason in ("sexual_content", "illegal_content", "people_privacy"):
+        assert (await _report(client, sid, reason=reason)).json()["hidden"] is False
+    assert await _status(client, sid) == "valid"
+    _become(client, oid)
+    item = (await client.get("/moderation/queue")).json()["items"][0]
+    assert item["sighting_id"] == sid and item["severe"] and item["reported_after_review"]
+    # Another reporter's severe concern still holds it (policy unchanged).
+    assert (await client.post(f"/sighting/{sid}/review", data={"verdict": "valid", "reason": "Checked again"})).status_code == 200
+    _become(client, await _observer(client))
+    assert (await _report(client, sid, reason="illegal_content")).json()["hidden"] is True
+
+
+async def test_reports_are_rate_limited_per_observer(authed_client, monkeypatch):
+    client, _ = authed_client
+    monkeypatch.setattr(settings, "rl_report_times", 2)
+    sids = [await _post(client) for _ in range(3)]
+    assert (await _report(client, sids[0])).status_code == 200
+    assert (await _report(client, sids[1])).status_code == 200
+    limited = await _report(client, sids[2])
+    assert limited.status_code == 429 and limited.headers["Retry-After"]
+    async with (await _pool(client)).acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM sighting_reports") == 2
 
 
 async def test_every_moderator_action_records_who_when_and_why(authed_client):
