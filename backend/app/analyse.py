@@ -179,8 +179,8 @@ def analyse_instances(image_bytes: bytes, *, source_id: str = "photo:0",
                       result.dog_confidence, result.cat_confidence, evidence, result.scene)
 
 
-def analyse_photos(stored_photos: list[bytes]) -> "CaptureAnalysis":
-    """A photo burst is one capture; repeated views of co-visible animals require review."""
+def analyse_photos(stored_photos: list[bytes], *, policy=None) -> "CaptureAnalysis":
+    """A photo burst is one capture, grouped into animals with confidences (app/tracking.py)."""
     from app.tracking import SamplingCoverage, associate_frames
 
     if not 1 <= len(stored_photos) <= 12:
@@ -190,10 +190,11 @@ def analyse_photos(stored_photos: list[bytes]) -> "CaptureAnalysis":
     for index, raw in enumerate(stored_photos):
         frame = analyse_instances(raw, source_id=f"photo:{index}", frame_index=index)
         count += len(frame.instances)
-        if count > 96:
+        # Past 96 the tracker keeps each animal's best views; this bounds memory only.
+        if count > 4 * 96:
             raise ValueError("capture exceeds instance budget")
         frames.append(frame)
     frames = tuple(frames)
     coverage = SamplingCoverage("photos", len(frames), len(frames), None, None, None,
                                 12, 12, True)
-    return associate_frames(frames, coverage)
+    return associate_frames(frames, coverage, policy=policy)

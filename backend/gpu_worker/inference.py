@@ -56,7 +56,11 @@ class Limits:
     keep: int = 12
     max_decoded_frames: int = 3600
     max_result_bytes: int = 256 * 1024 * 1024
+    # Evenly spaced candidate frames decoded from a clip (the hard cap)...
     max_tracking_frames: int = 48
+    # ...of which at most this many visually distinct ones are analysed and
+    # kept as review photos (app/video.py select_diverse).
+    clip_tracking_frames: int = 12
     max_instances: int = 96
     max_evidence_per_track: int = 12
 
@@ -69,6 +73,7 @@ class Limits:
                 raise ValueError(f"{name} must be an integer")
         if not 2 <= self.max_tracking_frames <= 120 or self.max_instances > 512 or self.max_evidence_per_track > 12:
             raise ValueError("multi-animal evidence budgets exceed supported caps")
+
         if not self.keep <= self.max_raw <= 20 or self.keep > 12:
             raise ValueError("frame caps must satisfy keep <= max_raw <= 20; keep <= 12")
 
@@ -318,7 +323,12 @@ class GpuInference:
         finally:
             self._lock.release()
 
-    def analyse_photos(self, stored_photos: list[bytes]) -> CaptureAnalysis:
+    def _raw_instance_cap(self) -> int:
+        # Past the budget the tracker keeps each animal's best views rather than
+        # failing; this only bounds memory against a pathological detector.
+        return 4 * self.limits.max_instances
+
+    def analyse_photos(self, stored_photos: list[bytes], *, policy=None) -> CaptureAnalysis:
         from app.tracking import SamplingCoverage, associate_frames
 
         self._claim()
@@ -330,24 +340,27 @@ class GpuInference:
             for index, raw in enumerate(stored_photos):
                 frame = self._analyse_instances(raw, f"photo:{index}", index, None)
                 count += len(frame.instances)
-                if count > self.limits.max_instances:
+                if count > self._raw_instance_cap():
                     raise ValueError("capture exceeds instance budget")
                 frames.append(frame)
             coverage = SamplingCoverage("photos", len(frames), len(frames), None, None, None, 12, 12, True)
             return associate_frames(tuple(frames), coverage, max_instances=self.limits.max_instances,
-                                    max_evidence_per_track=self.limits.max_evidence_per_track)
+                                    max_evidence_per_track=self.limits.max_evidence_per_track, policy=policy)
         finally:
             self._lock.release()
 
-    def analyse_clip(self, raw: bytes, *, evidence_sink) -> CaptureAnalysis:
-        """GPU-only capture inference; sink consumes sampled source photos once.
+    def analyse_clip(self, raw: bytes, *, evidence_sink, policy=None) -> CaptureAnalysis:
+        """GPU-only capture inference; sink consumes kept source photos once.
 
-        The decoder writes bounded encoded samples to disk. Only one decoded
-        frame is resident during serial inference. The sink is called after
-        tracking, once per selected source (possibly shared by several animals).
+        The decoder writes bounded encoded candidates to disk; a visually
+        diverse, time-ordered subset of at most `clip_tracking_frames` is
+        analysed. Only one decoded frame is resident during serial inference.
+        The sink is called after tracking, once per frame that still shows an
+        animal (or the first analysed frame when none does), in time order.
         Its caller owns upload/lease fencing and must not publish until complete.
         """
-        from app.tracking import associate_frames
+        from dataclasses import replace
+        from app.tracking import associate_frames, keep_frames_with_animals
         from gpu_worker.clip import sampled_bounded
 
         self._claim()
@@ -356,19 +369,27 @@ class GpuInference:
             _require_cuda(self._detector)
             _require_cuda(self._embedder)
             with sampled_bounded(raw, self.limits) as samples:
+                chosen = set(video.select_diverse([m["photo"]["phash"] for m in samples.metadata],
+                    min(self.limits.clip_tracking_frames, self.limits.max_tracking_frames)))
                 frames = []
                 count = 0
-                for index, timestamp, photo in samples.frames():
+                for ordinal, (index, timestamp, photo) in enumerate(samples.frames()):
+                    if ordinal not in chosen:
+                        continue
                     frame = self._analyse_instances(photo.original, f"video:{index}", index, timestamp)
                     count += len(frame.instances)
-                    if count > self.limits.max_instances:
+                    if count > self._raw_instance_cap():
                         raise ValueError("capture exceeds instance budget")
                     frames.append(frame)
-                result = associate_frames(tuple(frames), samples.coverage,
+                coverage = replace(samples.coverage, sampled_frames=len(frames),
+                                   candidate_frames=samples.coverage.sampled_frames)
+                result = keep_frames_with_animals(associate_frames(tuple(frames), coverage,
                     max_instances=self.limits.max_instances,
-                    max_evidence_per_track=self.limits.max_evidence_per_track)
+                    max_evidence_per_track=self.limits.max_evidence_per_track, policy=policy))
+                kept = {frame.source_id for frame in result.frames}
                 for index, timestamp, photo in samples.frames():
-                    evidence_sink(f"video:{index}", photo)
+                    if f"video:{index}" in kept:
+                        evidence_sink(f"video:{index}", photo)
                 return result
         finally:
             self._lock.release()
