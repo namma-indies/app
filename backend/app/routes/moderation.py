@@ -18,10 +18,10 @@ import logging
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Form, HTTPException
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from app.aggregates import owner_active
+from app.aggregates import owner_active, owner_not_leaving
 from app.auth.deps import require_moderator, require_observer
 from app.config import settings
 from app.deps import get_conn, get_storage
@@ -204,6 +204,7 @@ async def moderation_queue(
                s.species,
                o.display_name AS observer,
                s.observer_id,
+               o.banned_at IS NOT NULL AS observer_banned,
                count(r.*) AS report_count,
                max(r.created_at) AS last_reported,
                min(r.opened_at) AS first_reported,
@@ -221,10 +222,12 @@ async def moderation_queue(
             ORDER BY created_at, id LIMIT 1
         ) p ON TRUE
         WHERE r.resolved_at IS NULL
-          -- Going with its account (#179): nothing left to rule on.
-          AND {owner_active('s')}
+          -- Going with its account (#179): nothing left to rule on. A banned
+          -- account's reports stay, flagged: the ban hides the content from
+          -- everyone else, not the concern from the moderators.
+          AND {owner_not_leaving('s')}
         GROUP BY s.id, s.captured_at, s.review_status, s.reviewed_at, s.species,
-                 o.display_name, p.s3_key
+                 o.display_name, o.banned_at, p.s3_key
         -- A ruling resolves the capture's open report rows atomically.
         -- A later report reopens its row, with a fresh response clock.
         ORDER BY (min(r.severe_at) IS NOT NULL) DESC,
@@ -247,6 +250,7 @@ async def moderation_queue(
                 "observer": r["observer"],
                 # Moderators only: what a ban acts on (#180).
                 "observer_id": str(r["observer_id"]) if r["observer_id"] else None,
+                "observer_banned": r["observer_banned"],
                 "report_count": r["report_count"],
                 "last_reported_at": r["last_reported"],
                 **report_clock(r["first_reported"], r["first_severe"]),
@@ -433,15 +437,47 @@ async def rule_on_animal(
 # nothing bans automatically, however many people have blocked someone.
 # Reversible. A banned person can still delete their account (/account), and
 # the ban outlives that as a keyed hash of their address (banned_emails).
+# Their photos already posted by the project's X account are taken down there,
+# through the same owed-delete records account deletion uses (x_post_purges);
+# unbanning does not repost them.
 
 
 class BanBody(BaseModel):
     reason: str = Field(..., min_length=1, max_length=MAX_NOTE)
 
 
+async def _owe_x_takedowns(conn, observer_id: UUID) -> list[str]:
+    """Record a delete on X for every post made from this observer's photos;
+    a post started and never confirmed is kept for a person to check, as on
+    erasure. Returns the post ids to try deleting once committed."""
+    picks = await conn.fetch(
+        """SELECT sp.id, sp.status, sp.x_post_id, sp.caption FROM social_picks sp
+           JOIN sightings s ON s.id = sp.sighting_id
+           LEFT JOIN captures c ON c.id = s.capture_id
+           WHERE (s.observer_id = $1 OR c.observer_id = $1)
+             AND (sp.x_post_id IS NOT NULL OR sp.status = 'posting')
+           ORDER BY sp.id""", observer_id)
+    owed = []
+    for pick in picks:
+        if pick["x_post_id"]:
+            inserted = await conn.fetchval(
+                "INSERT INTO x_post_purges (id, x_post_id, pick_id, reason) VALUES ($1,$2,$3,'banned') "
+                "ON CONFLICT DO NOTHING RETURNING x_post_id", uuid7(), pick["x_post_id"], pick["id"])
+            if inserted:
+                owed.append(inserted)
+        else:
+            await conn.execute(
+                "INSERT INTO x_post_purges (id, pick_id, caption, reason) "
+                "SELECT $1, $2, $3, 'banned:unconfirmed' "
+                "WHERE NOT EXISTS (SELECT 1 FROM x_post_purges WHERE pick_id = $2)",
+                uuid7(), pick["id"], pick["caption"])
+    return owed
+
+
 @router.post("/moderation/observer/{observer_id}/ban")
-async def ban(observer_id: UUID, body: BanBody, moderator_id: UUID = Depends(require_moderator),
+async def ban(observer_id: UUID, body: BanBody, request: Request, moderator_id: UUID = Depends(require_moderator),
               conn=Depends(get_conn)):
+    from app.social import purge_x_later
     reason = action_reason(body.reason)
     async with conn.transaction():
         target = await conn.fetchrow(
@@ -459,10 +495,13 @@ async def ban(observer_id: UUID, body: BanBody, moderator_id: UUID = Depends(req
         if target["email"]:
             await conn.execute("INSERT INTO banned_emails (email_hmac) VALUES ($1) ON CONFLICT DO NOTHING",
                                email_hash(target["email"]))
+        owed = await _owe_x_takedowns(conn, observer_id)
         await record_action(conn, moderator_id=moderator_id, target_kind="observer", target_id=observer_id,
                             action="ban", reason=reason, previous_state="banned" if target["banned_at"] else "active",
                             new_state="banned")
-    logger.info("observer=%s banned by moderator=%s", observer_id, moderator_id)
+    for post_id in owed:
+        purge_x_later(request.app.state.pool, post_id)
+    logger.info("observer=%s banned by moderator=%s x_takedowns=%d", observer_id, moderator_id, len(owed))
     return {"status": "banned"}
 
 

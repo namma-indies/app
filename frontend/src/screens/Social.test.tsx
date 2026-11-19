@@ -219,3 +219,15 @@ describe("an unconfirmed takedown", () => {
     expect(settleTakedown).toHaveBeenLastCalledWith("t1", null);
   });
 });
+
+describe("a takedown owed because its observer was banned", () => {
+  it("says the account was banned rather than that the owner deleted it", async () => {
+    vi.mocked(getSocialQueue).mockResolvedValue({ ...emptyQueue, takedowns: [
+      { id: "t2", x_post_id: "77", caption: null, unconfirmed: false, banned: true, attempts: 0,
+        last_error: null, created_at: "2026-11-02T09:00:00Z" },
+    ] });
+    render(<Social onUnauthorized={() => {}} />);
+    expect(await screen.findByText(/A photo by a banned account\./)).toBeInTheDocument();
+    expect(screen.queryByText(/deleted by its owner/)).not.toBeInTheDocument();
+  });
+});

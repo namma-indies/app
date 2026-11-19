@@ -116,13 +116,13 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
   /** A ban hides everything this person logged, for everyone (#180). */
   async function ban(item: ModerationItem) {
     if (!item.observer_id) return;
-    const reason = prompt(`Ban ${item.observer ?? "this person"}? Everything they logged is hidden from everyone, and they can't sign in. You can lift it under STATS. Reason (for the record):`);
+    const reason = prompt(`Ban ${item.observer ?? "this person"}? Everything they logged is hidden from everyone, any of their photos we posted on X are taken down, and they can't sign in. You can lift it under STATS. Reason (for the record):`);
     if (!reason?.trim()) return;
     setBusy(item.sighting_id);
     try {
       await banObserver(item.observer_id, reason.trim());
-      // Everything of theirs leaves the queue with them.
-      setItems((cur) => (cur ?? []).filter((x) => x.observer_id !== item.observer_id));
+      // Their reports stay to be ruled on, marked as from a banned account.
+      setItems((cur) => (cur ?? []).map((x) => x.observer_id === item.observer_id ? { ...x, observer_banned: true } : x));
     } catch (err) {
       if (err instanceof UnauthorizedError) onUnauthorized();
       else alert(err instanceof Error ? err.message : "Couldn't ban just now.");
@@ -333,6 +333,7 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
                   {formatWhen(item.captured_at)}
                   <br />
                   {item.observer ? `logged by ${item.observer}` : "observer unknown"}
+                  {item.observer_banned && <strong> · BANNED ACCOUNT</strong>}
                   <br />
                   {item.report_count} REPORT{item.report_count === 1 ? "" : "S"}
                   {(item.reported_after_review ?? item.review_status === "valid") && " · REPORTED AGAIN AFTER REVIEW"}
@@ -378,7 +379,7 @@ export default function Moderation({ onUnauthorized }: { onUnauthorized: () => v
                 HIDE IT
               </button>
             </div>
-            {item.observer_id && (
+            {item.observer_id && !item.observer_banned && (
               <button className="link-btn" disabled={busy === item.sighting_id} onClick={() => void ban(item)}>
                 Ban {item.observer ?? "this person"}
               </button>

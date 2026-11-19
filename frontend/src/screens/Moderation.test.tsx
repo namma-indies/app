@@ -8,9 +8,10 @@ vi.mock("../api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api")>()),
   getModerationQueue: vi.fn(),
   reviewSighting: vi.fn(),
+  banObserver: vi.fn(),
 }));
 
-import { getModerationQueue, reviewSighting, type ModerationItem } from "../api";
+import { banObserver, getModerationQueue, reviewSighting, type ModerationItem } from "../api";
 import Moderation from "./Moderation";
 import { isBusy } from "../update/reloadGuard";
 
@@ -66,6 +67,31 @@ describe("Moderation", () => {
     });
     render(<Moderation onUnauthorized={() => {}} />);
     expect(await screen.findByText(/REPORTED AGAIN AFTER REVIEW/)).toBeInTheDocument();
+  });
+
+  it("keeps a banned account's reports in the queue, marked, with no second ban", async () => {
+    vi.mocked(getModerationQueue).mockResolvedValue({
+      items: [item({ observer_id: "o1", observer_banned: true })],
+    });
+    render(<Moderation onUnauthorized={() => {}} />);
+    expect(await screen.findByText(/BANNED ACCOUNT/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Ban / })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "HIDE IT" })).toBeInTheDocument();
+  });
+
+  it("banning marks the person's rows instead of dropping them", async () => {
+    vi.mocked(getModerationQueue).mockResolvedValue({
+      items: [item({ observer_id: "o1" }), item({ sighting_id: "s2", observer_id: "o1" })],
+    });
+    vi.mocked(banObserver).mockResolvedValue(undefined as never);
+    const ask = vi.spyOn(window, "prompt").mockReturnValue("Repeated abuse");
+    render(<Moderation onUnauthorized={() => {}} />);
+    await userEvent.click((await screen.findAllByRole("button", { name: "Ban Priya" }))[0]);
+    expect(banObserver).toHaveBeenCalledWith("o1", "Repeated abuse");
+    expect(await screen.findAllByText(/BANNED ACCOUNT/)).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: "Ban Priya" })).not.toBeInTheDocument();
+    expect(ask.mock.calls[0][0]).toMatch(/taken down/);
+    ask.mockRestore();
   });
 
   it("hiding sends the verdict and drops the row", async () => {

@@ -747,6 +747,8 @@ export interface SocialTakedown {
   x_post_id: string | null;
   caption: string | null;
   unconfirmed: boolean;
+  /** Owed because its observer was banned, not because the photo was erased. */
+  banned?: boolean;
   attempts: number;
   last_error: string | null;
   created_at: string;
@@ -958,6 +960,9 @@ export interface ModerationItem {
   thumb_url: string | null;
   /** Who logged it, for a ban (#180). Moderators only. */
   observer_id?: string | null;
+  /** Logged by an account a moderator has banned: hidden from everyone else,
+   * still here to be ruled on. */
+  observer_banned?: boolean;
   severe?: boolean;
   first_reported_at?: string;
   last_reported_at?: string;

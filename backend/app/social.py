@@ -17,7 +17,7 @@ from datetime import date
 from uuid import UUID
 
 from app.aggregates import coarse_geog
-from app.aggregates import screened
+from app.aggregates import owner_active, screened
 from app.config import settings
 from app.ids import uuid7
 from app.x_client import XUncertain, prepare_image
@@ -52,8 +52,10 @@ def _postable_photos_sql() -> str:
           AND s.shared_with_team_at IS NOT NULL
           AND o.social_consent
           AND o.x_handle IS NOT NULL
-          -- Not while its observer's account is being deleted (#179).
+          -- Not while its observer's account is being deleted (#179), nor
+          -- once a moderator has banned them (#180), whoever logged it.
           AND o.deletion_requested_at IS NULL AND o.deleted_at IS NULL
+          AND o.banned_at IS NULL AND {owner_active('s')}
           AND COALESCE(c.kind, 'photo') <> 'video'
           AND COALESCE(s.attrs->>'source', '') <> 'video'
     )

@@ -59,6 +59,28 @@ Moderators are always exempt from that one rule.
 Set contacts privately in deployment settings, never in this public repository.
 No deployment or production configuration changes are part of this PR.
 
+## Bans
+
+A ban (moderator people screen or the report queue) hides everything the person
+logged from every shared surface, ends their sessions and refuses their address
+at sign-in, as before. In addition (decided 2026-11):
+
+- **X takedowns.** Any of their photos already posted by the project's X account
+  is queued for deletion there, through the same owed-delete records account
+  deletion uses (`x_post_purges`, reason `banned`): the delete is tried straight
+  away when X credentials are configured and retried by every daily run until X
+  confirms. A post that was on its way and never confirmed is kept for a person
+  to check in the Social screen's "To take down from X" list, as on erasure.
+  Their queued picks never post. Banning again owes nothing twice. Unbanning
+  does not repost anything.
+- **Moderation stays visible.** Their reported items stay in the report queue,
+  marked **BANNED ACCOUNT**, so a moderator can still rule on them; the audit
+  trail keeps every action. Public surfaces keep hiding all their content. An
+  account being deleted still leaves the queue with its content.
+
+A suspended person's screen links straight to the grievance form with
+**Appeal a suspension** chosen (`/grievances?kind=appeal`).
+
 ## Shared alert interface for #181 and grievances
 
 ```python

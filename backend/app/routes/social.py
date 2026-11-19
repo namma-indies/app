@@ -275,6 +275,8 @@ async def queue(
         "takedowns": [
             {"id": str(r["id"]), "x_post_id": r["x_post_id"], "caption": r["caption"],
              "unconfirmed": r["x_post_id"] is None, "attempts": r["attempts"],
+             # Why it is owed: its photo was erased, or its observer banned.
+             "banned": r["reason"].startswith("banned"),
              "last_error": r["last_error"], "created_at": r["created_at"].isoformat()}
             for r in takedowns
         ],
