@@ -7,7 +7,7 @@
 # The weights are gitignored and ~429 MB, so they never arrive with a deploy.
 # Without them both ML background tasks catch a missing model and every upload
 # saves with no embedding -- re-ID looks deployed and does nothing, which
-# /health reports as "reid": "degraded".
+# protected health and the local model-health CLI report as unavailable.
 #
 # Expects miewid_msv3.onnx and yolo26x.onnx already in /tmp on this box.
 set -euo pipefail
@@ -38,3 +38,15 @@ fi
 # The fetch only runs at boot, so a running container will not pick up files
 # that appeared underneath it.
 sudo docker compose -f "$COMPOSE" restart app
+
+# Verify on the box, after restart, without public model details or a new
+# credential in the seeding workflow. This also works before monitoring is on.
+for i in $(seq 1 30); do
+  if sudo docker compose -f "$COMPOSE" exec -T app \
+    sh -c 'cd /app/backend && uv run python -m app.model_health --live' < /dev/null; then
+    exit 0
+  fi
+  sleep 4
+done
+echo "!! local API/model readiness did not recover" >&2
+exit 1

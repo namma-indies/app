@@ -87,6 +87,7 @@ export default defineConfig({
       "/moderation": { target: API, changeOrigin: true },
       "/stats": { target: API, changeOrigin: true },
       "/grievances": { target: API, changeOrigin: true },
+      "/monitoring": { target: API, changeOrigin: true },
 
       // Photos, so the whole app is one HTTPS origin. Otherwise the page is
       // https and MinIO is http, and the browser blocks every image as mixed

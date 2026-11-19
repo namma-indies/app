@@ -624,7 +624,20 @@ class Worker:
 
     async def run(self):
         errors = 0
+        next_health = 0.0
         while not self.stop.is_set():
+            # Only the model-loaded, serial claim loop reports readiness. A
+            # live lease-renewal task cannot keep a hung native worker healthy.
+            # Best effort so an older API can be rolled forward independently.
+            now = asyncio.get_running_loop().time()
+            if now >= next_health:
+                with suppress(Exception):
+                    async with asyncio.timeout(min(3, self.config.request_timeout)):
+                        await self._api("", {"transcription": self.transcriber is not None,
+                                             "suggestions": self.model is not None,
+                                             "multi_animal": self.config.multi_animal},
+                                        "/internal/worker-health")
+                next_health = asyncio.get_running_loop().time() + 60
             try:
                 busy = await self.run_once()
                 errors = 0

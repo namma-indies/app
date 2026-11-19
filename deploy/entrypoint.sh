@@ -8,7 +8,7 @@ cd /app/backend
 # background tasks raise, get caught, and every upload saves with no embedding
 # -- re-ID looks deployed and does nothing. Deliberately NOT `set -e` fatal:
 # a model-fetch failure should degrade re-ID, not take the whole site down.
-# /health reports which models are present so a deploy check can catch it.
+# Protected /health/detailed and the local CLI report model presence.
 uv run python scripts/fetch_models.py || echo "!! model fetch failed -- re-ID will be DISABLED"
 
 uv run alembic upgrade head

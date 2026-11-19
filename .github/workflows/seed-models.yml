@@ -5,7 +5,7 @@ name: Seed model weights
 #
 # The weights are gitignored, so a fresh box has none and re-ID runs inert:
 # both background tasks catch the missing model, every upload saves with no
-# embedding, and /health reports "reid": "degraded". This is the job that fixes
+# embedding; protected health / the local CLI report degraded. This job fixes
 # that, and it should need running roughly never -- once per environment, and
 # again only if a model is re-exported.
 #
@@ -153,22 +153,5 @@ jobs:
             cat deploy/remote-seed-models.sh
           } | $SSH "$SSH_TARGET" "$action"
 
-      - name: Confirm re-ID came up ready
-        env:
-          BASE: ${{ inputs.environment == 'production'
-            && 'https://app.nammaindies.org' || '' }}
-        run: |
-          if [ -z "$BASE" ]; then
-            echo "::notice::no public URL for ${{ inputs.environment }}; check /health on the box"
-            exit 0
-          fi
-          for i in $(seq 1 30); do
-            body=$(curl -s "$BASE/health" || true)
-            echo "$body"
-            case "$body" in
-              *'"reid":"ready"'*) echo "::notice::re-ID is ready"; exit 0 ;;
-            esac
-            sleep 4
-          done
-          echo "::error::/health never reported reid: ready"
-          exit 1
+      # remote-seed-models.sh verifies local API/model readiness after restart.
+      # Public /health intentionally contains liveness only.

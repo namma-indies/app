@@ -140,6 +140,16 @@ class Settings(BaseSettings):
     login_token_retention_days: int = Field(default=7, ge=0)
     login_token_cleanup_interval_s: float = Field(default=3600.0, gt=0)
 
+    # Private operational diagnostics. An empty token disables the route.
+    health_check_token: str = Field(default="", repr=False)
+    health_check_timeout_s: float = Field(default=3.0, ge=0.1, le=15)
+    health_worker_stale_s: int = Field(default=600, ge=60, le=86400)
+    health_queue_stale_s: int = Field(default=1800, ge=60, le=604800)
+    health_backfill_stale_s: int = Field(default=86400, ge=60, le=2592000)
+    health_backup_stale_s: int = Field(default=129600, ge=3600, le=2592000)
+    ops_error_monitoring_enabled: bool = False
+    ops_error_alert_threshold: int = Field(default=5, ge=1, le=100000)
+
     s3_endpoint: str = "http://localhost:9000"
     # Host the browser fetches objects from, when it differs from where the
     # server writes them (dev proxy, or a CDN in front of S3). Empty means
