@@ -12,7 +12,7 @@ vi.mock("./screens/Dex", () => ({ default: () => null }));
 vi.mock("./screens/Admin", () => ({ default: () => null }));
 vi.mock("./components/Celebration", () => ({ default: () => null }));
 vi.mock("./offline/queue", () => ({
-  enqueue: vi.fn(async () => {}), flush: vi.fn(async () => {}), failedCount: async () => 0,
+  enqueue: vi.fn(async () => {}), flush: vi.fn(async () => {}), failedCount: async () => 0, nextRetryAt: async () => null,
   setOnFlushed: () => {}, setOnUnauthorized: () => {},
 }));
 // Exercise real Capture, /me capability readers and the policy dialog. Only
