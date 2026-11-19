@@ -29,17 +29,30 @@ Defaults (environment variables use the uppercased setting names):
 | `JOIN_POW_BITS` | 16 | Work difficulty; validate on the oldest supported phone before changing |
 | `JOIN_POW_TTL_S` | 300 | Proof lifetime |
 | `RL_JOIN_CHALLENGE_TIMES` | 60 | Challenge requests per IP per minute |
+| `AUTH_IP_BACKOFF_AFTER` | 10 | Failure that first triggers a lockout on an IP-keyed door (all of them today) |
+| `RL_JOIN_GLOBAL_WRONG_TIMES` | 100 | Wrong passcodes per window across all sources before the passcode door pauses |
+| `RL_JOIN_GLOBAL_WRONG_WINDOW_S` | 3600 | That window |
+| `RL_JOIN_SUCCESS_IP_DAY_TIMES` | 50 | Successful passcode joins per source per day |
+| `RL_CONSUME_TIMES` / `RL_CONSUME_WINDOW_S` | 60 / 900 | Sign-in link clicks per source per window |
 
 Existing `RL_EMAIL_ADDR_*`, `RL_EMAIL_IP_*` and `RL_JOIN_*` budgets remain.
-The address cooldown is separate from the address window. Failed passcodes,
-invalid proofs and invalid sign-in tokens trigger backoff. A blocked request
-does not extend its lockout. Replies include a readable wait and `Retry-After`.
-An IP is a shared resource on carrier NAT, so the default lockout is bounded,
-never permanent.
+The address cooldown is separate from the address window. Wrong passcodes and
+forged proofs trigger backoff; a genuine proof that expired, was issued to
+another address or was already used only asks for a new one. Every passcode
+attempt is charged against the per-source and global budgets before the
+compare (a correct one is refunded), so parallel guesses cannot all be tried.
+When the global budget runs out the passcode door pauses for the rest of its
+window (email sign-in is unaffected) and the moderators' abuse signals say so.
+Sign-in links are high-entropy, so consuming one has no failure backoff, only
+the plain per-source window. An address that is not on the allowlist is not a
+failed sign-in. A blocked request does not extend its lockout. Replies include
+a readable wait and `Retry-After`. An IP is a shared resource on carrier NAT,
+so the default lockout is bounded, never permanent. IPv6 sources are keyed by
+their /64.
 
 Limiter keys are domain-separated HMACs using `PHONE_HASH_SECRET`; raw email
 addresses and IPs are not written to limiter tables. Expired rows are swept in
-bounded batches during requests and every minute while the service is idle.
+bounded batches by a background sweeper every minute; requests never pay for it.
 Keep the key stable across workers and deployments.
 
 ## Development-secret guard (#42)
@@ -92,9 +105,24 @@ every address. An admitted request gets a neutral inbox/retry message; it never
 claims a message was sent, and a recipient-specific failure cannot reveal who
 has an account.
 
-Transient provider failures back off across workers/restarts. A request retries
-at most three times, with short waits only. A daily-quota refusal immediately
-sets a shared one-hour pause. Permanent refusals do not retry. When admission
+Sends are paced by a shared token bucket (`EMAIL_SEND_RATE_PER_S`, burst
+`EMAIL_SEND_BURST`): a send that finds it briefly empty waits up to
+`EMAIL_SEND_MAX_WAIT_S` without holding a database connection, instead of
+failing. The daily budget is split: account mail (deletion links and notices)
+is capped at `EMAIL_ACCOUNT_DAILY_BUDGET` and can never use the
+`EMAIL_SIGNIN_FLOOR_FRACTION` of the budget held back for sign-in links.
+Requests for an address with no account answer exactly as for one with, but
+spend no provider budget. Every source is also capped per day across sign-in
+and deletion mail (`RL_EMAIL_IP_DAY_TIMES`, per /64 for IPv6).
+
+SES errors are classified by error code, never by message text. Throttling
+and transport failures back off across workers/restarts; a request retries
+at most three times, with short waits only. `LimitExceededException` (the
+24-hour quota) sets a shared `EMAIL_QUOTA_BACKOFF_S` pause.
+`AccountSuspendedException`, `SendingPausedException` and
+`MailFromDomainNotVerifiedException` need a human: they set a shared
+`EMAIL_ACCOUNT_PAUSE_S` pause and log the code at error level. Per-message
+refusals (`MessageRejected`, `BadRequestException`, ...) do not retry or pause. When admission
 fails, the address cooldown rolls back, so it cannot contradict the displayed
 wait. A failed send returns readable retry guidance. SDK retries are disabled
 so every actual attempt is accounted for. No provider error text, recipient,
@@ -103,7 +131,14 @@ token or link goes into error logs.
 | Setting | Default | Operator action |
 | --- | --- | --- |
 | `EMAIL_DAILY_BUDGET` | 200 | Set below the confirmed regional quota, leaving headroom for other senders |
-| `EMAIL_SEND_INTERVAL_S` | 1 | Set at least `1 / usable recipients-per-second`, with headroom |
+| `EMAIL_SEND_RATE_PER_S` | 10 | Below the account's confirmed `MaxSendRate` (about 14/s), with headroom for other senders |
+| `EMAIL_SEND_BURST` | 10 | At most the rate |
+| `EMAIL_SEND_MAX_WAIT_S` | 2 | Longest a send waits for its turn before answering "busy" |
+| `EMAIL_ACCOUNT_DAILY_BUDGET` | 40 | Cap on deletion links and notices per 24 hours |
+| `EMAIL_SIGNIN_FLOOR_FRACTION` | 0.5 | Share of the daily budget only sign-in mail may use |
+| `RL_EMAIL_IP_DAY_TIMES` | 100 | Mail requests per source per day (IPv6: per /64) |
+| `RL_DELETE_REQUEST_DAY_TIMES` | 200 | Deletion-link requests per day, all sources, known address or not |
+| `EMAIL_ACCOUNT_PAUSE_S` | 3600 | Pause after SES refuses for the whole account |
 | `EMAIL_SEND_ATTEMPTS` | 3 | Maximum attempts per request; at most 5 |
 | `EMAIL_BACKOFF_MAX_S` | 60 | Cap on shared transient backoff |
 | `EMAIL_QUOTA_BACKOFF_S` | 3600 | Pause after SES reports a daily quota refusal |
@@ -171,10 +206,14 @@ configuration, consistently across workers, and deploy the migrations:
    and `JOIN_PASSCODE`, with #42 or equivalent public-deployment enforcement.
 2. `EMAIL_SENDER=ses`, the verified `EMAIL_FROM`, the confirmed `SES_REGION`,
    and the correct public HTTPS origin in `PUBLIC_BASE_URL`.
-3. `EMAIL_DAILY_BUDGET` and `EMAIL_SEND_INTERVAL_S` chosen from the live SES
+3. `EMAIL_DAILY_BUDGET` and `EMAIL_SEND_RATE_PER_S` chosen from the live SES
    confirmations above, plus `SES_CONFIGURATION_SET` if configured for feedback.
 4. `RATE_LIMIT_ENABLED=true`; accept or explicitly set
-   `RL_UPLOAD_HOUR_TIMES=60` and `RL_UPLOAD_DAY_TIMES=200`. Keep the documented
+   `RL_UPLOAD_HOUR_TIMES=60` and `RL_UPLOAD_DAY_TIMES=200` per account (voice
+   notes and re-transcriptions have buckets of their own at the same sizes),
+   `RL_UPLOAD_IP_HOUR_TIMES=600` per source and `RL_UPLOAD_GLOBAL_HOUR_TIMES=5000`
+   for the service. Replays of an accepted upload and requests the server turns
+   away are refunded. Keep the documented
    auth/proof/backoff defaults unless device or field measurements justify a change.
 5. Keep `TRUST_PROXY_HEADER=true` only behind the proxy that overwrites
    `X-Real-IP`; the app must not be directly reachable through an untrusted path.
