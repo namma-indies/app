@@ -591,6 +591,9 @@ export interface MatchSide {
   instance_id?: string | null;
   /** True only when this is the gallery photo recorded with the score. */
   matched?: boolean;
+  /** The photo recorded with the score has been deleted; another photo of
+   * this sighting is shown instead. */
+  matched_removed?: boolean;
   /** All contributing query views; one matched photo on the gallery side. */
   photos?: MatchPhoto[];
   species?: "dog" | "cat" | null;

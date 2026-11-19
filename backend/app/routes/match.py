@@ -312,6 +312,11 @@ async def list_proposals(
                 "instance_id": primary["instance_id"] if primary else None,
                 "matched": name == "b" and r["matched_photo_id"] is not None
                            and r["matched_photo_id"] == r["b_photo_id"],
+                # The proposal recorded its evidence (every new one does, with
+                # a matched photo), but that photo has since been deleted: the
+                # card shows another photo of the sighting and says so.
+                "matched_removed": name == "b" and r["query_photo_ids"] is not None
+                                   and r["matched_photo_id"] is None,
                 "photos": views,
                 "mine": r[f"{name}_mine"]}
 

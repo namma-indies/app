@@ -187,6 +187,7 @@ export default function Review({
                   <div className="match-blank">🐾</div>
                 )}
                 {side.matched && <span className="match-evidence-label">MATCHED PHOTO</span>}
+                {side.matched_removed && <span className="match-evidence-label">MATCHED PHOTO REMOVED</span>}
                 {side.photos && side.photos.length > 1 && <>
                   <span className="match-evidence-label">{side.photos.length} VIEWS</span>
                   <div className="match-other-views" aria-label="Supporting views of the new sighting">

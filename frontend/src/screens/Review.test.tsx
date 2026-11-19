@@ -71,6 +71,15 @@ describe("Review", () => {
     expect(screen.queryByRole("button", { name: /not sure/i })).not.toBeInTheDocument();
   });
 
+  it("says so when the matched photo was removed, and not otherwise", async () => {
+    const removed = proposal();
+    removed.b = { ...removed.b, matched: false, matched_removed: true };
+    vi.mocked(getProposals).mockResolvedValue(resp([removed, proposal({ id: "p2" })]));
+    render(<Review onUnauthorized={() => {}} />);
+    expect(await screen.findAllByText("MATCHED PHOTO REMOVED")).toHaveLength(1);
+    expect(screen.queryByText("MATCHED PHOTO")).not.toBeInTheDocument();
+  });
+
   it("can enlarge a historical thumbnail without new evidence fields", async () => {
     vi.mocked(getProposals).mockResolvedValue(resp([proposal()]));
     render(<Review onUnauthorized={() => {}} />);
