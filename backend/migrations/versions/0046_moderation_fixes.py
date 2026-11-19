@@ -6,6 +6,10 @@ Revises: 0045_match_evidence
 * sighting_reports.last_resolved_at remembers that a reporter's earlier report
   was ruled on, after the row is reopened, so the same account cannot re-hide
   an approved capture on its own.
+* moderation_actions is append-only for every role, including the table owner
+  and the `postgres` login production connects as. REVOKE alone only bound
+  app_rw. A superuser can still disable triggers deliberately; this stops
+  application code and casual SQL from rewriting history.
 """
 from alembic import op
 
@@ -18,10 +22,28 @@ depends_on = None
 def upgrade():
     op.execute("""
         ALTER TABLE sighting_reports ADD COLUMN last_resolved_at timestamptz;
+
+        CREATE FUNCTION moderation_actions_append_only() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+            RAISE EXCEPTION 'moderation_actions is append-only (% refused)', TG_OP
+                USING ERRCODE = 'insufficient_privilege';
+        END
+        $$;
+        CREATE TRIGGER moderation_actions_no_update_delete
+            BEFORE UPDATE OR DELETE ON moderation_actions
+            FOR EACH ROW EXECUTE FUNCTION moderation_actions_append_only();
+        CREATE TRIGGER moderation_actions_no_truncate
+            BEFORE TRUNCATE ON moderation_actions
+            FOR EACH STATEMENT EXECUTE FUNCTION moderation_actions_append_only();
     """)
 
 
 def downgrade():
+    # Removes only the guard and the bookkeeping column; ledger rows are kept.
     op.execute("""
+        DROP TRIGGER moderation_actions_no_truncate ON moderation_actions;
+        DROP TRIGGER moderation_actions_no_update_delete ON moderation_actions;
+        DROP FUNCTION moderation_actions_append_only();
         ALTER TABLE sighting_reports DROP COLUMN last_resolved_at;
     """)

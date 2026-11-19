@@ -117,6 +117,24 @@ async def test_reports_are_rate_limited_per_observer(authed_client, monkeypatch)
         assert await conn.fetchval("SELECT count(*) FROM sighting_reports") == 2
 
 
+async def test_audit_ledger_is_append_only_even_for_the_owner(migrated_db):
+    """Production connects as the owning superuser, where REVOKE does nothing."""
+    import asyncpg
+
+    conn = migrated_db
+    assert await conn.fetchval("SELECT rolsuper FROM pg_roles WHERE rolname=current_user")
+    entry = uuid7()
+    await conn.execute(
+        "INSERT INTO moderation_actions (id,moderator_id,target_kind,target_id,action,reason) "
+        "VALUES ($1,$2,'sighting',$3,'hide','Evidence reviewed')", entry, uuid7(), uuid7())
+    for statement in ("UPDATE moderation_actions SET reason='rewritten'",
+                      "DELETE FROM moderation_actions",
+                      "TRUNCATE moderation_actions"):
+        with pytest.raises(asyncpg.InsufficientPrivilegeError, match="append-only"):
+            await conn.execute(statement)
+    assert await conn.fetchval("SELECT reason FROM moderation_actions WHERE id=$1", entry) == "Evidence reviewed"
+
+
 async def test_every_moderator_action_records_who_when_and_why(authed_client):
     client, oid = authed_client
     sid = await _post(client)

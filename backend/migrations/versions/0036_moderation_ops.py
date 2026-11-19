@@ -79,6 +79,16 @@ def upgrade():
 
 
 def downgrade():
+    # Dropping the table destroys the audit ledger. Refuse while it holds rows
+    # unless the operator explicitly opts in after exporting it:
+    #   alembic -x drop_moderation_audit=yes downgrade 0035_account_consents
+    from alembic import context
+    if context.get_x_argument(as_dictionary=True).get("drop_moderation_audit") != "yes":
+        rows = op.get_bind().exec_driver_sql("SELECT count(*) FROM moderation_actions").scalar()
+        if rows:
+            raise RuntimeError(
+                f"refusing to drop {rows} moderation audit row(s); export them, then rerun "
+                "with -x drop_moderation_audit=yes")
     op.execute("""
         DROP TABLE moderation_mail;
         DROP TABLE moderator_alerts;

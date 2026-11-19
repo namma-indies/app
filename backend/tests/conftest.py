@@ -57,6 +57,9 @@ def _migrated():
 async def migrated_db(_migrated):
     conn = await asyncpg.connect(settings.test_database_url)
     try:
+        # The audit ledger refuses TRUNCATE (0046); replica mode skips user
+        # triggers for this superuser test reset only.
+        await conn.execute("SET session_replication_role = replica")
         await conn.execute(
             "TRUNCATE observers, sightings, photos, embeddings, individuals, "
             "match_proposals, confirmations, clinical_records, login_tokens, "
@@ -65,6 +68,7 @@ async def migrated_db(_migrated):
             "rate_limit_buckets, auth_failures, join_pow_uses, email_delivery_state, "
             "email_send_attempts, abuse_hourly RESTART IDENTITY CASCADE"
         )
+        await conn.execute("RESET session_replication_role")
         yield conn
     finally:
         await conn.close()
@@ -84,6 +88,7 @@ async def app_client(_migrated):
     await get_storage().ensure_bucket()
 
     async with app.state.pool.acquire() as c:
+        await c.execute("SET session_replication_role = replica")
         await c.execute(
             "TRUNCATE observers, sightings, photos, embeddings, individuals, "
             "match_proposals, confirmations, clinical_records, login_tokens, "
@@ -92,6 +97,7 @@ async def app_client(_migrated):
             "rate_limit_buckets, auth_failures, join_pow_uses, email_delivery_state, "
             "email_send_attempts, abuse_hourly RESTART IDENTITY CASCADE"
         )
+        await c.execute("RESET session_replication_role")
 
     import httpx
 

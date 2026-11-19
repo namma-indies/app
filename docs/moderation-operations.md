@@ -79,8 +79,13 @@ capture's open reports atomically with audit records for affected sightings.
 Fresh reports open a new clock. Severe reports sort ahead of ordinary ones.
 
 `GET /moderation/audit` exposes a cursor-paginated action history only to
-moderators. The application role has insert/select access to the ledger and
-cannot update or delete entries. Existing sign-in and deletion mail flows use
+moderators. The ledger is append-only in the database itself: triggers refuse
+UPDATE, DELETE and TRUNCATE for every role, including the table owner and the
+`postgres` login the deployment connects as (the `app_rw` REVOKE alone does not
+bind those). Only a superuser deliberately dropping or disabling the triggers
+can rewrite it. Downgrading past migration 0036 refuses while the ledger holds
+rows unless run with `-x drop_moderation_audit=yes` after exporting it;
+downgrading 0046 removes the guard but keeps every row. Existing sign-in and deletion mail flows use
 their existing sender; moderation adds no mail vendor or credentials.
 
 ## Public grievances (#190, code scope #199)
