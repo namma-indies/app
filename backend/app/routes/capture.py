@@ -16,6 +16,7 @@ from app import screening
 from app.config import settings
 from app.deps import get_conn, get_storage
 from app.ids import uuid7
+from app.ratelimit import mark_replay
 from app.photos import process_photo, thumb_key
 from app.routes.sighting import _read_bounded, read_voice_note
 from app.transcription_jobs import enqueue_transcription
@@ -93,6 +94,7 @@ async def create_capture(request: Request, photos: list[UploadFile] | None = Fil
         async with pool.acquire() as conn:
             old = await conn.fetchrow("SELECT * FROM captures WHERE observer_id=$1 AND client_token=$2",observer_id,client_token)
             if old:
+                mark_replay(request)
                 return await receipt(conn,old,duplicate=True)
     if not (settings.multi_animal_enabled and settings.media_jobs_enabled):
         raise HTTPException(404,"multi-animal capture intake is disabled")
@@ -184,4 +186,5 @@ async def create_capture(request: Request, photos: list[UploadFile] | None = Fil
             winner = await conn.fetchrow("SELECT * FROM captures WHERE observer_id=$1 AND client_token=$2",observer_id,client_token)
             if winner is None:
                 raise
+            mark_replay(request)
             return await receipt(conn,winner,duplicate=True)

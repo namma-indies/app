@@ -42,7 +42,7 @@ from app.deps import get_conn, get_storage
 from app.ids import uuid7
 from app.media_purges import lock_key, purge_later
 from app.note_language import check_choice, hint_for
-from app.ratelimit import check, voice_note_limit
+from app.ratelimit import REPLAY_HEADER, check, voice_note_limit
 from app.routes.capture import owned
 from app.routes.sighting import read_voice_note
 from app.transcription_jobs import enqueue_transcription, transcription_enabled
@@ -73,7 +73,7 @@ async def _already(conn, observer_id: UUID, client_token: str | None) -> JSONRes
     found = await conn.fetchval(
         "SELECT id FROM voice_notes WHERE observer_id=$1 AND client_token=$2", observer_id, client_token)
     return None if found is None else JSONResponse(
-        {"note_id": str(found), "duplicate": True}, status_code=202)
+        {"note_id": str(found), "duplicate": True}, status_code=202, headers={REPLAY_HEADER: "1"})
 
 
 def _note_id(observer_id: UUID, client_token: str | None) -> UUID:

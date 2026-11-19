@@ -21,3 +21,17 @@ it("shows hourly failures, upload spikes and the conservative email budget as si
   expect(screen.getByText(/190\/200 attempts reserved/)).toBeInTheDocument();
   expect(screen.getByText(/do not trigger moderation automatically/)).toBeInTheDocument();
 });
+
+it("says when the passcode door has been paused by the global wrong-passcode budget", () => {
+  render(<AbuseSignals data={{
+    collection_started_at: "2026-11-03T00:00:00Z",
+    hours: [{ hour: "2026-11-03T12:00:00Z", signups: 0, failed_signins: 100, auth_throttled: 4,
+      uploads: 0, upload_throttled: 0, email_throttled: 0, email_failed: 0, signup_spike: false, signin_spike: true,
+      passcode_lockouts: 7 }],
+    upload_spikes: [],
+    email_capacity: { daily_budget: 200, reserved_last_24h: 0, accepted_last_24h: 0, send_interval_s: 1, retry_at: null },
+    thresholds: { signups_per_hour: 20, failed_signins_per_hour: 50, upload_spike_hour: 20 },
+  }} />);
+  expect(screen.getByText(/passcode door is paused/)).toBeInTheDocument();
+  expect(screen.getByText(/7 passcode joins were refused/)).toBeInTheDocument();
+});

@@ -120,10 +120,111 @@ async def test_expired_work_is_refused(migrated_db, monkeypatch):
 
 
 @pytest.mark.parametrize("path", ["/auth/email/consume", "/auth/magic-link/consume"])
-async def test_invalid_signin_tokens_trigger_backoff(app_client, path):
-    replies = [await app_client.get(path, params={"token": "invalid"}, headers=JSON) for _ in range(4)]
-    assert [r.status_code for r in replies] == [401, 401, 429, 429]
+async def test_invalid_signin_tokens_get_a_plain_window_not_backoff(app_client, monkeypatch, path):
+    """Tokens are high-entropy: backoff would only lock out a carrier NAT."""
+    monkeypatch.setattr(settings, "rl_consume_times", 5)
+    replies = [await app_client.get(path, params={"token": "invalid"}, headers=JSON) for _ in range(6)]
+    assert [r.status_code for r in replies] == [401] * 5 + [429]
     assert int(replies[-1].headers["Retry-After"]) > 0
+    async with app_client._transport.app.state.pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM auth_failures") == 0
+
+
+async def test_parallel_wrong_guesses_are_bounded_by_the_budget(app_client, monkeypatch, passcode_form):
+    """The budget is charged before the compare, atomically, so N parallel
+    guesses cannot all be compared."""
+    monkeypatch.setattr(settings, "rl_join_times", 3)
+    forms = [await passcode_form(app_client, name="x", passcode="wrong") for _ in range(10)]
+    replies = await asyncio.gather(*(app_client.post("/auth/join", data=f, headers=JSON) for f in forms))
+    assert sorted(r.status_code for r in replies) == [401] * 3 + [429] * 7
+
+
+async def test_the_global_wrong_passcode_budget_pauses_the_door(app_client, monkeypatch, passcode_form, caplog):
+    monkeypatch.setattr(settings, "rl_join_global_wrong_times", 2)
+    for _ in range(2):
+        form = await passcode_form(app_client, name="x", passcode="wrong")
+        assert (await app_client.post("/auth/join", data=form, headers=JSON)).status_code == 401
+    assert "global wrong-passcode budget reached" in caplog.text
+    form = await passcode_form(app_client, name="Tester", passcode=settings.join_passcode)
+    refused = await app_client.post("/auth/join", data=form, headers=JSON)
+    assert refused.status_code == 429
+    assert "email" in refused.json()["error"]
+    async with app_client._transport.app.state.pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM observers") == 0
+        assert await conn.fetchval("SELECT sum(count) FROM abuse_hourly WHERE event='passcode_lockouts'") == 1
+
+
+async def test_correct_passcodes_do_not_spend_the_global_budget(app_client, monkeypatch, passcode_form):
+    monkeypatch.setattr(settings, "rl_join_global_wrong_times", 1)
+    for i in range(3):
+        form = await passcode_form(app_client, name=f"tester{i}", passcode=settings.join_passcode)
+        assert (await app_client.post("/auth/join", data=form, headers=JSON)).status_code == 200
+
+
+async def test_successful_joins_are_capped_per_source_per_day(app_client, monkeypatch, passcode_form):
+    monkeypatch.setattr(settings, "rl_join_success_ip_day_times", 2)
+    codes = []
+    for i in range(3):
+        form = await passcode_form(app_client, name=f"tester{i}", passcode=settings.join_passcode)
+        codes.append((await app_client.post("/auth/join", data=form, headers=JSON)).status_code)
+    assert codes == [200, 200, 429]
+
+
+async def test_a_stale_but_genuine_proof_does_not_count_toward_backoff(app_client, monkeypatch):
+    """Expired, issued to another address, or already spent: ask for a new
+    proof, never lock the source out."""
+    monkeypatch.setattr(settings, "auth_ip_backoff_after", 1)
+    timestamp = TimestampSigner.get_timestamp
+    with monkeypatch.context() as patch:
+        patch.setattr(TimestampSigner, "get_timestamp", lambda self: timestamp(self) - 601)
+        old = (await app_client.get("/auth/join/challenge")).json()
+    elsewhere = proof.issue("198.51.100.7")
+    for work in (old, elsewhere):
+        form = {"name": "x", "passcode": "wrong", "challenge": work["challenge"], "solution": solve(work)}
+        reply = await app_client.post("/auth/join", data=form, headers=JSON)
+        assert reply.status_code == 400
+        assert "expired" in reply.json()["error"]
+    async with app_client._transport.app.state.pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM auth_failures") == 0
+    # A forged proof still counts.
+    reply = await app_client.post("/auth/join", data={"name": "x", "passcode": "wrong",
+                                  "challenge": "forged", "solution": "1"}, headers=JSON)
+    assert reply.status_code == 429
+
+
+async def test_ip_keyed_backoff_waits_for_the_ip_threshold(migrated_db, monkeypatch):
+    monkeypatch.setattr(settings, "auth_ip_backoff_after", 4)
+    for _ in range(3):
+        await record_failure(migrated_db, "ip", after=settings.auth_ip_backoff_after)
+    with pytest.raises(HTTPException):
+        await record_failure(migrated_db, "ip", after=settings.auth_ip_backoff_after)
+
+
+def test_ip_backoff_threshold_defaults_high():
+    assert Settings(_env_file=None).auth_ip_backoff_after == 10
+
+
+async def test_an_address_not_on_the_list_is_not_a_failed_signin(app_client, monkeypatch):
+    monkeypatch.setattr(settings, "email_allowlist_domains", "example.test")
+    monkeypatch.setattr(settings, "auth_ip_backoff_after", 1)
+    for _ in range(3):
+        reply = await app_client.post("/auth/email", data={"email": "someone@elsewhere.test"}, headers=JSON)
+        assert reply.status_code == 403
+    async with app_client._transport.app.state.pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM auth_failures") == 0
+        assert await conn.fetchval("SELECT count(*) FROM abuse_hourly WHERE event='failed_signins'") == 0
+
+
+async def test_only_refused_credentials_are_audited_as_failed_signins(app_client, passcode_form):
+    await app_client.post("/auth/email", data={"email": "not-an-address"}, headers=JSON)  # 400
+    await app_client.post("/auth/reviewer", data={"secret": "x"}, headers=JSON)  # door off: 404
+    await app_client.post("/auth/join", data={"name": "x", "passcode": "y"}, headers=JSON)  # no proof: 400
+    async with app_client._transport.app.state.pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM abuse_hourly WHERE event='failed_signins'") == 0
+    form = await passcode_form(app_client, name="x", passcode="wrong")
+    assert (await app_client.post("/auth/join", data=form, headers=JSON)).status_code == 401
+    async with app_client._transport.app.state.pool.acquire() as conn:
+        assert await conn.fetchval("SELECT sum(count) FROM abuse_hourly WHERE event='failed_signins'") == 1
 
 
 async def test_address_cooldown_applies_across_sources_and_email_case(app_client, monkeypatch):
