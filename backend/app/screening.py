@@ -45,6 +45,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.auth.deps import require_moderator
+from app.aggregates import capture_public
 from app.config import settings
 from app.deps import get_conn, get_storage
 from app.detect_reid import DETECTOR_NAME
@@ -110,10 +111,11 @@ async def reasons_for(conn, capture_id: UUID, observer_id: UUID | None) -> list[
     if any((p["indoor"] or 0) >= settings.screening_indoor_min for p in photos):
         reasons.append("indoor")
     if observer_id is not None and settings.screening_trusted_after > 0:
+        # Shown means what `screened` shows, `checking` past its wait included.
         row = await conn.fetchrow(
-            """SELECT o.trust_tier = 'moderator' AS moderator,
+            f"""SELECT o.trust_tier = 'moderator' AS moderator,
                       (SELECT count(*) FROM captures c
-                       WHERE c.observer_id = o.id AND c.id <> $2 AND c.screening IN ('clear','approved')) AS shown
+                       WHERE c.observer_id = o.id AND c.id <> $2 AND {capture_public('c')}) AS shown
                FROM observers o WHERE o.id = $1""", observer_id, capture_id)
         if row is not None and not row["moderator"] and row["shown"] < settings.screening_trusted_after:
             reasons.append("new_account")

@@ -35,7 +35,10 @@ log = logging.getLogger(__name__)
 #
 # The observer is the capture's when there is one, which is the same rule
 # `propose_known_names` uses for credit.
-_POSTABLE_PHOTOS = f"""
+def _postable_photos_sql() -> str:
+    # Built per call: `screened` reads `screening_model_wait_s`, and a
+    # module-level f-string would freeze it at import.
+    return f"""
     WITH s AS (
         SELECT s.id
         FROM sightings s
@@ -103,7 +106,7 @@ async def unshare(conn, sighting_id: UUID) -> None:
 async def postable_photos(conn, sighting_id: UUID) -> list[UUID]:
     """The photos of this sighting that may be posted, oldest first; empty
     when the sighting itself may not be."""
-    return [r["id"] for r in await conn.fetch(_POSTABLE_PHOTOS, sighting_id)]
+    return [r["id"] for r in await conn.fetch(_postable_photos_sql(), sighting_id)]
 
 
 async def is_postable(conn, sighting_id: UUID, photo_id: UUID) -> bool:

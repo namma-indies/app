@@ -323,6 +323,45 @@ async def test_rejecting_an_original_releases_its_copies(authed_client):
     assert _mentions((await client.get("/map")).json()["sightings"], clean)
 
 
+@pytest.mark.parametrize("minutes_ago, trusted_now", [(30, True), (1, False)])
+@pytest.mark.asyncio
+async def test_uploads_showing_after_the_model_wait_count_towards_trust(migrated_db, screening_on,
+                                                                         monkeypatch, minutes_ago, trusted_now):
+    """The new-account count is of uploads others can see: `checking` past its
+    wait shows (aggregates.screened), so it counts; one still waiting does not."""
+    from app.screening import reasons_for
+    monkeypatch.setattr(settings, "screening_trusted_after", 2)
+    monkeypatch.setattr(settings, "screening_model_wait_s", 600)
+    conn, oid = migrated_db, uuid7()
+    await conn.execute("INSERT INTO observers(id) VALUES($1)", oid)
+    for _ in range(2):
+        await conn.execute("""INSERT INTO captures (id, observer_id, kind, captured_at, screening, screened_at)
+            VALUES ($1, $2, 'photo', now(), 'checking', now() - $3 * interval '1 minute')""",
+                           uuid7(), oid, minutes_ago)
+    new = uuid7()
+    await conn.execute("INSERT INTO captures (id, observer_id, kind, captured_at) VALUES ($1,$2,'photo',now())",
+                       new, oid)
+    assert ("new_account" not in await reasons_for(conn, new, oid)) is trusted_now
+
+
+@pytest.mark.asyncio
+async def test_the_daily_post_reads_the_model_wait_when_it_asks(authed_client, monkeypatch):
+    """Not frozen at import: changing the wait changes what may be posted."""
+    from app.social import postable_photos
+    client, owner = authed_client
+    mine = await _post(client, share_with_team="true")
+    pool = await _pool(client)
+    async with pool.acquire() as c:
+        await c.execute("UPDATE observers SET social_consent=true, x_handle='owner_handle' WHERE id=$1", owner)
+        await c.execute("UPDATE sightings SET shared_with_team_at = now() WHERE id = $1", UUID(mine))
+        await c.execute("UPDATE captures SET screening='checking', screened_at = now() - interval '5 minutes' "
+                        "WHERE id=$1", await _capture_of(pool, mine))
+        monkeypatch.setattr(settings, "screening_model_wait_s", 600)
+        assert await postable_photos(c, UUID(mine)) == []
+        monkeypatch.setattr(settings, "screening_model_wait_s", 60)
+        assert await postable_photos(c, UUID(mine)) != []
+
+
 # --- what gets held ---------------------------------------------------------------
 
 
