@@ -393,6 +393,30 @@ async def test_a_passcode_account_being_deleted_is_not_carried_into_an_email_one
 
 
 
+@pytest.mark.asyncio
+async def test_an_absorbed_passcode_rows_name_that_is_the_address_goes_with_the_account(app_client):
+    """Testers typed their email as the passcode name. Absorbing retires that
+    row but keeps its name; erasing the email account must not leave the
+    address behind on it."""
+    from app.auth.email_login import absorb_passcode_observers
+    pool, storage = await _pool(app_client), get_storage()
+    absorbed, unrelated, email_account = uuid7(), uuid7(), uuid7()
+    async with pool.acquire() as c:
+        await c.execute("INSERT INTO observers (id, display_name, created_via) VALUES ($1,' T@Example.org ','passcode')",
+                        absorbed)
+        await c.execute("INSERT INTO observers (id, display_name, created_via) VALUES ($1,'someone@else.org','passcode')",
+                        unrelated)
+        await c.execute("INSERT INTO observers (id, display_name, email, created_via) VALUES ($1,'T','t@example.org','email')",
+                        email_account)
+        assert await absorb_passcode_observers(c, target=email_account, email="t@example.org") == 1
+        assert await c.fetchval("SELECT display_name FROM observers WHERE id=$1", absorbed) == " T@Example.org "
+        assert (await accounts.request(c, email_account, "app")) is not None
+    await _purge_now(pool, storage, email_account)
+    async with pool.acquire() as c:
+        assert await c.fetchval("SELECT display_name FROM observers WHERE id=$1", absorbed) is None
+        assert await c.fetchval("SELECT display_name FROM observers WHERE id=$1", unrelated) == "someone@else.org"
+
+
 async def _passcode_and_email_accounts(app_client):
     from app.security import issue_session
     pool = await _pool(app_client)
