@@ -20,7 +20,7 @@ Policy URLs accept HTTPS or a path on this server. The stable app routes are
 `/policies/terms`, `/policies/privacy`, `/policies/community-guidelines` and
 `/policies/grievance`. Each redirects using the current configuration, without
 caching the destination. An unset URL returns a page saying it is unconfigured
-(503), rather than serving a draft or silently sending someone elsewhere.
+(404, so uptime monitors and store reviewers don't see an outage), rather than serving a draft or silently sending someone elsewhere.
 
 The store support URL is the public app URL followed by `/support`. It works
 without an account, links to all policies and the web deletion request, and

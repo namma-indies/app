@@ -59,7 +59,7 @@ async def test_unconfigured_document_does_not_publish_a_draft(public_client, mon
     title, key = DOCUMENTS[document]
     monkeypatch.setattr(settings, key, "")
     response = await public_client.get(f"/policies/{document}")
-    assert response.status_code == 503
+    assert response.status_code == 404
     assert title in response.text and "not been configured yet" in response.text
     assert_links(response.text)
 

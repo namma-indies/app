@@ -62,4 +62,6 @@ async def published_policy(document: str):
     target = getattr(settings, setting)
     if target:
         return RedirectResponse(target, status_code=302, headers={"Cache-Control": "no-store"})
-    return _page(title, f"<p>The {title} link has not been configured yet. Please check back.</p>", status=503)
+    # 404, not 503: nothing is down, and a 5xx trips uptime monitors and reads
+    # as an outage to store reviewers.
+    return _page(title, f"<p>The {title} link has not been configured yet. Please check back.</p>", status=404)
