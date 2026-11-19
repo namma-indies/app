@@ -25,6 +25,7 @@ export function ModerationAlerts({ onUnauthorized }: { onUnauthorized: () => voi
   return <div className="mod-ops-notice" role="status">
     {!status.delivery_configured && <strong>Moderator email delivery is not configured. </strong>}
     {status.failed_mail > 0 && <strong>{status.failed_mail} EMAIL(S) RETRYING. </strong>}
+    {(status.undeliverable_mail ?? 0) > 0 && <strong>{status.undeliverable_mail} EMAIL(S) UNDELIVERABLE: retries stopped. </strong>}
     {status.pending_events} alert(s) waiting · {status.pending_mail} email(s) queued
   </div>;
 }

@@ -7,8 +7,14 @@ moderators, staffing a rota and agreeing response targets.
 
 - People/privacy, sexual-content and illegal-content reports are severe. One
   severe report holds the entire capture off shared surfaces pending review,
-  including a fresh concern following an earlier approval. Ordinary reports
-  retain the two-distinct-reporter threshold and cannot overturn a ruling.
+  including a fresh concern following an earlier approval. Exception: a
+  reporter whose earlier report on that capture a moderator already ruled on
+  cannot re-hide it alone; their repeat report reaches the queue (still marked
+  severe) without hiding. Ordinary reports retain the two-distinct-reporter
+  threshold and cannot overturn a ruling. Reports are limited per account
+  (`RL_REPORT_TIMES` per `RL_REPORT_WINDOW_S`, default 30 per hour).
+  Whether *other* accounts' severe reports should re-hide an approved capture
+  remains Akash's policy call.
 - Severe reports target a response within 2 hours; ordinary reports within
   24 hours. These are provisional operational targets, not legal deadlines.
 - Ordinary alerts are digested every 60 minutes; urgent alerts bypass that
@@ -30,6 +36,9 @@ moderators, staffing a rota and agreeing response targets.
 | `MODERATION_RESPONSE_HOURS` | Ordinary report response target | `24` |
 | `MODERATION_SEVERE_RESPONSE_HOURS` | Severe report response target | `2` |
 | `MODERATION_MAIL_POLL_S` | Idle delivery poll interval | `5` |
+| `MODERATION_REMINDER_FRACTION` | Share of a severe-report / urgent-grievance window after which one urgent reminder is sent; a second goes at the deadline | `0.75` |
+| `MODERATION_REMINDER_CHECK_S` | How often deadlines are scanned for reminders | `60` |
+| `MODERATION_MAIL_MAX_ATTEMPTS` | Failed sends before a message is marked undeliverable instead of retried forever | `8` (about two hours of backoff) |
 
 Set contacts privately in deployment settings, never in this public repository.
 No deployment or production configuration changes are part of this PR.
@@ -66,15 +75,36 @@ Console mode keeps mail pending; a log message never counts as delivery.
 Decision drafts hold automatic service-worker reloads until they are submitted
 or the view is closed. A failed request keeps its reason visible for retry.
 
-The moderator view reports unconfigured delivery, pending counts and failed
-messages retrying. Report clocks start at the first unanswered report; editing
+The moderator view reports unconfigured delivery, pending counts, failed
+messages retrying and messages given up on. The same signals reach the
+protected `/health/detailed` check `moderation_mail` (and so the launch
+monitor): unconfigured delivery, the oldest unsent message's age, and recently
+undeliverable mail all degrade it. After fixing the cause (for example an
+unverified sender), an operator requeues given-up mail privately with
+`UPDATE moderation_mail SET failed_at=NULL, attempts=0, available_at=now()
+WHERE sent_at IS NULL AND failed_at IS NOT NULL`. Report clocks start at the first unanswered report; editing
 or repeating an open report cannot extend its deadline. A ruling closes the
 capture's open reports atomically with audit records for affected sightings.
 Fresh reports open a new clock. Severe reports sort ahead of ordinary ones.
 
+Escalation: while a severe report episode, or an urgent (non-`other`)
+grievance's removal or resolution clock, is still open, the alert consumer
+queues one urgent reminder once `MODERATION_REMINDER_FRACTION` of the window
+has elapsed and one more when it is overdue (an item first seen overdue gets
+only the second). Reminders reuse the alert outbox with stable per-episode
+keys, so restarts and several workers never duplicate them. Ordinary reports
+and `other` grievances get no reminders. Overdue grievances (including an
+unsent acknowledgement past its clock) also degrade the protected
+`/health/detailed` check `grievances`, so the launch monitor pages on them.
+
 `GET /moderation/audit` exposes a cursor-paginated action history only to
-moderators. The application role has insert/select access to the ledger and
-cannot update or delete entries. Existing sign-in and deletion mail flows use
+moderators. The ledger is append-only in the database itself: triggers refuse
+UPDATE, DELETE and TRUNCATE for every role, including the table owner and the
+`postgres` login the deployment connects as (the `app_rw` REVOKE alone does not
+bind those). Only a superuser deliberately dropping or disabling the triggers
+can rewrite it. Downgrading past migration 0036 refuses while the ledger holds
+rows unless run with `-x drop_moderation_audit=yes` after exporting it;
+downgrading 0046 removes the guard but keeps every row. Existing sign-in and deletion mail flows use
 their existing sender; moderation adds no mail vendor or credentials.
 
 ## Public grievances (#190, code scope #199)
@@ -144,7 +174,11 @@ email automatically. Reference lookup includes closed complaints.
 The moderator-recipient, real sender and public-base settings above are also
 required. Optional intake controls are `RL_GRIEVANCE_IP_TIMES` (20),
 `RL_GRIEVANCE_EMAIL_TIMES` (5) and `RL_GRIEVANCE_WINDOW_S` (3600). These are
-per-window abuse budgets, not people/complaint quotas.
+per-window abuse budgets, not people/complaint quotas. Both are charged before
+and outside the intake transaction, so invalid, conflicting or rolled-back
+attempts still count; an identical retry of an already-saved submission returns
+its receipt without spending the address budget. There is no CAPTCHA or
+third-party bot check: adding one is a product/privacy decision for Akash.
 
 ### Product and people decisions for Akash
 

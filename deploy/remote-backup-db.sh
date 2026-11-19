@@ -19,9 +19,18 @@ cd ~/app
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 DUMP="/tmp/indiedex-$STAMP.dump"
+COUNTS="/tmp/indiedex-$STAMP.counts.json"
 # The host copy is a plaintext dump of every sighting and observer. It exists
 # only between the two containers, and it goes away whichever way this exits.
-trap 'rm -f "$DUMP"' EXIT
+trap 'rm -f "$DUMP" "$COUNTS"' EXIT
+
+echo "==> counting rows for the manifest"
+# Row counts and schema head, immediately before the dump. The restore drill
+# compares a restored copy to them (with a small tolerance for writes in the
+# seconds between). The SQL is passed as an argument, so stdin stays /dev/null.
+sudo docker compose -f "$COMPOSE" exec -T db \
+  psql -U postgres -d indiedex -XqAt -v ON_ERROR_STOP=1 -c "$(cat deploy/backup-manifest.sql)" \
+  < /dev/null > "$COUNTS"
 
 echo "==> dumping"
 # Custom format: restores selectively and in parallel, and its table of
@@ -42,10 +51,12 @@ echo "==> uploading"
 # From the app container, which already holds the S3 credentials -- so nothing
 # new has to be distributed, and this works on any box that can deploy.
 sudo docker compose -f "$COMPOSE" cp "$DUMP" app:/tmp/backup.dump
+sudo docker compose -f "$COMPOSE" cp "$COUNTS" app:/tmp/backup.counts.json
+# Uploads the dump, then its manifest, then backups/latest.json last.
 sudo docker compose -f "$COMPOSE" exec -T app \
-  sh -c 'cd /app/backend && uv run python scripts/backup_db.py /tmp/backup.dump' \
+  sh -c 'cd /app/backend && uv run python scripts/backup_db.py /tmp/backup.dump --counts /tmp/backup.counts.json' \
   < /dev/null
-sudo docker compose -f "$COMPOSE" exec -T app rm -f /tmp/backup.dump < /dev/null
+sudo docker compose -f "$COMPOSE" exec -T app rm -f /tmp/backup.dump /tmp/backup.counts.json < /dev/null
 
 echo "==> what is stored now"
 # Every run reports the whole inventory. The failure worth catching is not a

@@ -164,6 +164,15 @@ class Settings(BaseSettings):
     # Provisional operational targets; product/coverage must confirm them.
     moderation_response_hours: float = Field(default=24, gt=0, le=720)
     moderation_severe_response_hours: float = Field(default=2, gt=0, le=168)
+    # Give up on one outbox message after this many failed sends (about two
+    # hours with the capped exponential backoff) instead of retrying a
+    # permanent provider error forever. Failed messages surface in health.
+    moderation_mail_max_attempts: int = Field(default=8, ge=1, le=50)
+    # Escalation for severe reports and urgent grievances still open as their
+    # clock runs down: one urgent reminder once this fraction of the window has
+    # elapsed, one more at the deadline. Checked every reminder_check_s.
+    moderation_reminder_fraction: float = Field(default=0.75, gt=0, lt=1)
+    moderation_reminder_check_s: int = Field(default=60, ge=5, le=3600)
 
     # Public grievance contact (#199). Honest placeholders until people are
     # appointed; never commit personal contact details here.
@@ -180,6 +189,12 @@ class Settings(BaseSettings):
     rl_grievance_ip_times: int = Field(default=20, ge=1)
     rl_grievance_email_times: int = Field(default=5, ge=1)
     rl_grievance_window_s: int = Field(default=3600, ge=1)
+    # Moderator grievance queue page; older pages are fetched on demand.
+    grievance_queue_page_size: int = Field(default=100, ge=1, le=500)
+    # Reports per observer per window, across all sightings. Generous for a
+    # person flagging a bad batch; caps one account cycling severe holds/alerts.
+    rl_report_times: int = Field(default=30, ge=1)
+    rl_report_window_s: int = Field(default=3600, ge=1)
 
     phone_hash_secret: str = "dev-phone-secret"
     # Key for `banned_emails` hashes (security.email_hash, #180), kept apart
@@ -205,6 +220,23 @@ class Settings(BaseSettings):
     health_queue_stale_s: int = Field(default=1800, ge=60, le=604800)
     health_backfill_stale_s: int = Field(default=86400, ge=60, le=2592000)
     health_backup_stale_s: int = Field(default=129600, ge=3600, le=2592000)
+    # Moderation/grievance outbox: the oldest unsent message older than this
+    # means delivery is stuck; a message given up on within the window degrades.
+    # Last restore-drill pass (monitoring/restore-drill.json, written by the
+    # drill with --record-pass). Not required by default: until the drill is
+    # enabled the check reports "disabled" with the age if one exists.
+    # Database disk. Free space is not visible through SQL without superuser
+    # shell-outs, so it is read with statvfs on a path where the Postgres data
+    # volume is mounted read-only into the API container (empty = not checked).
+    # Below the ratio is "low". The database's own size is always reported and
+    # compared to health_db_size_max_bytes when that is set (0 = off).
+    health_db_disk_path: str = ""
+    health_db_disk_min_free_ratio: float = Field(default=0.10, ge=0, le=0.9)
+    health_db_size_max_bytes: int = Field(default=0, ge=0)
+    health_restore_drill_required: bool = False
+    health_restore_drill_stale_s: int = Field(default=691200, ge=3600, le=7776000)
+    health_moderation_mail_stale_s: int = Field(default=3600, ge=60, le=604800)
+    health_moderation_mail_failed_window_s: int = Field(default=86400, ge=60, le=2592000)
     ops_error_monitoring_enabled: bool = False
     ops_error_alert_threshold: int = Field(default=5, ge=1, le=100000)
 

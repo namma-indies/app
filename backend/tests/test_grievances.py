@@ -130,6 +130,28 @@ async def test_public_intake_limits_address_and_ip(app_client, monkeypatch):
     assert (await app_client.post("/grievances", data=form(contact_email="other@example.invalid"))).status_code == 429
 
 
+async def test_failed_attempts_still_spend_the_address_and_ip_budgets(app_client, monkeypatch):
+    monkeypatch.setattr(settings, "rl_grievance_email_times", 2)
+    # Invalid submissions (bad target, missing details) are charged to the address.
+    for bad in (form(target="not a link"), form(details="")):
+        assert (await app_client.post("/grievances", data=bad)).status_code == 422
+    r = await app_client.post("/grievances", data=form(contact_email=" Person@Example.invalid "))
+    assert r.status_code == 429
+    async with (await _pool(app_client)).acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM grievances") == 0
+    # A conflicting reuse of a submission key is charged too (it used to roll back).
+    monkeypatch.setattr(settings, "rl_grievance_email_times", 100)
+    first = form(contact_email="second@example.invalid")
+    assert (await app_client.post("/grievances", data=first)).status_code == 201
+    # An identical retry returns the receipt without spending the budget.
+    monkeypatch.setattr(settings, "rl_grievance_email_times", 1)
+    assert (await app_client.post("/grievances", data=first)).status_code == 200
+    assert (await app_client.post("/grievances", data={**first, "details": "Changed"})).status_code == 429
+    # IP budget counts invalid attempts as well.
+    monkeypatch.setattr(settings, "rl_grievance_ip_times", 1)
+    assert (await app_client.post("/grievances", data=form(contact_email="", target="x"))).status_code == 429
+
+
 async def test_queue_and_actions_are_moderator_only(authed_client):
     client, _ = authed_client
     await client.post("/grievances", data=form())
@@ -255,3 +277,20 @@ async def test_photo_erasure_keeps_the_complaint_and_opaque_reference(authed_cli
     response = await client.get("/moderation/grievances", params={"reference": complaint["reference"]})
     assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
     assert response.json()["items"][0]["photos"] == []
+
+
+async def test_moderator_queue_pages_instead_of_truncating(authed_client, monkeypatch):
+    client, oid = authed_client
+    await _make_moderator(client, oid)
+    monkeypatch.setattr(settings, "grievance_queue_page_size", 2)
+    for kind in ("other", "privacy", "intimate_imagery", "takedown", "government_order"):
+        assert (await client.post("/grievances", data=form(kind=kind))).status_code == 201
+    seen, offset = [], 0
+    while offset is not None:
+        page = (await client.get("/moderation/grievances", params={"offset": offset})).json()
+        assert page["total"] == 5 and len(page["items"]) <= 2
+        seen += [item["kind"] for item in page["items"]]
+        offset = page["next_offset"]
+    assert len(seen) == 5 and set(seen) == {"other", "privacy", "intimate_imagery", "takedown", "government_order"}
+    assert set(seen[:2]) == {"intimate_imagery", "government_order"}
+    assert (await client.get("/moderation/grievances", params={"offset": -1})).status_code == 422

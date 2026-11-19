@@ -54,14 +54,29 @@ a size bound rather than a time guarantee; replacement can discard them.
 - Database access includes pool acquisition, queue queries, capability ages
   and error counts. Independent S3 probes run concurrently. Every probe has
   its own timeout; unrelated results remain available when one fails.
+- `database_write` upserts one fixed row (`health_write_probe`) in a read-write
+  transaction under the same short timeout. The other database probes are
+  read-only and cannot see a database that has gone read-only (recovery,
+  `default_transaction_read_only`) or cannot write (full disk); this reports
+  `read_only`, `full` or `unavailable`.
+- `database_disk` always reports the database's size (`pg_database_size`),
+  `low` when it reaches `HEALTH_DB_SIZE_MAX_BYTES` (if set). Free space on the
+  Postgres volume is not readable through SQL without superuser shell-outs, so
+  it is read with `statvfs` on `HEALTH_DB_DISK_PATH`: optionally mount the
+  Postgres data volume **read-only** into the API container (for example
+  `<pg-volume>:/pgdata:ro`, set `HEALTH_DB_DISK_PATH=/pgdata`); below
+  `HEALTH_DB_DISK_MIN_FREE_RATIO` free it is `low`. With neither configured the
+  check is `disabled` and the write probe remains the backstop.
 - Local ONNX presence is checked when legacy CPU re-ID or CPU fallback is in
   use. Model names/presence are private. The maintenance scripts use
   `uv run python -m app.model_health` locally; seeding also checks local liveness.
 - Storage writes/reads the constant two-byte `monitoring/storage-probe`.
-  Grant the API ListBucket and Get/Put on that key, plus List/Get on `backups/`
-  for freshness. No delete permission is required. The existing noncurrent
-  lifecycle rule bounds probe versions. The latest backup check reads its
-  header/age, never exposes its name, and does not claim to prove a restore.
+  Grant the API ListBucket and Get/Put on that key, plus GetObject on the single
+  `backups/latest.json` marker for freshness (see deploy/BACKUPS.md for the
+  narrowed backup-prefix grants). No delete permission is required. The existing
+  noncurrent lifecycle rule bounds probe versions. The backup check reads the
+  marker's age/validity, never exposes the dump's name, and does not claim to
+  prove a restore.
 - A model-loaded GPU worker sends an outbound authenticated readiness heartbeat
   once per minute through the existing worker connection. It advertises re-ID,
   multi-animal, transcription and suggestion capabilities. Only the serial claim
@@ -73,6 +88,18 @@ a size bound rather than a time guarantee; replacement can discard them.
   Deliberately disabled features or zero-rate backfills show `paused` with
   counts/ages still visible. Re-ID monitoring covers durable media jobs, not the
   legacy unqueued CPU background path.
+- `moderation_mail` covers the shared moderator-alert / grievance
+  acknowledgement outbox: `unconfigured` when no moderator recipients are set
+  or the real sender is not selected (alerts would silently wait), `stale` when
+  the oldest unsent message is older than `HEALTH_MODERATION_MAIL_STALE_S`, and
+  `failed` while a message given up on after `MODERATION_MAIL_MAX_ATTEMPTS` is
+  within `HEALTH_MODERATION_MAIL_FAILED_WINDOW_S`. Counts/ages only.
+- `restore_drill` reports the age of the last successful restore drill from
+  `monitoring/restore-drill.json` (see deploy/BACKUPS.md). It is `disabled`
+  until `HEALTH_RESTORE_DRILL_REQUIRED=true`, then `missing`/`stale`/`ok`.
+- `grievances` reports open and overdue grievance counts (resolution, removal
+  or unsent acknowledgement past its provisional clock) and is `overdue` while
+  any are. No references or contact data.
 - The external checker fetches app HTML plus its first-party JS entry asset,
   public API liveness and detailed health. Redirects/malformed responses fail;
   the health token goes only to the detailed endpoint. This static availability
@@ -91,6 +118,13 @@ configuration changes are Aswin's private deployment procedure.
 | `HEALTH_QUEUE_STALE_S` | `1800` | Oldest live job; **starting value to tune against actual durations** |
 | `HEALTH_BACKFILL_STALE_S` | `86400` | Enabled backfill age; tune to batch size/rate |
 | `HEALTH_BACKUP_STALE_S` | `129600` | 36-hour backup freshness |
+| `HEALTH_DB_DISK_PATH` | empty/off | Read-only mount of the Postgres data volume in the API container, for free space |
+| `HEALTH_DB_DISK_MIN_FREE_RATIO` | `0.10` | Free-space fraction below which `database_disk` is `low` |
+| `HEALTH_DB_SIZE_MAX_BYTES` | `0`/off | Database size at which `database_disk` is `low` |
+| `HEALTH_RESTORE_DRILL_REQUIRED` | `false` | Degrade when the last drill pass is missing/stale |
+| `HEALTH_RESTORE_DRILL_STALE_S` | `691200` | Eight days since the last drill pass |
+| `HEALTH_MODERATION_MAIL_STALE_S` | `3600` | Oldest unsent moderation/grievance mail |
+| `HEALTH_MODERATION_MAIL_FAILED_WINDOW_S` | `86400` | How long a given-up message keeps health degraded |
 | `OPS_ERROR_MONITORING_ENABLED` | `false` | Server counts and authenticated client-event intake; API restart |
 | `OPS_ERROR_ALERT_THRESHOLD` | `5` | Signals in approximately 15 minutes |
 | `VITE_SELF_HOSTED_ERRORS_ENABLED` | `false` | Web/PWA reporting; frontend rebuild, passed by Compose |
@@ -123,6 +157,18 @@ workflow edits through normal review. Put these secrets in that environment:
 | `MONITOR_STATE_ACCESS_KEY_ID` | Dedicated state identity |
 | `MONITOR_STATE_SECRET_ACCESS_KEY` | Its secret; no media/backup access |
 | `MONITOR_STATE_ENDPOINT` | Optional custom HTTPS S3 origin; empty uses regional AWS endpoint |
+| `MONITOR_HEARTBEAT_URL` | Optional HTTPS dead-man's-switch URL, pinged (GET) after each completed run |
+
+**Dead-man's switch.** GitHub cron can be delayed, dropped or disabled, and a
+checker that never runs sends nothing. If `MONITOR_HEARTBEAT_URL` is set, the
+checker GETs it at the end of every run that completed (state saved and any
+notification delivered), whether or not services were healthy. Point it at any
+heartbeat/cron-monitoring service that alerts when pings stop arriving; set its
+expected period to the 10-minute schedule plus generous grace (for example
+30–60 minutes) because Actions cron is best effort. No vendor is chosen here:
+choosing one, its recipients and its privacy terms is a #201 decision. A failed
+ping fails the run (`heartbeat_failed`), so workflow-failure notification also
+fires. The URL usually embeds a secret token: keep it in the environment secret.
 
 Environment/repository variables: `MONITOR_STATE_REGION` (default `ap-south-1`)
 and `MONITOR_REMINDER_S` (default `21600`, minimum `600`). The enable switch

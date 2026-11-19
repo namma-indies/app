@@ -1,5 +1,8 @@
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import json
+
+from botocore.exceptions import ClientError
 
 import pytest
 
@@ -57,20 +60,49 @@ async def test_health_exercises_write_and_read_on_a_fixed_non_media_object(monke
     assert client.puts[0]["Body"] == b"ok"
 
 
-async def test_backup_probe_pages_and_reads_only_the_latest_archive_header(monkeypatch):
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    key = f"backups/indiedex-{stamp}.dump"
-    client = Client([{"Contents": [{"Key": "backups/indiedex-20260101T000000Z.dump", "Size": 4000}]},
-                     {"Contents": [{"Key": key, "Size": 5000}]}])
+def marker(**over):
+    stamp = datetime.now(timezone.utc).replace(microsecond=0)
+    body = {"version": 1, "key": f"backups/indiedex-{stamp:%Y%m%dT%H%M%SZ}.dump", "size": 5000,
+            "created_at": stamp.isoformat(), "pgdmp_verified": True, **over}
+    return json.dumps(body).encode()
+
+
+class MarkerClient(Client):
+    def __init__(self, raw=None, missing=False):
+        super().__init__()
+        self.raw, self.missing = raw, missing
+    async def get_object(self, **kwargs):
+        self.gets.append(kwargs)
+        if self.missing:
+            raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+        return {"Body": Body(self.raw)}
+    def get_paginator(self, name):
+        raise AssertionError("the freshness check must not list backups")
+
+
+async def test_backup_probe_reads_only_the_latest_marker(monkeypatch):
+    client = MarkerClient(marker())
     result = await storage(monkeypatch, client).backup_health()
     assert result["valid"] is True and 0 <= result["age_s"] < 10
-    assert client.gets[0]["Key"] == key
-    assert client.gets[0]["Range"] == "bytes=0-4"
+    assert [g["Key"] for g in client.gets] == ["backups/latest.json"]
 
 
-async def test_missing_or_corrupt_newest_backup_is_not_masked_by_an_older_one(monkeypatch):
-    assert await storage(monkeypatch, Client()).backup_health() is None
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    client = Client([{"Contents": [{"Key": f"backups/indiedex-{stamp}.dump", "Size": 4000}]}])
-    client.header = b"ERROR"
-    assert (await storage(monkeypatch, client).backup_health())["valid"] is False
+async def test_missing_marker_is_missing_and_bad_markers_are_invalid(monkeypatch):
+    assert await storage(monkeypatch, MarkerClient(missing=True)).backup_health() is None
+    old = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+    assert (await storage(monkeypatch, MarkerClient(marker(created_at=old))).backup_health())["age_s"] > 200000
+    for bad in (marker(pgdmp_verified=False), marker(size=10), marker(key="backups/other.dump"),
+                marker(created_at="2026-01-01T00:00:00"), b"not json", b"{" + b" " * 5000 + b"}",
+                marker(created_at=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat())):
+        assert (await storage(monkeypatch, MarkerClient(bad)).backup_health())["valid"] is False
+
+
+async def test_restore_drill_marker_is_read_from_one_fixed_key(monkeypatch):
+    passed = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(hours=2)
+    client = MarkerClient(json.dumps({"version": 1, "passed_at": passed.isoformat(),
+                                      "manifest_compared": True}).encode())
+    result = await storage(monkeypatch, client).restore_drill_health()
+    assert result["valid"] and 7100 < result["age_s"] < 7300 and result["manifest_compared"]
+    assert [g["Key"] for g in client.gets] == ["monitoring/restore-drill.json"]
+    assert await storage(monkeypatch, MarkerClient(missing=True)).restore_drill_health() is None
+    assert (await storage(monkeypatch, MarkerClient(b"[]")).restore_drill_health())["valid"] is False

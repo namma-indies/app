@@ -28,7 +28,7 @@ describe("self-hosted error signals", () => {
     window.dispatchEvent(new Event("unhandledrejection"));
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(fetcher).toHaveBeenCalledWith("/monitoring/client-error", expect.objectContaining({
-      credentials: "same-origin", referrerPolicy: "no-referrer", body: '{"kind":"error"}',
+      credentials: "include", referrerPolicy: "no-referrer", body: '{"kind":"error"}',
     }));
     expect(JSON.stringify(fetcher.mock.calls)).not.toContain("private");
   });
@@ -54,5 +54,20 @@ describe("self-hosted error signals", () => {
     stop();
     window.dispatchEvent(new Event("unhandledrejection"));
     expect(fetcher).not.toHaveBeenCalled();
+  });
+});
+
+describe("native builds", () => {
+  it("posts to the API origin rather than the bundled app", async () => {
+    vi.resetModules();
+    vi.doMock("../apiBase", () => ({ API_BASE: "https://api.example.test" }));
+    const { startErrorMonitoring: start } = await import("./errors");
+    const fetcher = vi.fn().mockResolvedValue({ status: 204 });
+    vi.stubGlobal("fetch", fetcher);
+    stop = start(true);
+    window.dispatchEvent(new Event("unhandledrejection"));
+    expect(fetcher).toHaveBeenCalledWith("https://api.example.test/monitoring/client-error",
+      expect.objectContaining({ credentials: "include" }));
+    vi.doUnmock("../apiBase");
   });
 });

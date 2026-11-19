@@ -2,9 +2,10 @@
 
 Ordinary reports need two distinct reporters before shared surfaces hide a
 capture. People/privacy, sexual-content and illegal-content reports hold it
-on the first report and alert immediately (#198). A fresh severe concern can
-hold a previously approved capture again; ordinary reports cannot overturn a
-ruling. All open concerns reach the queue, with an original response clock.
+on the first report and alert immediately (#198). A fresh severe concern from
+another reporter can hold a previously approved capture again; the reporter a
+moderator already ruled against reaches the queue but cannot re-hide it alone.
+Ordinary reports cannot overturn a ruling. Reports are rate limited per account. All open concerns reach the queue, with an original response clock.
 
 Moderators are deliberately assigned through observers.trust_tier. Decisions
 require a reason and append an audit entry in the same transaction. No action
@@ -25,8 +26,9 @@ from app.deps import get_conn, get_storage
 from app.detect_reid import DETECTOR_NAME
 from app.ids import uuid7
 from app.moderation_ops import SEVERE_REASONS, action_reason, apply_sighting_action, record_action, report_clock
-from app.moderator_alerts import alert_moderators, recipients
+from app.moderator_alerts import alert_moderators, delivery_configured, mail_status, recipients
 from app.photos import thumb_key
+from app.ratelimit import Limit, check
 from app.security import email_hash
 from app.storage.s3 import S3Storage
 from app.transcription_jobs import transcription_enabled
@@ -99,10 +101,12 @@ async def report_sighting(
         raise HTTPException(status_code=422, detail=f"note is longer than {MAX_NOTE}")
 
     note = (note or "").strip() or None
+    # Charged before the transaction so a refused or failed report still counts.
+    await check(conn, f"report:obs:{observer_id}", Limit(settings.rl_report_times, settings.rl_report_window_s))
     async with conn.transaction():
         capture_id = await conn.fetchval("SELECT capture_id FROM sightings WHERE id=$1", sighting_id)
         await conn.execute("SELECT id FROM captures WHERE id=$1 FOR UPDATE", capture_id)
-        sighting = await conn.fetchrow("SELECT review_status FROM sightings WHERE id=$1", sighting_id)
+        sighting = await conn.fetchrow("SELECT review_status, reviewed_at FROM sightings WHERE id=$1", sighting_id)
         if sighting is None:
             raise HTTPException(status_code=404, detail="no such sighting")
         previous = await conn.fetchrow(
@@ -113,6 +117,17 @@ async def report_sighting(
         changed = previous is None or previous["resolved_at"] is not None or (previous["reason"], previous["note"]) != (reason, note)
         if not changed:
             return {"status": "ok", "hidden": sighting["review_status"] != "valid"}
+        # The same account reporting again after a moderator approved the
+        # capture over its earlier report goes to the queue, but cannot hold
+        # the capture by itself again (otherwise one account can re-hide an
+        # approved photo indefinitely). Other reporters keep the severe hold.
+        repeat_after_approval = (
+            sighting["review_status"] == "valid" and sighting["reviewed_at"] is not None
+            and await conn.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM sighting_reports r JOIN sightings s ON s.id=r.sighting_id "
+                "WHERE r.reporter_id=$2 AND COALESCE(r.resolved_at, r.last_resolved_at) IS NOT NULL "
+                "AND (s.id=$1 OR s.capture_id=$3))", sighting_id, observer_id, capture_id))
+        hold_now = reason in SEVERE_REASONS and not repeat_after_approval
         await conn.execute(
             """
             INSERT INTO sighting_reports (sighting_id, reporter_id, reason, note, severe_at)
@@ -125,6 +140,7 @@ async def report_sighting(
                                      THEN now() ELSE sighting_reports.opened_at END,
                     severe_at = CASE WHEN sighting_reports.resolved_at IS NOT NULL THEN EXCLUDED.severe_at
                                      ELSE COALESCE(sighting_reports.severe_at, EXCLUDED.severe_at) END,
+                    last_resolved_at = COALESCE(sighting_reports.resolved_at, sighting_reports.last_resolved_at),
                     resolved_at = NULL
             """,
             sighting_id,
@@ -145,7 +161,7 @@ async def report_sighting(
             "AND r.resolved_at IS NULL) >= $2) OR $3)",
             sighting_id,
             HIDE_AT_REPORTS,
-            reason in SEVERE_REASONS,
+            hold_now,
         )
         # Rejecting is already a stronger hold. Fresh severe concerns about a
         # previously approved item still hide it until the next human ruling.
@@ -482,10 +498,7 @@ async def audit_log(before: UUID | None = None, _mod: UUID = Depends(require_mod
 
 @router.get("/moderation/alerts/status")
 async def alerts_status(_mod: UUID = Depends(require_moderator), conn=Depends(get_conn)):
-    row = await conn.fetchrow(
-        "SELECT (SELECT count(*) FROM moderator_alerts WHERE queued_at IS NULL) AS pending_events, "
-        "count(*) FILTER (WHERE sent_at IS NULL) AS pending_mail, "
-        "count(*) FILTER (WHERE sent_at IS NULL AND attempts>0 AND last_error IS NOT NULL) AS failed_mail "
-        "FROM moderation_mail")
-    return {**dict(row), "recipient_count": len(recipients()), "email_sender": settings.email_sender,
-            "delivery_configured": bool(recipients()) and settings.email_sender == "ses"}
+    status = await mail_status(conn)
+    status.pop("recently_undeliverable_mail")
+    return {**status, "recipient_count": len(recipients()), "email_sender": settings.email_sender,
+            "delivery_configured": delivery_configured()}

@@ -127,10 +127,16 @@ async def test_operational_probes_use_real_s3_streams(storage):
     await storage.ensure_bucket()
     await storage.check_health()
     assert await storage.get("monitoring/storage-probe") == b"ok"
-    key = "backups/indiedex-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + ".dump"
+    import json
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    key = "backups/indiedex-" + now.strftime("%Y%m%dT%H%M%SZ") + ".dump"
     try:
-        await storage.put(key, b"PGDMP" + b"0" * 2048, "application/octet-stream")
+        await storage.delete("backups/latest.json")
+        assert await storage.backup_health() is None
+        await storage.put("backups/latest.json", json.dumps({
+            "version": 1, "key": key, "size": 2053, "created_at": now.isoformat(),
+            "pgdmp_verified": True}).encode(), "application/json")
         result = await storage.backup_health()
         assert result["valid"] is True and result["age_s"] < 60
     finally:
-        await storage.delete(key)
+        await storage.delete("backups/latest.json")

@@ -21,6 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.ops_common import OpsError, aws_command
 
 BACKEND = Path(__file__).resolve().parents[1]
+DRILL_MARKER_KEY = "monitoring/restore-drill.json"
+MANIFEST_TABLES = ("observers", "sightings", "captures", "photos", "individuals",
+                   "confirmations", "embeddings")
 BACKUP_KEY = re.compile(r"backups/indiedex-(\d{8}T\d{6}Z)\.dump\Z")
 CORE_TABLES = ("observers", "sightings", "captures", "photos", "individuals",
                "confirmations", "embeddings", "alembic_version")
@@ -40,7 +43,38 @@ def newest_backup(objects, *, now, max_age_hours):
     return latest
 
 
-def fetch_latest(destination, *, max_age_hours):
+def parse_manifest(raw, *, key=None, size=None):
+    """The manifest the backup job writes beside each dump (or, for a local
+    archive, the raw deploy/backup-manifest.sql output)."""
+    try:
+        manifest = json.loads(raw)
+        counts = manifest["counts"]
+        if (not isinstance(manifest["schema_head"], str) or set(counts) != set(MANIFEST_TABLES)
+                or any(type(v) is not int or v < 0 for v in counts.values())):
+            raise ValueError
+        if key is not None and (manifest.get("key") != key or manifest.get("size") != size):
+            raise ValueError
+    except (ValueError, KeyError, TypeError, UnicodeError):
+        raise OpsError("manifest_invalid") from None
+    return manifest
+
+
+def compare_to_manifest(result, manifest, *, tolerance, slack):
+    """Restored counts must match what was in the database at backup time.
+
+    Counts are taken just before pg_dump, so a few rows can legitimately
+    differ: allow max(slack, tolerance * expected) either way. The schema head
+    must match exactly. Classifications only; never the numbers.
+    """
+    if result["revision"] != manifest["schema_head"]:
+        raise OpsError("manifest_schema_mismatch")
+    for table, expected in manifest["counts"].items():
+        allowed = max(slack, int(expected * tolerance))
+        if abs(result[table] - expected) > allowed:
+            raise OpsError("manifest_count_mismatch")
+
+
+def fetch_latest(destination, *, max_age_hours, require_manifest=True):
     bucket = os.environ.get("RESTORE_BACKUP_BUCKET", "")
     endpoint = os.environ.get("RESTORE_BACKUP_ENDPOINT", "")
     if not bucket:
@@ -70,6 +104,37 @@ def fetch_latest(destination, *, max_age_hours):
     aws_command([*args, str(destination)], endpoint=endpoint)
     if destination.stat().st_size != latest["Size"]:
         raise OpsError("backup_size_mismatch")
+    manifest_path = destination.with_suffix(".manifest.json")
+    found = aws_command(["get-object", "--bucket", bucket, "--key",
+                         latest["Key"].removesuffix(".dump") + ".json", str(manifest_path)],
+                        endpoint=endpoint, missing_ok=True)
+    if found is None:
+        if require_manifest:
+            raise OpsError("manifest_missing")
+        return None
+    if manifest_path.stat().st_size > 64 * 1024:
+        raise OpsError("manifest_invalid")
+    return parse_manifest(manifest_path.read_bytes(), key=latest["Key"], size=latest["Size"])
+
+
+def record_pass(manifest):
+    """Write the last-pass marker /health/detailed reads. The drill identity
+    needs PutObject on this one key only. Times and schema head, no counts."""
+    bucket = os.environ.get("RESTORE_BACKUP_BUCKET", "")
+    endpoint = os.environ.get("RESTORE_BACKUP_ENDPOINT", "")
+    if not bucket:
+        raise OpsError("backup_configuration_missing")
+    body = {"version": 1, "passed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "backup_created_at": manifest.get("created_at") if manifest else None,
+            "manifest_compared": manifest is not None}
+    with tempfile.TemporaryDirectory(prefix="restore-drill-marker-") as directory:
+        path = Path(directory) / "marker.json"
+        path.write_text(json.dumps(body, sort_keys=True))
+        try:
+            aws_command(["put-object", "--bucket", bucket, "--key", DRILL_MARKER_KEY,
+                         "--body", str(path), "--content-type", "application/json"], endpoint=endpoint)
+        except OpsError:
+            raise OpsError("pass_marker_write_failed") from None
 
 
 def command(args, *, stdin=None, timeout=60):
@@ -103,7 +168,7 @@ def check_archive(path):
 
 
 def restore(archive, *, image="indiedex-restore-db", minimum_sightings=1,
-            minimum_embeddings=1, data_mib=2048):
+            minimum_embeddings=1, data_mib=2048, manifest=None, count_tolerance=0.01, count_slack=10):
     check_archive(archive)
     name = "indiedex-restore-drill-" + uuid4().hex
     created = False
@@ -143,6 +208,8 @@ def restore(archive, *, image="indiedex-restore-db", minimum_sightings=1,
                 'extensions', (SELECT count(*) = 2 FROM pg_extension WHERE extname IN ('postgis','vector')),
                 'one_revision', (SELECT count(*) = 1 FROM alembic_version),
                 'revision', (SELECT min(version_num) FROM alembic_version),
+                'observers', (SELECT count(*) FROM observers),
+                'captures', (SELECT count(*) FROM captures),
                 'sightings', (SELECT count(*) FROM sightings),
                 'photos', (SELECT count(*) FROM photos),
                 'individuals', (SELECT count(*) FROM individuals),
@@ -170,6 +237,8 @@ def restore(archive, *, image="indiedex-restore-db", minimum_sightings=1,
                 raise ValueError
         except (ValueError, KeyError, TypeError):
             raise OpsError("restore_sanity_failed") from None
+        if manifest is not None:
+            compare_to_manifest(result, manifest, tolerance=count_tolerance, slack=count_slack)
     finally:
         # docker run may create a container and then fail. Cleanup is attempted
         # by our generated name even in that case; no existing name is accepted.
@@ -197,17 +266,39 @@ def main():
     parser.add_argument("--minimum-sightings", type=nonnegative, default=1)
     parser.add_argument("--minimum-embeddings", type=nonnegative, default=1)
     parser.add_argument("--data-mib", type=int, default=2048, help="throwaway tmpfs size, MiB")
+    parser.add_argument("--manifest", type=Path,
+                        help="with --archive: backup manifest (or backup-manifest.sql output) to compare counts against")
+    parser.add_argument("--allow-missing-manifest", action="store_true",
+                        help="accept a latest backup written before manifests existed (minimums only)")
+    parser.add_argument("--count-tolerance", type=float, default=0.01,
+                        help="relative row-count difference allowed against the manifest")
+    parser.add_argument("--count-slack", type=nonnegative, default=10,
+                        help="absolute row-count difference always allowed against the manifest")
+    parser.add_argument("--record-pass", action="store_true",
+                        help=f"on success, write {DRILL_MARKER_KEY} for detailed health (needs PutObject on that key)")
     args = parser.parse_args()
     try:
-        if not 1 <= args.max_age_hours <= 8760 or not 256 <= args.data_mib <= 32768:
+        if (not 1 <= args.max_age_hours <= 8760 or not 256 <= args.data_mib <= 32768
+                or not 0 <= args.count_tolerance <= 0.5 or (args.manifest and not args.archive)
+                or (args.record_pass and args.archive)):
             raise OpsError("drill_configuration_invalid")
         with tempfile.TemporaryDirectory(prefix="restore-drill-") as directory:
             archive = args.archive or Path(directory) / "backup.dump"
             if args.archive is None:
-                fetch_latest(archive, max_age_hours=args.max_age_hours)
+                manifest = fetch_latest(archive, max_age_hours=args.max_age_hours,
+                                        require_manifest=not args.allow_missing_manifest)
+            else:
+                try:
+                    manifest = parse_manifest(args.manifest.read_bytes()) if args.manifest else None
+                except OSError:
+                    raise OpsError("manifest_invalid") from None
             restore(archive, image=args.image, minimum_sightings=args.minimum_sightings,
-                    minimum_embeddings=args.minimum_embeddings, data_mib=args.data_mib)
-        print("restore_drill: archive, restore, sanity and cleanup verified")
+                    minimum_embeddings=args.minimum_embeddings, data_mib=args.data_mib,
+                    manifest=manifest, count_tolerance=args.count_tolerance, count_slack=args.count_slack)
+        if args.record_pass:
+            record_pass(manifest)
+        print("restore_drill: archive, restore, sanity" + (", manifest counts" if manifest else "")
+              + " and cleanup verified")
         return 0
     except OpsError as error:
         print("restore_drill: " + str(error), file=sys.stderr)

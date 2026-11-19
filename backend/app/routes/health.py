@@ -1,6 +1,7 @@
 """Public liveness and authenticated, bounded operational diagnostics."""
 import asyncio
 import hmac
+import os
 from typing import Literal
 from uuid import UUID
 
@@ -13,6 +14,7 @@ from app.auth.deps import require_observer
 from app.deps import get_storage
 from app.media_jobs import require_gpu
 from app.model_health import local_reid_health
+from app.moderator_alerts import delivery_configured, mail_status
 from app.operational_errors import WINDOW_S, errors
 from app.ratelimit import Limit, check
 
@@ -46,6 +48,16 @@ QUEUE_SQL = """
     SELECT 'suggestion_backfill', count(*) FILTER (WHERE status='pending'),
            count(*) FILTER (WHERE status='running'), extract(epoch FROM now()-min(created_at))
     FROM transcript_backfill WHERE status IN ('pending','running')
+"""
+# Counts only: no references, contacts or content. An unsent acknowledgement
+# counts even after closure, matching the moderator queue.
+GRIEVANCE_SQL = """
+    SELECT count(*) FILTER (WHERE g.resolved_at IS NULL) AS open,
+           count(*) FILTER (WHERE (g.resolved_at IS NULL AND (now() >= g.resolve_due_at
+                    OR (g.removed_at IS NULL AND g.removal_due_at IS NOT NULL AND now() >= g.removal_due_at)))
+                OR (m.sent_at IS NULL AND now() >= g.acknowledge_due_at)) AS overdue
+    FROM grievances g LEFT JOIN moderation_mail m ON m.id = g.acknowledgement_mail_id
+    WHERE g.resolved_at IS NULL OR m.sent_at IS NULL
 """
 QUEUE_NAMES = ("reid", "transcription", "suggestion", "description",
                "description_backfill", "suggestion_backfill")
@@ -121,7 +133,78 @@ async def database_checks(pool):
                 count = await conn.fetchval(
                     "SELECT coalesce(sum(count),0) FROM operational_errors "
                     "WHERE minute >= now() - $1 * interval '1 second'", WINDOW_S)
-            return queues, beats, int(count)
+            mail = await mail_status(conn)
+            grievances = dict(await conn.fetchrow(GRIEVANCE_SQL))
+            size = await conn.fetchval("SELECT pg_database_size(current_database())")
+            return {"queues": queues, "beats": beats, "errors": int(count), "mail": mail,
+                    "grievances": grievances, "db_size_bytes": int(size)}
+
+
+async def database_write_check(pool):
+    """The read-only probe cannot see a read-only (standby/recovery,
+    default_transaction_read_only) or full database. Upsert one fixed row in a
+    read-write transaction with the same short timeout."""
+    import asyncpg
+
+    try:
+        async with asyncio.timeout(settings.health_check_timeout_s):
+            async with pool.acquire() as conn, conn.transaction():
+                await conn.fetchval("SELECT set_config('statement_timeout', $1, true)",
+                                    str(int(settings.health_check_timeout_s * 1000)))
+                await conn.execute(
+                    "INSERT INTO health_write_probe (id, touched_at) VALUES (1, now()) "
+                    "ON CONFLICT (id) DO UPDATE SET touched_at = EXCLUDED.touched_at")
+        return {"status": "ok"}
+    except asyncpg.ReadOnlySQLTransactionError:
+        return {"status": "read_only"}
+    except asyncpg.DiskFullError:
+        return {"status": "full"}
+    except Exception:
+        return {"status": "unavailable"}
+
+
+def database_disk_check(size_bytes):
+    result = {"db_size_bytes": size_bytes}
+    status = "disabled"
+    limit = settings.health_db_size_max_bytes
+    if limit and size_bytes is not None:
+        status = "low" if size_bytes >= limit else "ok"
+        result["db_size_max_bytes"] = limit
+    path = settings.health_db_disk_path
+    if path:
+        try:
+            stat = os.statvfs(path)
+            free = stat.f_bavail * stat.f_frsize
+            total = stat.f_blocks * stat.f_frsize
+            ratio = free / total if total else 0.0
+            result.update(free_bytes=free, total_bytes=total, free_ratio=round(ratio, 4),
+                          min_free_ratio=settings.health_db_disk_min_free_ratio)
+            if ratio < settings.health_db_disk_min_free_ratio:
+                status = "low"
+            elif status == "disabled":
+                status = "ok"
+        except OSError:
+            status = "unavailable"
+    result["status"] = status
+    return result
+
+
+def moderation_mail_check(mail):
+    """Alert/acknowledgement delivery, visible outside the moderator tab.
+
+    Unconfigured delivery is degraded: alerts and grievance acknowledgements
+    would silently wait. Counts and ages only; never recipients or content.
+    """
+    if mail is None:
+        return {"status": "unknown"}
+    age = mail["oldest_unsent_age_s"]
+    status = ("unconfigured" if not delivery_configured() else
+              "failed" if mail["recently_undeliverable_mail"] else
+              "stale" if age is not None and age >= settings.health_moderation_mail_stale_s else "ok")
+    return {"status": status, "pending": mail["pending_mail"], "retrying": mail["failed_mail"],
+            "undeliverable": mail["undeliverable_mail"],
+            "recently_undeliverable": mail["recently_undeliverable_mail"],
+            "oldest_unsent_age_s": age, "stale_after_s": settings.health_moderation_mail_stale_s}
 
 
 async def storage_check(storage):
@@ -145,6 +228,22 @@ async def backup_check(storage):
         return {"status": "unavailable"}
 
 
+async def restore_drill_check(storage):
+    required = settings.health_restore_drill_required
+    stale_after = settings.health_restore_drill_stale_s
+    try:
+        async with asyncio.timeout(settings.health_check_timeout_s):
+            drill = await storage.restore_drill_health()
+    except Exception:
+        return {"status": "unavailable" if required else "disabled"}
+    if drill is None:
+        return {"status": "missing" if required else "disabled", "age_s": None, "stale_after_s": stale_after}
+    status = ("invalid" if not drill["valid"] else
+              "stale" if drill["age_s"] >= stale_after else "ok")
+    return {"status": status if required else "disabled", "age_s": drill["age_s"],
+            "manifest_compared": drill["manifest_compared"], "stale_after_s": stale_after}
+
+
 @router.get("/health/detailed", dependencies=[Depends(require_health_token)])
 async def detailed_health(request: Request, storage=Depends(get_storage)):
     async def database():
@@ -153,19 +252,29 @@ async def detailed_health(request: Request, storage=Depends(get_storage)):
         except Exception:
             return None
 
-    snapshot, object_storage, database_backup = await asyncio.gather(
-        database(), storage_check(storage), backup_check(storage))
+    snapshot, object_storage, database_backup, restore_drill, database_write = await asyncio.gather(
+        database(), storage_check(storage), backup_check(storage), restore_drill_check(storage),
+        database_write_check(request.app.state.pool))
     required = expected_capabilities()
     checks = {"database": {"status": "unavailable" if snapshot is None else "ok"},
-              "object_storage": object_storage, "database_backup": database_backup}
+              "object_storage": object_storage, "database_backup": database_backup,
+              "restore_drill": restore_drill, "database_write": database_write,
+              "database_disk": database_disk_check(snapshot["db_size_bytes"] if snapshot else None)}
     checks["local_reid_models"] = (local_reid_health()
         if not settings.media_jobs_enabled or settings.media_cpu_fallback_enabled else {"status": "disabled"})
+    checks["moderation_mail"] = moderation_mail_check(snapshot["mail"] if snapshot else None)
+    if snapshot is None:
+        checks["grievances"] = {"status": "unknown"}
+    else:
+        g = snapshot["grievances"]
+        checks["grievances"] = {"status": "overdue" if g["overdue"] else "ok",
+                                "open": g["open"], "overdue": g["overdue"]}
     if snapshot is None:
         queues = {name: {"status": "unknown"} for name in QUEUE_NAMES}
         gpu = {"status": "unknown" if required else "disabled"}
         error_check = {"status": "unknown" if settings.ops_error_monitoring_enabled else "disabled"}
     else:
-        queues, beats, count = snapshot
+        queues, beats, count = snapshot["queues"], snapshot["beats"], snapshot["errors"]
         capabilities = {name: {"status": ("missing" if name not in beats else
                                 "stale" if beats[name] >= settings.health_worker_stale_s else "ok"),
                                "age_s": beats.get(name)} for name in required}
