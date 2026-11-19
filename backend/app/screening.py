@@ -20,7 +20,8 @@ The rules, from the YOLO pass every upload already gets (`app/scene.py`):
 * `person`     a confident person box covers `screening_person_area_min` of a frame
 * `indoor`     indoor-only furniture scores `screening_indoor_min`
 * `new_account` fewer than `screening_trusted_after` of the account's uploads
-               have gone public; moderators are exempt from this one rule
+               have gone public; moderators are exempt from this one rule.
+               Off by default (0): new accounts do not wait for a moderator
 * `unscreened` the detector failed on a photo, so nothing is known about it
 * `model_*`    the local model, when on, saw something the detector cannot
                (app/model_screening.py; it can only add a hold)

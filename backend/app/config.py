@@ -518,8 +518,11 @@ class Settings(BaseSettings):
     # Hold when indoor-only furniture (app/scene.py) scores at least this.
     screening_indoor_min: float = 0.50
     # Hold a new account's uploads until this many of them have gone public
-    # (screened clear or approved by a moderator). 0 turns the rule off.
-    screening_trusted_after: int = 2
+    # (screened clear or approved by a moderator). 0 turns the rule off, which
+    # is the default (product decision 2026-11: new accounts do not wait for a
+    # moderator, as in most apps; the person/indoor/detector/model holds still
+    # apply to everyone). Set it above 0 to bring the new-account hold back.
+    screening_trusted_after: int = Field(default=0, ge=0)
     # An upload still unscreened after this long (worker down, process
     # restarted) is put in front of a moderator as "not screened". It stays
     # hidden either way.

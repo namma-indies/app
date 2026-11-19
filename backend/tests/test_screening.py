@@ -418,7 +418,8 @@ def _detector(monkeypatch, scene=SceneSignals(), *, fail=False):
 
 @pytest.fixture
 def trusted(screening_on, monkeypatch):
-    """Screening on, with the new-account rule off, to test the photo rules alone."""
+    """Screening on, with the new-account rule off, to test the photo rules alone.
+    Off is the default; pinned here so a changed default cannot reword these tests."""
     monkeypatch.setattr(settings, "screening_trusted_after", 0)
     return screening_on
 
@@ -504,6 +505,23 @@ async def test_a_detector_failure_holds_rather_than_publishing_blind(authed_clie
     mine = await _post(client)
     state = await _state(await _pool(client), mine)
     assert (state["screening"], list(state["hold_reasons"])) == ("held", ["unscreened"])
+
+
+@pytest.mark.asyncio
+async def test_by_default_a_brand_new_accounts_clean_first_upload_goes_public(authed_client, screening_on,
+                                                                           monkeypatch):
+    """Product default: new accounts do not wait for a moderator. The photo
+    rules still hold their uploads like anyone else's."""
+    from app.config import Settings
+    assert Settings.model_fields["screening_trusted_after"].default == 0
+    assert settings.screening_trusted_after == 0
+    _detector(monkeypatch)
+    client, _ = authed_client
+    viewer = await _second_observer(client, "Viewer")
+    first = await _post(client)
+    assert dict(await _state(await _pool(client), first)) == {"screening": "clear", "hold_reasons": []}
+    _as(client, viewer)
+    assert _mentions((await client.get("/map")).json()["sightings"], first)
 
 
 @pytest.mark.asyncio

@@ -24,6 +24,18 @@ moderators, staffing a rota and agreeing response targets.
   their subject/account, with stable IDs rather than identity snapshots. Decide
   audit retention and who covers escalations before launch.
 
+## Upload screening: new accounts
+
+New accounts do not wait for a moderator (decided 2026-11, "what apps usually
+do"): `SCREENING_TRUSTED_AFTER` defaults to `0`, so a brand-new account's clean
+upload goes public as soon as screening clears it, like anyone else's. Every
+other hold is unchanged and applies to every account: a person filling the
+frame, an indoor scene, a detector failure, a never-finished screening and, when
+switched on, the local model's second look. To bring the new-account hold back,
+set `SCREENING_TRUSTED_AFTER` to N: each account's first N uploads then wait in
+the held queue (marked NEW ACCOUNT) until N of them have gone public.
+Moderators are always exempt from that one rule.
+
 ## Settings Aswin must configure
 
 | Setting | Purpose | Default |
