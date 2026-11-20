@@ -38,7 +38,7 @@ describe("uploads in the Journal", () => {
     const entry = screen.getByRole("article", { name: "Upload that needs you" });
     expect(entry).toHaveClass("needs-review");
     expect(within(entry).getByRole("img")).toHaveAttribute("src", "held_thumb.webp");
-    await userEvent.click(within(entry).getByRole("button", { name: "Separate the animals" }));
+    await userEvent.click(within(entry).getByRole("button", { name: "Check the animals" }));
     expect(screen.getByText("review sheet for held")).toBeInTheDocument();
   });
 

@@ -268,6 +268,22 @@ class Settings(BaseSettings):
     # Default-off: deploy schema and worker before deliberately changing intake.
     media_jobs_enabled: bool = False
     multi_animal_enabled: bool = False
+    # Grouping boxes of one capture into animals (app/tracking.py; Akash's
+    # 2026-11-19 policy: a confident grouping publishes, an unsure one asks the
+    # person). Sent to the worker with every capture job, so they are tuned
+    # here. Conservative, NOT calibrated on street clips -- see the module
+    # docstring and docs/specs/2026-11-19-multi-animal-grouping.md.
+    grouping_accept_min: float = 0.35
+    grouping_confident_min: float = 0.65
+    grouping_margin_min: float = 0.20
+    grouping_new_animal_max: float = 0.20
+    grouping_cosine_floor: float = 0.20
+    grouping_cosine_ceiling: float = 0.80
+    grouping_appearance_weight: float = 0.75
+    grouping_motion_speed_scale: float = 2.0
+    grouping_motion_horizon_s: float = 3.0
+    grouping_species_mismatch_penalty: float = 0.15
+    grouping_species_share_min: float = 0.70
     # The daily @nammaindies post. Off means a dry run: the timer still fires
     # and logs what it would have posted, and nothing reaches X. The four X
     # values are OAuth 1.0a for the @nammaindies account and live only in the

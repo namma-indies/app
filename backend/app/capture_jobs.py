@@ -31,6 +31,13 @@ from app.scoring import save_detection
 router = APIRouter(prefix="/internal/capture-jobs",dependencies=[Depends(require_gpu)])
 
 
+def grouping_policy():
+    """The grouping thresholds from settings (app/tracking.py GroupingPolicy)."""
+    from dataclasses import fields
+    from app.tracking import GroupingPolicy
+    return GroupingPolicy(**{f.name: getattr(settings, "grouping_" + f.name) for f in fields(GroupingPolicy)})
+
+
 async def claim_capture_job(conn, owner, *, cpu=False):
     token = secrets.token_urlsafe(32)
     async with conn.transaction():
@@ -103,7 +110,10 @@ async def claim(body: Claim,request: Request,storage=Depends(get_storage)):
         return {"job":{"id":str(job["id"]),"capture_id":str(job["capture_id"]),"kind":job["kind"],
             "pipeline_version":MULTI_PIPELINE_VERSION,"model":MODEL_NAME,"lease_token":token,
             "lease_expires_at":job["lease_expires_at"],"sources":sources,
-            "max_frames":MAX_SOURCE_FRAMES,"max_instances":MAX_INSTANCES}}
+            "max_frames":MAX_SOURCE_FRAMES,"max_instances":MAX_INSTANCES,
+            # A worker sends per-animal grouping only to an API that says it
+            # takes it; the thresholds it groups by are tuned here (config).
+            "accepts":["grouping"],"grouping_policy":grouping_policy().as_mapping()}}
 
 
 @router.post("/{job_id}/heartbeat")
@@ -163,6 +173,15 @@ async def publish_slot(conn,storage,job,slot,width,height,phash):
 async def complete_capture_job(conn,storage,job_id,body: MultiCompletion,*,cpu=False):
     content = body.model_dump(mode="json",exclude={"lease_token"})
     digest_frames(content["frames"])
+    # Fields an older worker never sends stay out of the digest when absent, so
+    # a completion replayed across this deploy still matches.
+    for key in ("tracks","grouping_policy"):
+        if content.get(key) is None:
+            content.pop(key,None)
+    for item in content["instances"]:
+        for key in ("dog_score","cat_score"):
+            if item.get(key) is None:
+                item.pop(key,None)
     content["frames"].sort(key=lambda f:str(f["photo_id"]))
     content["instances"].sort(key=lambda i:i["index"])
     digest = hashlib.sha256(json.dumps(content,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
@@ -212,18 +231,36 @@ async def complete_capture_job(conn,storage,job_id,body: MultiCompletion,*,cpu=F
                 VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10)""",iid,capture["id"],
                 item.source_photo_id,pid,item.track_id,item.species,item.confidence,json.dumps(item.bbox),
                 json.dumps(item.crop_bbox),frames[item.source_photo_id].timestamp_ms)
-            await save_detection(conn,pid,item.confidence if item.species == "dog" else 0,
-                item.confidence if item.species == "cat" else 0)
+            # The crop's own dog and cat scores when the worker sent both
+            # (the species vote reads them back, captures.group_species).
+            await save_detection(conn,pid,
+                item.dog_score if item.dog_score is not None else item.confidence if item.species == "dog" else 0,
+                item.cat_score if item.cat_score is not None else item.confidence if item.species == "cat" else 0)
             if item.vector is not None:
                 await conn.execute("""INSERT INTO embeddings(id,photo_id,instance_id,model,dim,vec_miew,bbox,recipe)
                     VALUES($1,$2,$3,$4,$5,$6::vector,$7::jsonb,$8)""",uuid7(),pid,iid,MODEL_NAME,EMBED_DIM,
                     vector_text(item.vector),json.dumps(dict(zip(("x1","y1","x2","y2"),item.crop_bbox))),ACTIVE_RECIPE)
             groups.setdefault(item.track_id,[]).append(iid)
+        confident = True
+        species = {}
+        if body.tracks is not None:
+            # The grouping is published only when every animal in it is
+            # confident, whatever the worker's own flag says.
+            for track in body.tracks:
+                await conn.execute("""INSERT INTO capture_tracks(capture_id,track_id,species,species_uncertain,
+                    species_share,confidence,confident,representative_instance_id,reasons)
+                    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)""",capture["id"],track.track_id,track.species,
+                    track.species_uncertain,track.species_share,track.confidence,track.confident,
+                    uuid5(capture["id"],f"instance:{track.representative_index}"),json.dumps(track.reasons))
+                confident = confident and track.confident and not track.species_uncertain
+                species[track.track_id] = track.species
         # From the whole frames just stored (#181); crops tell it nothing more.
         await screening.screen(conn,capture["id"])
-        outcome = "no_animal" if not body.instances else "needs_review" if body.needs_review else "ready"
+        outcome = ("no_animal" if not body.instances else
+                   "needs_review" if body.needs_review or not confident else "ready")
         if outcome == "ready":
-            await publish_groups(conn,capture,[AnimalGroup(instance_ids=ids) for ids in groups.values()])
+            await publish_groups(conn,capture,[AnimalGroup(instance_ids=ids,species=species.get(track_id))
+                                               for track_id,ids in groups.items()])
         await conn.execute("UPDATE captures SET processing_state=$2,revision=revision+1,updated_at=now() WHERE id=$1",capture["id"],outcome)
         if not await conn.fetchval("SELECT lease_expires_at>clock_timestamp() FROM jobs WHERE id=$1",job_id):
             raise HTTPException(409,"lease expired during completion")
