@@ -117,6 +117,8 @@ function PickRow({ pick, children }: { pick: SocialPick; children?: React.ReactN
 
 export const UNCONFIRMED_TAKEDOWN =
   "Its owner deleted this photo while a post of it was on its way, and X never confirmed it. Check the account: if the post is there, paste its link; if not, say nothing went out.";
+export const UNCONFIRMED_BANNED_TAKEDOWN =
+  "Its observer was banned while a post of this photo was on its way, and X never confirmed it. Check the account: if the post is there, paste its link; if not, say nothing went out.";
 
 /** The post number from a link to it, or the number itself. */
 export function postIdFrom(text: string): string | null {
@@ -143,7 +145,7 @@ function TakedownRow({ takedown, onSettled, onUnauthorized }: {
     return (
       <div className="match-card">
         <p className="hint">
-          A photo deleted by its owner. Its post is being taken down
+          {takedown.banned ? "A photo by a banned account." : "A photo deleted by its owner."} Its post is being taken down
           {takedown.attempts > 0 ? ` (tried ${takedown.attempts}×${takedown.last_error ? `: ${takedown.last_error}` : ""})` : ""}.
         </p>
         {takedown.x_post_id && <a className="link-btn" href={postUrl(takedown.x_post_id)} target="_blank" rel="noreferrer">View on X</a>}
@@ -153,7 +155,7 @@ function TakedownRow({ takedown, onSettled, onUnauthorized }: {
   const id = postIdFrom(link);
   return (
     <div className="match-card">
-      <p className="under-review">{UNCONFIRMED_TAKEDOWN}</p>
+      <p className="under-review">{takedown.banned ? UNCONFIRMED_BANNED_TAKEDOWN : UNCONFIRMED_TAKEDOWN}</p>
       {takedown.caption && <p className="hint">“{takedown.caption}”</p>}
       <input aria-label="link to the post on X" value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://x.com/…/status/…" />
       <button className="link-btn" disabled={!id} onClick={() => void settle(id)}>Take this post down</button>

@@ -61,7 +61,7 @@ async def test_severe_escalation_bypasses_digest_and_orders_ahead_of_volume(auth
         assert await conn.fetchval("SELECT count(*) FROM moderator_alerts WHERE urgent") == 1
 
 
-async def test_severe_concern_after_approval_holds_again_with_a_new_clock(authed_client):
+async def test_severe_concern_after_approval_queues_urgently_without_rehiding(authed_client):
     client, oid = authed_client
     sid = await _post(client)
     await _report(client, sid, reason="people_privacy")
@@ -71,16 +71,72 @@ async def test_severe_concern_after_approval_holds_again_with_a_new_clock(authed
         old_opened = await conn.fetchval("SELECT opened_at FROM sighting_reports")
     assert (await client.post(f"/sighting/{sid}/review", data={"verdict": "valid", "reason": "Concern addressed"})).status_code == 200
     assert (await client.get("/moderation/queue")).json()["items"] == []
-    # A different person's fresh severe concern holds it again.
+    # One different person's fresh severe concern reaches the queue, severe and
+    # urgent, with a new clock, but no longer takes an approved photo down.
     _become(client, await _observer(client))
-    await _report(client, sid, reason="sexual_content")
+    assert (await _report(client, sid, reason="sexual_content")).json()["hidden"] is False
+    _become(client, oid)
+    assert await _status(client, sid) == "valid"
+    item = (await client.get("/moderation/queue")).json()["items"][0]
+    assert item["reported_after_review"] and item["severe"]
+    async with (await _pool(client)).acquire() as conn:
+        assert await conn.fetchval("SELECT max(opened_at) FROM sighting_reports") > old_opened
+        assert await conn.fetchval("SELECT count(*) FROM moderator_alerts WHERE urgent") == 2
+
+
+@pytest.mark.parametrize("reason", ["illegal_content", "other"])
+async def test_approved_capture_rehides_only_at_the_distinct_reporter_threshold(authed_client, monkeypatch, reason):
+    """After a ruling, N distinct accounts reporting since then take it down
+    again; fewer only queue it. N is `report_rehide_min_reporters` (default 3)."""
+    from app.config import Settings
+    assert Settings.model_fields["report_rehide_min_reporters"].default == 3
+    monkeypatch.setattr(settings, "report_rehide_min_reporters", 3)
+    client, oid = authed_client
+    sid = await _post(client)
+    first = await _observer(client)
+    _become(client, first)
+    await _report(client, sid, reason="people_privacy")
+    _become(client, oid)
+    await _make_moderator(client, oid)
+    assert (await client.post(f"/sighting/{sid}/review", data={"verdict": "valid", "reason": "Checked"})).status_code == 200
+    # The reporter ruled against counts once, however often they report.
+    _become(client, first)
+    for again in ("sexual_content", reason):
+        assert (await _report(client, sid, reason=again)).json()["hidden"] is False
+    _become(client, await _observer(client))
+    assert (await _report(client, sid, reason=reason)).json()["hidden"] is False
+    _become(client, oid)
+    assert await _status(client, sid) == "valid"
+    _become(client, await _observer(client))
+    assert (await _report(client, sid, reason=reason)).json()["hidden"] is True
     _become(client, oid)
     assert await _status(client, sid) == "pending"
     item = (await client.get("/moderation/queue")).json()["items"][0]
-    assert item["reported_after_review"]
-    async with (await _pool(client)).acquire() as conn:
-        assert await conn.fetchval("SELECT max(opened_at) FROM sighting_reports") > old_opened
-        assert await conn.fetchval("SELECT count(*) FROM moderator_alerts") == 2
+    assert item["report_count"] == 3 and item["reported_after_review"]
+    # A further approval starts the count again from zero.
+    assert (await client.post(f"/sighting/{sid}/review", data={"verdict": "valid", "reason": "Still fine"})).status_code == 200
+    _become(client, await _observer(client))
+    assert (await _report(client, sid, reason="illegal_content")).json()["hidden"] is False
+
+
+async def test_rehide_threshold_is_a_setting(authed_client, monkeypatch):
+    monkeypatch.setattr(settings, "report_rehide_min_reporters", 1)
+    client, oid = authed_client
+    sid = await _post(client)
+    await _make_moderator(client, oid)
+    await _report(client, sid, reason="other")
+    assert (await client.post(f"/sighting/{sid}/review", data={"verdict": "valid", "reason": "Fine"})).status_code == 200
+    _become(client, await _observer(client))
+    assert (await _report(client, sid, reason="wrong_place")).json()["hidden"] is True
+
+
+async def test_before_any_ruling_one_severe_report_still_hides(authed_client):
+    client, oid = authed_client
+    sid = await _post(client)
+    _become(client, await _observer(client))
+    assert (await _report(client, sid, reason="people_privacy")).json()["hidden"] is True
+    _become(client, oid)
+    assert await _status(client, sid) == "pending"
 
 
 async def test_same_reporter_after_approval_queues_without_rehiding(authed_client):
@@ -99,10 +155,10 @@ async def test_same_reporter_after_approval_queues_without_rehiding(authed_clien
     _become(client, oid)
     item = (await client.get("/moderation/queue")).json()["items"][0]
     assert item["sighting_id"] == sid and item["severe"] and item["reported_after_review"]
-    # Another reporter's severe concern still holds it (policy unchanged).
+    # One other reporter's severe concern queues it too, without re-hiding.
     assert (await client.post(f"/sighting/{sid}/review", data={"verdict": "valid", "reason": "Checked again"})).status_code == 200
     _become(client, await _observer(client))
-    assert (await _report(client, sid, reason="illegal_content")).json()["hidden"] is True
+    assert (await _report(client, sid, reason="illegal_content")).json()["hidden"] is False
 
 
 async def test_reports_are_rate_limited_per_observer(authed_client, monkeypatch):

@@ -104,7 +104,7 @@ function UploadEntry({ capture, onReview, onDeleted, onUnauthorized }: {
         {needsYou ? <>
           <div className="name">TWO ANIMALS IN ONE SHOT</div>
           <div className="line">We need you to say which photos show which animal before this goes on the map.</div>
-          <button className="link-btn" onClick={(event) => { event.stopPropagation(); onReview(); }}>Separate the animals</button>
+          <button className="link-btn" onClick={(event) => { event.stopPropagation(); onReview(); }}>Check the animals</button>
         </> : <div className="processing-status">{processingLabel(capture.processing_state)}</div>}
         <div className="line">taken {formatWhen(capture.captured_at)}</div>
         <div onClick={(event) => event.stopPropagation()}>

@@ -5,16 +5,18 @@ moderators, staffing a rota and agreeing response targets.
 
 ## Decisions to confirm with Akash
 
-- People/privacy, sexual-content and illegal-content reports are severe. One
-  severe report holds the entire capture off shared surfaces pending review,
-  including a fresh concern following an earlier approval. Exception: a
-  reporter whose earlier report on that capture a moderator already ruled on
-  cannot re-hide it alone; their repeat report reaches the queue (still marked
-  severe) without hiding. Ordinary reports retain the two-distinct-reporter
-  threshold and cannot overturn a ruling. Reports are limited per account
-  (`RL_REPORT_TIMES` per `RL_REPORT_WINDOW_S`, default 30 per hour).
-  Whether *other* accounts' severe reports should re-hide an approved capture
-  remains Akash's policy call.
+- People/privacy, sexual-content and illegal-content reports are severe. Before
+  any moderator ruling, one severe report holds the entire capture off shared
+  surfaces pending review; ordinary reports need two distinct reporters.
+- Re-reports after approval (decided 2026-11): once a moderator has approved
+  or cleared a capture, new reports do not take it down again unless at least
+  `REPORT_REHIDE_MIN_REPORTERS` distinct accounts (default `3`) have reported it
+  since that ruling, whatever their reasons. A reporter already ruled against
+  counts once, however often they report. Every report still reaches the queue
+  (marked "reported again after review"), and severe ones still alert urgently
+  with their own clock. A further ruling starts the count again. Reports are
+  limited per account (`RL_REPORT_TIMES` per `RL_REPORT_WINDOW_S`, default 30
+  per hour).
 - Severe reports target a response within 2 hours; ordinary reports within
   24 hours. These are provisional operational targets, not legal deadlines.
 - Ordinary alerts are digested every 60 minutes; urgent alerts bypass that
@@ -23,6 +25,18 @@ moderators, staffing a rota and agreeing response targets.
 - Every moderator decision requires a reason. Audit rows outlive removal of
   their subject/account, with stable IDs rather than identity snapshots. Decide
   audit retention and who covers escalations before launch.
+
+## Upload screening: new accounts
+
+New accounts do not wait for a moderator (decided 2026-11, "what apps usually
+do"): `SCREENING_TRUSTED_AFTER` defaults to `0`, so a brand-new account's clean
+upload goes public as soon as screening clears it, like anyone else's. Every
+other hold is unchanged and applies to every account: a person filling the
+frame, an indoor scene, a detector failure, a never-finished screening and, when
+switched on, the local model's second look. To bring the new-account hold back,
+set `SCREENING_TRUSTED_AFTER` to N: each account's first N uploads then wait in
+the held queue (marked NEW ACCOUNT) until N of them have gone public.
+Moderators are always exempt from that one rule.
 
 ## Settings Aswin must configure
 
@@ -39,9 +53,33 @@ moderators, staffing a rota and agreeing response targets.
 | `MODERATION_REMINDER_FRACTION` | Share of a severe-report / urgent-grievance window after which one urgent reminder is sent; a second goes at the deadline | `0.75` |
 | `MODERATION_REMINDER_CHECK_S` | How often deadlines are scanned for reminders | `60` |
 | `MODERATION_MAIL_MAX_ATTEMPTS` | Failed sends before a message is marked undeliverable instead of retried forever | `8` (about two hours of backoff) |
+| `REPORT_REHIDE_MIN_REPORTERS` | Distinct accounts reporting an approved capture since its ruling before it is hidden again | `3` |
+| `SCREENING_TRUSTED_AFTER` | Uploads a new account must have gone public before the next skips the moderator; `0` = new accounts never wait | `0` |
 
 Set contacts privately in deployment settings, never in this public repository.
 No deployment or production configuration changes are part of this PR.
+
+## Bans
+
+A ban (moderator people screen or the report queue) hides everything the person
+logged from every shared surface, ends their sessions and refuses their address
+at sign-in, as before. In addition (decided 2026-11):
+
+- **X takedowns.** Any of their photos already posted by the project's X account
+  is queued for deletion there, through the same owed-delete records account
+  deletion uses (`x_post_purges`, reason `banned`): the delete is tried straight
+  away when X credentials are configured and retried by every daily run until X
+  confirms. A post that was on its way and never confirmed is kept for a person
+  to check in the Social screen's "To take down from X" list, as on erasure.
+  Their queued picks never post. Banning again owes nothing twice. Unbanning
+  does not repost anything.
+- **Moderation stays visible.** Their reported items stay in the report queue,
+  marked **BANNED ACCOUNT**, so a moderator can still rule on them; the audit
+  trail keeps every action. Public surfaces keep hiding all their content. An
+  account being deleted still leaves the queue with its content.
+
+A suspended person's screen links straight to the grievance form with
+**Appeal a suspension** chosen (`/grievances?kind=appeal`).
 
 ## Shared alert interface for #181 and grievances
 
@@ -139,6 +177,7 @@ remain visible.
 | Non-consensual intimate imagery | 24 hours | 7 days | 2 hours |
 | Government or court order | 24 hours | 7 days | 3 hours |
 | Other | 24 hours | 7 days | — |
+| Appeal a suspension | 24 hours | 7 days | — |
 
 These are provisional tracking targets from the task, not a legal conclusion.
 Every deadline and its applicability is labelled for lawyer confirmation on the
@@ -148,7 +187,12 @@ must confirm the scope, start events, exceptions and what counts as completion.
 Deadlines are snapshotted on intake; configuration changes do not rewrite them.
 
 Intimate-imagery and government/order cases sort first. All categories except
-`other` alert immediately; `other` uses the ordinary digest. Filing an
+`other` and `appeal` alert immediately; those two use the ordinary digest and get
+no reminders. An appeal names an account rather than content, so its link field
+may be left empty; the appellant is asked to use the suspended account's email
+address as the contact, which is how a moderator finds the account. Lifting a
+suspension is the existing unban action (with its own reason), then resolving
+the appeal. Filing an
 unauthenticated complaint does not itself hide content: a moderator verifies
 the concern/order and acts, preventing a claimed order from being a public
 take-down switch. Hiding linked content affects the shared capture and records
@@ -177,13 +221,39 @@ required. Optional intake controls are `RL_GRIEVANCE_IP_TIMES` (20),
 per-window abuse budgets, not people/complaint quotas. Both are charged before
 and outside the intake transaction, so invalid, conflicting or rolled-back
 attempts still count; an identical retry of an already-saved submission returns
-its receipt without spending the address budget. There is no CAPTCHA or
-third-party bot check: adding one is a product/privacy decision for Akash.
+its receipt without spending the address budget.
+
+### Optional bot check (Cloudflare Turnstile)
+
+Off by default. With `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` both empty
+the form is exactly as described above. Startup refuses one without the other.
+To switch it on:
+
+1. In the Cloudflare dashboard, Turnstile → Add widget: name it, add the public
+   hostname that serves `/grievances` (and any staging host), mode "Managed".
+2. Set the site key and secret key privately in deployment settings on every
+   API worker. Never commit either; the site key is rendered into the page, the
+   secret is not.
+3. Deploy and load `/grievances`: the check appears above "Send complaint".
+
+When on, the page loads Turnstile's script and frame from
+`https://challenges.cloudflare.com` (its CSP allows exactly that origin for
+`script-src` and `frame-src`), and the token is verified server-side against
+siteverify before anything is saved, with `TURNSTILE_TIMEOUT_S` (default 5 s).
+It fails closed: a missing or failed check returns the filled-in form asking
+the person to complete the check; an unreachable or erroring siteverify (or a
+rejected secret, logged at error level) returns it with a "try again" message.
+Nothing is saved and no email is charged or queued in either case. The token
+and secret are never logged. An identical browser retry of an already-saved
+complaint still gets its receipt without a second check. Cloudflare's test keys
+(`1x00000000000000000000AA` / `1x0000000000000000000000000000000AA`, always pass)
+are fine for staging. Turnstile sends the visitor's browser signals to
+Cloudflare: mention it in the privacy policy before switching it on.
 
 ### Product and people decisions for Akash
 
-- Confirm severe-report categories, one-report holding (including after a
-  previous approval), response targets and the 60-minute ordinary digest.
+- Confirm severe-report categories, one-report holding before a ruling, the
+  three-reporter re-hide after one, response targets and the 60-minute digest.
 - Confirm the grievance category-to-clock mapping with a lawyer, including
   whether every privacy complaint needs the 36-hour clock.
 - Name the officer, rota, escalation contacts and coverage for 2/3-hour cases.

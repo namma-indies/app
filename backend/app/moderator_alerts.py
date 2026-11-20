@@ -141,11 +141,11 @@ REMINDER_SQL = """
                'grievance' AS kind, 'removal' AS clock
         FROM grievances g
         WHERE g.resolved_at IS NULL AND g.removed_at IS NULL AND g.removal_due_at IS NOT NULL
-          AND g.kind <> 'other'
+          AND g.kind NOT IN ('other', 'appeal')
         UNION ALL
         SELECT g.id, g.received_at, g.resolve_due_at, 'grievance', 'resolve'
         FROM grievances g
-        WHERE g.resolved_at IS NULL AND g.kind <> 'other'
+        WHERE g.resolved_at IS NULL AND g.kind NOT IN ('other', 'appeal')
     ), due AS (
         SELECT c.*, CASE WHEN now() >= c.due_at THEN 'overdue' ELSE 'due_soon' END AS stage
         FROM (SELECT * FROM reports UNION ALL SELECT * FROM grievance_clocks) c
@@ -169,7 +169,7 @@ REMINDER_SQL = """
 async def escalate_deadlines(conn) -> int:
     """Queue one urgent reminder near a deadline and one when it passes.
 
-    Covers severe report episodes and urgent (non-"other") grievances still
+    Covers severe report episodes and urgent (not "other"/"appeal") grievances still
     open. Reuses the alert outbox; stable event keys (per open episode and
     stage) make every check idempotent across workers and restarts. An item
     first seen already overdue gets only the overdue reminder. Grievance

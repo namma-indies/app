@@ -25,7 +25,7 @@ describe("Add voice note in the details sheet (#156)", () => {
   it("is offered only when the Journal says it can be", async () => {
     vi.mocked(getCapture).mockResolvedValue({ ...detail, later_notes: [] });
     const { unmount } = render(<CaptureReview captureId="c" onClose={() => {}} onSaved={() => {}} onUnauthorized={() => {}} />);
-    await screen.findByRole("group", { name: "Dog 1" });
+    await screen.findByRole("group", { name: "Dog A" });
     expect(screen.queryByRole("button", { name: "🎙 add a voice note" })).not.toBeInTheDocument();
     unmount();
     render(<CaptureReview captureId="c" laterNotes={{ enabled: true, max: 5 }} onClose={() => {}} onSaved={() => {}} onUnauthorized={() => {}} />);
@@ -40,12 +40,12 @@ describe("Add voice note in the details sheet (#156)", () => {
     });
     render(<CaptureReview captureId="c" laterNotes={{ enabled: true, max: 5 }} onClose={() => {}} onSaved={() => {}} onUnauthorized={() => {}} />);
     expect(await screen.findByText("Listening to your note…")).toBeInTheDocument();
-    const name = within(screen.getByRole("group", { name: "Dog 1" })).getByLabelText("Known name (optional)");
+    const name = within(screen.getByRole("group", { name: "Dog A" })).getByLabelText("Known name (optional)");
     await userEvent.type(name, "Kaju");
     await vi.advanceTimersByTimeAsync(3000);
     expect(await screen.findByText("The brown one is Kaalu.")).toBeInTheDocument();
     expect(screen.queryByText("Listening to your note…")).not.toBeInTheDocument();
-    expect(within(screen.getByRole("group", { name: "Dog 1" })).getByLabelText("Known name (optional)")).toHaveValue("Kaju");
+    expect(within(screen.getByRole("group", { name: "Dog A" })).getByLabelText("Known name (optional)")).toHaveValue("Kaju");
     await vi.advanceTimersByTimeAsync(60000);
     await waitFor(() => expect(getCapture).toHaveBeenCalledTimes(2));
   });

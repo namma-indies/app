@@ -12,7 +12,9 @@ one budget; deploying does not reset it. Database failure refuses the request.
 `RATE_LIMIT_ENABLED=true` is required for launch.
 
 The passcode door requires first-party SHA-256 proof-of-work on **every** join.
-There is no captcha vendor, third-party script or transfer of visitor data.
+There is no captcha vendor, third-party script or transfer of visitor data on
+sign-in. (Only the public grievance form can optionally use Cloudflare
+Turnstile, off by default; see `docs/moderation-operations.md`.)
 The work is signed, bound to the client IP, expires after five minutes, and can
 be used once across all workers. This changes the passcode protocol: older
 native bundles must update to use that door; email sign-in remains available.
@@ -28,9 +30,11 @@ Defaults (environment variables use the uppercased setting names):
 | `AUTH_FAILURE_WINDOW_S` | 3600 | Inactivity interval that resets failure history |
 | `JOIN_POW_BITS` | 16 | Work difficulty; validate on the oldest supported phone before changing |
 | `JOIN_POW_TTL_S` | 300 | Proof lifetime |
+| `JOIN_POW_ESCALATED_BITS` | 4 | Added to `JOIN_POW_BITS` while the global wrong-passcode budget is spent (~16x work); the sum may not exceed 22 |
+| `JOIN_POW_ESCALATED_WAIT_S` | 120 | Solver deadline advertised on escalated challenges, so a slow phone on any app version stops with "timed out, try again or sign in by email" |
 | `RL_JOIN_CHALLENGE_TIMES` | 60 | Challenge requests per IP per minute |
 | `AUTH_IP_BACKOFF_AFTER` | 10 | Failure that first triggers a lockout on an IP-keyed door (all of them today) |
-| `RL_JOIN_GLOBAL_WRONG_TIMES` | 100 | Wrong passcodes per window across all sources before the passcode door pauses |
+| `RL_JOIN_GLOBAL_WRONG_TIMES` | 100 | Wrong passcodes per window across all sources before the passcode check gets harder |
 | `RL_JOIN_GLOBAL_WRONG_WINDOW_S` | 3600 | That window |
 | `RL_JOIN_SUCCESS_IP_DAY_TIMES` | 50 | Successful passcode joins per source per day |
 | `RL_CONSUME_TIMES` / `RL_CONSUME_WINDOW_S` | 60 / 900 | Sign-in link clicks per source per window |
@@ -41,8 +45,11 @@ forged proofs trigger backoff; a genuine proof that expired, was issued to
 another address or was already used only asks for a new one. Every passcode
 attempt is charged against the per-source and global budgets before the
 compare (a correct one is refunded), so parallel guesses cannot all be tried.
-When the global budget runs out the passcode door pauses for the rest of its
-window (email sign-in is unaffected) and the moderators' abuse signals say so.
+When the global budget runs out the passcode door does not close: for the rest
+of its window every passcode join needs `JOIN_POW_ESCALATED_BITS` more
+proof-of-work, correct passcodes still get in, the log warns once, and the
+moderators' abuse signals count each wrong passcode over the budget. A proof
+issued at the easier difficulty before the escalation only asks for a new one.
 Sign-in links are high-entropy, so consuming one has no failure backoff, only
 the plain per-source window. An address that is not on the allowlist is not a
 failed sign-in. A blocked request does not extend its lockout. Replies include

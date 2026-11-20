@@ -21,7 +21,7 @@ from tests.test_multi_captures import seed, tracked
 def held(*frames):
     """A completion as the pre-#87 worker sent it: every instance its own
     track, and the whole capture held for review."""
-    body = tracked(*frames)
+    body = tracked(*frames, new_worker=False)
     instances = [i.model_copy(update={"track_id": f"old:{n}"}) for n, i in enumerate(body.instances)]
     return body.model_copy(update={"instances": instances, "needs_review": True})
 

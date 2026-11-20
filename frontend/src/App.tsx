@@ -197,9 +197,9 @@ export default function App() {
       <div className="app">
         <div className="empty-state pending-deletion">
           <h2>Your account has been suspended</h2>
-          <p>A moderator has suspended this account. If you think that’s wrong, <a href={`${API_BASE}/support`} target="_blank" rel="noreferrer">contact support</a>.
+          <p>A moderator has suspended this account. If you think that’s wrong, you can appeal: use the email address of this account as your contact email.
             You can still delete your account.</p>
-          <a href={`${API_BASE}/grievances`}>Grievances and officer contact</a>
+          <a href={`${API_BASE}/grievances?kind=appeal`}>Appeal the suspension</a>
           <button className="link-btn" onClick={() => setDeletingAccount(true)}>delete account</button>
           <button className="link-btn" onClick={() => void signOut()}>sign out</button>
           <LegalLinks />

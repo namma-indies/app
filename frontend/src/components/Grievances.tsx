@@ -3,7 +3,8 @@ import { decideGrievance, getGrievances, UnauthorizedError, type Grievance, type
 import { useReloadGuard } from "../update/reloadGuard";
 
 const LABELS: Record<GrievanceKind, string> = { takedown: "TAKEDOWN", privacy: "PRIVACY",
-  intimate_imagery: "NON-CONSENSUAL INTIMATE IMAGERY", government_order: "GOVERNMENT / COURT ORDER", other: "OTHER" };
+  intimate_imagery: "NON-CONSENSUAL INTIMATE IMAGERY", government_order: "GOVERNMENT / COURT ORDER", other: "OTHER",
+  appeal: "APPEAL A SUSPENSION" };
 
 export default function Grievances({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [items, setItems] = useState<Grievance[] | null>(null);

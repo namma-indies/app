@@ -139,26 +139,113 @@ async def test_parallel_wrong_guesses_are_bounded_by_the_budget(app_client, monk
     assert sorted(r.status_code for r in replies) == [401] * 3 + [429] * 7
 
 
-async def test_the_global_wrong_passcode_budget_pauses_the_door(app_client, monkeypatch, passcode_form, caplog):
+async def _wrong(client, passcode_form, n):
+    for _ in range(n):
+        form = await passcode_form(client, name="x", passcode="wrong")
+        assert (await client.post("/auth/join", data=form, headers=JSON)).status_code == 401
+
+
+async def test_the_global_wrong_passcode_budget_raises_the_work_but_never_shuts_the_door(
+        app_client, monkeypatch, passcode_form, caplog):
+    """Spent, the door-wide budget makes every passcode join harder for the
+    rest of its window. It refuses nobody: a correct passcode still gets in,
+    and a wrong one is still just wrong."""
     monkeypatch.setattr(settings, "rl_join_global_wrong_times", 2)
-    for _ in range(2):
-        form = await passcode_form(app_client, name="x", passcode="wrong")
-        assert (await app_client.post("/auth/join", data=form, headers=JSON)).status_code == 401
-    assert "global wrong-passcode budget reached" in caplog.text
+    monkeypatch.setattr(settings, "join_pow_escalated_bits", 4)
+    monkeypatch.setattr(settings, "join_pow_escalated_wait_s", 90)
+    base = settings.join_pow_bits
+
+    calm = (await app_client.get("/auth/join/challenge")).json()
+    assert (calm["difficulty"], calm["expires_in"], calm["escalated"]) == (base, settings.join_pow_ttl_s, False)
+
+    await _wrong(app_client, passcode_form, 2)
+    assert "proof-of-work raised" not in caplog.text
+    # Over the budget now, and still a plain 401: no door-wide 429.
+    await _wrong(app_client, passcode_form, 2)
+    assert caplog.text.count("proof-of-work raised") == 1, "warned once per window, not per guess"
+
+    hard = (await app_client.get("/auth/join/challenge")).json()
+    assert (hard["difficulty"], hard["expires_in"], hard["escalated"]) == (base + 4, 90, True)
+
     form = await passcode_form(app_client, name="Tester", passcode=settings.join_passcode)
-    refused = await app_client.post("/auth/join", data=form, headers=JSON)
-    assert refused.status_code == 429
-    assert "email" in refused.json()["error"]
+    joined = await app_client.post("/auth/join", data=form, headers=JSON)
+    assert joined.status_code == 200, joined.text
+    async with app_client._transport.app.state.pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM observers") == 1
+        # Each guess over the budget is a signal on the abuse screen.
+        assert await conn.fetchval("SELECT sum(count) FROM abuse_hourly WHERE event='passcode_escalated'") == 2
+
+
+async def test_the_abuse_screen_reports_the_escalation(app_client, monkeypatch, passcode_form):
+    from app.abuse import snapshot
+    monkeypatch.setattr(settings, "rl_join_global_wrong_times", 1)
+    await _wrong(app_client, passcode_form, 3)
+    async with app_client._transport.app.state.pool.acquire() as conn:
+        latest = (await snapshot(conn))["hours"][0]
+    assert latest["passcode_escalated"] == 2
+    assert "passcode_lockouts" not in latest
+
+
+async def test_a_cheap_proof_from_before_the_escalation_is_stale_not_a_guess(app_client, monkeypatch, passcode_form):
+    """Someone mid-solve when the door escalates is asked for a fresh, harder
+    proof. Nothing about it counts toward their backoff or any budget."""
+    monkeypatch.setattr(settings, "rl_join_global_wrong_times", 1)
+    early = await passcode_form(app_client, name="Tester", passcode=settings.join_passcode)
+    await _wrong(app_client, passcode_form, 2)
+
+    stale = await app_client.post("/auth/join", data=early, headers=JSON)
+    assert stale.status_code == 400
+    assert "try again" in stale.json()["error"]
     async with app_client._transport.app.state.pool.acquire() as conn:
         assert await conn.fetchval("SELECT count(*) FROM observers") == 0
-        assert await conn.fetchval("SELECT sum(count) FROM abuse_hourly WHERE event='passcode_lockouts'") == 1
+
+    fresh = await passcode_form(app_client, name="Tester", passcode=settings.join_passcode)
+    assert (await app_client.post("/auth/join", data=fresh, headers=JSON)).status_code == 200
+
+
+async def test_the_escalation_ends_with_the_window(app_client, monkeypatch, passcode_form):
+    monkeypatch.setattr(settings, "rl_join_global_wrong_times", 1)
+    await _wrong(app_client, passcode_form, 2)
+    assert (await app_client.get("/auth/join/challenge")).json()["escalated"] is True
+    async with app_client._transport.app.state.pool.acquire() as conn:
+        await conn.execute("UPDATE rate_limit_buckets SET expires_at = now() - interval '1 second'")
+    calm = (await app_client.get("/auth/join/challenge")).json()
+    assert (calm["difficulty"], calm["escalated"]) == (settings.join_pow_bits, False)
+
+
+async def test_per_source_limits_still_refuse_while_escalated(app_client, monkeypatch, passcode_form):
+    monkeypatch.setattr(settings, "rl_join_global_wrong_times", 1)
+    monkeypatch.setattr(settings, "rl_join_times", 3)
+    await _wrong(app_client, passcode_form, 3)
+    form = await passcode_form(app_client, name="x", passcode="wrong")
+    assert (await app_client.post("/auth/join", data=form, headers=JSON)).status_code == 429
+
+
+def test_escalated_work_must_stay_solvable_by_the_app():
+    with pytest.raises(ValueError, match="at most 22"):
+        Settings(join_pow_bits=20, join_pow_escalated_bits=4)
+    assert Settings(join_pow_bits=18, join_pow_escalated_bits=4).join_pow_escalated_bits == 4
+
+
+async def test_proof_refuses_easier_work_than_required_as_stale(migrated_db):
+    work = proof.issue("client")
+    with pytest.raises(proof.Stale):
+        await proof.consume(migrated_db, "client", work["challenge"], solve(work),
+                            min_bits=work["difficulty"] + 1)
 
 
 async def test_correct_passcodes_do_not_spend_the_global_budget(app_client, monkeypatch, passcode_form):
     monkeypatch.setattr(settings, "rl_join_global_wrong_times", 1)
+    # The budget is now exactly spent, not over: each correct join below is
+    # charged past it for a moment, before its refund.
+    await _wrong(app_client, passcode_form, 1)
     for i in range(3):
         form = await passcode_form(app_client, name=f"tester{i}", passcode=settings.join_passcode)
         assert (await app_client.post("/auth/join", data=form, headers=JSON)).status_code == 200
+    # Nor escalate the door: only wrong guesses past the budget do that.
+    assert (await app_client.get("/auth/join/challenge")).json()["escalated"] is False
+    async with app_client._transport.app.state.pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM abuse_hourly WHERE event='passcode_escalated'") == 0
 
 
 async def test_successful_joins_are_capped_per_source_per_day(app_client, monkeypatch, passcode_form):

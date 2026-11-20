@@ -149,6 +149,12 @@ class Settings(BaseSettings):
         return value
 
     @model_validator(mode="after")
+    def _turnstile_both_or_neither(self):
+        if bool(self.turnstile_site_key.strip()) != bool(self.turnstile_secret_key.strip()):
+            raise ValueError("set both TURNSTILE_SITE_KEY and TURNSTILE_SECRET_KEY, or neither")
+        return self
+
+    @model_validator(mode="after")
     def _consent_has_versions(self):
         if self.consent_enabled and not all(value.strip() for value in (
             self.terms_version, self.privacy_version, self.community_guidelines_version,
@@ -189,12 +195,25 @@ class Settings(BaseSettings):
     rl_grievance_ip_times: int = Field(default=20, ge=1)
     rl_grievance_email_times: int = Field(default=5, ge=1)
     rl_grievance_window_s: int = Field(default=3600, ge=1)
+    # Optional Cloudflare Turnstile bot check on the public grievance form
+    # (docs/moderation-operations.md). Both empty (the default) = off, and
+    # the form behaves exactly as without it. Set both or neither: the site
+    # key is public (rendered into the page), the secret is a private
+    # deployment setting. Verification fails closed.
+    turnstile_site_key: str = ""
+    turnstile_secret_key: str = ""
+    turnstile_timeout_s: float = Field(default=5, gt=0, le=30)
     # Moderator grievance queue page; older pages are fetched on demand.
     grievance_queue_page_size: int = Field(default=100, ge=1, le=500)
     # Reports per observer per window, across all sightings. Generous for a
     # person flagging a bad batch; caps one account cycling severe holds/alerts.
     rl_report_times: int = Field(default=30, ge=1)
     rl_report_window_s: int = Field(default=3600, ge=1)
+    # Once a moderator has approved/cleared a capture, reports only take it
+    # down again when this many distinct accounts report it after that ruling.
+    # Every report still reaches the queue, and severe ones still alert
+    # urgently. Before any ruling, one severe (or two ordinary) reports hide it.
+    report_rehide_min_reporters: int = Field(default=3, ge=1)
 
     phone_hash_secret: str = "dev-phone-secret"
     # Key for `banned_emails` hashes (security.email_hash, #180), kept apart
@@ -249,6 +268,22 @@ class Settings(BaseSettings):
     # Default-off: deploy schema and worker before deliberately changing intake.
     media_jobs_enabled: bool = False
     multi_animal_enabled: bool = False
+    # Grouping boxes of one capture into animals (app/tracking.py; Akash's
+    # 2026-11-19 policy: a confident grouping publishes, an unsure one asks the
+    # person). Sent to the worker with every capture job, so they are tuned
+    # here. Conservative, NOT calibrated on street clips -- see the module
+    # docstring and docs/specs/2026-11-19-multi-animal-grouping.md.
+    grouping_accept_min: float = 0.35
+    grouping_confident_min: float = 0.65
+    grouping_margin_min: float = 0.20
+    grouping_new_animal_max: float = 0.20
+    grouping_cosine_floor: float = 0.20
+    grouping_cosine_ceiling: float = 0.80
+    grouping_appearance_weight: float = 0.75
+    grouping_motion_speed_scale: float = 2.0
+    grouping_motion_horizon_s: float = 3.0
+    grouping_species_mismatch_penalty: float = 0.15
+    grouping_species_share_min: float = 0.70
     # The daily @nammaindies post. Off means a dry run: the timer still fires
     # and logs what it would have posted, and nothing reaches X. The four X
     # values are OAuth 1.0a for the @nammaindies account and live only in the
@@ -518,8 +553,11 @@ class Settings(BaseSettings):
     # Hold when indoor-only furniture (app/scene.py) scores at least this.
     screening_indoor_min: float = 0.50
     # Hold a new account's uploads until this many of them have gone public
-    # (screened clear or approved by a moderator). 0 turns the rule off.
-    screening_trusted_after: int = 2
+    # (screened clear or approved by a moderator). 0 turns the rule off, which
+    # is the default (product decision 2026-11: new accounts do not wait for a
+    # moderator, as in most apps; the person/indoor/detector/model holds still
+    # apply to everyone). Set it above 0 to bring the new-account hold back.
+    screening_trusted_after: int = Field(default=0, ge=0)
     # An upload still unscreened after this long (worker down, process
     # restarted) is put in front of a moderator as "not screened". It stays
     # hidden either way.
@@ -587,6 +625,17 @@ class Settings(BaseSettings):
     # No third-party script, cookie, service or transfer of visitor data.
     join_pow_bits: int = Field(default=16, ge=8, le=22)
     join_pow_ttl_s: int = Field(default=300, ge=30, le=600)
+    # Added to join_pow_bits while the door-wide wrong-passcode budget below
+    # is exhausted: every extra bit doubles the work, so +4 is ~16x per guess
+    # for whoever is guessing, and seconds rather than minutes for a person.
+    # The sum may not pass 22, the most the app's solver (and proof.consume)
+    # will accept -- an older app handed more would refuse the challenge.
+    join_pow_escalated_bits: int = Field(default=4, ge=0, le=14)
+    # How long a client is told it has to solve an escalated challenge. The
+    # app's solver stops at this deadline with "timed out -- try again or sign
+    # in by email", so it bounds how long anyone, on any app version, sits on
+    # "Checking...". The server still accepts a solution for join_pow_ttl_s.
+    join_pow_escalated_wait_s: int = Field(default=120, ge=30, le=600)
     rl_join_challenge_times: int = Field(default=60, ge=1, le=1000)
 
     # Admission happens before multipart parsing, keyed by account, shared by
@@ -652,7 +701,9 @@ class Settings(BaseSettings):
     rl_join_times: int = 10
     rl_join_window_s: int = 900
     # The same budget for the whole door, across every source. Exhausting it
-    # shuts the passcode door (email sign-in stays open) until the window ends.
+    # does not shut the door: for the rest of the window every passcode join
+    # needs join_pow_escalated_bits more proof-of-work, moderators see it on
+    # the abuse-signals screen, and correct passcodes keep getting in.
     rl_join_global_wrong_times: int = Field(default=100, ge=1)
     rl_join_global_wrong_window_s: int = Field(default=3600, ge=60)
     # Successful passcode joins per source per day: a leaked code must not
@@ -720,6 +771,15 @@ class Settings(BaseSettings):
         secret = self.store_review_secret.get_secret_value()
         if self.store_review_enabled and (not secret.isascii() or not 32 <= len(secret) <= 512):
             raise ValueError("STORE_REVIEW_ENABLED requires a random ASCII STORE_REVIEW_SECRET of 32 to 512 characters")
+        return self
+
+    @model_validator(mode="after")
+    def _escalated_proof_is_solvable(self):
+        if self.join_pow_bits + self.join_pow_escalated_bits > 22:
+            raise ValueError(
+                f"join_pow_bits + join_pow_escalated_bits = "
+                f"{self.join_pow_bits + self.join_pow_escalated_bits}; the app's solver "
+                "accepts at most 22")
         return self
 
     @model_validator(mode="after")

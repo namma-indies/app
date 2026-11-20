@@ -217,7 +217,7 @@ async def get_dogs(
                    -- arbitrary and can change between loads.
                    row_number() OVER (PARTITION BY s.individual_id
                                       ORDER BY s.captured_at DESC,
-                                               p.created_at, p.id) AS rn
+                                               (p.id IS NOT DISTINCT FROM s.cover_photo_id) DESC, p.created_at, p.id) AS rn
             FROM sightings s
             JOIN photos p ON p.sighting_id = s.id
             -- The same photo submitted twice is shown once (app.identical).

@@ -12,7 +12,8 @@ from app.auth.allowlist import normalize_email
 from app.auth.deps import require_moderator
 from app.config import settings
 from app.deps import get_conn, get_storage
-from app.grievances import Intake, KIND_LABELS, LEGAL_NOTE, clocks, linked_sighting, removal_hours
+from app.grievances import Intake, KIND_LABELS, LEGAL_NOTE, clocks, linked_sighting, removal_hours, urgent_kind
+from app.turnstile import TOKEN_FIELD, TurnstileUnavailable, turnstile_enabled, verify_turnstile
 from app.ids import uuid7
 from app.moderation_ops import action_reason, apply_sighting_action, record_action
 from app.moderator_alerts import alert_moderators, queue_message
@@ -25,10 +26,21 @@ router = APIRouter()
 MAX_BODY = 128 * 1024
 
 
-def _page(body: str, *, status=200, receipt=False) -> HTMLResponse:
+TURNSTILE_ORIGIN = "https://challenges.cloudflare.com"
+
+
+def _csp(*, turnstile: bool) -> str:
+    # Turnstile's script and its challenge iframe both come from its origin.
+    extra = f"; script-src {TURNSTILE_ORIGIN}; frame-src {TURNSTILE_ORIGIN}" if turnstile else ""
+    return ("default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; "
+            "frame-ancestors 'none'" + extra)
+
+
+def _page(body: str, *, status=200, receipt=False, turnstile=False) -> HTMLResponse:
+    script = f'<script src="{TURNSTILE_ORIGIN}/turnstile/v0/api.js" async defer></script>' if turnstile else ""
     return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-{'<meta name="robots" content="noindex">' if receipt else ''}
+{'<meta name="robots" content="noindex">' if receipt else ''}{script}
 <title>Grievances · IndieDex</title><style>{_STYLE}
 .card {{ max-width:640px; }} select, textarea {{ width:100%; padding:12px; margin-bottom:16px;
 border:1px solid var(--line); border-radius:10px; font:inherit; background:white; color:var(--ink); }}
@@ -37,8 +49,7 @@ textarea {{ resize:vertical; }} .small {{ font-size:.82rem; color:#6b5844; }}
 dl {{ font-size:.9rem; }} dt {{ font-weight:600; }} dd {{ margin:0 0 .7rem; white-space:pre-wrap; }}
 </style></head><body><main class="card"><h1>Grievances</h1>{body}</main></body></html>''',
         status_code=status, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
-        "X-Content-Type-Options": "nosniff", "Content-Security-Policy":
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"})
+        "X-Content-Type-Options": "nosniff", "Content-Security-Policy": _csp(turnstile=turnstile)})
 
 
 def _contact() -> str:
@@ -60,21 +71,28 @@ def _form(*, values=None, error=None, status=200):
     options = '<option value="" disabled selected>Choose a complaint type</option>' if values.get("kind") not in KIND_LABELS else ""
     options += "".join(f'<option value="{kind}" {"selected" if values.get("kind") == kind else ""}>{label}</option>' for kind, label in KIND_LABELS.items())
     banner = f'<p class="err" role="alert">{escape(error)}</p>' if error else ""
+    turnstile = turnstile_enabled()
+    widget = (f'<div class="cf-turnstile" data-sitekey="{escape(settings.turnstile_site_key.strip(), quote=True)}" '
+              f'data-response-field-name="{TOKEN_FIELD}"></div>' if turnstile else "")
     deadlines = f'''<h2>Tracking targets</h2><p class="small">{LEGAL_NOTE}</p><dl>
 <dt>All complaints</dt><dd>Acknowledge: {settings.grievance_acknowledge_hours:g} hours. Resolve: {settings.grievance_resolve_hours / 24:g} days.</dd>
 <dt>Takedown or privacy</dt><dd>Removal review: {settings.grievance_removal_hours:g} hours.</dd>
 <dt>Non-consensual intimate imagery</dt><dd>Urgent removal review: {settings.grievance_intimate_hours:g} hours.</dd>
-<dt>Government or court order</dt><dd>Urgent action review: {settings.grievance_government_hours:g} hours.</dd></dl>'''
+<dt>Government or court order</dt><dd>Urgent action review: {settings.grievance_government_hours:g} hours.</dd>
+<dt>Appeal a suspension</dt><dd>Standard clock: acknowledge and resolve as above.</dd></dl>'''
     return _page(f'''<p>You can send a complaint without an account.</p>{_contact()}{banner}
 <h2>Send a complaint</h2><form method="post" action="/grievances">
 <input type="hidden" name="submission_key" value="{key}">
 <label for="kind">Complaint type</label><select id="kind" name="kind" required>{options}</select>
-<label for="target">Link or sighting ID</label><input id="target" name="target" required maxlength="1000" value="{value('target')}">
+<label for="target">Link or sighting ID</label><input id="target" name="target" maxlength="1000" value="{value('target')}">
+<p class="small">Needed for every type except an appeal. Appealing a suspension? Choose “Appeal a suspension”,
+use the email address of the suspended account as your contact email, and say why the suspension should be lifted.</p>
 <label for="details">Details</label><textarea id="details" name="details" required maxlength="5000" rows="5">{value('details')}</textarea>
 <label for="contact_email">Contact email</label><input id="contact_email" name="contact_email" type="email" required maxlength="254" autocomplete="email" value="{value('contact_email')}">
 <p class="small">Your details and contact email are shared with the moderation team to handle this complaint.
 Include enough to identify the content. Please do not send or upload intimate imagery here.</p>
-<button type="submit">Send complaint</button></form>{deadlines}<p><a href="/">Back to IndieDex</a></p>''', status=status)
+{widget}<button type="submit">Send complaint</button></form>{deadlines}<p><a href="/">Back to IndieDex</a></p>''', status=status,
+        turnstile=turnstile)
 
 
 def _receipt(reference: str, *, status=201):
@@ -85,8 +103,9 @@ def _receipt(reference: str, *, status=201):
 
 
 @router.get("/grievances", response_class=HTMLResponse)
-async def grievance_page():
-    return _form()
+async def grievance_page(kind: str | None = Query(None, max_length=40)):
+    # `?kind=appeal` preselects a type, e.g. from the suspended-account screen.
+    return _form(values={"kind": kind} if kind in KIND_LABELS else None)
 
 
 async def _read_form(request: Request) -> dict:
@@ -135,6 +154,17 @@ async def submit_grievance(request: Request):
         existing = await conn.fetchrow("SELECT reference,payload_digest FROM grievances WHERE submission_key=$1", body.submission_key)
     if existing and existing["payload_digest"] == digest:
         return _receipt(existing["reference"], status=200)
+    # After the retry check: a browser resubmitting a saved complaint carries
+    # an already-spent token and must still get its receipt back.
+    if turnstile_enabled():
+        try:
+            human = await verify_turnstile(values.get(TOKEN_FIELD, ""))
+        except TurnstileUnavailable:
+            return _form(values=values, status=503,
+                         error="We couldn't run the bot check just now. Wait a moment, then send the complaint again.")
+        if not human:
+            return _form(values=values, status=400,
+                         error="The bot check didn't pass. Complete the check above, then send the complaint again.")
     await _charge_email(request, body.contact_email)
     async with request.app.state.pool.acquire() as conn:
         async with conn.transaction():
@@ -167,7 +197,7 @@ async def submit_grievance(request: Request):
                                           html=f"<p>We received your IndieDex grievance.</p><p>Reference: <strong>{reference}</strong></p><p>Keep this reference for follow-up. The moderation team will review your complaint.</p>", urgent=True)
             await conn.execute("UPDATE grievances SET acknowledgement_mail_id=$2 WHERE id=$1", gid, mail_id)
             await alert_moderators(conn, event_key=f"grievance:{gid}", category=f"grievance_{body.kind}",
-                                   subject_id=gid, urgent=body.kind != "other")
+                                   subject_id=gid, urgent=urgent_kind(body.kind))
     return _receipt(reference)
 
 

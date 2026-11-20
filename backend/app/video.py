@@ -165,3 +165,28 @@ def extract_diverse_frames(
                 os.unlink(tmp_path)
             except OSError:
                 pass
+
+
+def select_diverse(phashes: list[str], target: int, *, min_hamming: int = 4) -> list[int]:
+    """Indices of a time-ordered, visually diverse subset of sampled frames.
+
+    The clip is first sampled evenly into candidates (`sample_chronological`).
+    Walking them in time order, a frame within `min_hamming` bits of the last
+    one kept is a near-duplicate (a dog standing still) and is dropped. If more
+    than `target` remain, they are thinned evenly, always keeping the first and
+    the last. Returns indices in ascending (time) order; never empty.
+    """
+    if target < 1 or min_hamming < 0:
+        raise ValueError("invalid diversity target")
+    if not phashes:
+        return []
+    hashes = [imagehash.hex_to_hash(p) for p in phashes]
+    kept = [0]
+    for index in range(1, len(hashes)):
+        if hashes[index] - hashes[kept[-1]] >= min_hamming:
+            kept.append(index)
+    if len(kept) <= target:
+        return kept
+    if target == 1:
+        return [kept[0]]
+    return sorted({kept[round(i * (len(kept) - 1) / (target - 1))] for i in range(target)})

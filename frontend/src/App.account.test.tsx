@@ -50,6 +50,7 @@ describe("a suspended account (#180)", () => {
     render(<App />);
     expect(await screen.findByText("Your account has been suspended")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "delete account" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Grievances and officer contact" }).getAttribute("href")).toMatch(/\/grievances$/);
+    // The way back is an appeal, on the grievance form with that type chosen.
+    expect(screen.getByRole("link", { name: "Appeal the suspension" }).getAttribute("href")).toMatch(/\/grievances\?kind=appeal$/);
   });
 });

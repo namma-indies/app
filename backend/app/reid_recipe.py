@@ -51,8 +51,12 @@ RECIPES = (
         # Re-pinned when the launch stack met #211: GpuInference now also
         # reports scene signals for upload screening. Detection boxes, crops
         # and vectors are untouched, so the recipe and both versions stand.
+        # Re-pinned again for multi-animal grouping (2026-11-19): detections
+        # also carry their folded dog/cat scores, and clips analyse a diverse
+        # subset of frames. Each box, crop and vector is made exactly as
+        # before, so the recipe and both versions still stand.
         preprocessing="stored-webp90-yolo640-miew440-imagenet-l2-v1:"
-                      "e662cfd229d503a7893180d76f218b3afd4435e5386460edaed405c99afff2d6",
+                      "123e6e403e90ecdc405e40681a814e41719c854ff78204242ca42a3fbf92df54",
     ),
 )
 

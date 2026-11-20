@@ -876,6 +876,27 @@ button { font-family: inherit; }
   color: var(--muted); margin-top: 0.25rem;
 }
 
+/* Where the two photos were taken. The map is context for the reviewer's
+   eye, so it stays small and does not take input. */
+.pair-where { margin-top: 0.6rem; text-align: center; }
+.pair-map {
+  height: 150px; border: 3px solid var(--line); border-radius: 3px;
+  background: var(--frame); overflow: hidden; position: relative;
+}
+.pair-map-canvas { position: absolute; inset: 0; }
+.pair-pin {
+  width: 22px; height: 22px; border-radius: 50%; display: flex;
+  align-items: center; justify-content: center;
+  font-family: "Silkscreen", monospace; font-size: 0.6rem;
+  background: var(--accent); color: var(--panel); border: 2px solid var(--line);
+  box-shadow: 1px 1px 0 var(--shadow);
+}
+.pair-distance {
+  font-family: "Silkscreen", monospace; font-size: 0.55rem; margin-top: 0.4rem;
+}
+.pair-when { font-size: 0.75rem; color: var(--muted); }
+.pair-note { font-size: 0.7rem; color: var(--muted); margin-top: 0.15rem; }
+
 .match-score {
   font-family: "Silkscreen", monospace; font-size: 0.46rem; color: var(--muted);
   text-align: center; margin: 0.5rem 0;
@@ -1206,6 +1227,26 @@ button { font-family: inherit; }
 .capture-thumb { flex: none; width: 64px; height: 64px; margin: 0 0 10px; padding: 0; border: 2px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--bg); cursor: zoom-in; }
 .capture-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .capture-thumb:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+/* One card per animal (2026-11-19): its letter and colour follow it into every photo. */
+.animal-card { margin: 14px 0; padding: 12px; border: 2px solid var(--line); border-left: 8px solid var(--evidence-color); border-radius: 10px; }
+.animal-card.is-unsure { border-style: dashed; border-left-style: solid; }
+.animal-card-head { display: flex; align-items: flex-start; gap: 10px; }
+.animal-letter { flex: none; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: var(--evidence-color); color: #111; font-weight: 800; border: 1px solid #111; }
+.animal-face { flex: none; width: 88px; height: 88px; object-fit: cover; border-radius: 8px; border: 3px solid var(--evidence-color); }
+.animal-card-title { flex: 1; min-width: 0; }
+.animal-card-title h3 { margin: 0; font-size: 1rem; }
+.animal-species { display: flex; gap: 6px; margin-top: 6px; }
+.animal-species .chip-choice.is-chosen { background: var(--evidence-color); color: #111; border-color: #111; }
+.animal-hint { margin: 8px 0; padding: 6px 8px; border-radius: 6px; background: var(--bg); font-size: .85rem; }
+.animal-frames { margin: 8px 0; }
+.animal-frames summary { cursor: pointer; min-height: 32px; line-height: 32px; font-weight: 700; }
+.animal-strip { display: flex; gap: 10px; overflow-x: auto; list-style: none; margin: 6px 0; padding: 0 0 6px; scroll-snap-type: x proximity; }
+.animal-frame { flex: 0 0 min(220px, 70%); min-width: 0; scroll-snap-align: start; }
+.animal-frame .capture-source-image { margin-bottom: 4px; }
+.animal-frame .hint { font-size: .78rem; }
+.animal-actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 14px; }
+.animal-actions label { flex: 1 1 180px; }
+.animal-left-out { margin: 18px 0; opacity: .85; }
 .chip-field { margin: 0 0 8px; }
 .chip-field-head { display: flex; align-items: center; justify-content: space-between; min-height: 20px; }
 .chip-field-label { font-size: .85rem; }

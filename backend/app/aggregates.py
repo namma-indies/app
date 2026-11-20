@@ -85,6 +85,14 @@ def owner_active(alias: str = "s") -> str:
             f" OR ox.banned_at IS NOT NULL))")
 
 
+def owner_not_leaving(alias: str = "s") -> str:
+    """`owner_active` without the ban: the account is not being deleted or
+    gone. For moderator views only, which keep a banned account's reported
+    items in sight (flagged) while every shared surface hides them."""
+    return (f"NOT EXISTS (SELECT 1 FROM observers ox WHERE ox.id = {alias}.observer_id"
+            f" AND (ox.deletion_requested_at IS NOT NULL OR ox.deleted_at IS NOT NULL))")
+
+
 def screened(alias: str = "s") -> str:
     """The upload this sighting came from has passed screening (#181).
 

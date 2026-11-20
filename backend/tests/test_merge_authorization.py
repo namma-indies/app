@@ -204,10 +204,11 @@ async def test_the_queue_shows_everyones_pairs_with_your_own_first(authed_client
 
 
 @pytest.mark.asyncio
-async def test_the_queue_says_nothing_about_where(authed_client):
+async def test_the_queue_says_no_more_about_where_than_the_map(authed_client):
     """Issue #45: exact location only for animals you photographed. A pair card
-    is a thumbnail and a date for each side, and must stay that way for other
-    people's sightings."""
+    shows where each side was taken, but for other people's sightings only as
+    the map's cell (tests/test_match_location.py pins the coordinates); no
+    other field says anything about place."""
     client, oid_a = authed_client
     await _as(client, await _observer(client))
     a, b = await _post(client), await _post(client)
@@ -217,10 +218,12 @@ async def test_the_queue_says_nothing_about_where(authed_client):
     p = (await client.get("/proposals")).json()["proposals"][0]
     for side in (p["a"], p["b"]):
         assert set(side) == {"sighting_id", "species", "date", "thumb_url", "mine",
-                             "photo_url", "photo_id", "instance_id", "matched", "matched_removed", "photos"}
+                             "photo_url", "photo_id", "instance_id", "matched", "matched_removed", "photos",
+                             "location"}
+        assert side["location"] is None or side["location"]["precision"] == "area"
         for photo in side["photos"]:
             assert set(photo) == {"photo_id", "instance_id", "thumb_url", "photo_url"}
-    assert set(p) == {"id", "score", "a", "b"}
+    assert set(p) == {"id", "score", "a", "b", "distance_m"}
 
 
 @pytest.mark.asyncio

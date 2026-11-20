@@ -2,10 +2,12 @@
 
 Ordinary reports need two distinct reporters before shared surfaces hide a
 capture. People/privacy, sexual-content and illegal-content reports hold it
-on the first report and alert immediately (#198). A fresh severe concern from
-another reporter can hold a previously approved capture again; the reporter a
-moderator already ruled against reaches the queue but cannot re-hide it alone.
-Ordinary reports cannot overturn a ruling. Reports are rate limited per account. All open concerns reach the queue, with an original response clock.
+on the first report and alert immediately (#198). Once a moderator has
+approved or cleared a capture, reports only hide it again when
+`report_rehide_min_reporters` distinct accounts (default 3) have reported it
+since that ruling, whatever the reason; until then they reach the queue, and
+severe ones still alert urgently. Reports are rate limited per account. All
+open concerns reach the queue, with an original response clock.
 
 Moderators are deliberately assigned through observers.trust_tier. Decisions
 require a reason and append an audit entry in the same transaction. No action
@@ -16,10 +18,10 @@ import logging
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Form, HTTPException
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from app.aggregates import owner_active
+from app.aggregates import owner_active, owner_not_leaving
 from app.auth.deps import require_moderator, require_observer
 from app.config import settings
 from app.deps import get_conn, get_storage
@@ -117,17 +119,13 @@ async def report_sighting(
         changed = previous is None or previous["resolved_at"] is not None or (previous["reason"], previous["note"]) != (reason, note)
         if not changed:
             return {"status": "ok", "hidden": sighting["review_status"] != "valid"}
-        # The same account reporting again after a moderator approved the
-        # capture over its earlier report goes to the queue, but cannot hold
-        # the capture by itself again (otherwise one account can re-hide an
-        # approved photo indefinitely). Other reporters keep the severe hold.
-        repeat_after_approval = (
-            sighting["review_status"] == "valid" and sighting["reviewed_at"] is not None
-            and await conn.fetchval(
-                "SELECT EXISTS (SELECT 1 FROM sighting_reports r JOIN sightings s ON s.id=r.sighting_id "
-                "WHERE r.reporter_id=$2 AND COALESCE(r.resolved_at, r.last_resolved_at) IS NOT NULL "
-                "AND (s.id=$1 OR s.capture_id=$3))", sighting_id, observer_id, capture_id))
-        hold_now = reason in SEVERE_REASONS and not repeat_after_approval
+        # After a moderator approved/cleared the capture, a single report (even
+        # a severe one) no longer takes it down: only
+        # `report_rehide_min_reporters` distinct accounts reporting since that
+        # ruling do (open rows are exactly those, as a ruling resolves them
+        # all). This also stops one account re-hiding an approved photo
+        # indefinitely. Before any ruling one severe report still holds it.
+        hold_now = reason in SEVERE_REASONS and sighting["reviewed_at"] is None
         await conn.execute(
             """
             INSERT INTO sighting_reports (sighting_id, reporter_id, reason, note, severe_at)
@@ -149,19 +147,20 @@ async def report_sighting(
             note,
             reason in SEVERE_REASONS,
         )
-        # Ordinary reports keep a human ruling sticky. A new severe concern
-        # takes precedence over an earlier approval until reviewed again. The
-        # whole capture is held, since sibling animals share the photograph.
+        # Distinct accounts with an open report on the capture: before a
+        # ruling, everyone who reported; after one, everyone since. The whole
+        # capture is held, since sibling animals share the photograph.
         await conn.execute(
             "UPDATE sightings SET review_status = 'pending', updated_at = now() "
             "WHERE (id = $1 OR capture_id=(SELECT capture_id FROM sightings WHERE id=$1)) "
-            "AND review_status <> 'rejected' AND ((reviewed_at IS NULL "
-            "AND (SELECT count(DISTINCT r.reporter_id) FROM sighting_reports r JOIN sightings src ON src.id=r.sighting_id "
+            "AND review_status <> 'rejected' AND ($3 OR "
+            "(SELECT count(DISTINCT r.reporter_id) FROM sighting_reports r JOIN sightings src ON src.id=r.sighting_id "
             "WHERE (src.id=$1 OR src.capture_id=(SELECT capture_id FROM sightings WHERE id=$1)) "
-            "AND r.resolved_at IS NULL) >= $2) OR $3)",
+            "AND r.resolved_at IS NULL) >= CASE WHEN reviewed_at IS NULL THEN $2::int ELSE $4::int END)",
             sighting_id,
             HIDE_AT_REPORTS,
             hold_now,
+            settings.report_rehide_min_reporters,
         )
         # Rejecting is already a stronger hold. Fresh severe concerns about a
         # previously approved item still hide it until the next human ruling.
@@ -205,6 +204,7 @@ async def moderation_queue(
                s.species,
                o.display_name AS observer,
                s.observer_id,
+               o.banned_at IS NOT NULL AS observer_banned,
                count(r.*) AS report_count,
                max(r.created_at) AS last_reported,
                min(r.opened_at) AS first_reported,
@@ -222,10 +222,12 @@ async def moderation_queue(
             ORDER BY created_at, id LIMIT 1
         ) p ON TRUE
         WHERE r.resolved_at IS NULL
-          -- Going with its account (#179): nothing left to rule on.
-          AND {owner_active('s')}
+          -- Going with its account (#179): nothing left to rule on. A banned
+          -- account's reports stay, flagged: the ban hides the content from
+          -- everyone else, not the concern from the moderators.
+          AND {owner_not_leaving('s')}
         GROUP BY s.id, s.captured_at, s.review_status, s.reviewed_at, s.species,
-                 o.display_name, p.s3_key
+                 o.display_name, o.banned_at, p.s3_key
         -- A ruling resolves the capture's open report rows atomically.
         -- A later report reopens its row, with a fresh response clock.
         ORDER BY (min(r.severe_at) IS NOT NULL) DESC,
@@ -248,6 +250,7 @@ async def moderation_queue(
                 "observer": r["observer"],
                 # Moderators only: what a ban acts on (#180).
                 "observer_id": str(r["observer_id"]) if r["observer_id"] else None,
+                "observer_banned": r["observer_banned"],
                 "report_count": r["report_count"],
                 "last_reported_at": r["last_reported"],
                 **report_clock(r["first_reported"], r["first_severe"]),
@@ -434,15 +437,47 @@ async def rule_on_animal(
 # nothing bans automatically, however many people have blocked someone.
 # Reversible. A banned person can still delete their account (/account), and
 # the ban outlives that as a keyed hash of their address (banned_emails).
+# Their photos already posted by the project's X account are taken down there,
+# through the same owed-delete records account deletion uses (x_post_purges);
+# unbanning does not repost them.
 
 
 class BanBody(BaseModel):
     reason: str = Field(..., min_length=1, max_length=MAX_NOTE)
 
 
+async def _owe_x_takedowns(conn, observer_id: UUID) -> list[str]:
+    """Record a delete on X for every post made from this observer's photos;
+    a post started and never confirmed is kept for a person to check, as on
+    erasure. Returns the post ids to try deleting once committed."""
+    picks = await conn.fetch(
+        """SELECT sp.id, sp.status, sp.x_post_id, sp.caption FROM social_picks sp
+           JOIN sightings s ON s.id = sp.sighting_id
+           LEFT JOIN captures c ON c.id = s.capture_id
+           WHERE (s.observer_id = $1 OR c.observer_id = $1)
+             AND (sp.x_post_id IS NOT NULL OR sp.status = 'posting')
+           ORDER BY sp.id""", observer_id)
+    owed = []
+    for pick in picks:
+        if pick["x_post_id"]:
+            inserted = await conn.fetchval(
+                "INSERT INTO x_post_purges (id, x_post_id, pick_id, reason) VALUES ($1,$2,$3,'banned') "
+                "ON CONFLICT DO NOTHING RETURNING x_post_id", uuid7(), pick["x_post_id"], pick["id"])
+            if inserted:
+                owed.append(inserted)
+        else:
+            await conn.execute(
+                "INSERT INTO x_post_purges (id, pick_id, caption, reason) "
+                "SELECT $1, $2, $3, 'banned:unconfirmed' "
+                "WHERE NOT EXISTS (SELECT 1 FROM x_post_purges WHERE pick_id = $2)",
+                uuid7(), pick["id"], pick["caption"])
+    return owed
+
+
 @router.post("/moderation/observer/{observer_id}/ban")
-async def ban(observer_id: UUID, body: BanBody, moderator_id: UUID = Depends(require_moderator),
+async def ban(observer_id: UUID, body: BanBody, request: Request, moderator_id: UUID = Depends(require_moderator),
               conn=Depends(get_conn)):
+    from app.social import purge_x_later
     reason = action_reason(body.reason)
     async with conn.transaction():
         target = await conn.fetchrow(
@@ -460,10 +495,13 @@ async def ban(observer_id: UUID, body: BanBody, moderator_id: UUID = Depends(req
         if target["email"]:
             await conn.execute("INSERT INTO banned_emails (email_hmac) VALUES ($1) ON CONFLICT DO NOTHING",
                                email_hash(target["email"]))
+        owed = await _owe_x_takedowns(conn, observer_id)
         await record_action(conn, moderator_id=moderator_id, target_kind="observer", target_id=observer_id,
                             action="ban", reason=reason, previous_state="banned" if target["banned_at"] else "active",
                             new_state="banned")
-    logger.info("observer=%s banned by moderator=%s", observer_id, moderator_id)
+    for post_id in owed:
+        purge_x_later(request.app.state.pool, post_id)
+    logger.info("observer=%s banned by moderator=%s x_takedowns=%d", observer_id, moderator_id, len(owed))
     return {"status": "banned"}
 
 

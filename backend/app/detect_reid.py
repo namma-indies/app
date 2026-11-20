@@ -31,7 +31,7 @@ Model: Ultralytics YOLO26x, exported with NMS baked in (output is already
 
 import math
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
@@ -51,6 +51,12 @@ class AnimalDetection:
     confidence: float
     raw_box: tuple[float, float, float, float]
     crop_box: tuple[int, int, int, int]
+    # The detector's dog and cat scores for this same animal: its own box plus
+    # any other-class box over it that `_without_duplicates` folded in (the
+    # export's NMS is per class, so an indie can come out as both). None when
+    # not measured. The per-animal species vote reads these (app/tracking.py).
+    dog_score: float | None = None
+    cat_score: float | None = None
 
 
 def animal_detections(dets, size, scale=1.0, pad_x=0, pad_y=0) -> tuple[AnimalDetection, ...]:
@@ -106,7 +112,13 @@ def _without_duplicates(instances) -> tuple[AnimalDetection, ...]:
     for det in sorted(instances, key=lambda d: (-d.confidence, d.detection_index)):
         if all(_iou(det.raw_box, k.raw_box) <= DUPLICATE_IOU for k in kept):
             kept.append(det)
-    return tuple(sorted(kept, key=lambda d: d.detection_index))
+    scored = []
+    for det in kept:
+        same = [o for o in instances if o is det or _iou(det.raw_box, o.raw_box) > DUPLICATE_IOU]
+        scored.append(replace(det,
+            dog_score=max((o.confidence for o in same if o.species == "dog"), default=0.0),
+            cat_score=max((o.confidence for o in same if o.species == "cat"), default=0.0)))
+    return tuple(sorted(scored, key=lambda d: d.detection_index))
 
 
 _MODEL_PATH = Path(__file__).resolve().parent / "ml" / "yolo26x.onnx"

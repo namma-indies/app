@@ -214,6 +214,70 @@ async def _noop():
     return None
 
 
+async def _pick(pool, sighting_id, status, x_post_id=None):
+    async with pool.acquire() as c:
+        photo = await c.fetchval("SELECT id FROM photos WHERE sighting_id=$1 ORDER BY id LIMIT 1", UUID(sighting_id))
+        pick = uuid7()
+        await c.execute(
+            "INSERT INTO social_picks (id, sighting_id, photo_id, caption, status, x_post_id) "
+            "VALUES ($1,$2,$3,'a dog',$4,$5)", pick, UUID(sighting_id), photo, status, x_post_id)
+        return pick
+
+
+@pytest.mark.asyncio
+async def test_a_ban_queues_takedowns_on_x_for_their_posted_photos(authed_client, monkeypatch):
+    """Same owed-delete path as account deletion: posted photos come down,
+    an unconfirmed post waits for a person, a queued one never goes out, and
+    nobody else's post is touched."""
+    from app import social
+    tried = []
+    monkeypatch.setattr(social, "purge_x_later", lambda pool, post_id: tried.append(post_id))
+    client, target = authed_client
+    pool = await _pool(client)
+    posted, posting, queued = await _post(client), await _post(client), await _post(client)
+    await _pick(pool, posted, "posted", "x-222")
+    unconfirmed = await _pick(pool, posting, "posting")
+    await _pick(pool, queued, "queued")
+    other = await _second_observer(client, "Other")
+    _as(client, other)
+    await _pick(pool, await _post(client), "posted", "x-333")
+    async with pool.acquire() as c:
+        await c.execute("UPDATE sightings SET shared_with_team_at=now()")
+        await c.execute("UPDATE observers SET social_consent=true, x_handle='h' WHERE id=$1", target)
+        assert await social.postable_photos(c, UUID(queued))
+    mod = await _moderator(client)
+    _as(client, mod)
+    for _ in range(2):   # banning again owes nothing twice
+        assert (await client.post(f"/moderation/observer/{target}/ban", json={"reason": "Abuse"})).status_code == 200
+    assert tried == ["x-222"]
+    async with pool.acquire() as c:
+        rows = await c.fetch("SELECT x_post_id, pick_id, reason FROM x_post_purges ORDER BY reason")
+        assert [(r["x_post_id"], r["reason"]) for r in rows] == [("x-222", "banned"), (None, "banned:unconfirmed")]
+        assert rows[1]["pick_id"] == unconfirmed
+        assert await social.postable_photos(c, UUID(queued)) == []
+    takedowns = (await client.get("/social/queue")).json()["takedowns"]
+    assert {t["x_post_id"] for t in takedowns} == {"x-222", None} and all(t["banned"] for t in takedowns)
+
+
+@pytest.mark.asyncio
+async def test_a_banned_accounts_reports_stay_in_the_moderation_queue_flagged(authed_client):
+    client, target = authed_client
+    mine = await _post(client)
+    viewer, mod = await _second_observer(client, "Viewer"), await _moderator(client)
+    _as(client, viewer)
+    assert (await client.post(f"/sighting/{mine}/report", data={"reason": "people_privacy"})).status_code == 200
+    _as(client, mod)
+    assert (await client.post(f"/moderation/observer/{target}/ban", json={"reason": "Abuse"})).status_code == 200
+    (item,) = (await client.get("/moderation/queue")).json()["items"]
+    assert item["sighting_id"] == mine and item["observer_banned"] is True
+    # Still hidden from everyone else, and still a ruling a moderator can make.
+    assert (await client.post(f"/sighting/{mine}/review", data={"verdict": "rejected", "reason": "Upheld"})).status_code == 200
+    assert (await client.get("/moderation/queue")).json()["items"] == []
+    assert any(a["action"] == "ban" for a in (await client.get("/moderation/audit")).json()["items"])
+    _as(client, viewer)
+    assert mine not in {s["id"] for s in (await client.get("/map")).json()["sightings"]}
+
+
 @pytest.mark.asyncio
 async def test_deleting_an_account_takes_its_blocks_both_ways(authed_client, monkeypatch):
     from app.routes import account

@@ -85,6 +85,7 @@ REFERENCES: dict[tuple[str, str, str], str] = {
     ("voice_notes", "capture_id", "captures"): "c",
     ("photo_descriptions", "capture_id", "captures"): "c",
     ("upload_screens", "capture_id", "captures"): "c",
+    ("capture_tracks", "capture_id", "captures"): "c",
     # -> photos
     ("embeddings", "photo_id", "photos"): "c",
     ("detections", "photo_id", "photos"): "c",
@@ -92,10 +93,12 @@ REFERENCES: dict[tuple[str, str, str], str] = {
     ("animal_instances", "evidence_photo_id", "photos"): "c",
     ("social_picks", "photo_id", "photos"): "c",
     ("match_proposals", "matched_photo_id", "photos"): "n",  # evidence can go; the verdict stays (#220)
+    ("sightings", "cover_photo_id", "photos"): "n",  # the sighting picks no cover then (0049)
     # -> animal_instances
     ("embeddings", "instance_id", "animal_instances"): "c",
     ("detail_suggestions", "instance_id", "animal_instances"): "c",
     ("match_proposals", "matched_instance_id", "animal_instances"): "n",
+    ("capture_tracks", "representative_instance_id", "animal_instances"): "n",
     # -> voice_notes, voice_transcripts, photo_descriptions
     ("transcription_jobs", "note_id", "voice_notes"): "c",
     ("voice_transcripts", "note_id", "voice_notes"): "c",
@@ -172,9 +175,11 @@ async def _lock_all(conn, capture_ids: list[UUID]) -> dict[UUID, asyncpg.Record]
 # owner's own -- the same photo picked twice, or replayed by the offline queue
 # (migration 0016, app/identical.py) -- so the owner's copies go with it.
 #
-# TODO(product): another observer's copy of the same photo is still brought
-# back by SET NULL, as 0016 intended ("they did submit it"). Whether it should
-# instead stay hidden, or go too, is a product decision, not taken here.
+# Another observer's copy of the same photo is brought back by SET NULL and
+# surfaces as their own upload. Decided (Akash, 2026-11): keep it -- they did
+# submit it (0016), and one person erasing their upload must not erase
+# someone else's. It still passes every public filter (screening, reports,
+# bans) like any other upload of theirs.
 _OWN_COPIES = """
     WITH RECURSIVE copies AS (
         SELECT c.id, c.capture_id, c.observer_id FROM sightings c JOIN sightings o ON o.id = c.duplicate_of

@@ -152,7 +152,7 @@ async def get_map(
     # plan, so the pin for a video sighting can show a different frame on each
     # load. p.id is uuid7, so it tiebreaks by real insertion order.
     sql += """
-        ORDER BY s.id, p.created_at ASC, p.id ASC
+        ORDER BY s.id, (p.id IS NOT DISTINCT FROM s.cover_photo_id) DESC, p.created_at ASC, p.id ASC
     """
     # With an area, `limit` is applied after the area test, never in SQL: rows
     # the wider prefilter admitted only because of where they sit inside a cell
