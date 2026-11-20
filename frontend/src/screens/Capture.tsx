@@ -31,6 +31,8 @@ import NoteLanguagePicker, { useNoteLanguage } from "../components/NoteLanguageP
 import type { NoteLanguage } from "../api";
 import { CONDITION_OPTIONS, EAR_NOTCH_OPTIONS, SEX_OPTIONS } from "../detailOptions";
 import { formatWhen } from "../formatWhen";
+import { useReloadGuard } from "../update/reloadGuard";
+import { CONSENT_ACCEPTED_EVENT } from "../consentEvents";
 
 const MAX_PHOTOS = 5;
 
@@ -70,23 +72,31 @@ function isVideoFile(file: File): boolean {
 
 export default function Capture() {
   const [multiAnimal, setMultiAnimal] = useState(false);
-  useEffect(() => {
-    const controller = new AbortController();
-    void multiAnimalIntakeAvailable(controller.signal).then((enabled) => {
-      if (!controller.signal.aborted) setMultiAnimal(enabled);
-    });
-    return () => controller.abort();
-  }, []);
   // Offered only to someone who has agreed to be posted on @nammaindies; for
   // everyone else the option does not exist (design: 2026-10-24 x daily post).
   const [canShare, setCanShare] = useState(false);
   const [shareWithTeam, setShareWithTeam] = useState(false);
   useEffect(() => {
-    const controller = new AbortController();
-    void canShareSocially(controller.signal).then((ok) => {
-      if (!controller.signal.aborted) setCanShare(ok);
-    });
-    return () => controller.abort();
+    let controller: AbortController | undefined;
+    function refresh() {
+      controller?.abort();
+      const request = new AbortController();
+      controller = request;
+      void multiAnimalIntakeAvailable(request.signal).then((enabled) => {
+        if (!request.signal.aborted) setMultiAnimal(enabled);
+      });
+      void canShareSocially(request.signal).then((ok) => {
+        if (!request.signal.aborted) setCanShare(ok);
+      });
+    }
+    refresh();
+    // A fresh mount under the policy dialog gets 428 from /me. Retry after
+    // agreement without remounting this screen or losing its draft.
+    window.addEventListener(CONSENT_ACCEPTED_EVENT, refresh);
+    return () => {
+      controller?.abort();
+      window.removeEventListener(CONSENT_ACCEPTED_EVENT, refresh);
+    };
   }, []);
   const fileRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLInputElement>(null);
@@ -116,6 +126,7 @@ export default function Capture() {
   const [origin, setOrigin] = useState<ImportOrigin | null>(null);
   // Non-null while we're asking the person for what the file didn't say.
   const [asking, setAsking] = useState<{ file: File; md: PhotoMetadata; request: number } | null>(null);
+  const [readingImport, setReadingImport] = useState(false);
   const importRequest = useRef(0);
   const locationRequest = useRef(0);
   // Bumps on reset and when a new shutter photo replaces the metadata read, so
@@ -140,6 +151,11 @@ export default function Capture() {
   // browser fix failed) must not save silently — the person confirms the
   // placeless save instead of it being the default.
   const [confirmingPlaceless, setConfirmingPlaceless] = useState(false);
+  // A reload now would throw away the draft, so a new version waits for it.
+  useReloadGuard(
+    photos.length > 0 || !!video || !!voiceNote || note.trim() !== "" || submitting ||
+      readingImport || !!asking || picking || confirmingPlaceless,
+  );
   // True once the shutter file's own EXIF GPS is in hand. A placeless-save
   // confirm is only warranted when neither the file nor the browser fix gave
   // us a coordinate.
@@ -232,6 +248,7 @@ export default function Capture() {
 
   function addPhoto(f: File) {
     importRequest.current++;
+    setReadingImport(false);
     setAsking(null);
     setOrigin(null);
     readShutterMetadata(f);
@@ -252,6 +269,7 @@ export default function Capture() {
 
   function acceptVideo(f: File) {
     importRequest.current++;
+    setReadingImport(false);
     shutterRequest.current++;
     setAsking(null);
     beginLocating();
@@ -319,6 +337,7 @@ export default function Capture() {
   }
 
   async function onImportFile(f: File, request = ++importRequest.current) {
+    setReadingImport(false);
     setAsking(null);
     if (isVideoFile(f)) {
       if (f.type && !IMPORT_VIDEO_TYPES.includes(f.type)) {
@@ -332,33 +351,39 @@ export default function Capture() {
       setAsking({ file: f, md: NO_METADATA, request });
       return;
     }
-    let md: PhotoMetadata;
+    setReadingImport(true);
     try {
-      md = await readPhotoMetadata(f);
-    } catch (err) {
+      let md: PhotoMetadata;
+      try {
+        md = await readPhotoMetadata(f);
+      } catch (err) {
+        if (request !== importRequest.current) return;
+        if (err instanceof UnauthorizedError) {
+          showToast("Session expired. Sign in again.");
+          return;
+        }
+        md = NO_METADATA;
+      }
       if (request !== importRequest.current) return;
-      if (err instanceof UnauthorizedError) {
-        showToast("Session expired. Sign in again.");
+
+      const capturedAt = resolveCapturedAt(md.captured_at_local, md.utc_offset_minutes);
+      if (capturedAt && md.has_location && md.lat != null && md.lng != null) {
+        // The file knew both. Nothing to ask.
+        stageImport(f, originFromExif(capturedAt, md.lat, md.lng));
         return;
       }
-      md = NO_METADATA;
+      // Ask for missing provenance rather than defaulting to here-and-now.
+      setAsking({ file: f, md, request });
+    } finally {
+      // Hand off to photos/asking in the same commit; an older request must
+      // not release the hold belonging to a newer selection.
+      if (request === importRequest.current) setReadingImport(false);
     }
-    if (request !== importRequest.current) return;
-
-    const capturedAt = resolveCapturedAt(md.captured_at_local, md.utc_offset_minutes);
-    if (capturedAt && md.has_location && md.lat != null && md.lng != null) {
-      // The file knew both. Nothing to ask.
-      stageImport(f, originFromExif(capturedAt, md.lat, md.lng));
-      return;
-    }
-    // Stripped of one or both -- the common case for forwards and screenshots,
-    // and also what an offline preflight looks like. Ask rather than default to
-    // here-and-now, which would poison the 1km prior re-ID matches against.
-    setAsking({ file: f, md, request });
   }
 
   async function onImportPress() {
     const request = ++importRequest.current;
+    setReadingImport(false);
     setAsking(null);
     if (isNative()) {
       try {
@@ -410,6 +435,7 @@ export default function Capture() {
 
   function reset() {
     importRequest.current++;
+    setReadingImport(false);
     locationRequest.current++;
     shutterRequest.current++;
     setLocating(false);

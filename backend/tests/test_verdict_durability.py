@@ -11,6 +11,7 @@ threshold change -- both of which move scores, which is the case that erased
 the verdict.
 """
 
+from app.reid_recipe import ACTIVE_RECIPE
 import numpy as np
 import pytest
 
@@ -47,8 +48,8 @@ async def _sighting(conn, oid, *, individual_id=None, status="unmatched", seed=1
     await conn.execute(
         "INSERT INTO photos (id, sighting_id, s3_key) VALUES ($1,$2,'k.webp')", pid, sid)
     await conn.execute(
-        f"INSERT INTO embeddings (id, photo_id, model, dim, vec_miew) "
-        f"VALUES ($1,$2,$3,$4,$5::vector({EMBED_DIM}))",
+        f"INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, recipe) "
+        f"VALUES ($1,$2,$3,$4,$5::vector({EMBED_DIM}),'{ACTIVE_RECIPE}')",
         uuid7(), pid, MODEL_NAME, EMBED_DIM,
         _lit(_unit(seed) if vec is None else vec))
     return sid

@@ -16,7 +16,11 @@ from app.media_jobs import MAX_PHOTOS, enqueue
 from app.deps import get_storage
 from app.ids import uuid7
 from app.photos import process_photo, ProcessedPhoto, thumb_key
+from app import screening
 from app.scoring import recompute_animal_confidence
+from app.reid_recipe import ACTIVE_RECIPE
+from app.ratelimit import mark_replay
+from app.sighting_vectors import save_mean
 from app.social import mark_shared
 from app.storage.s3 import S3Storage
 from app.transcription_jobs import enqueue_transcription
@@ -86,7 +90,8 @@ async def _analyse_and_save(
         try:
             async with pool.acquire() as conn:
                 await save_detection(
-                    conn, photo_id, found.dog_confidence, found.cat_confidence
+                    conn, photo_id, found.dog_confidence, found.cat_confidence,
+                    scene=getattr(found, "scene", None),
                 )
         except Exception:
             # A lost score costs a label. It must not cost the embedding that
@@ -112,16 +117,16 @@ async def _analyse_and_save(
             continue
 
         box = found.box
-        collected.append(vec)
         try:
             async with pool.acquire() as conn:
                 await conn.execute(
                     """
-                    INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, bbox)
-                    VALUES ($1, $2, $3, $4, $5::vector, $6::jsonb)
+                    INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, bbox, recipe)
+                    VALUES ($1, $2, $3, $4, $5::vector, $6::jsonb, $7)
                     ON CONFLICT (photo_id, model) DO UPDATE
                         SET vec_miew = EXCLUDED.vec_miew,
                             bbox = EXCLUDED.bbox,
+                            recipe = EXCLUDED.recipe,
                             created_at = now()
                     """,
                     uuid7(),
@@ -130,7 +135,9 @@ async def _analyse_and_save(
                     EMBED_DIM,
                     "[" + ",".join(f"{float(v):.7g}" for v in vec) + "]",
                     json.dumps({"x1": box[0], "y1": box[1], "x2": box[2], "y2": box[3]}),
+                    ACTIVE_RECIPE,
                 )
+            collected.append(vec)
         except Exception:
             logger.warning(
                 "failed to store embedding for photo=%s", photo_id, exc_info=True
@@ -138,6 +145,9 @@ async def _analyse_and_save(
 
     await _save_animal_confidence(pool, sighting_id)
     await _save_mean_vector(pool, sighting_id, collected)
+    # From the detections just stored (#181). A photo whose analysis failed
+    # above has none, which holds the upload rather than publishing it blind.
+    await screening.screen_sighting(pool, sighting_id)
 
     # Decide the match once, now that the vectors exist. This used to run inside
     # GET /sighting/{id}/match, which meant every read deleted and recreated the
@@ -190,26 +200,19 @@ async def _save_mean_vector(pool: asyncpg.Pool, sighting_id: UUID, vecs: list) -
     for them and the caller skips. That matters more for a mean than for a max
     -- one bad frame drags an average, while a max simply ignores it.
     """
-    if not vecs:
-        return
     import numpy as np
 
-    mean = np.mean(np.stack(vecs), axis=0)
-    norm = float(np.linalg.norm(mean))
-    if norm == 0.0:
-        # Only reachable if the frames cancelled exactly, which would mean the
-        # embeddings are not what we think. Skip rather than store a zero
-        # vector, whose cosine against anything is undefined.
-        logger.warning("mean vector for sighting=%s has zero norm; not stored", sighting_id)
-        return
-    mean = mean / norm
+    vector = None
+    if vecs:
+        mean = np.mean(np.stack(vecs), axis=0)
+        norm = float(np.linalg.norm(mean))
+        if np.isfinite(norm) and norm > 1e-8:
+            vector = "[" + ",".join(f"{float(v):.7g}" for v in mean / norm) + "]"
+        else:
+            logger.warning("mean vector for sighting=%s is unusable; clearing it", sighting_id)
     try:
         async with pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE sightings SET vec_miew = $1::vector WHERE id = $2",
-                "[" + ",".join(f"{float(v):.7g}" for v in mean) + "]",
-                sighting_id,
-            )
+            await save_mean(conn, sighting_id, vector)
     except Exception:
         logger.warning(
             "failed to store mean vector for sighting=%s", sighting_id, exc_info=True
@@ -364,6 +367,7 @@ async def create_sighting(
                 "duplicate submission for client_token=%s; returning sighting=%s",
                 client_token, existing["id"],
             )
+            mark_replay(request)
             return JSONResponse(
                 status_code=201,
                 content={
@@ -588,6 +592,11 @@ async def create_sighting(
                         client_token,
                     )
 
+                # Off every shared surface until screened (#181). The insert
+                # trigger has just made this sighting's capture.
+                await screening.start(conn, await conn.fetchval(
+                    "SELECT capture_id FROM sightings WHERE id = $1", sighting_id))
+
                 if share_with_team:
                     await mark_shared(conn, sighting_id, observer_id)
 
@@ -675,6 +684,7 @@ async def create_sighting(
             "concurrent duplicate for client_token=%s; returning sighting=%s",
             client_token, winner["id"],
         )
+        mark_replay(request)
         return JSONResponse(
             status_code=201,
             content={

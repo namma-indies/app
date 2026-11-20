@@ -1,16 +1,20 @@
 """Delete object-store media the app has let go of but could not delete itself.
 
-When an observer deletes a voice note they added later (#158), its rows go at
-once and the API then deletes the audio from the store. If the store refuses
-(the API's credentials may lack s3:DeleteObject) or the API stops before
-asking, the key stays in `media_purges`. This deletes those objects, using
-whatever S3 credentials it is run with, and clears each key the store confirms.
+When an observer deletes a voice note they added later (#158), or a photo or
+one animal in it (#54), its rows go at once and the API then deletes the media
+from the store. If the store refuses (the API's credentials may lack
+s3:DeleteObject) or the API stops before asking, what it owes stays in
+`media_purges`: one key, or a whole upload's prefix (`captures/{id}/`,
+`sightings/{id}/`), which is listed and emptied. This deletes those objects,
+using whatever S3 credentials it is run with, and clears each record the store
+confirms.
 
 **Dry-run is the default** and only lists how many are owed and the oldest.
 
 Usage, from /app/backend inside the container, with S3_ACCESS_KEY /
-S3_SECRET_KEY set to credentials allowed s3:DeleteObject on the media bucket
-(on the `sightings/*/notes/*` and `captures/*/notes/*` prefixes at least):
+S3_SECRET_KEY set to credentials allowed s3:DeleteObject on `sightings/*` and
+`captures/*` of the media bucket, and s3:ListBucket on those prefixes (see
+docs/ops/media-deletion.md):
 
     uv run python scripts/purge_media.py            # dry run: what is owed
     uv run python scripts/purge_media.py --apply
@@ -32,8 +36,9 @@ from app.db import effective_dsn  # noqa: E402
 
 
 async def run(pool: asyncpg.Pool, storage, *, apply: bool) -> tuple[int, int, int]:
-    """(owed, purged, failed). A key a live note points at again is let go of
-    without deleting anything (app/media_purges.py)."""
+    """(owed, purged, failed). A key a live note points at again, or a prefix
+    whose upload exists again, is let go of without deleting anything
+    (app/media_purges.py)."""
     from app.media_purges import purge
 
     async with pool.acquire() as conn:

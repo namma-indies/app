@@ -1,5 +1,6 @@
 import httpx
 import pytest
+from datetime import datetime, timezone
 
 from app.storage.s3 import storage_from_settings
 
@@ -120,3 +121,22 @@ async def test_put_file_lands_where_list_keys_can_find_it(storage, tmp_path):
     await storage.put_file(key, str(src), "application/octet-stream")
 
     assert key in await storage.list_keys("backups/")
+
+
+async def test_operational_probes_use_real_s3_streams(storage):
+    await storage.ensure_bucket()
+    await storage.check_health()
+    assert await storage.get("monitoring/storage-probe") == b"ok"
+    import json
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    key = "backups/indiedex-" + now.strftime("%Y%m%dT%H%M%SZ") + ".dump"
+    try:
+        await storage.delete("backups/latest.json")
+        assert await storage.backup_health() is None
+        await storage.put("backups/latest.json", json.dumps({
+            "version": 1, "key": key, "size": 2053, "created_at": now.isoformat(),
+            "pgdmp_verified": True}).encode(), "application/json")
+        result = await storage.backup_health()
+        assert result["valid"] is True and result["age_s"] < 60
+    finally:
+        await storage.delete("backups/latest.json")

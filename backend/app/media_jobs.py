@@ -26,13 +26,15 @@ from starlette.concurrency import run_in_threadpool
 from app.config import settings
 from app.deps import get_storage
 from app.detect_reid import DETECTOR_NAME
+from app.embed import EMBED_DIM, MODEL_NAME
 from app.ids import uuid7
 from app.photos import thumb_key
+from app import screening
+from app.scene import as_wire, digest_frames, from_wire
 from app.scoring import recompute_animal_confidence, save_detection
+from app.reid_recipe import ACTIVE_RECIPE
 
 PIPELINE_VERSION = "stored-webp-q90-yolo26x-miewid-msv3-v1"
-MODEL_NAME = "miewid-msv3"
-EMBED_DIM = 2152
 MAX_FRAMES = 12
 MAX_PHOTOS = 24
 MAX_FRAME_BYTES = 20 * 1024 * 1024
@@ -70,6 +72,11 @@ class FrameResult(WireModel):
     phash: str = Field(pattern=r"^[0-9a-f]{16}$")
     dog_confidence: float = Field(ge=0, le=1)
     cat_confidence: float = Field(ge=0, le=1)
+    # Screening signals (#181, app/scene.py). Optional: a worker that does not
+    # report them yet sends none, and they are stored as "not measured".
+    person: float | None = Field(default=None, ge=0, le=1)
+    person_area: float | None = Field(default=None, ge=0, le=1)
+    indoor: float | None = Field(default=None, ge=0, le=1)
     bbox: tuple[int, int, int, int] | None = None
     vector: list[float] | None = Field(default=None, min_length=EMBED_DIM, max_length=EMBED_DIM)
 
@@ -113,6 +120,7 @@ def token_hash(token: str) -> str:
 
 def completion_digest(body: Completion) -> str:
     content = body.model_dump(mode="json", exclude={"lease_token"})
+    digest_frames(content["frames"])
     content["frames"].sort(key=lambda frame: str(frame["photo_id"]))
     return hashlib.sha256(json.dumps(content, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
@@ -170,6 +178,7 @@ async def claim_job(conn, owner: str, *, cpu: bool = False):
         if job["attempts"] >= settings.media_max_attempts:
             await conn.execute("UPDATE jobs SET status='failed',terminal_outcome='failed',lease_token_hash=NULL,lease_expires_at=NULL,last_error='lease retry limit reached',updated_at=now() WHERE id=$1", job["id"])
             await conn.execute("UPDATE sightings SET processing_state='failed' WHERE id=$1", job["sighting_id"])
+            await owe_staging(conn, job["id"])
             return None
         job = await conn.fetchrow(
             """UPDATE jobs SET status='running',attempts=attempts+1, lease_token_hash=$2,
@@ -319,15 +328,16 @@ async def complete_job(conn, storage, job_id, body: Completion, *, cpu=False):
             # The validated pipeline pins YOLO26x; `body.model` names only
             # the embedder. Persist even frames with no box or embedding.
             await save_detection(conn, frame.photo_id, frame.dog_confidence,
-                                 frame.cat_confidence, model=DETECTOR_NAME)
+                                 frame.cat_confidence, model=DETECTOR_NAME, scene=from_wire(frame))
             if frame.vector is None:
                 continue
             vecs.append(frame.vector)
             box = dict(zip(("x1", "y1", "x2", "y2"), frame.bbox))
-            await conn.execute("""INSERT INTO embeddings (id,photo_id,model,dim,vec_miew,bbox)
-                VALUES ($1,$2,$3,$4,$5::vector,$6::jsonb)
-                ON CONFLICT(photo_id,model) DO UPDATE SET vec_miew=EXCLUDED.vec_miew,bbox=EXCLUDED.bbox,created_at=now()""",
-                uuid7(), frame.photo_id, MODEL_NAME, EMBED_DIM, vector_text(frame.vector), json.dumps(box))
+            await conn.execute("""INSERT INTO embeddings (id,photo_id,model,dim,vec_miew,bbox,recipe)
+                VALUES ($1,$2,$3,$4,$5::vector,$6::jsonb,$7)
+                ON CONFLICT(photo_id,model) DO UPDATE SET vec_miew=EXCLUDED.vec_miew,
+                    bbox=EXCLUDED.bbox,recipe=EXCLUDED.recipe,created_at=now()""",
+                uuid7(), frame.photo_id, MODEL_NAME, EMBED_DIM, vector_text(frame.vector), json.dumps(box), ACTIVE_RECIPE)
         mean = None
         if vecs:
             mean = np.mean(np.asarray(vecs, dtype=np.float64), axis=0)
@@ -336,8 +346,13 @@ async def complete_job(conn, storage, job_id, body: Completion, *, cpu=False):
                 raise HTTPException(422, "frame vectors cancel to zero")
             mean = vector_text(mean / norm)
         outcome = "ready" if vecs else "no_animal"
-        await conn.execute("UPDATE sightings SET dog_confidence=$2,vec_miew=$3::vector,processing_state=$4,phash=COALESCE(phash,$5) WHERE id=$1", sid, max(f.dog_confidence for f in body.frames), mean, outcome, body.frames[0].phash)
+        await conn.execute("""UPDATE sightings SET dog_confidence=$2,vec_miew=$3::vector,
+            processing_state=$4,phash=COALESCE(phash,$5),vec_miew_model=$6,vec_miew_recipe=$7
+            WHERE id=$1""", sid, max(f.dog_confidence for f in body.frames), mean, outcome,
+            body.frames[0].phash, MODEL_NAME if mean else None, ACTIVE_RECIPE if mean else None)
         await recompute_animal_confidence(conn, sid)
+        # From the detections just stored (#181).
+        await screening.screen(conn, sighting.get("capture_id"))
         if vecs and sighting["review_status"] != "rejected":
             await resolve_sighting(conn, sid, auto_merge_min=settings.reid_auto_merge_min,
                 propose_min=settings.reid_propose_min, radius_m=settings.reid_radius_m,
@@ -349,13 +364,29 @@ async def complete_job(conn, storage, job_id, body: Completion, *, cpu=False):
         if not live:
             raise HTTPException(409, "lease expired during completion")
         await conn.execute("UPDATE jobs SET status='done',completion_digest=$2,terminal_outcome=$3,updated_at=now() WHERE id=$1", job_id, digest, outcome)
+        await owe_staging(conn, job_id)
         return {"status": "done", "outcome": outcome, "replayed": False}
+
+
+async def owe_staging(conn, job_id) -> None:
+    """A finished job's temporary uploads are owed a delete, recorded in the
+    transaction that finishes it (docs/ops/media-deletion.md)."""
+    from app.media_purges import owe, staging_prefix
+    await owe(conn, staging_prefix(job_id), "job_finished", "prefix")
+
+
+def purge_staging_later(pool, storage, job_id) -> None:
+    """Try what `owe_staging` recorded now; nothing if nothing was."""
+    from app.media_purges import purge_later, staging_prefix
+    purge_later(pool, storage, staging_prefix(job_id))
 
 
 @router.post("/{job_id}/complete")
 async def complete(job_id: UUID, body: Completion, request: Request, storage=Depends(get_storage)):
     async with request.app.state.pool.acquire() as conn:
-        return await complete_job(conn, storage, job_id, body)
+        result = await complete_job(conn, storage, job_id, body)
+    purge_staging_later(request.app.state.pool, storage, job_id)
+    return result
 
 
 async def fail_job(conn, job_id, body: Failure, *, cpu=False):
@@ -369,13 +400,20 @@ async def fail_job(conn, job_id, body: Failure, *, cpu=False):
             job_id, "pending" if retry else "failed", body.error,
             min(300, 2 ** min(job["attempts"], 8)), None if retry else "failed")
         await conn.execute("UPDATE sightings SET processing_state=$2 WHERE id=$1", job["sighting_id"], "queued" if retry else "failed")
+        if not retry:
+            # Nothing was measured, so screening holds it for a person (#181).
+            await screening.screen(conn, await conn.fetchval(
+                "SELECT capture_id FROM sightings WHERE id=$1", job["sighting_id"]))
+            await owe_staging(conn, job_id)
         return {"status": "queued" if retry else "failed"}
 
 
 @router.post("/{job_id}/fail")
-async def fail(job_id: UUID, body: Failure, request: Request):
+async def fail(job_id: UUID, body: Failure, request: Request, storage=Depends(get_storage)):
     async with request.app.state.pool.acquire() as conn:
-        return await fail_job(conn, job_id, body)
+        result = await fail_job(conn, job_id, body)
+    purge_staging_later(request.app.state.pool, storage, job_id)
+    return result
 
 
 async def cpu_process(pool, storage, job, token):
@@ -391,11 +429,12 @@ async def cpu_process(pool, storage, job, token):
         vector = await run_in_threadpool(embed_analysis, analysis)
         frames.append(FrameResult(photo_id=source["photo_id"], width=source["width"],
             height=source["height"], phash=source["phash"], dog_confidence=analysis.dog_confidence,
-            cat_confidence=analysis.cat_confidence, bbox=analysis.box,
+            cat_confidence=analysis.cat_confidence, bbox=analysis.box, **as_wire(getattr(analysis, "scene", None)),
             vector=vector.tolist() if vector is not None else None))
     body = Completion(lease_token=token, pipeline_version=PIPELINE_VERSION, model=MODEL_NAME, frames=frames)
     async with pool.acquire() as conn:
         await complete_job(conn, storage, job["id"], body, cpu=True)
+    purge_staging_later(pool, storage, job["id"])
 
 
 async def cpu_consumer(pool, storage):
@@ -432,6 +471,7 @@ async def cpu_consumer(pool, storage):
                         from app.capture_jobs import fail_capture_job
                         fail = fail_capture_job if job["pipeline_version"] == MULTI_PIPELINE_VERSION else fail_job
                         await fail(conn, job["id"], Failure(lease_token=token, error="CPU analysis failed"), cpu=True)
+                purge_staging_later(pool, storage, job["id"])
             finally:
                 for task in (work, heartbeat_task):
                     task.cancel()

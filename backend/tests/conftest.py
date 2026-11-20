@@ -57,11 +57,18 @@ def _migrated():
 async def migrated_db(_migrated):
     conn = await asyncpg.connect(settings.test_database_url)
     try:
+        # The audit ledger refuses TRUNCATE (0046); replica mode skips user
+        # triggers for this superuser test reset only.
+        await conn.execute("SET session_replication_role = replica")
         await conn.execute(
             "TRUNCATE observers, sightings, photos, embeddings, individuals, "
             "match_proposals, confirmations, clinical_records, login_tokens, "
-            "areas, individual_names, social_picks, media_purges RESTART IDENTITY CASCADE"
+            "areas, individual_names, social_picks, media_purges, x_post_purges, account_deletions, "
+            "moderation_actions, moderator_alerts, grievances, moderation_mail, "
+            "rate_limit_buckets, auth_failures, join_pow_uses, email_delivery_state, "
+            "email_send_attempts, abuse_hourly RESTART IDENTITY CASCADE"
         )
+        await conn.execute("RESET session_replication_role")
         yield conn
     finally:
         await conn.close()
@@ -81,11 +88,16 @@ async def app_client(_migrated):
     await get_storage().ensure_bucket()
 
     async with app.state.pool.acquire() as c:
+        await c.execute("SET session_replication_role = replica")
         await c.execute(
             "TRUNCATE observers, sightings, photos, embeddings, individuals, "
             "match_proposals, confirmations, clinical_records, login_tokens, "
-            "areas, individual_names, social_picks, media_purges RESTART IDENTITY CASCADE"
+            "areas, individual_names, social_picks, media_purges, x_post_purges, account_deletions, "
+            "moderation_actions, moderator_alerts, grievances, moderation_mail, "
+            "rate_limit_buckets, auth_failures, join_pow_uses, email_delivery_state, "
+            "email_send_attempts, abuse_hourly RESTART IDENTITY CASCADE"
         )
+        await c.execute("RESET session_replication_role")
 
     import httpx
 
@@ -115,16 +127,51 @@ async def authed_client(app_client):
 
 
 @pytest.fixture(autouse=True)
-def _reset_rate_limits():
-    """Every test starts with a full budget.
+def _test_proof_cost(monkeypatch):
+    # Exercise real signed work and replay protection without spending the
+    # production proof cost on every auth integration test.
+    monkeypatch.setattr(settings, "join_pow_bits", 8)
 
-    The limiter stays *enabled* in the suite rather than switched off, so the
-    dependencies are exercised on every request the tests make. No existing
-    test makes more than two calls to any limited endpoint, so a per-test
-    reset is enough to keep them green while keeping the limiter real.
+
+@pytest.fixture
+def passcode_form():
+    import hashlib
+    import itertools
+
+    async def make(client, **fields):
+        response = await client.get("/auth/join/challenge")
+        assert response.status_code == 200, response.text
+        work = response.json()
+        for n in itertools.count():
+            digest = hashlib.sha256(f"{work['challenge']}:{n}".encode()).digest()
+            if not int.from_bytes(digest, "big") >> (256 - work["difficulty"]):
+                return {**fields, "challenge": work["challenge"], "solution": str(n)}
+
+    return make
+
+
+@pytest.fixture(autouse=True)
+def _screening_off():
+    """Uploads go public on save in the suite, as they did before #181.
+
+    Every test observer is a brand-new account and the ONNX weights are not
+    in the repo, so with screening on every upload would be held (new account,
+    and unscreened), and every test about the map, dogs or matching would be
+    a test of screening. Only the decision is off: the `screened()` predicate
+    is in every shared query regardless, and tests/test_screening.py turns
+    the decision on with the `screening_on` fixture.
     """
-    from app.ratelimit import reset
+    from app.config import settings
 
-    reset()
+    before = settings.screening_enabled
+    settings.screening_enabled = False
     yield
-    reset()
+    settings.screening_enabled = before
+
+
+@pytest.fixture
+def screening_on():
+    from app.config import settings
+
+    settings.screening_enabled = True
+    yield settings

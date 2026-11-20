@@ -365,8 +365,10 @@ imported — a console script puts `.venv/bin` on `sys.path`, not the cwd.
 **`main` deploys straight to production.** `.github/workflows/deploy.yml` fires
 on pushes to `main` that can affect the running app, SSHes to the box,
 `git pull` + `docker compose up --build`, then checks the site returns 200 —
-which proves the app boots, not that it works. `/health` also reports whether
-re-ID is `ready` or `degraded`, which is the falsifiable part.
+which proves the app boots, not that it works. Public `/health` is liveness only;
+token-protected `/health/detailed` reports dependencies, queues, GPU readiness
+and local model presence when the CPU path is in use. See
+`docs/ops/launch-monitoring.md` for activation.
 
 There **is** a staging box (`deploy-staging.yml`, manual dispatch). Use it for
 anything touching the ML path; production is one merge away and has no
@@ -385,8 +387,9 @@ So merging is deploying. Before any merge touching the ML path:
       secret is added to GitHub. Once done, `entrypoint.sh` fetches them on every
       future boot and this is never needed again.
 
-      Until then `/health` reports `"reid": "degraded"` and every upload saves
-      with no embedding: re-ID looks deployed and does nothing.
+      Until then protected health reports local models unavailable (when CPU
+      re-ID/fallback is enabled). `uv run python -m app.model_health` checks them
+      inside the API container; public liveness does not expose model details.
 - [ ] Box RAM fits ~430 MB of resident model weights plus runtime.
 - [ ] **Backfill existing photos** — `uv run python scripts/backfill_embeddings.py
       --resolve` from `/app/backend`. Nothing embeds them automatically, and

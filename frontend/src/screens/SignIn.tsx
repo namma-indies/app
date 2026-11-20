@@ -1,5 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { API_BASE } from "../apiBase";
+import LegalLinks from "../components/LegalLinks";
+import { useSignupConsent } from "../components/useSignupConsent";
+import { passcodeProof } from "../authProof";
 
 /** The gate an unauthenticated visitor lands on.
  *
@@ -31,13 +34,27 @@ function Mark() {
 }
 
 export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
-  const [mode, setMode] = useState<"email" | "passcode">("email");
+  const [mode, setMode] = useState<"email" | "passcode" | "reviewer">("email");
+  const [reviewerAvailable, setReviewerAvailable] = useState(false);
+  const [reviewerCode, setReviewerCode] = useState("");
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [passcode, setPasscode] = useState("");
   const [busy, setBusy] = useState(false);
+  // The server made the passcode check harder for now (someone is guessing).
+  const [slowCheck, setSlowCheck] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState<string | null>(null);
+  const consent = useSignupConsent(mode === "passcode");
+
+  useEffect(() => {
+    let active = true;
+    fetch(`${API_BASE}/auth/options`, { credentials: "include", cache: "no-store" })
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => { if (active) setReviewerAvailable(data?.store_reviewer_enabled === true); })
+      .catch(() => { /* The optional door stays hidden if unavailable. */ });
+    return () => { active = false; };
+  }, []);
 
   async function post(path: string, body: Record<string, string>) {
     setBusy(true);
@@ -53,7 +70,12 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
       // a proxy error page). Say so rather than throwing a parse error.
       const data = await res.json().catch(() => null);
       if (!res.ok || !data?.ok) {
-        setError(data?.error ?? "Something went wrong. Try again in a moment.");
+        if (data?.consent_required) consent.refresh(data.consent);
+        const message = typeof data?.error === "string" ? data.error
+          : typeof data?.detail === "string" ? data.detail
+          : res.status === 422 ? "Please check the fields and try again."
+          : "Something went wrong. Try again in a moment.";
+        setError(message);
         return null;
       }
       return data;
@@ -67,16 +89,33 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
 
   async function submitEmail(e: React.FormEvent) {
     e.preventDefault();
-    const data = await post("/auth/email", { email });
+    const data = await post("/auth/email", { email, ...consent.values });
     if (data) setSent(data.message);
   }
 
   async function submitPasscode(e: React.FormEvent) {
     e.preventDefault();
-    const data = await post("/auth/join", { name, passcode });
-    // The session cookie is already set on that response; re-probe rather
-    // than assuming, so the app and the server agree on who we are.
-    if (data) onSignedIn();
+    setBusy(true);
+    setError(null);
+    setSlowCheck(false);
+    try {
+      const proof = await passcodeProof(() => setSlowCheck(true));
+      const data = await post("/auth/join", { name, passcode, ...consent.values, ...proof });
+      // The session cookie is already set on that response; re-probe rather
+      // than assuming, so the app and the server agree on who we are.
+      if (data) onSignedIn();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "The sign-in check failed. Please try again.");
+    } finally {
+      setBusy(false);
+      setSlowCheck(false);
+    }
+  }
+
+  async function submitReviewer(e: React.FormEvent) {
+    e.preventDefault();
+    const data = await post("/auth/reviewer", { secret: reviewerCode });
+    if (data) { setReviewerCode(""); onSignedIn(); }
   }
 
   if (sent) {
@@ -92,6 +131,10 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
         <button className="btn btn-secondary" onClick={() => { setSent(null); setEmail(""); }}>
           Use a different address
         </button>
+        {consent.policy?.enabled && !consent.creating && (
+          <button className="link-btn" onClick={() => { consent.setCreating(true); setSent(null); }}>Create an account</button>
+        )}
+        <LegalLinks />
       </div>
     );
   }
@@ -114,6 +157,7 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
             <input
               id="signin-email"
               type="email"
+              maxLength={320}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@example.com"
@@ -121,21 +165,28 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
               required
               disabled={busy}
             />
-            <button className="btn btn-primary" type="submit" disabled={busy}>
+            {consent.fields}
+            <button className="btn btn-primary" type="submit" disabled={busy || !consent.ready}>
               {busy ? "Sending…" : "Email me a link"}
             </button>
           </form>
+          {consent.policy?.enabled && (
+            <button type="button" className="link-btn" onClick={() => consent.setCreating(!consent.creating)}>
+              {consent.creating ? "Sign in with an existing account" : "New here? Create an account"}
+            </button>
+          )}
           <div className="signin-or">or</div>
           <button className="btn btn-secondary" onClick={() => { setMode("passcode"); setError(null); }}>
             Use a passcode
           </button>
         </>
-      ) : (
+      ) : mode === "passcode" ? (
         <>
           <form className="signin-form" onSubmit={submitPasscode}>
             <label htmlFor="signin-name">Your name</label>
             <input
               id="signin-name"
+              maxLength={200}
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="your email works best"
@@ -147,6 +198,7 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
             <input
               id="signin-passcode"
               type="password"
+              maxLength={512}
               value={passcode}
               onChange={(e) => setPasscode(e.target.value)}
               placeholder="shared code"
@@ -154,9 +206,16 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
               required
               disabled={busy}
             />
-            <button className="btn btn-primary" type="submit" disabled={busy}>
-              {busy ? "Joining…" : "Join with passcode"}
+            {consent.fields}
+            <button className="btn btn-primary" type="submit" disabled={busy || !consent.ready}>
+              {busy ? "Checking…" : "Join with passcode"}
             </button>
+            {busy && slowCheck && (
+              <p className="hint" role="status">
+                Lots of sign-in attempts right now, so this check takes longer than
+                usual — up to a minute or two on some phones. Email sign-in is quicker.
+              </p>
+            )}
           </form>
           <p className="hint">
             Using your email as your name means your sightings follow you when
@@ -167,17 +226,29 @@ export default function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
             Email me a link instead
           </button>
         </>
+      ) : (
+        <>
+          <form className="signin-form" onSubmit={submitReviewer}>
+            <label htmlFor="reviewer-code">Reviewer code</label>
+            <input id="reviewer-code" type="password" autoComplete="off" maxLength={512}
+              value={reviewerCode} onChange={(e) => setReviewerCode(e.target.value)} required disabled={busy} />
+            <p className="hint">Use the code supplied in the store review notes.</p>
+            <button className="btn btn-primary" type="submit" disabled={busy}>
+              {busy ? "Signing in…" : "Sign in as reviewer"}
+            </button>
+          </form>
+          <button className="btn btn-secondary" onClick={() => { setMode("email"); setReviewerCode(""); setError(null); }}>
+            Back to email sign-in
+          </button>
+        </>
       )}
+
+      {reviewerAvailable && mode !== "reviewer" && <button className="link-btn"
+        onClick={() => { setMode("reviewer"); setError(null); }}>Store reviewer</button>}
 
       {/* The gate is where an app reviewer lands before they have credentials,
           so the policy and a way to reach us have to be readable from here. */}
-      <div className="legal-row">
-        <a href="https://nammaindies.org/privacy" target="_blank" rel="noreferrer">
-          privacy
-        </a>
-        <span aria-hidden="true"> · </span>
-        <a href="mailto:nammaindies@gmail.com">contact us</a>
-      </div>
+      <LegalLinks />
     </div>
   );
 }

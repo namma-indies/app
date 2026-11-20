@@ -18,8 +18,14 @@ services:
       args:
         VITE_MULTI_ANIMAL_ENABLED: ${VITE_MULTI_ANIMAL_ENABLED:-false}
         VITE_VOICE_NOTES_ENABLED: ${VITE_VOICE_NOTES_ENABLED:-false}
+        VITE_SELF_HOSTED_ERRORS_ENABLED: ${VITE_SELF_HOSTED_ERRORS_ENABLED:-false}
     restart: unless-stopped
     env_file: .env
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       # Override the localhost defaults in app/config.py to point at the
       # `db` service above. Drop these two (and use the RDS vars from

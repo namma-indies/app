@@ -216,6 +216,8 @@ export default function LocationPicker({
     setSearchNote(null);
     setFound(null);
     try {
+      // searchPlaces coarsens the bias before sending it. Keep the pin itself
+      // precise so choosing this spot still records what the person picked.
       const places = await searchPlaces(q, centreRef.current);
       if (!active.current) return;
       setFound(places);

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useReloadGuard } from "../update/reloadGuard";
 import { decideDescription, UnauthorizedError, type PhotoDescription as Described } from "../api";
 import { highlightSpans, type Highlight } from "./Transcript";
 
@@ -33,6 +34,8 @@ export default function PhotoDescription({ described, highlights = [], onChanged
   const [editing, setEditing] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
+  // The edit draft lives only in this component's state.
+  useReloadGuard(editing !== null || busy);
 
   async function decide(decision: Parameters<typeof decideDescription>[1]) {
     setBusy(true);

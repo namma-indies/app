@@ -91,3 +91,88 @@ def test_backups_live_under_their_own_prefix():
     separable from the photos, which `sightings/` are not."""
     assert backup_db.PREFIX == "backups/"
     assert not backup_db._key().startswith("sightings/")
+
+
+async def test_upload_writes_the_latest_marker_after_a_verified_upload(tmp_path, monkeypatch):
+    import json
+
+    class Storage:
+        def __init__(self):
+            self.objects = {}
+        async def put_file(self, key, path, content_type):
+            self.objects[key] = Path(path).read_bytes()
+            return len(self.objects[key])
+        async def list_keys(self, prefix):
+            return [k for k in self.objects if k.startswith(prefix)]
+        async def put(self, key, data, content_type):
+            assert content_type == "application/json"
+            self.objects[key] = data
+
+    fake = Storage()
+    monkeypatch.setattr(backup_db, "storage_from_settings", lambda: fake)
+    assert await backup_db.upload(_dump(tmp_path, b"PGDMP" + b"\x00" * 4000)) == 0
+    (dump_key,) = [k for k in fake.objects if k.endswith(".dump")]
+    marker = json.loads(fake.objects["backups/latest.json"])
+    assert marker["key"] == dump_key and marker["size"] == 4005 and marker["pgdmp_verified"] is True
+    assert dump_key.endswith(datetime.fromisoformat(marker["created_at"]).strftime("%Y%m%dT%H%M%SZ.dump"))
+
+
+async def test_a_vanished_upload_writes_no_marker(tmp_path, monkeypatch):
+    class Storage:
+        puts = []
+        async def put_file(self, key, path, content_type):
+            return 4005
+        async def list_keys(self, prefix):
+            return []
+        async def put(self, key, data, content_type):
+            self.puts.append(key)
+
+    fake = Storage()
+    monkeypatch.setattr(backup_db, "storage_from_settings", lambda: fake)
+    with pytest.raises(SystemExit):
+        await backup_db.upload(_dump(tmp_path, b"PGDMP" + b"\x00" * 4000))
+    assert fake.puts == []
+
+
+def test_counts_file_is_validated_and_becomes_a_manifest(tmp_path):
+    import json
+
+    good = {"schema_head": "0047_moderation_fixes", "counts": {t: 3 for t in backup_db.MANIFEST_TABLES}}
+    path = tmp_path / "counts.json"
+    path.write_text(json.dumps(good))
+    counts = backup_db.read_counts(str(path))
+    when = datetime(2026, 11, 19, 19, 30, tzinfo=timezone.utc)
+    key = backup_db._key(when)
+    manifest = json.loads(backup_db.manifest(key, 5000, when, counts))
+    assert manifest["key"] == key and manifest["schema_head"] == "0047_moderation_fixes"
+    assert manifest["counts"]["sightings"] == 3 and manifest["created_at"].startswith("2026-11-19T19:30")
+    assert backup_db.manifest_key(key) == key.removesuffix(".dump") + ".json"
+    for bad in ({**good, "counts": {"sightings": 3}}, {**good, "schema_head": ""},
+                {**good, "counts": {**good["counts"], "photos": -1}}):
+        path.write_text(json.dumps(bad))
+        with pytest.raises(SystemExit):
+            backup_db.read_counts(str(path))
+    path.write_text("ERROR: relation does not exist")
+    with pytest.raises(SystemExit):
+        backup_db.read_counts(str(path))
+
+
+async def test_upload_with_counts_writes_manifest_before_the_marker(tmp_path, monkeypatch):
+    import json
+
+    order = []
+    class Storage:
+        async def put_file(self, key, path, content_type):
+            order.append(key)
+            return 4005
+        async def list_keys(self, prefix):
+            return order[:1]
+        async def put(self, key, data, content_type):
+            order.append(key)
+
+    monkeypatch.setattr(backup_db, "storage_from_settings", lambda: Storage())
+    counts = tmp_path / "counts.json"
+    counts.write_text(json.dumps({"schema_head": "x", "counts": {t: 0 for t in backup_db.MANIFEST_TABLES}}))
+    assert await backup_db.upload(_dump(tmp_path, b"PGDMP" + b"\x00" * 4000), str(counts)) == 0
+    assert order[0].endswith(".dump") and order[1] == backup_db.manifest_key(order[0])
+    assert order[2] == "backups/latest.json"

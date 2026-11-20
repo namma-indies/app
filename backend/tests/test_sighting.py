@@ -1,4 +1,5 @@
 import io
+from app.reid_recipe import ACTIVE_RECIPE
 from uuid import UUID
 
 import pytest
@@ -274,8 +275,8 @@ async def test_get_match_does_not_mutate_proposals(authed_client):
         await c.execute(
             "INSERT INTO photos (id, sighting_id, s3_key) VALUES ($1,$2,'k.webp')", pid, sid)
         await c.execute(
-            "INSERT INTO embeddings (id, photo_id, model, dim, vec_miew) "
-            "VALUES ($1,$2,'miewid-msv3',2152,$3::vector)",
+            "INSERT INTO embeddings (id, photo_id, model, dim, vec_miew, recipe) "
+            f"VALUES ($1,$2,'miewid-msv3',2152,$3::vector,'{ACTIVE_RECIPE}')",
             eid, pid, "[" + ",".join(["0.01"] * 2152) + "]")
         await c.execute(
             "INSERT INTO match_proposals (id, sighting_id, candidate_sighting_id, "

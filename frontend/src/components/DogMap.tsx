@@ -111,7 +111,8 @@ export function popupHtml(p: Record<string, string>): string {
         // required too: the button carries the id it would report, so without
         // one there is nothing for the delegated handler to act on.
         p.observer && p.id
-          ? `<button type="button" class="popup-report" data-report="${esc(p.id)}">report</button>`
+          ? `<div class="popup-actions"><button type="button" class="popup-report" data-report="${esc(p.id)}">report</button>` +
+            `<button type="button" class="popup-report" data-block="${esc(p.id)}">block</button></div>`
           : ""
       }
     </div>`;
@@ -244,11 +245,14 @@ function clusterEl(count: number): HTMLElement {
 export default function DogMap({
   sightings,
   onReport,
+  onBlock,
 }: {
   sightings: MappableSighting[];
   /** Called with a sighting id when someone taps `report` in its popup.
    * Omitted on surfaces where reporting makes no sense (your own dex). */
   onReport?: (sightingId: string) => void;
+  /** Called with a sighting id when someone taps `block` (#180). */
+  onBlock?: (sightingId: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -256,6 +260,8 @@ export default function DogMap({
   // the first render's handler forever.
   const onReportRef = useRef(onReport);
   onReportRef.current = onReport;
+  const onBlockRef = useRef(onBlock);
+  onBlockRef.current = onBlock;
   // Read inside map callbacks, which are registered once and would otherwise
   // close over the first render's sightings forever.
   const sightingsRef = useRef(sightings);
@@ -279,9 +285,11 @@ export default function DogMap({
     // and out of view, and per-popup listeners leak with them.
     const container = containerRef.current;
     const onClick = (e: MouseEvent) => {
-      const target = (e.target as HTMLElement | null)?.closest?.("[data-report]");
-      const id = target?.getAttribute("data-report");
+      const el = e.target as HTMLElement | null;
+      const id = el?.closest?.("[data-report]")?.getAttribute("data-report");
       if (id) onReportRef.current?.(id);
+      const blocked = el?.closest?.("[data-block]")?.getAttribute("data-block");
+      if (blocked) onBlockRef.current?.(blocked);
     };
     container.addEventListener("click", onClick);
 

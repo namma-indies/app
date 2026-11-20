@@ -357,8 +357,15 @@ class Worker:
         dog, cat = float(analysis.dog_confidence), float(analysis.cat_confidence)
         if not 0 <= dog <= 1 or not 0 <= cat <= 1:
             raise ProtocolError()
+        # Screening signals for the API (#181); omitted when not measured.
+        scene = getattr(analysis, "scene", None)
+        signals = {} if scene is None else {
+            k: float(getattr(scene, k)) for k in ("person", "person_area", "indoor")}
+        if not all(0 <= v <= 1 for v in signals.values()):
+            raise ProtocolError()
         return dict(photo_id=str(UUID(photo_id)), index=index, width=width, height=height,
-                    phash=phash, dog_confidence=dog, cat_confidence=cat, bbox=bbox, vector=vector)
+                    phash=phash, dog_confidence=dog, cat_confidence=cat, bbox=bbox, vector=vector,
+                    **signals)
 
     async def _process_multi(self, lease):
         from gpu_worker.multi import prepare_capture
@@ -624,7 +631,20 @@ class Worker:
 
     async def run(self):
         errors = 0
+        next_health = 0.0
         while not self.stop.is_set():
+            # Only the model-loaded, serial claim loop reports readiness. A
+            # live lease-renewal task cannot keep a hung native worker healthy.
+            # Best effort so an older API can be rolled forward independently.
+            now = asyncio.get_running_loop().time()
+            if now >= next_health:
+                with suppress(Exception):
+                    async with asyncio.timeout(min(3, self.config.request_timeout)):
+                        await self._api("", {"transcription": self.transcriber is not None,
+                                             "suggestions": self.model is not None,
+                                             "multi_animal": self.config.multi_animal},
+                                        "/internal/worker-health")
+                next_health = asyncio.get_running_loop().time() + 60
             try:
                 busy = await self.run_once()
                 errors = 0

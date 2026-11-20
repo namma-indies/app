@@ -7,9 +7,11 @@ vi.mock("../api", () => ({
   UnauthorizedError: class UnauthorizedError extends Error {},
   HttpError: class HttpError extends Error {
     status: number;
-    constructor(status: number) {
+    retryAfterS: number | null;
+    constructor(status: number, retryAfterS: number | null = null) {
       super(`request failed: ${status}`);
       this.status = status;
+      this.retryAfterS = retryAfterS;
     }
   },
 }));
@@ -39,6 +41,32 @@ beforeEach(() => {
 });
 
 describe("flush", () => {
+  it.each(["sighting", "capture"] as const)("pauses %s uploads for consent without losing bytes or retry identity", async (endpoint) => {
+    const { enqueue, flush, pendingCount, failedCount } = await freshQueue();
+    await enqueue({ ...SAMPLE, upload_endpoint: endpoint,
+      ...(endpoint === "capture" ? { video: new Blob(["clip"], { type: "video/mp4" }) }
+        : { photos: [new Blob(["photo"], { type: "image/jpeg" })], audio: new Blob(["note"], { type: "audio/mp4" }) }),
+    });
+    await enqueue(SAMPLE);
+    const send = endpoint === "capture" ? vi.mocked(postCapture) : vi.mocked(postSighting);
+    send.mockRejectedValueOnce(new HttpError(428));
+    await flush();
+    expect(await pendingCount()).toBe(2);
+    expect(await failedCount()).toBe(0);
+    const first = send.mock.calls[0][0];
+    vi.mocked(postCapture).mockResolvedValue({ capture_id: "capture", processing_state: "queued", sighting_ids: [] });
+    vi.mocked(postSighting).mockResolvedValue({ sighting_id: "sighting", photo_ids: [] });
+    await flush();
+    const retry = send.mock.calls[1][0];
+    expect(retry.client_token).toBe(first.client_token);
+    if (endpoint === "capture") expect(await retry.video?.text()).toBe("clip");
+    else {
+      expect(await retry.photos?.[0].text()).toBe("photo");
+      expect(await retry.audio?.text()).toBe("note");
+    }
+    expect(await pendingCount()).toBe(0);
+    expect(await failedCount()).toBe(0);
+  });
   it("keeps endpoint and token across lost capture acknowledgements, without rerouting legacy items", async () => {
     const { enqueue, flush, pendingCount } = await freshQueue();
     await enqueue({ ...SAMPLE, upload_endpoint: "capture", video: new Blob(["clip"], { type: "video/mp4" }) });

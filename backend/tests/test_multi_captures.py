@@ -74,7 +74,7 @@ def test_track_cannot_mix_covisible_animals_or_species():
         MultiCompletion.model_validate(body)
 
 
-def test_review_requires_exact_nonoverlapping_species_safe_partition():
+def test_review_requires_exact_nonoverlapping_partition():
     a,b,source = uuid4(),uuid4(),uuid4()
     rows = [{"id":a,"source_photo_id":source,"species":"dog"},
             {"id":b,"source_photo_id":source,"species":"dog"}]
@@ -86,8 +86,10 @@ def test_review_requires_exact_nonoverlapping_species_safe_partition():
         CaptureReview(revision=0,groups=[{"instance_ids":[a,a]}])
     rows[1]["source_photo_id"] = uuid4()
     rows[1]["species"] = "cat"
-    with pytest.raises(HTTPException):
-        validate_groups(rows,[AnimalGroup(instance_ids=[a,b])])
+    # Species belongs to the animal now: one box called a cat in one frame
+    # can still be the same dog, and the group says which.
+    validate_groups(rows,[AnimalGroup(instance_ids=[a,b],species="dog")])
+    validate_groups(rows,[AnimalGroup(instance_ids=[a,b])])
 
 
 def test_review_can_leave_out_a_box_that_is_not_an_animal():
@@ -147,7 +149,7 @@ async def test_cpu_fallback_uses_multi_adapter_and_fenced_completion(monkeypatch
         raw_box=(1,1,9,9),crop_box=(0,0,10,10))
     frame = make_frame("photo:0",0,None,100,80,0.9,0,[(detection,np.array([1.0]+[0.0]*2151),None)])
     analysis = associate_frames((frame,),SamplingCoverage("photos",1,1,None,None,None,12,12,True))
-    monkeypatch.setattr(analyse,"analyse_photos",lambda raw:analysis)
+    monkeypatch.setattr(analyse,"analyse_photos",lambda raw,**kw:analysis)
     monkeypatch.setattr(capture_cpu,"evidence_photo",lambda raw,box:SimpleNamespace(
         original=b"crop",thumbnail=b"thumb",content_type="image/webp",width=10,height=10,phash="0123456789abcdef"))
     monkeypatch.setattr(capture_cpu,"capture_sources",AsyncMock(return_value=[{
@@ -163,13 +165,18 @@ async def test_cpu_fallback_uses_multi_adapter_and_fenced_completion(monkeypatch
     assert completion.pipeline_version == MULTI_PIPELINE_VERSION
     assert completion.instances[0].source_photo_id == source_id
     assert not completion.needs_review
+    # The CPU path speaks the same grouping contract as a current worker.
+    (track,) = completion.tracks
+    assert track.confident and track.species == "dog" and track.representative_index == 0
+    assert completion.instances[0].dog_score is None  # a synthetic detection measured none
     assert storage.put.await_count == 2
 
 
 async def seed(conn,body,kind="photo"):
     oid,cid,jid = uuid4(),uuid4(),uuid4()
     await conn.execute("INSERT INTO observers(id) VALUES($1)",oid)
-    await conn.execute("INSERT INTO captures(id,observer_id,kind,captured_at,attrs,processing_state) VALUES($1,$2,$3,now(),'{\"note\":\"shared\"}','processing')",cid,oid,kind)
+    await conn.execute("INSERT INTO captures(id,observer_id,kind,captured_at,attrs,processing_state,clip_s3_key) VALUES($1,$2,$3,now(),'{\"note\":\"shared\"}','processing',$4)",cid,oid,kind,
+        f"captures/{cid}/clip.mp4" if kind == "video" else None)
     if kind == "photo":
         for f in body.frames:
             await conn.execute("INSERT INTO photos(id,capture_id,s3_key,width,height,phash) VALUES($1,$2,$3,$4,$5,$6)",
@@ -199,7 +206,8 @@ async def test_private_status_returns_source_dimensions_without_signing_original
         "source_width": 200, "source_height": 400, "details": {}}
     # Instances, the receipt's sightings, notes added later, transcripts, sounds being transcribed
     # again, open voice-note suggestions.
-    conn = SimpleNamespace(fetch=AsyncMock(side_effect=[[row], [], [], [], [], []]), fetchrow=AsyncMock(return_value=None))
+    # The worker's stored tracks come second (none: an older worker).
+    conn = SimpleNamespace(fetch=AsyncMock(side_effect=[[row], [], [], [], [], [], []]), fetchrow=AsyncMock(return_value=None))
     storage = SimpleNamespace(urls=AsyncMock(side_effect=lambda keys: ["signed:" + key for key in keys]))
     response = await status(conn, storage, capture)
     evidence = response.model_dump(mode="json")["instances"][0]
@@ -224,8 +232,10 @@ async def test_published_name_edits_only_replace_details_without_matching(monkey
     a, b, source, capture_id = [uuid4() for _ in range(4)]
     rows = [{"id": iid, "sighting_id": uuid4(), "source_photo_id": source,
         "species": species, "phash": "0123456789abcdef", "vec": None,
-        "confidence": 0.9, "evidence_photo_id": uuid4()} for iid, species in [(a, "dog"), (b, "cat")]]
-    conn = SimpleNamespace(fetch=AsyncMock(return_value=rows), execute=AsyncMock())
+        "confidence": 0.9, "evidence_photo_id": uuid4(), "track_id": f"track-{species}",
+        "bbox": [1, 1, 9, 9], "source_width": 100, "source_height": 80}
+        for iid, species in [(a, "dog"), (b, "cat")]]
+    conn = SimpleNamespace(fetch=AsyncMock(side_effect=[rows, []]), execute=AsyncMock())
     resolve = AsyncMock()
     monkeypatch.setattr(matching, "resolve_sighting", resolve)
     capture = {"id": capture_id, "published_at": datetime.now(timezone.utc), "attrs": {"note": "shared"}}
@@ -254,10 +264,15 @@ async def test_db_completion_isolated_children_and_replay(migrated_db):
     oid,cid,jid,storage = await seed(conn,body)
     response = await complete_capture_job(conn,storage,jid,body)
     assert response["outcome"] == "ready"
-    children = await conn.fetch("SELECT id,species,vec_miew::text AS vec FROM sightings WHERE capture_id=$1 ORDER BY species",cid)
+    children = await conn.fetch("SELECT id,species,vec_miew::text AS vec,vec_miew_model,vec_miew_recipe FROM sightings WHERE capture_id=$1 ORDER BY species",cid)
     assert len(children) == 2
     assert {r["species"] for r in children} == {"dog","cat"}
     assert children[0]["vec"] != children[1]["vec"]
+    from app.embed import MODEL_NAME
+    from app.reid_recipe import ACTIVE_RECIPE
+    assert all((r["vec_miew_model"], r["vec_miew_recipe"]) == (MODEL_NAME, ACTIVE_RECIPE) for r in children)
+    assert all(r["recipe"] == ACTIVE_RECIPE for r in await conn.fetch(
+        "SELECT e.recipe FROM embeddings e JOIN animal_instances a ON a.id=e.instance_id WHERE a.capture_id=$1", cid))
     assert await conn.fetchval("SELECT count(*) FROM photos WHERE capture_id=$1 AND sighting_id IS NULL",cid) == 1
     assert await conn.fetchval("SELECT count(*) FROM embeddings e JOIN animal_instances a ON a.id=e.instance_id WHERE a.capture_id=$1",cid) == 2
     assert await conn.fetchval("SELECT count(*) FROM match_proposals WHERE sighting_id=ANY($1::uuid[])",[r["id"] for r in children]) == 0
@@ -408,7 +423,8 @@ async def test_db_shared_reports_and_species_matching(migrated_db, second_specie
     assert not (await report_sighting(ids[0],"offensive",None,oid,conn))["hidden"]
     assert (await report_sighting(ids[1],"offensive",None,second,conn))["hidden"]
     assert await conn.fetchval("SELECT count(*) FROM sightings WHERE capture_id=$1 AND review_status='pending'",cid) == 2
-    await review_sighting(ids[0],"rejected",oid,conn)
+    await review_sighting(ids[0], "rejected", reason="Shared capture reviewed",
+                          action=None, moderator_id=oid, conn=conn)
     assert await conn.fetchval("SELECT count(*) FROM sightings WHERE capture_id=$1 AND review_status='rejected'",cid) == 2
 
 
@@ -441,18 +457,25 @@ async def test_db_upload_gate_and_cross_endpoint_idempotency(migrated_db,monkeyp
     assert replay["capture_id"] == legacy and replay["sighting_ids"] == [legacy]
 
 
-def tracked(*frames):
-    """Run the real tracking policy and shape its result as a worker completion would."""
+def tracked(*frames, same_look=False, new_worker=True):
+    """Run the real tracking policy and shape its result as a worker completion would.
+
+    The n-th animal of every frame is the same individual, with its own look
+    (a shared direction plus a little per-view noise); `same_look` gives every
+    animal one look, as look-alike siblings would have.
+    """
     import numpy as np
     from app.detect_reid import AnimalDetection
     from app.tracking import SamplingCoverage, associate_frames, make_frame
-    built, axis = [], 0
+    built, view = [], 0
     for ordinal, species in enumerate(frames):
         evidence = []
         for n, name in enumerate(species):
             vector = np.zeros(2152)
-            vector[axis] = 1.0
-            axis += 1
+            vector[0 if same_look else n] = 1.0
+            vector[100 + view] = 0.3
+            view += 1
+            vector /= np.linalg.norm(vector)
             evidence.append((AnimalDetection(detection_index=n, species=name, confidence=0.9,
                 raw_box=(20*n+1, 1, 20*n+9, 9), crop_box=(20*n, 0, 20*n+10, 10)), vector, None))
         built.append(make_frame(f"photo:{ordinal}", ordinal, None, 100, 80, 0.9, 0, evidence))
@@ -467,8 +490,20 @@ def tracked(*frames):
         "bbox": tuple(int(v) for v in i.detection.raw_box), "crop_bbox": i.detection.crop_box,
         "width": 10, "height": 10, "phash": "0123456789abcdef", "vector": i.vector.tolist()}
         for index, (f, i) in enumerate(observed)]
+    index_of = {i.instance_id: index for index, (_, i) in enumerate(observed)}
+    extra = {}
+    if not new_worker:
+        # An older worker never mixed labels in a track; keep each box its own.
+        for item in instances:
+            item["track_id"] = f"old:{item['index']}"
+    if new_worker:
+        extra = dict(grouping_policy=analysis.tracking_policy, tracks=[dict(track_id=t.track_id,
+            species=t.species, species_uncertain=t.species_uncertain, species_share=t.species_share,
+            confidence=t.confidence, confident=t.confident, reasons=list(t.reasons),
+            representative_index=index_of[t.representative_instance_id]) for t in analysis.tracks])
     return MultiCompletion(lease_token="x"*43, pipeline_version=MULTI_PIPELINE_VERSION,
-        model="miewid-msv3", frames=sources, instances=instances, needs_review=analysis.requires_review)
+        model="miewid-msv3", frames=sources, instances=instances, needs_review=analysis.requires_review,
+        **extra)
 
 
 async def test_db_single_dog_burst_publishes_one_animal_with_mean_vector(migrated_db):
@@ -478,11 +513,14 @@ async def test_db_single_dog_burst_publishes_one_animal_with_mean_vector(migrate
     body = tracked(("dog",), ("dog",), ("dog",))
     oid,cid,jid,storage = await seed(conn,body)
     assert (await complete_capture_job(conn,storage,jid,body))["outcome"] == "ready"
-    (child,) = await conn.fetch("SELECT id,species,vec_miew::text AS vec FROM sightings WHERE capture_id=$1",cid)
+    (child,) = await conn.fetch("SELECT id,species,vec_miew::text AS vec,cover_photo_id FROM sightings WHERE capture_id=$1",cid)
     assert child["species"] == "dog"
     # The sighting's probe is the normalised mean of every view, not the first.
     vec = np.asarray([float(v) for v in child["vec"].strip("[]").split(",")])
-    np.testing.assert_allclose(vec[:3], [1/np.sqrt(3)]*3, atol=1e-6)
+    views = np.array([np.asarray(i.vector) for i in body.instances])
+    mean = views.mean(axis=0)
+    np.testing.assert_allclose(vec, mean / np.linalg.norm(mean), atol=1e-5)
+    assert child["cover_photo_id"] is not None
     assert await conn.fetchval("SELECT count(*) FROM animal_instances WHERE sighting_id=$1",child["id"]) == 3
     # resolve_sighting counts frames from embedded photos on the sighting, so
     # the burst is no longer judged thin evidence one view at a time.
@@ -490,6 +528,7 @@ async def test_db_single_dog_burst_publishes_one_animal_with_mean_vector(migrate
         WHERE p.sighting_id=$1""",child["id"]) == 3
     groups = json.loads(await conn.fetchval("SELECT review_groups FROM captures WHERE id=$1",cid))
     assert [len(g["instance_ids"]) for g in groups] == [3]
+    assert groups[0]["species"] == "dog"
 
 
 async def test_db_dog_and_cat_together_publish_two_animals(migrated_db):
@@ -502,13 +541,53 @@ async def test_db_dog_and_cat_together_publish_two_animals(migrated_db):
     assert sorted((r["species"],r["views"]) for r in rows) == [("cat",2),("dog",2)]
 
 
-async def test_db_two_dogs_in_one_frame_hold_the_capture_for_review(migrated_db):
-    from app.routes.capture import get_capture
+async def test_db_two_distinct_dogs_that_reappear_publish_on_their_own(migrated_db):
+    # Akash, 2026-11-19: a confident grouping no longer waits for a person.
     conn = migrated_db
     body = tracked(("dog","dog"), ("dog",))
+    assert not body.needs_review
+    oid,cid,jid,storage = await seed(conn,body)
+    assert (await complete_capture_job(conn,storage,jid,body))["outcome"] == "ready"
+    rows = await conn.fetch("""SELECT count(a.id) AS views FROM sightings s
+        JOIN animal_instances a ON a.sighting_id=s.id WHERE s.capture_id=$1 GROUP BY s.id""",cid)
+    assert sorted(r["views"] for r in rows) == [1,2]
+
+
+async def test_db_look_alike_dogs_wait_with_the_best_grouping_filled_in(migrated_db):
+    from app.routes.capture import get_capture
+    conn = migrated_db
+    body = tracked(("dog","dog"), ("dog",), same_look=True)
     oid,cid,jid,storage = await seed(conn,body)
     assert (await complete_capture_job(conn,storage,jid,body))["outcome"] == "needs_review"
     assert await conn.fetchval("SELECT count(*) FROM sightings WHERE capture_id=$1",cid) == 0
     status = await get_capture(cid,oid,conn,storage)
     assert status.processing_state == "needs_review"
-    assert sorted(len(g.instance_ids) for g in status.groups) == [1,1,1]
+    assert sorted(len(g.instance_ids) for g in status.groups) == [1,2]
+    assert [h.instance_ids for h in status.animal_hints] == [g.instance_ids for g in status.groups]
+    unsure = [h for h in status.animal_hints if len(h.instance_ids) == 2]
+    assert unsure[0].confident is False and "close_alternative" in unsure[0].reasons
+    assert all(g.species == "dog" for g in status.groups)
+
+
+async def test_db_worker_says_ready_but_an_unsure_track_still_holds(migrated_db):
+    conn = migrated_db
+    body = tracked(("dog",), ("dog",))
+    tracks = [t.model_copy(update={"species_uncertain": True}) for t in body.tracks]
+    body = body.model_copy(update={"tracks": tracks})
+    oid,cid,jid,storage = await seed(conn,body)
+    assert (await complete_capture_job(conn,storage,jid,body))["outcome"] == "needs_review"
+
+
+async def test_db_old_worker_without_tracks_keeps_the_old_meaning(migrated_db):
+    from app.routes.capture import get_capture
+    conn = migrated_db
+    body = tracked(("dog","dog"), ("dog",), new_worker=False)
+    body = body.model_copy(update={"needs_review": True})
+    assert body.tracks is None
+    oid,cid,jid,storage = await seed(conn,body)
+    assert (await complete_capture_job(conn,storage,jid,body))["outcome"] == "needs_review"
+    status = await get_capture(cid,oid,conn,storage)
+    assert len(status.animal_hints) == len(status.groups)
+    assert all(h.confidence is None for h in status.animal_hints)
+    assert not await conn.fetchval("SELECT count(*) FROM capture_tracks WHERE capture_id=$1",cid)
+

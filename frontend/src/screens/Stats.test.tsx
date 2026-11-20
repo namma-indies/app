@@ -8,12 +8,14 @@ vi.mock("../api", async (importOriginal) => ({
   getStats: vi.fn(),
   getStatsAreas: vi.fn(),
   getStatsObservers: vi.fn(),
+  getAbuseSignals: vi.fn(),
 }));
 
 import {
   getStats,
   getStatsAreas,
   getStatsObservers,
+  getAbuseSignals,
   type StatsArea,
   type StatsObserver,
 } from "../api";
@@ -47,6 +49,11 @@ function mock({
     unattributed_sightings: unattributed,
   });
   vi.mocked(getStatsObservers).mockResolvedValue({ observers });
+  vi.mocked(getAbuseSignals).mockResolvedValue({
+    collection_started_at: "2026-11-03T00:00:00Z", hours: [], upload_spikes: [],
+    email_capacity: { daily_budget: 200, reserved_last_24h: 0, accepted_last_24h: 0, send_interval_s: 1, retry_at: null },
+    thresholds: { signups_per_hour: 20, failed_signins_per_hour: 50, upload_spike_hour: 20 },
+  });
 }
 
 describe("Stats", () => {

@@ -12,7 +12,7 @@ from uuid import UUID, uuid5
 import numpy as np
 from fastapi import APIRouter, Depends, Form, HTTPException
 
-from app.aggregates import animal_present
+from app.aggregates import animal_present, countable_sighting, owner_active, screened, visible_to
 from app.auth.deps import require_observer
 from app.config import settings
 from app.deps import get_conn, get_storage
@@ -20,6 +20,8 @@ from app.embed import MODEL_NAME
 from app.ids import uuid7
 from app.matching import find_candidates
 from app.photos import thumb_key
+from app.precision import Located, distance_m, resolve_precision
+from app.reid_recipe import ACTIVE_RECIPE
 from app.storage.s3 import S3Storage
 
 logger = logging.getLogger(__name__)
@@ -58,11 +60,13 @@ async def get_match(
         """
         SELECT EXISTS (
             SELECT 1 FROM photos p
-            JOIN embeddings e ON e.photo_id = p.id
+            JOIN embeddings e ON e.photo_id = p.id AND e.model = $2 AND e.recipe = $3
             WHERE p.sighting_id = $1 AND e.vec_miew IS NOT NULL
         )
         """,
         sighting_id,
+        MODEL_NAME,
+        ACTIVE_RECIPE,
     )
     if not embedded:
         # Distinguishes "not scored yet" from "scored, found nothing" -- the
@@ -86,12 +90,17 @@ async def get_match(
         FROM sightings s
         JOIN photos p ON p.sighting_id = s.id
         JOIN embeddings e ON e.photo_id = p.id AND e.model = $2
-        WHERE s.id = $1 AND e.vec_miew IS NOT NULL
+        WHERE s.id = $1 AND e.vec_miew IS NOT NULL AND e.recipe = $3
         ORDER BY e.created_at
         """,
         sighting_id,
         MODEL_NAME,
+        ACTIVE_RECIPE,
     )
+    if not rows:
+        # Frames can be removed between the existence check and this read.
+        return {"status": "pending", "processing_state": row["processing_state"],
+                "candidates": [], "proposals": []}
     vecs = [
         np.array([float(x) for x in r["vec"].strip("[]").split(",")], dtype=np.float32)
         for r in rows
@@ -105,13 +114,26 @@ async def get_match(
         exclude_sighting_id=sighting_id,
         limit=settings.reid_max_candidates,
     )
+    # Not someone this viewer blocked, or who blocked them (#180). Shown, not
+    # searched: which candidates exist for the matcher is the same for all.
+    # Nor an upload still being screened (#181): matching searches those, so
+    # what is shown has to leave them out.
+    if candidates:
+        hidden = {r["id"] for r in await conn.fetch(
+            f"SELECT s.id FROM sightings s WHERE s.id = ANY($1::uuid[])"
+            f" AND NOT ({visible_to('$2')} AND {screened('s')})",
+            [c.sighting_id for c in candidates], observer_id)}
+        candidates = [c for c in candidates if c.sighting_id not in hidden]
 
     proposals = await conn.fetch(
-        """
+        f"""
         SELECT mp.id, mp.candidate_individual_id, mp.score, i.name
         FROM match_proposals mp
         LEFT JOIN individuals i ON i.id = mp.candidate_individual_id
         WHERE mp.sighting_id = $1 AND mp.status = 'pending'
+          -- The other side of the pair is showing (#181).
+          AND (mp.candidate_sighting_id IS NULL OR EXISTS (
+              SELECT 1 FROM sightings s WHERE s.id = mp.candidate_sighting_id AND {screened('s')}))
         ORDER BY mp.score DESC
         """,
         sighting_id,
@@ -170,12 +192,19 @@ async def list_proposals(
     away. Without a list they are unreachable, which is why `individuals` is
     empty in production despite the pipeline running end to end.
 
-    Returns both sides with a thumbnail and a date each, because the question
+    Returns the matched gallery photo and the query's supporting views, with
+    thumbnails and originals for zoom. Old proposals use the earliest photo.
+    Each side carries a date, because the question
     is "are these the same dog" and it cannot be answered from ids and a
-    score. Nothing about where either sighting was taken: issue #45 keeps exact
-    location to animals you photographed, and a pair card is the wrong place
-    to start leaking it. `mine` per side says only what the viewer already
-    knows.
+    score. `mine` per side says only what the viewer already knows.
+
+    Each side also carries where it was taken, at exactly the precision the
+    public `/map` gives this viewer for that sighting and no finer (issue #45,
+    `app/precision.py`): exact for the viewer's own, the grid cell for anyone
+    else's, and nothing at all for a sighting `/map` would not show this
+    viewer. `distance_m` is measured between the two coordinates returned, never
+    from an exact point the response withholds -- otherwise the distance from
+    the viewer's own exact sighting would locate the other one inside its cell.
 
     Open to every observer. It used to list only pairs where the viewer had
     logged both sightings (issue #29), which left every cross-observer match --
@@ -185,24 +214,39 @@ async def list_proposals(
     """
     rows = await conn.fetch(
         f"""
-        SELECT mp.id, mp.score,
-               a.id AS a_id, a.species AS a_species, a.captured_at AS a_when, pa.s3_key AS a_key,
+        SELECT mp.id, mp.score, mp.query_photo_ids, mp.matched_photo_id,
+               a.id AS a_id, a.species AS a_species, a.captured_at AS a_when, pa.id AS a_photo_id,
                a.observer_id = $1 AS a_mine,
-               b.id AS b_id, b.species AS b_species, b.captured_at AS b_when, pb.s3_key AS b_key,
-               b.observer_id = $1 AS b_mine
+               b.id AS b_id, b.species AS b_species, b.captured_at AS b_when, pb.id AS b_photo_id,
+               b.observer_id = $1 AS b_mine,
+               -- Read only to be passed through resolve_precision below, the
+               -- same function /map uses; never returned as they are for
+               -- anyone else's sighting.
+               ST_Y(a.geog::geometry) AS a_lat, ST_X(a.geog::geometry) AS a_lng,
+               ST_Y(b.geog::geometry) AS b_lat, ST_X(b.geog::geometry) AS b_lng,
+               -- Would /map show this viewer this sighting? The pair filters
+               -- below are close to /map's but not identical (a duplicate, for
+               -- one, is off the map), so the card asks /map's own question
+               -- rather than assuming the answer.
+               EXISTS (SELECT 1 FROM sightings s WHERE s.id = a.id AND s.geog IS NOT NULL
+                       AND {countable_sighting()} AND {visible_to('$1')}) AS a_on_map,
+               EXISTS (SELECT 1 FROM sightings s WHERE s.id = b.id AND s.geog IS NOT NULL
+                       AND {countable_sighting()} AND {visible_to('$1')}) AS b_on_map
         FROM match_proposals mp
         JOIN sightings a ON a.id = mp.sighting_id
         JOIN sightings b ON b.id = mp.candidate_sighting_id
-        -- One representative photo per side. DISTINCT ON inside a lateral
-        -- rather than a join, or a sighting with several frames multiplies the
-        -- proposal into several rows.
+        -- Keep one row per proposal. New proposals show their recorded
+        -- evidence; historical ones fall back to the earliest photo.
+        -- A recorded view first; the earliest photo when none was recorded
+        -- (NULL, or an empty list) or every recorded one is gone, so a card
+        -- is never blank while "same" can still be pressed.
         LEFT JOIN LATERAL (
-            SELECT s3_key FROM photos WHERE sighting_id = a.id
-            ORDER BY created_at, id LIMIT 1
+            SELECT id FROM photos WHERE sighting_id = a.id
+            ORDER BY (id = ANY(COALESCE(mp.query_photo_ids, '{{}}'::uuid[]))) DESC, created_at, id LIMIT 1
         ) pa ON TRUE
         LEFT JOIN LATERAL (
-            SELECT s3_key FROM photos WHERE sighting_id = b.id
-            ORDER BY created_at, id LIMIT 1
+            SELECT id FROM photos WHERE sighting_id = b.id
+            ORDER BY (id = mp.matched_photo_id) DESC NULLS LAST, created_at, id LIMIT 1
         ) pb ON TRUE
         WHERE mp.status = 'pending'
           -- Both sides must be showing. A pair where one photo is hidden
@@ -211,6 +255,16 @@ async def list_proposals(
           -- identity, which no moderator decision afterwards can unpick.
           AND a.review_status = 'valid'
           AND b.review_status = 'valid'
+          -- Nor a pair with someone who has asked to leave (#179).
+          AND {owner_active('a')}
+          AND {owner_active('b')}
+          -- Nor one still held by screening (#181): the same reason as above.
+          AND {screened('a')}
+          AND {screened('b')}
+          -- Nor a pair with someone this viewer blocked, or who blocked them:
+          -- they cannot rule on each other's pairs; anyone else still can.
+          AND {visible_to('$1', 'a')}
+          AND {visible_to('$1', 'b')}
           -- animal_present() is written against alias `s`; this query has no
           -- `s`, only `a` and `b`, so re-alias with a plain string replace
           -- rather than a second function. Safe only because every
@@ -230,37 +284,93 @@ async def list_proposals(
     if not rows:
         return {"proposals": [], "propose_min": settings.reid_propose_min}
 
-    keys, index = [], {}
-    for i, r in enumerate(rows):
-        for side in ("a", "b"):
-            if r[f"{side}_key"]:
-                index[(i, side)] = len(keys)
-                keys.append(thumb_key(r[f"{side}_key"]))
-    urls = await storage.urls(keys)
+    photo_ids = {pid for r in rows for pid in (
+        r["a_photo_id"], r["b_photo_id"], *(r["query_photo_ids"] or [])) if pid}
+    photos = await conn.fetch("""
+        SELECT p.id, p.sighting_id, p.s3_key, ai.id AS instance_id
+        FROM photos p
+        LEFT JOIN animal_instances ai ON ai.evidence_photo_id = p.id
+            AND ai.sighting_id = p.sighting_id
+        WHERE p.id = ANY($1::uuid[])
+        ORDER BY p.created_at, p.id
+    """, list(photo_ids))
+    # Only sign evidence belonging to the expected side, including when an old
+    # proposal has lost its original photo. Array IDs never grant photo access.
+    allowed = {(r["a_id"], pid) for r in rows
+               for pid in (*(r["query_photo_ids"] or []), r["a_photo_id"])}
+    allowed.update((r["b_id"], r["b_photo_id"]) for r in rows)
+    photos = [p for p in photos if (p["sighting_id"], p["id"]) in allowed]
+    keys = list(dict.fromkeys(key for p in photos
+                             for key in (p["s3_key"], thumb_key(p["s3_key"]))))
+    urls = dict(zip(keys, await storage.urls(keys)))
+    by_id = {p["id"]: p for p in photos}
 
-    def thumb(i, side):
-        j = index.get((i, side))
-        return urls[j] if j is not None else None
+    def evidence(pid, sighting_id):
+        p = by_id.get(pid)
+        if p is None or p["sighting_id"] != sighting_id:
+            return None
+        return {"photo_id": str(p["id"]),
+                "instance_id": str(p["instance_id"]) if p["instance_id"] else None,
+                "photo_url": urls[p["s3_key"]],
+                "thumb_url": urls[thumb_key(p["s3_key"])]}
+
+    def where(r, name) -> Located | None:
+        # The viewer's own sighting is theirs to see exactly, as on /map and
+        # /dex. Anyone else's gets exactly what /map would give this viewer:
+        # the same function, the same cell, or nothing when /map shows nothing.
+        mine = r[f"{name}_mine"]
+        if not mine and not r[f"{name}_on_map"]:
+            return None
+        return resolve_precision(r[f"{name}_lat"], r[f"{name}_lng"],
+                                 viewer_contributed=mine, cell_m=settings.map_coarsen_cell_m)
+
+    def location(at: Located | None):
+        if at is None:
+            return None
+        return {"lat": at.lat, "lng": at.lng, "precision": at.precision, "cell_m": at.cell_m}
+
+    def side(r, name, at):
+        primary = evidence(r[f"{name}_photo_id"], r[f"{name}_id"])
+        ids = r["query_photo_ids"] if name == "a" else None
+        views = [view for pid in (ids or [])
+                 if (view := evidence(pid, r[f"{name}_id"])) is not None]
+        if not views and primary is not None:
+            # Nothing recorded, or every recorded view since deleted.
+            views = [primary]
+        return {"sighting_id": str(r[f"{name}_id"]),
+                "species": r[f"{name}_species"],
+                "date": r[f"{name}_when"].date().isoformat(),
+                "thumb_url": primary["thumb_url"] if primary else None,
+                "photo_url": primary["photo_url"] if primary else None,
+                "photo_id": primary["photo_id"] if primary else None,
+                "instance_id": primary["instance_id"] if primary else None,
+                "matched": name == "b" and r["matched_photo_id"] is not None
+                           and r["matched_photo_id"] == r["b_photo_id"],
+                # The proposal recorded its evidence (every new one does, with
+                # a matched photo), but that photo has since been deleted: the
+                # card shows another photo of the sighting and says so.
+                "matched_removed": name == "b" and r["query_photo_ids"] is not None
+                                   and r["matched_photo_id"] is None,
+                "photos": views,
+                "mine": r[f"{name}_mine"],
+                # None when there is no location, or none this viewer may see.
+                "location": location(at)}
+
+    def card(r):
+        a, b = where(r, "a"), where(r, "b")
+        return {
+            "id": str(r["id"]),
+            "score": round(float(r["score"]), 4),
+            "a": side(r, "a", a),
+            "b": side(r, "b", b),
+            # Between the two coordinates above and nothing else. Approximate
+            # whenever either side is an area; the client says so.
+            "distance_m": distance_m(a, b) if a and b else None,
+        }
 
     return {
         "propose_min": settings.reid_propose_min,
-        "proposals": [
-            {
-                "id": str(r["id"]),
-                "score": round(float(r["score"]), 4),
-                "a": {"sighting_id": str(r["a_id"]),
-                      "species": r["a_species"],
-                      "date": r["a_when"].date().isoformat(),
-                      "thumb_url": thumb(i, "a"),
-                      "mine": r["a_mine"]},
-                "b": {"sighting_id": str(r["b_id"]),
-                      "species": r["b_species"],
-                      "date": r["b_when"].date().isoformat(),
-                      "thumb_url": thumb(i, "b"),
-                      "mine": r["b_mine"]},
-            }
-            for i, r in enumerate(rows)
-        ],
+        "proposals": [card(r) for r in rows],
     }
 
 
@@ -357,6 +467,16 @@ async def resolve_proposal(
         # Visibility, not ownership: a sighting reported or taken down since
         # the queue was read must not be folded into an identity.
         if any(r["review_status"] != "valid" for r in locked):
+            raise HTTPException(409, "sighting visibility changed")
+        # Nor one this observer can no longer see: its contributor blocked, or
+        # blocking them, or banned or leaving since the pair was read (#179,
+        # #180). Hidden from the list is not enough while a cached id still
+        # works. Anyone who can still see both sides can still rule.
+        visible = await conn.fetchval(
+            f"""SELECT count(*) FROM sightings s WHERE s.id = ANY($1::uuid[])
+                AND {owner_active('s')} AND {screened('s')} AND {visible_to('$2')}""",
+            [sighting_id, p["candidate_sighting_id"]], observer_id)
+        if visible != len(locked):
             raise HTTPException(409, "sighting visibility changed")
         if verdict == "same":
             from app.matching import ensure_compatible_observations

@@ -65,7 +65,89 @@ def countable_sighting() -> str:
     later copy does not count again (app.identical, migration 0016). It still
     exists, and still shows in its contributor's own /dex.
     """
-    return f"s.review_status = 'valid' AND s.duplicate_of IS NULL AND {animal_present()}"
+    return (f"s.review_status = 'valid' AND s.duplicate_of IS NULL AND {animal_present()}"
+            f" AND {owner_active('s')} AND {screened('s')}")
+
+
+def owner_active(alias: str = "s") -> str:
+    """The sighting's observer still stands behind it.
+
+    A banned observer's sightings are off every shared surface (#180).
+    Someone who has asked to delete their account (#179) is off every shared
+    surface from that moment, not when the purge gets to them: the grace
+    period hides, and the purge erases. A deleted account has nothing left to
+    show, and a passcode account absorbed into an email one (deleted_at, with
+    its sightings moved) has nothing either. Decided by who logged it, never
+    by where, so it cannot reveal anything about a location (#148, #150).
+    """
+    return (f"NOT EXISTS (SELECT 1 FROM observers ox WHERE ox.id = {alias}.observer_id"
+            f" AND (ox.deletion_requested_at IS NOT NULL OR ox.deleted_at IS NOT NULL"
+            f" OR ox.banned_at IS NOT NULL))")
+
+
+def owner_not_leaving(alias: str = "s") -> str:
+    """`owner_active` without the ban: the account is not being deleted or
+    gone. For moderator views only, which keep a banned account's reported
+    items in sight (flagged) while every shared surface hides them."""
+    return (f"NOT EXISTS (SELECT 1 FROM observers ox WHERE ox.id = {alias}.observer_id"
+            f" AND (ox.deletion_requested_at IS NOT NULL OR ox.deleted_at IS NOT NULL))")
+
+
+def screened(alias: str = "s") -> str:
+    """The upload this sighting came from has passed screening (#181).
+
+    Unscreened, held or rejected uploads are off every shared surface: only
+    their owner (`/dex`) and moderators see them. Written so that anything
+    not positively cleared stays hidden: a capture that is missing, or in a
+    state added later, does not show. Next to `owner_active` wherever a
+    surface shows someone else's sightings.
+    """
+    return (f"EXISTS (SELECT 1 FROM captures cs WHERE cs.id = {alias}.capture_id"
+            f" AND {capture_public('cs')})")
+
+
+def capture_public(alias: str = "c") -> str:
+    """The upload (a `captures` row) is past screening: what `screened` asks
+    of a sighting's capture, for queries that start from the capture.
+
+    Reads the wait when called, so build SQL with it at query time, never into
+    a module-level constant.
+    """
+    wait = float(settings.screening_model_wait_s)
+    # `checking`: the detector cleared it and the local model is looking. It
+    # shows once the model has had its time, so a model that is down never
+    # blanks the map (app/model_screening.py).
+    return (f"({alias}.screening IN ('clear','approved')"
+            f" OR ({alias}.screening = 'checking'"
+            f" AND {alias}.screened_at <= now() - {wait!r}::float8 * interval '1 second'))")
+
+
+def not_rejected_upload(alias: str = "s") -> str:
+    """For matching only: anything a moderator has not kept off (#181).
+
+    Re-ID searches over uploads still being screened, so two photos of the
+    same new dog that arrive while both are held or being checked still meet,
+    and their pair shows up by itself once both are public -- every place a
+    candidate or a pair is *shown* checks `screened`. A rejected upload is
+    out: rejected content must not seed identities.
+    """
+    return (f"NOT EXISTS (SELECT 1 FROM captures cr WHERE cr.id = {alias}.capture_id"
+            f" AND cr.screening = 'rejected')")
+
+
+def visible_to(viewer: str, alias: str = "s") -> str:
+    """Neither the viewer nor the sighting's observer has blocked the other (#180).
+
+    Both directions, so that blocking someone also stops them seeing where you
+    go. `viewer` is the SQL for the viewer's id, usually a parameter. Like
+    `owner_active`, it is decided by who logged a sighting and never by where,
+    so a filtered answer is always a subset of what the cell rules already
+    allowed (#148, #150). A moderator ban is in `owner_active`: it hides from
+    everyone, this only from one person.
+    """
+    return (f"NOT EXISTS (SELECT 1 FROM observer_blocks bx WHERE"
+            f" (bx.blocker_id = {viewer} AND bx.blocked_id = {alias}.observer_id)"
+            f" OR (bx.blocked_id = {viewer} AND bx.blocker_id = {alias}.observer_id))")
 
 
 # Bangalore. `captured_at` is timestamptz and date_trunc would otherwise bucket
@@ -240,6 +322,10 @@ async def observer_rows(conn) -> list[dict]:
             o.id,
             o.display_name,
             o.email,
+            -- How many people have blocked them, and whether a moderator has
+            -- banned them (#180): a signal for a person to read, never a trigger.
+            (SELECT count(*) FROM observer_blocks b WHERE b.blocked_id = o.id) AS blocked_by,
+            o.banned_at IS NOT NULL AS banned,
             o.created_via,
             o.trust_tier,
             o.created_at,
@@ -249,8 +335,8 @@ async def observer_rows(conn) -> list[dict]:
             MAX(s.captured_at) FILTER (WHERE {countable_sighting()}) AS last_sighting_at
         FROM observers o
         LEFT JOIN sightings s ON s.observer_id = o.id
-        WHERE o.deleted_at IS NULL
-        GROUP BY o.id, o.display_name, o.email, o.created_via, o.trust_tier, o.created_at
+        WHERE o.deleted_at IS NULL AND o.deletion_requested_at IS NULL
+        GROUP BY o.id, o.display_name, o.email, o.created_via, o.trust_tier, o.created_at, o.banned_at
         ORDER BY sightings DESC, o.created_at ASC
         """
     )

@@ -7,6 +7,7 @@ from uuid import UUID
 
 from app.detect import load_upright
 from app.photos import process_photo
+from app.scene import as_wire
 from app.tracking import CaptureAnalysis
 
 
@@ -16,6 +17,8 @@ class PreparedCapture:
     frames: list[tuple[str, dict]]
     instances: list[tuple[str, dict]]
     uploads: list[dict]
+    # Per-animal grouping and confidence, sent only to an API that accepts it.
+    tracks: list[dict] | None = None
 
     def completion(self, photo_ids):
         frames = []
@@ -31,11 +34,24 @@ class PreparedCapture:
             item = dict(values)
             item["source_photo_id"] = source_ids[source_id]
             instances.append(item)
-        return dict(frames=frames, instances=instances, needs_review=self.analysis.requires_review)
+        body = dict(frames=frames, instances=instances, needs_review=self.analysis.requires_review)
+        if self.tracks is not None:
+            body.update(tracks=self.tracks, grouping_policy=self.analysis.tracking_policy)
+        return body
 
 
 def prepare_capture(adapter, job: dict, directory: str, raw: list[bytes]) -> PreparedCapture:
-    """Persist bounded encoded evidence; no sessions, database, or HTTP here."""
+    """Persist bounded encoded evidence; no sessions, database, or HTTP here.
+
+    The grouping thresholds come from the API with the job (`grouping_policy`,
+    app/config.py); the per-animal results go back only when the job's
+    `accepts` lists "grouping" -- an older API rejects fields it does not know.
+    """
+    from app.tracking import GroupingPolicy
+
+    policy = GroupingPolicy.from_mapping(job.get("grouping_policy"))
+    accepts = job.get("accepts")
+    grouping = isinstance(accepts, list) and "grouping" in accepts
     root = Path(directory)
     source_files = {}
     source_metadata = {}
@@ -68,11 +84,11 @@ def prepare_capture(adapter, job: dict, directory: str, raw: list[bytes]) -> Pre
     if job["kind"] == "video":
         if len(raw) != 1 or len(job["sources"]) != 1 or job["sources"][0]["photo_id"] is not None:
             raise ValueError("invalid video sources")
-        result = adapter.analyse_clip(raw[0], evidence_sink=source_sink)
+        result = adapter.analyse_clip(raw[0], evidence_sink=source_sink, policy=policy)
     elif job["kind"] == "photo":
         if not 1 <= len(raw) == len(job["sources"]) <= 12:
             raise ValueError("invalid photo sources")
-        result = adapter.analyse_photos(raw)
+        result = adapter.analyse_photos(raw, policy=policy)
         for index, (source, data) in enumerate(zip(job["sources"], raw)):
             source_id = f"photo:{index}"
             if len(data) > 32 * 1024 * 1024:
@@ -94,6 +110,7 @@ def prepare_capture(adapter, job: dict, directory: str, raw: list[bytes]) -> Pre
         raise ValueError("capture instance budget exceeded")
     tracks = {iid: track.track_id for track in result.tracks for iid in track.instance_ids}
     frames, evidence = [], []
+    evidence_index = {}
     for frame in result.frames:
         source = source_metadata[frame.source_id]
         timestamp = None if frame.timestamp_seconds is None else round(frame.timestamp_seconds * 1000)
@@ -101,7 +118,7 @@ def prepare_capture(adapter, job: dict, directory: str, raw: list[bytes]) -> Pre
             raise ValueError("invalid evidence timestamp")
         frames.append((frame.source_id, dict(**source, timestamp_ms=timestamp,
             width=frame.width, height=frame.height, dog_confidence=frame.dog_confidence,
-            cat_confidence=frame.cat_confidence)))
+            cat_confidence=frame.cat_confidence, **as_wire(getattr(frame, "scene", None)))))
         image = load_upright(source_files[frame.source_id].read_bytes())
         if image.size != (frame.width, frame.height):
             raise ValueError("source dimensions changed")
@@ -120,8 +137,19 @@ def prepare_capture(adapter, job: dict, directory: str, raw: list[bytes]) -> Pre
                     min(frame.width, math.floor(x2)), min(frame.height, math.floor(y2)))
             if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
                 raise ValueError("raw animal box has no source pixels")
-            evidence.append((frame.source_id, dict(index=index, track_id=tracks[instance.instance_id],
+            item = dict(index=index, track_id=tracks[instance.instance_id],
                 species=detection.species, confidence=detection.confidence, bbox=bbox,
                 crop_bbox=detection.crop_box, width=photo.width, height=photo.height,
-                phash=photo.phash, vector=None if instance.vector is None else instance.vector.tolist())))
-    return PreparedCapture(result, frames, evidence, uploads)
+                phash=photo.phash, vector=None if instance.vector is None else instance.vector.tolist())
+            if grouping:
+                item.update(dog_score=detection.dog_score, cat_score=detection.cat_score)
+            evidence_index[instance.instance_id] = index
+            evidence.append((frame.source_id, item))
+    track_results = None
+    if grouping:
+        track_results = [dict(track_id=t.track_id, species=t.species,
+            species_uncertain=t.species_uncertain, species_share=max(0.5, min(1.0, t.species_share)),
+            confidence=max(0.0, min(1.0, t.confidence)), confident=t.confident,
+            representative_index=evidence_index[t.representative_instance_id], reasons=list(t.reasons))
+            for t in result.tracks]
+    return PreparedCapture(result, frames, evidence, uploads, track_results)

@@ -1,15 +1,21 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from starlette.responses import RedirectResponse
 
 from app.auth.deps import set_session_cookie
 from app.auth.magiclink import consume
+from app.auth.audit import audit_failures
 from app.deps import get_conn
+from app.ratelimit import check, client_key, consume_limit
 
 router = APIRouter()
 
 
 @router.get("/auth/magic-link/consume")
-async def consume_link(token: str, conn=Depends(get_conn)):
+@audit_failures
+async def consume_link(request: Request, token: str = Query(max_length=1024), conn=Depends(get_conn)):
+    # High-entropy token: a plain per-source window, no failure backoff
+    # (which would lock out a whole carrier NAT for one stale link).
+    await check(conn, f"consume:ip:{client_key(request)}", consume_limit())
     oid = await consume(conn, token)
     if oid is None:
         raise HTTPException(status_code=401, detail="invalid or expired link")

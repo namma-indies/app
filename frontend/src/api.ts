@@ -2,6 +2,8 @@
 // httpOnly session cookie set by /auth/magic-link/consume is included.
 
 import { API_BASE } from "./apiBase";
+import { coarsenPlaceBias } from "./precision";
+import { requestConsent } from "./consentEvents";
 import { speciesNoun, speciesWithArticle } from "./species";
 
 // "exif" is a camera-roll import: coordinates read out of the file rather than
@@ -132,7 +134,9 @@ export interface Sighting {
   on_map?: boolean;
   /** Why it does not: a person reported it, a moderator hid it, or the
    * detector found no animal in the frame. */
-  off_map_reason?: "reported" | "hidden" | "no_animal" | null;
+  /** `checking`: not screened yet; `held`: screening is waiting for a
+   * moderator (#181). Either way only its owner can see it. */
+  off_map_reason?: "reported" | "hidden" | "no_animal" | "checking" | "held" | null;
 }
 
 export interface DexResponse {
@@ -238,6 +242,7 @@ export async function readPhotoMetadata(file: Blob): Promise<PhotoMetadata> {
     return NO_METADATA;
   }
   if (res.status === 401) throw new UnauthorizedError();
+  if (res.status === 428) throw responseError(res);
   if (!res.ok) return NO_METADATA;
   try {
     return (await res.json()) as PhotoMetadata;
@@ -298,14 +303,27 @@ export class UnauthorizedError extends Error {
 // message string, so callers (queue.ts's failure classification) don't have
 // to regex-parse prose that could change independently of this file.
 export class HttpError extends Error {
-  constructor(public status: number) {
+  constructor(public status: number, public retryAfterS: number | null = null) {
     super(`request failed: ${status}`);
   }
 }
 
+export function retryAfterSeconds(res: Response): number | null {
+  const raw = res.headers?.get("Retry-After");
+  if (!raw) return null;
+  const seconds = /^\d+$/.test(raw) ? Number(raw) : (Date.parse(raw) - Date.now()) / 1000;
+  return Number.isFinite(seconds) ? Math.min(86400, Math.max(1, Math.ceil(seconds))) : null;
+}
+
+/** Shared by both upload contracts and ordinary API calls. */
+export function responseError(res: Response): HttpError {
+  if (res.status === 428) requestConsent();
+  return new HttpError(res.status, retryAfterSeconds(res));
+}
+
 async function handle<T>(res: Response): Promise<T> {
   if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok) throw new HttpError(res.status);
+  if (!res.ok) throw responseError(res);
   return (await res.json()) as T;
 }
 
@@ -351,7 +369,77 @@ export async function addVoiceNote(
 export async function deleteVoiceNote(noteId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/voice-note/${encodeURIComponent(noteId)}`, { method: "DELETE", credentials: "include" });
   if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok && res.status !== 404) throw new HttpError(res.status);   // already gone is gone
+  if (!res.ok && res.status !== 404) throw responseError(res);   // already gone is gone
+}
+
+/** The signed-in account, and whether it is scheduled for deletion (#179). */
+export interface Account {
+  status: "active" | "pending_deletion";
+  purge_after: string | null;
+  can_cancel: boolean;
+  has_email: boolean;
+  grace_days: number;
+  /** Banned by a moderator (#180): the app is closed to them, but deleting is not. */
+  suspended?: boolean;
+  counts: { uploads: number; sightings: number; voice_notes: number };
+}
+
+/** Reachable while deletion is pending, unlike everything else (403 there). */
+export async function getAccount(): Promise<Account> {
+  return handle(await fetch(`${API_BASE}/account`, { credentials: "include" }));
+}
+
+export async function requestAccountDeletion(): Promise<Account> {
+  return handle(await sendJson("/account/delete", "POST", { confirm: "delete" }));
+}
+
+export async function cancelAccountDeletion(): Promise<Account> {
+  return handle(await sendJson("/account/delete/cancel", "POST", {}));
+}
+
+/** What every other endpoint answers while the account is scheduled for deletion or suspended. */
+export function isAccountRestricted(err: unknown): boolean {
+  return err instanceof HttpError && err.status === 403;
+}
+
+/** Block whoever logged this sighting (#180). Both ways, silently. */
+export async function blockSighting(sightingId: string): Promise<void> {
+  await handle(await sendJson(`/sighting/${encodeURIComponent(sightingId)}/block`, "POST"));
+}
+
+export interface Block { id: string; name: string; created_at: string }
+
+export async function getBlocks(): Promise<{ blocks: Block[] }> {
+  return handle(await fetch(`${API_BASE}/blocks`, { credentials: "include" }));
+}
+
+export async function unblock(blockId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/blocks/${encodeURIComponent(blockId)}`, { method: "DELETE", credentials: "include" });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok && res.status !== 404) throw responseError(res);
+}
+
+/** A moderator's ban (#180): hides everything they logged from everyone. */
+export async function banObserver(observerId: string, reason: string): Promise<void> {
+  await handleWithDetail(await sendJson(`/moderation/observer/${encodeURIComponent(observerId)}/ban`, "POST", { reason }));
+}
+
+export async function unbanObserver(observerId: string, reason: string): Promise<void> {
+  await handleWithDetail(await sendJson(`/moderation/observer/${encodeURIComponent(observerId)}/unban`, "POST", { reason }));
+}
+
+/** Delete an upload: the photo or clip, every animal in it, its notes (#54). */
+export async function deleteCapture(captureId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/capture/${encodeURIComponent(captureId)}`, { method: "DELETE", credentials: "include" });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok && res.status !== 404) throw responseError(res);   // already gone is gone
+}
+
+/** Remove one animal from an upload that has others in it (#54). */
+export async function deleteSighting(sightingId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/sighting/${encodeURIComponent(sightingId)}`, { method: "DELETE", credentials: "include" });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok && res.status !== 404) throw responseError(res);
 }
 
 /** The observer's answer to an AI photo description. */
@@ -378,7 +466,7 @@ export async function redoTranscript(id: string, language: string): Promise<void
     body: JSON.stringify({ language }),
   });
   if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok) throw new HttpError(res.status);
+  if (!res.ok) throw responseError(res);
 }
 
 /** The observer's answer to a suggestion: the option they tapped, or no. */
@@ -485,15 +573,46 @@ export async function getDogs(): Promise<DogsResponse> {
   return handle<DogsResponse>(res);
 }
 
+/** A photo supporting a proposed match. */
+export interface MatchPhoto {
+  photo_id: string;
+  instance_id: string | null;
+  thumb_url: string;
+  photo_url: string;
+}
+
 /** One side of a proposed match. */
 export interface MatchSide {
   sighting_id: string;
   date: string;
   thumb_url: string | null;
+  photo_url?: string | null;
+  photo_id?: string | null;
+  instance_id?: string | null;
+  /** True only when this is the gallery photo recorded with the score. */
+  matched?: boolean;
+  /** The photo recorded with the score has been deleted; another photo of
+   * this sighting is shown instead. */
+  matched_removed?: boolean;
+  /** All contributing query views; one matched photo on the gallery side. */
+  photos?: MatchPhoto[];
   species?: "dog" | "cat" | null;
-  /** The viewer logged this side. Nothing about where it was taken is sent
-   * for either side (issue #45). */
+  /** The viewer logged this side. */
   mine?: boolean;
+  /** Where this side was taken, at exactly the precision /map gives this
+   * viewer (issue #45): exact for their own sighting, the grid cell centre for
+   * anyone else's, and null when there is no location or none they may see.
+   * Older servers omit it. */
+  location?: PairLocation | null;
+}
+
+/** A shown coordinate and what it means; mirrors app/precision.py `Located`. */
+export interface PairLocation {
+  lat: number;
+  lng: number;
+  precision: "exact" | "area";
+  /** Width of the cell an "area" point stands for; null when exact. */
+  cell_m: number | null;
 }
 
 /** A pair the model thinks might be one dog, awaiting a human. */
@@ -504,6 +623,9 @@ export interface Proposal {
   score: number;
   a: MatchSide;
   b: MatchSide;
+  /** Metres between the two locations *as shown*, never between exact points
+   * the server withheld. Null when either side has no location. */
+  distance_m?: number | null;
 }
 
 export interface ProposalsResponse {
@@ -568,8 +690,8 @@ export async function setNoteLanguage(language: NoteLanguage): Promise<{ note_la
 
 /** Used only to decide whether to render the moderation tab. Every moderation
  * endpoint checks the tier itself -- a client-side flag is a suggestion. */
-export async function getMe(): Promise<Me> {
-  const res = await fetch(`${API_BASE}/me`, { credentials: "include" });
+export async function getMe(signal?: AbortSignal): Promise<Me> {
+  const res = await fetch(`${API_BASE}/me`, { credentials: "include", ...(signal ? { signal } : {}) });
   return handle<Me>(res);
 }
 
@@ -631,12 +753,28 @@ export interface SocialQueue {
   queued: SocialPick[];
   attention: SocialPick[];
   posted: SocialPick[];
+  /** Posts of photos their owners have since deleted, owed a delete on X (#54). */
+  takedowns?: SocialTakedown[];
+}
+
+export interface SocialTakedown {
+  id: string;
+  /** Null when the post was started and never confirmed: someone checks X. */
+  x_post_id: string | null;
+  caption: string | null;
+  unconfirmed: boolean;
+  /** Owed because its observer was banned, not because the photo was erased. */
+  banned?: boolean;
+  attempts: number;
+  last_error: string | null;
+  created_at: string;
 }
 
 /** A refusal the moderator should read (409/422 carry a sentence in
  * `detail`), surfaced as the error's message. */
 async function handleWithDetail<T>(res: Response): Promise<T> {
   if (res.status === 401) throw new UnauthorizedError();
+  if (res.status === 428) throw responseError(res);
   if (!res.ok) {
     let detail: unknown;
     try {
@@ -666,6 +804,11 @@ export async function getSocialQueue(): Promise<SocialQueue> {
   return handle(await fetch(`${API_BASE}/social/queue`, { credentials: "include" }));
 }
 
+/** Settle an unconfirmed takedown: the post found on X, or null if none went out. */
+export async function settleTakedown(id: string, xPostId: string | null): Promise<{ status: "owed" | "cleared" }> {
+  return handleWithDetail(await sendJson(`/social/takedown/${encodeURIComponent(id)}`, "POST", { x_post_id: xPostId }));
+}
+
 export async function pickForSocial(sightingId: string, photoId: string, caption: string): Promise<{ id: string }> {
   return handleWithDetail(await sendJson("/social/pick", "POST",
     { sighting_id: sightingId, photo_id: photoId, caption }));
@@ -686,6 +829,9 @@ export async function removeSocialPick(pickId: string): Promise<void> {
  * specific animal sleeps is a different kind of problem from a blurry cat. */
 export type ReportReason =
   | "endangers_dog"
+  | "people_privacy"
+  | "sexual_content"
+  | "illegal_content"
   | "not_a_dog"
   | "wrong_place"
   | "offensive"
@@ -693,6 +839,9 @@ export type ReportReason =
 
 export const REPORT_REASONS: ReportReason[] = [
   "endangers_dog",
+  "people_privacy",
+  "sexual_content",
+  "illegal_content",
   "offensive",
   "not_a_dog",
   "wrong_place",
@@ -704,6 +853,9 @@ export const REPORT_REASONS: ReportReason[] = [
 export function reportReasonLabel(reason: ReportReason, species?: string | null): string {
   switch (reason) {
     case "endangers_dog": return `Puts this ${speciesNoun(species)} at risk`;
+    case "people_privacy": return "People or private information";
+    case "sexual_content": return "Sexual content";
+    case "illegal_content": return "Illegal content";
     case "not_a_dog": return `Not ${speciesWithArticle(species)}`;
     case "offensive": return "Offensive or abusive";
     case "wrong_place": return "Wrong place or time";
@@ -733,6 +885,83 @@ export async function reportSighting(
 
 // --- moderation -------------------------------------------------------------
 
+export interface ModerationAlertStatus {
+  pending_events: number;
+  pending_mail: number;
+  failed_mail: number;
+  /** Given up after the configured number of attempts; needs an operator. */
+  undeliverable_mail?: number;
+  oldest_unsent_age_s?: number | null;
+  recipient_count: number;
+  email_sender: string;
+  delivery_configured: boolean;
+}
+
+export type GrievanceKind = "takedown" | "privacy" | "intimate_imagery" | "government_order" | "other" | "appeal";
+export interface Grievance {
+  id: string;
+  reference: string;
+  kind: GrievanceKind;
+  target: string;
+  sighting_id: string | null;
+  details: string;
+  contact_email: string;
+  status: "open" | "in_review" | "resolved" | "dismissed";
+  received_at: string;
+  acknowledge_due_at: string;
+  resolve_due_at: string;
+  removal_due_at: string | null;
+  acknowledged_at: string | null;
+  acknowledgement_error: string | null;
+  removed_at: string | null;
+  resolved_at: string | null;
+  resolution_reason: string | null;
+  age_seconds: number;
+  acknowledgement_overdue: boolean;
+  resolution_overdue: boolean;
+  removal_overdue: boolean;
+  next_due_at: string | null;
+  legal_confirmation_required: boolean;
+  photos?: { thumb_url: string; photo_url: string }[];
+}
+
+export async function getGrievances(options: { includeClosed?: boolean; reference?: string; offset?: number } = {}): Promise<{
+  items: Grievance[]; legal_note: string; total?: number; next_offset?: number | null }> {
+  const query = new URLSearchParams();
+  if (options.includeClosed) query.set("include_closed", "true");
+  if (options.reference) query.set("reference", options.reference);
+  if (options.offset) query.set("offset", String(options.offset));
+  return handle(await fetch(`${API_BASE}/moderation/grievances?${query}`, { credentials: "include" }));
+}
+
+export async function decideGrievance(id: string, action: "hide" | "resolve" | "dismiss", reason: string, sightingId?: string): Promise<void> {
+  await handleWithDetail(await sendJson(`/moderation/grievances/${encodeURIComponent(id)}/action`, "POST", {
+    action, reason, sighting_id: sightingId || null,
+  }));
+}
+
+export interface ModerationAction {
+  id: string;
+  moderator_id: string;
+  moderator: string | null;
+  target_kind: "sighting" | "observer" | "capture" | "grievance";
+  target_id: string;
+  action: "hide" | "unhide" | "ban" | "unban" | "approve" | "reject" | "dismiss";
+  reason: string;
+  previous_state: string | null;
+  new_state: string | null;
+  created_at: string;
+}
+
+export async function getModerationAlertStatus(): Promise<ModerationAlertStatus> {
+  return handle<ModerationAlertStatus>(await fetch(`${API_BASE}/moderation/alerts/status`, { credentials: "include" }));
+}
+
+export async function getModerationAudit(before?: string): Promise<{ items: ModerationAction[]; next_cursor: string | null }> {
+  const query = before ? `?before=${encodeURIComponent(before)}` : "";
+  return handle(await fetch(`${API_BASE}/moderation/audit${query}`, { credentials: "include" }));
+}
+
 export interface ModerationItem {
   sighting_id: string;
   captured_at: string;
@@ -745,6 +974,18 @@ export interface ModerationItem {
   /** Written by whoever reported it. Untrusted text; React escapes on render. */
   notes: string[];
   thumb_url: string | null;
+  /** Who logged it, for a ban (#180). Moderators only. */
+  observer_id?: string | null;
+  /** Logged by an account a moderator has banned: hidden from everyone else,
+   * still here to be ruled on. */
+  observer_banned?: boolean;
+  severe?: boolean;
+  first_reported_at?: string;
+  last_reported_at?: string;
+  age_seconds?: number;
+  response_due_at?: string;
+  overdue?: boolean;
+  reported_after_review?: boolean;
 }
 
 /** Moderators only. Answers 404 for everyone else, so a non-moderator sees the
@@ -760,9 +1001,13 @@ export async function getModerationQueue(): Promise<{ items: ModerationItem[] }>
 export async function reviewSighting(
   sightingId: string,
   verdict: "valid" | "rejected",
+  reason: string,
+  action?: "hide" | "unhide" | "approve" | "reject" | "dismiss",
 ): Promise<void> {
   const form = new FormData();
   form.append("verdict", verdict);
+  form.append("reason", reason);
+  if (action) form.append("action", action);
   const res = await fetch(`${API_BASE}/sighting/${sightingId}/review`, {
     method: "POST",
     credentials: "include",
@@ -800,15 +1045,75 @@ export async function getFlaggedQueue(): Promise<{ items: FlaggedItem[] }> {
 export async function ruleOnAnimal(
   sightingId: string,
   verdict: "animal" | "no_animal",
+  reason: string,
 ): Promise<void> {
   const form = new FormData();
   form.append("verdict", verdict);
+  form.append("reason", reason);
   const res = await fetch(`${API_BASE}/sighting/${sightingId}/animal`, {
     method: "POST",
     credentials: "include",
     body: form,
   });
   await handle<unknown>(res);
+}
+
+/** Why screening held an upload (#181). `not_screened`: screening never
+ * finished, so nothing is known about it. */
+export type HoldReason =
+  | "person" | "indoor" | "new_account" | "unscreened" | "not_screened"
+  // The local model's second look, when it is on.
+  | "model_person" | "model_home" | "model_sexual" | "model_graphic" | "model_text";
+
+export interface HeldItem {
+  capture_id: string;
+  created_at: string;
+  kind: "photo" | "video";
+  reasons: HoldReason[];
+  /** Who logged it. User-supplied at /join, so untrusted text. */
+  observer: string | null;
+  /** Who logged it, for a ban (#180). Moderators only. */
+  observer_id: string | null;
+  /** Typed by the uploader and public once approved. Untrusted text. */
+  note: string | null;
+  known_names: string[];
+  /** Whole frames, never the animal crops: the question is what the photo
+   * shows. The frames that could have held it come first (`flagged`). */
+  frames: HeldFrame[];
+  /** Every whole frame of the upload; more than `frames` means the rest must
+   * be opened (`getHeldFrames`) before it can be approved. */
+  frame_count: number;
+}
+
+export interface HeldFrame {
+  thumb_url: string;
+  /** Full size, for detail the preview is too small to show. */
+  url: string;
+  /** This frame alone would have held the upload (a person, indoors, or unchecked). */
+  flagged: boolean;
+}
+
+/** Moderators only. Uploads screening held back from everyone but their
+ * owner, oldest first. */
+export async function getHeldQueue(): Promise<{ items: HeldItem[] }> {
+  const res = await fetch(`${API_BASE}/moderation/held`, { credentials: "include" });
+  return handle<{ items: HeldItem[] }>(res);
+}
+
+/** Moderators only. Every whole frame of a held upload. */
+export async function getHeldFrames(captureId: string): Promise<{ frames: HeldFrame[] }> {
+  const res = await fetch(`${API_BASE}/moderation/capture/${encodeURIComponent(captureId)}/frames`, {
+    credentials: "include",
+  });
+  return handle<{ frames: HeldFrame[] }>(res);
+}
+
+/** `approve` shows it to everyone; `reject` keeps it to its owner. Either can
+ * be ruled again, and neither deletes anything. */
+export async function ruleOnUpload(captureId: string, verdict: "approve" | "reject"): Promise<void> {
+  await handleWithDetail(
+    await sendJson(`/moderation/capture/${encodeURIComponent(captureId)}/screening`, "POST", { verdict }),
+  );
 }
 
 // --- stats (moderator dashboard) --------------------------------------------
@@ -859,6 +1164,9 @@ export interface StatsObserver {
   sightings: number;
   confirmed_individuals: number;
   last_sighting_at: string | null;
+  /** How many people have blocked them (#180): something to read, never a trigger. */
+  blocked_by?: number;
+  banned?: boolean;
 }
 
 /** A place a typed search found, for the pick-on-a-map screen (#80). */
@@ -873,15 +1181,21 @@ export interface FoundPlace {
 
 /** Search for a place by name. `near` (where the map is now) ranks nearby
  * results first without hiding the rest. Goes through our server, which
- * caches and paces requests to the geocoder for everyone. */
+ * caches and paces requests to the geocoder for everyone. Only a shared-map
+ * cell centre leaves the client; the server enforces coarsening again. */
 export async function searchPlaces(
   q: string,
   near?: { lat: number; lng: number },
 ): Promise<FoundPlace[]> {
   const params = new URLSearchParams({ q });
   if (near) {
-    params.set("lat", near.lat.toFixed(4));
-    params.set("lng", near.lng.toFixed(4));
+    const config = await fetch(`${API_BASE}/places/config`, { credentials: "include", cache: "no-store" });
+    const { cell_m } = await handle<{ cell_m: number }>(config);
+    const coarse = coarsenPlaceBias(near, cell_m);
+    if (coarse) {
+      params.set("lat", String(coarse.lat));
+      params.set("lng", String(coarse.lng));
+    }
   }
   const res = await fetch(`${API_BASE}/places?${params}`, { credentials: "include" });
   return (await handle<{ places: FoundPlace[] }>(res)).places;
@@ -903,4 +1217,19 @@ export async function getStatsAreas(kind?: string): Promise<StatsAreas> {
 export async function getStatsObservers(): Promise<{ observers: StatsObserver[] }> {
   const res = await fetch(`${API_BASE}/stats/observers`, { credentials: "include" });
   return handle<{ observers: StatsObserver[] }>(res);
+}
+
+export interface AbuseSignals {
+  collection_started_at: string;
+  hours: { hour: string; signups: number; failed_signins: number; auth_throttled: number;
+    uploads: number; upload_throttled: number; email_throttled: number; email_failed: number;
+    signup_spike: boolean; signin_spike: boolean; reviewer_signins?: number; passcode_escalated?: number }[];
+  upload_spikes: { id: string; display_name: string | null; recent: number; previous: number }[];
+  email_capacity: { daily_budget: number; reserved_last_24h: number; accepted_last_24h: number;
+    send_interval_s: number; retry_at: string | null };
+  thresholds: { signups_per_hour: number; failed_signins_per_hour: number; upload_spike_hour: number };
+}
+
+export async function getAbuseSignals(): Promise<AbuseSignals> {
+  return handle(await fetch(`${API_BASE}/moderation/abuse`, { credentials: "include" }));
 }

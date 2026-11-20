@@ -12,9 +12,11 @@ from starlette.concurrency import run_in_threadpool
 from app.auth.deps import require_observer
 from app.capture_contracts import CaptureReceipt, CaptureReview, CaptureStatus, MULTI_PIPELINE_VERSION
 from app.captures import publish_groups, receipt, status, validate_groups
+from app import screening
 from app.config import settings
 from app.deps import get_conn, get_storage
 from app.ids import uuid7
+from app.ratelimit import mark_replay
 from app.photos import process_photo, thumb_key
 from app.routes.sighting import _read_bounded, read_voice_note
 from app.transcription_jobs import enqueue_transcription
@@ -92,6 +94,7 @@ async def create_capture(request: Request, photos: list[UploadFile] | None = Fil
         async with pool.acquire() as conn:
             old = await conn.fetchrow("SELECT * FROM captures WHERE observer_id=$1 AND client_token=$2",observer_id,client_token)
             if old:
+                mark_replay(request)
                 return await receipt(conn,old,duplicate=True)
     if not (settings.multi_animal_enabled and settings.media_jobs_enabled):
         raise HTTPException(404,"multi-animal capture intake is disabled")
@@ -159,6 +162,8 @@ async def create_capture(request: Request, photos: list[UploadFile] | None = Fil
                     $10,$11,$12::jsonb,$13,$14,$15) RETURNING *""",capture_id,observer_id,client_token,
                 "video" if video is not None else "photo",captured_at,reported_at,has_geo,lng,lat,
                 geo_source,geo_accuracy_m,json.dumps(attrs),clip_key,clip_sha,audio_key)
+            # Off every shared surface until screened (#181).
+            await screening.start(conn,capture_id)
             # The language to transcribe in (#167): this note's own, else the usual one.
             if audio_key is not None:
                 hint,forced = await hint_for(conn,observer_id,chosen_language,usual_sent)
@@ -181,4 +186,5 @@ async def create_capture(request: Request, photos: list[UploadFile] | None = Fil
             winner = await conn.fetchrow("SELECT * FROM captures WHERE observer_id=$1 AND client_token=$2",observer_id,client_token)
             if winner is None:
                 raise
+            mark_replay(request)
             return await receipt(conn,winner,duplicate=True)

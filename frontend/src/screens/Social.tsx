@@ -5,13 +5,16 @@ import {
   passForSocial,
   pickForSocial,
   removeSocialPick,
+  settleTakedown,
   UnauthorizedError,
   type SocialPick,
   type SocialQueue,
   type SocialShared,
+  type SocialTakedown,
 } from "../api";
 import { formatDay, formatWhen } from "../formatWhen";
 import { speciesNoun } from "../species";
+import { useReloadGuard } from "../update/reloadGuard";
 
 /** The moderators' POSTS screen: what people have shared, what goes out next
  * on @nammaindies, and what has gone out.
@@ -37,6 +40,7 @@ function SharedCard({ item, onDone, onUnauthorized }: {
   const [caption, setCaption] = useState(item.default_caption);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useReloadGuard(busy || caption !== item.default_caption || photoId !== item.photos[0]?.photo_id);
   const photo = item.photos.find((p) => p.photo_id === photoId) ?? item.photos[0];
   const needsArea = caption.includes(AREA);
 
@@ -111,6 +115,56 @@ function PickRow({ pick, children }: { pick: SocialPick; children?: React.ReactN
   );
 }
 
+export const UNCONFIRMED_TAKEDOWN =
+  "Its owner deleted this photo while a post of it was on its way, and X never confirmed it. Check the account: if the post is there, paste its link; if not, say nothing went out.";
+export const UNCONFIRMED_BANNED_TAKEDOWN =
+  "Its observer was banned while a post of this photo was on its way, and X never confirmed it. Check the account: if the post is there, paste its link; if not, say nothing went out.";
+
+/** The post number from a link to it, or the number itself. */
+export function postIdFrom(text: string): string | null {
+  const t = text.trim();
+  const m = t.match(/\/status(?:es)?\/(\d{1,30})/) ?? t.match(/^(\d{1,30})$/);
+  return m ? m[1] : null;
+}
+
+function TakedownRow({ takedown, onSettled, onUnauthorized }: {
+  takedown: SocialTakedown; onSettled: () => void; onUnauthorized: () => void;
+}) {
+  const [link, setLink] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  async function settle(xPostId: string | null) {
+    try {
+      await settleTakedown(takedown.id, xPostId);
+      onSettled();
+    } catch (err) {
+      if (err instanceof UnauthorizedError) onUnauthorized();
+      else setError(err instanceof Error ? err.message : "Couldn't save that. Try again.");
+    }
+  }
+  if (!takedown.unconfirmed) {
+    return (
+      <div className="match-card">
+        <p className="hint">
+          {takedown.banned ? "A photo by a banned account." : "A photo deleted by its owner."} Its post is being taken down
+          {takedown.attempts > 0 ? ` (tried ${takedown.attempts}×${takedown.last_error ? `: ${takedown.last_error}` : ""})` : ""}.
+        </p>
+        {takedown.x_post_id && <a className="link-btn" href={postUrl(takedown.x_post_id)} target="_blank" rel="noreferrer">View on X</a>}
+      </div>
+    );
+  }
+  const id = postIdFrom(link);
+  return (
+    <div className="match-card">
+      <p className="under-review">{takedown.banned ? UNCONFIRMED_BANNED_TAKEDOWN : UNCONFIRMED_TAKEDOWN}</p>
+      {takedown.caption && <p className="hint">“{takedown.caption}”</p>}
+      <input aria-label="link to the post on X" value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://x.com/…/status/…" />
+      <button className="link-btn" disabled={!id} onClick={() => void settle(id)}>Take this post down</button>
+      <button className="link-btn" onClick={() => void settle(null)}>Nothing went out</button>
+      {error && <p className="hint place-warning" role="alert">{error}</p>}
+    </div>
+  );
+}
+
 export default function Social({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [shared, setShared] = useState<SocialShared[] | null>(null);
   const [queue, setQueue] = useState<SocialQueue | null>(null);
@@ -159,6 +213,14 @@ export default function Social({ onUnauthorized }: { onUnauthorized: () => void 
 
   return (
     <div className="review">
+      {(queue.takedowns ?? []).length > 0 && (
+        <>
+          <div className="journal-head">TO TAKE DOWN FROM X</div>
+          {(queue.takedowns ?? []).map((t) => (
+            <TakedownRow key={t.id} takedown={t} onSettled={() => void load()} onUnauthorized={onUnauthorized} />
+          ))}
+        </>
+      )}
       {queue.attention.length > 0 && (
         <>
           <div className="journal-head">NEEDS ATTENTION</div>

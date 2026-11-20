@@ -38,7 +38,7 @@ describe("uploads in the Journal", () => {
     const entry = screen.getByRole("article", { name: "Upload that needs you" });
     expect(entry).toHaveClass("needs-review");
     expect(within(entry).getByRole("img")).toHaveAttribute("src", "held_thumb.webp");
-    await userEvent.click(within(entry).getByRole("button", { name: "Separate the animals" }));
+    await userEvent.click(within(entry).getByRole("button", { name: "Check the animals" }));
     expect(screen.getByText("review sheet for held")).toBeInTheDocument();
   });
 
@@ -78,18 +78,20 @@ describe("uploads in the Journal", () => {
   });
 
   it("adds no entry of its own for an upload that finished", async () => {
-    load([sighting("a")], [upload("done", "ready", { sighting_ids: ["a"] }), upload("empty", "no_animal")]);
+    load([sighting("a")], [upload("done", "ready", { sighting_ids: ["a"] })]);
     await journal();
     expect(screen.queryByText(/animal sightings? saved/)).not.toBeInTheDocument();
     expect(screen.queryByRole("article", { name: /upload/i })).not.toBeInTheDocument();
   });
 
-  it("shows uploads still processing, or that failed, as plain entries", async () => {
-    load([], [upload("q", "queued"), upload("f", "failed")]);
+  it("shows uploads still processing, that failed, or with no animal, as plain entries", async () => {
+    load([], [upload("q", "queued"), upload("f", "failed"), upload("e", "no_animal")]);
     await journal();
     expect(screen.getByText("Uploaded · waiting to process")).toBeInTheDocument();
     expect(screen.getByText("Processing failed · upload saved")).toBeInTheDocument();
-    for (const entry of screen.getAllByRole("article", { name: "Upload in progress" })) expect(entry).not.toHaveClass("needs-review");
+    expect(screen.getByText("No animal detected · matching unavailable")).toBeInTheDocument();
+    expect(screen.getByRole("article", { name: "Upload in progress" })).not.toHaveClass("needs-review");
+    for (const entry of screen.getAllByRole("article", { name: "Unfinished upload" })) expect(entry).not.toHaveClass("needs-review");
   });
 
   it("drops the entry and shows the sighting once a held upload publishes", async () => {

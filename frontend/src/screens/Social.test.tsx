@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   getSocialQueue,
@@ -9,17 +9,35 @@ import {
   passForSocial,
   pickForSocial,
   removeSocialPick,
+  settleTakedown,
   type SocialQueue,
   type SocialShared,
 } from "../api";
 import Social from "./Social";
+import { createUpdateController } from "../update/appUpdate";
+import { isBusy, onBusyChange } from "../update/reloadGuard";
 
 vi.mock("../api", async (original) => ({
   ...await original<typeof import("../api")>(),
   getSocialShared: vi.fn(), getSocialQueue: vi.fn(), pickForSocial: vi.fn(),
-  passForSocial: vi.fn(), removeSocialPick: vi.fn(),
+  passForSocial: vi.fn(), removeSocialPick: vi.fn(), settleTakedown: vi.fn(),
 }));
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+const stopUpdates: (() => void)[] = [];
+afterEach(() => {
+  stopUpdates.splice(0).forEach((stop) => stop());
+  cleanup();
+  vi.clearAllMocks();
+});
+
+function updates() {
+  const reload = vi.fn();
+  const setPrompt = vi.fn();
+  const controller = createUpdateController({
+    isBusy, onBusyChange, reload, setPrompt, isHidden: () => true, defer: (cb) => cb(),
+  });
+  stopUpdates.push(controller.dispose);
+  return { controller, reload, setPrompt };
+}
 
 const shared = (over: Partial<SocialShared> = {}): SocialShared => ({
   sighting_id: "s1", captured_at: "2026-10-24T09:00:00Z", species: "dog", handle: "a_handle",
@@ -122,5 +140,94 @@ describe("the POSTS screen", () => {
     render(<Social onUnauthorized={() => {}} />);
     expect(await screen.findByText(
       "Posting didn't confirm. Check @nammaindies on X before anything else posts.")).toBeInTheDocument();
+  });
+});
+
+describe("updates while preparing a post (#175)", () => {
+  it("keeps an edited caption through an update and a failed save", async () => {
+    vi.mocked(pickForSocial).mockRejectedValue(new Error("Try again."));
+    const u = updates();
+    const view = render(<Social onUnauthorized={() => {}} />);
+    const caption = await screen.findByLabelText("Caption");
+    expect(isBusy()).toBe(false);
+    fireEvent.change(caption, { target: { value: "A caption still being written" } });
+    u.controller.updateReady();
+    expect(u.reload).not.toHaveBeenCalled();
+    expect(u.setPrompt).toHaveBeenCalledWith(true);
+    await userEvent.click(screen.getByRole("button", { name: "Queue for X" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Try again.");
+    expect(caption).toHaveValue("A caption still being written");
+    expect(u.reload).not.toHaveBeenCalled();
+    view.unmount();
+    expect(u.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("holds a changed photo choice until it is restored", async () => {
+    const u = updates();
+    render(<Social onUnauthorized={() => {}} />);
+    await screen.findByLabelText("Caption");
+    await userEvent.click(screen.getByRole("button", { name: "photo 2" }));
+    u.controller.updateReady();
+    expect(u.reload).not.toHaveBeenCalled();
+    expect(u.setPrompt).toHaveBeenCalledWith(true);
+    await userEvent.click(screen.getByRole("button", { name: "photo 1" }));
+    expect(isBusy()).toBe(false);
+    expect(u.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("holds an unchanged card while saving, then releases after success", async () => {
+    let finish!: (pick: { id: string }) => void;
+    vi.mocked(pickForSocial).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const u = updates();
+    render(<Social onUnauthorized={() => {}} />);
+    await screen.findByLabelText("Caption");
+    expect(isBusy()).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "Queue for X" }));
+    u.controller.updateReady();
+    expect(u.reload).not.toHaveBeenCalled();
+    expect(u.setPrompt).toHaveBeenCalledWith(true);
+    await act(async () => finish({ id: "new" }));
+    expect(screen.queryByLabelText("Caption")).not.toBeInTheDocument();
+    expect(isBusy()).toBe(false);
+    expect(u.reload).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Takedowns of deleted photos (#54)", () => {
+  it("reads a post number from a link or the number itself", async () => {
+    const { postIdFrom } = await import("./Social");
+    expect(postIdFrom("https://x.com/nammaindies/status/1850123456789?s=20")).toBe("1850123456789");
+    expect(postIdFrom(" 1850123456789 ")).toBe("1850123456789");
+    expect(postIdFrom("not a post")).toBeNull();
+  });
+});
+
+describe("an unconfirmed takedown", () => {
+  const takedown = { id: "t1", x_post_id: null, caption: "maybe out", unconfirmed: true, attempts: 0,
+    last_error: null, created_at: "2026-11-02T09:00:00Z" };
+
+  it("takes down the post a moderator finds, or clears it when none went out", async () => {
+    vi.mocked(getSocialQueue).mockResolvedValue({ ...emptyQueue, takedowns: [takedown] });
+    vi.mocked(settleTakedown).mockResolvedValue({ status: "owed" });
+    render(<Social onUnauthorized={() => {}} />);
+    const take = await screen.findByRole("button", { name: "Take this post down" });
+    expect(take).toBeDisabled();
+    await userEvent.type(screen.getByLabelText("link to the post on X"), "https://x.com/nammaindies/status/42");
+    await userEvent.click(take);
+    expect(settleTakedown).toHaveBeenCalledWith("t1", "42");
+    await userEvent.click(screen.getByRole("button", { name: "Nothing went out" }));
+    expect(settleTakedown).toHaveBeenLastCalledWith("t1", null);
+  });
+});
+
+describe("a takedown owed because its observer was banned", () => {
+  it("says the account was banned rather than that the owner deleted it", async () => {
+    vi.mocked(getSocialQueue).mockResolvedValue({ ...emptyQueue, takedowns: [
+      { id: "t2", x_post_id: "77", caption: null, unconfirmed: false, banned: true, attempts: 0,
+        last_error: null, created_at: "2026-11-02T09:00:00Z" },
+    ] });
+    render(<Social onUnauthorized={() => {}} />);
+    expect(await screen.findByText(/A photo by a banned account\./)).toBeInTheDocument();
+    expect(screen.queryByText(/deleted by its owner/)).not.toBeInTheDocument();
   });
 });

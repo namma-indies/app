@@ -34,9 +34,10 @@ from uuid import UUID
 import asyncpg
 import numpy as np
 
-from app.aggregates import animal_present, coarse_geog
+from app.aggregates import animal_present, coarse_geog, not_rejected_upload, owner_active
 from app.config import settings
 from app.embed import EMBED_DIM, MODEL_NAME
+from app.reid_recipe import ACTIVE_RECIPE
 
 # How many neighbours the ANN stage pulls before exact re-ranking. Larger costs
 # little (the exact pass is a dot product over a shortlist) and protects
@@ -51,6 +52,7 @@ class Candidate:
     individual_id: UUID | None
     similarity: float  # cosine in [-1, 1]; exact, full precision
     distance_m: float | None
+    instance_id: UUID | None = None
 
 
 def _to_pgvector(vec: np.ndarray) -> str:
@@ -105,7 +107,7 @@ async def find_candidates(
     # no inferable type -- Postgres raises IndeterminateDatatypeError. That is
     # exactly what happened to sightings with no GPS, the case this function
     # claims to support: the geo predicates vanished and $3/$4 became untypeable.
-    params: list = [qs, MODEL_NAME, exclude_sighting_id]
+    params: list = [qs, MODEL_NAME, exclude_sighting_id, ACTIVE_RECIPE]
     p_vecs, p_model, p_excl = "$1", "$2", "$3"
     if has_geo:
         # THE VICINITY IS MEASURED FROM CELL TO CELL, NEVER FROM A POINT
@@ -131,7 +133,7 @@ async def find_candidates(
         # on this anyway, so a spatial index had little to save.
         reach = radius_m + settings.reid_slack_m()
         params += [lng, lat, reach]
-        p_lng, p_lat, p_radius = "$4", "$5", "$6"
+        p_lng, p_lat, p_radius = "$5", "$6", "$7"
         here = f"ST_SetSRID(ST_MakePoint({p_lng}, {p_lat}), 4326)::geography"
         here_cell = coarse_geog(here)
         geo_filter = (
@@ -148,14 +150,15 @@ async def find_candidates(
             SELECT unnest({p_vecs}::text[])::vector({EMBED_DIM}) AS v
         ),
         shortlist AS (
-            SELECT DISTINCT hits.photo_id, hits.vec_miew, hits.sighting_id
+            SELECT DISTINCT hits.photo_id, hits.instance_id, hits.vec_miew, hits.sighting_id
             FROM q
             CROSS JOIN LATERAL (
-                SELECT e.photo_id, e.vec_miew, p.sighting_id
+                SELECT e.photo_id, e.instance_id, e.vec_miew, p.sighting_id
                 FROM embeddings e
                 JOIN photos p ON p.id = e.photo_id
                 JOIN sightings s ON s.id = p.sighting_id
                 WHERE e.model = {p_model}
+                  AND e.recipe = $4
                   AND e.vec_miew IS NOT NULL
                   -- Rejected content must not seed identities. A moderator
                   -- taking a sighting down and it still being the reason two
@@ -172,6 +175,12 @@ async def find_candidates(
                   -- REID_CONF_THRESHOLD = 0.10 can produce a box, and so an
                   -- embedding, for a frame the map would not show.
                   AND {animal_present()}
+                  -- Nor anything of someone who has asked to delete their account.
+                  AND {owner_active('s')}
+                  -- Nor one a moderator rejected at screening (#181). One still
+                  -- being screened is searched, and hidden where shown: a pair
+                  -- made with it now appears by itself once it is public.
+                  AND {not_rejected_upload('s')}
                   AND ({p_excl}::uuid IS NULL OR s.id <> {p_excl}::uuid)
                   AND NOT EXISTS (
                       SELECT 1 FROM sightings query WHERE query.id={p_excl}::uuid
@@ -189,19 +198,21 @@ async def find_candidates(
         scored AS (
             SELECT sl.sighting_id,
                    sl.photo_id,
+                   sl.instance_id,
                    MAX(1 - (sl.vec_miew <=> q.v)) AS similarity
             FROM shortlist sl CROSS JOIN q
-            GROUP BY sl.sighting_id, sl.photo_id
+            GROUP BY sl.sighting_id, sl.photo_id, sl.instance_id
         )
         SELECT DISTINCT ON (sc.sighting_id)
                sc.sighting_id,
                sc.photo_id,
+               sc.instance_id,
                s.individual_id,
                sc.similarity,
                {distance} AS distance_m
         FROM scored sc
         JOIN sightings s ON s.id = sc.sighting_id
-        ORDER BY sc.sighting_id, sc.similarity DESC
+        ORDER BY sc.sighting_id, sc.similarity DESC, sc.photo_id
     """
     # One row per candidate sighting (its best-matching photo); re-sort by score
     # and cut, which DISTINCT ON cannot do in the same pass.
@@ -227,6 +238,7 @@ async def find_candidates(
             individual_id=r["individual_id"],
             similarity=float(r["similarity"]),
             distance_m=float(r["distance_m"]) if r["distance_m"] is not None else None,
+            instance_id=r["instance_id"],
         )
         for r in rows
     ]
@@ -327,19 +339,26 @@ async def _resolve_sighting(
                ST_Y(geog::geometry) AS lat,
                ST_X(geog::geometry) AS lng
         FROM sightings WHERE id = $1 AND vec_miew IS NOT NULL
-        """,
-        sighting_id,
-    )
-    frame_count = await conn.fetchval(
-        """
-        SELECT count(*) FROM photos p
-        JOIN embeddings e ON e.photo_id = p.id AND e.model = $2
-        WHERE p.sighting_id = $1 AND e.vec_miew IS NOT NULL
+          AND vec_miew_model = $2 AND vec_miew_recipe = $3
         """,
         sighting_id,
         MODEL_NAME,
+        ACTIVE_RECIPE,
     )
-    if mean is not None:
+    frames = await conn.fetch(
+        """
+        SELECT p.id FROM photos p
+        JOIN embeddings e ON e.photo_id = p.id AND e.model = $2
+        WHERE p.sighting_id = $1 AND e.vec_miew IS NOT NULL AND e.recipe = $3
+        ORDER BY p.created_at, p.id
+        """,
+        sighting_id,
+        MODEL_NAME,
+        ACTIVE_RECIPE,
+    )
+    query_photo_ids = [r["id"] for r in frames]
+    frame_count = len(query_photo_ids)
+    if mean is not None and frame_count:
         rows = [mean]
     else:
         rows = await conn.fetch(
@@ -350,11 +369,12 @@ async def _resolve_sighting(
             FROM sightings s
             JOIN photos p ON p.sighting_id = s.id
             JOIN embeddings e ON e.photo_id = p.id AND e.model = $2
-            WHERE s.id = $1 AND e.vec_miew IS NOT NULL
+            WHERE s.id = $1 AND e.vec_miew IS NOT NULL AND e.recipe = $3
             ORDER BY e.created_at
             """,
             sighting_id,
             MODEL_NAME,
+            ACTIVE_RECIPE,
         )
     if not rows:
         # No embedding yet (or no animal found). Nothing to decide.
@@ -464,8 +484,9 @@ async def _resolve_sighting(
             """
             INSERT INTO match_proposals
                 (id, sighting_id, candidate_individual_id, candidate_sighting_id,
-                 score, method, status)
-            VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+                 score, method, status, matched_photo_id, matched_instance_id,
+                 query_photo_ids)
+            VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9)
             """,
             pid,
             sighting_id,
@@ -473,6 +494,9 @@ async def _resolve_sighting(
             c.sighting_id,
             c.similarity,
             MODEL_NAME,
+            c.photo_id,
+            c.instance_id,
+            query_photo_ids,
         )
         proposal_ids.append(pid)
 

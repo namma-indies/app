@@ -42,7 +42,7 @@ from app.deps import get_conn, get_storage
 from app.ids import uuid7
 from app.media_purges import lock_key, purge_later
 from app.note_language import check_choice, hint_for
-from app.ratelimit import check, voice_note_limit
+from app.ratelimit import REPLAY_HEADER, check, voice_note_limit
 from app.routes.capture import owned
 from app.routes.sighting import read_voice_note
 from app.transcription_jobs import enqueue_transcription, transcription_enabled
@@ -53,11 +53,11 @@ router = APIRouter()
 _NOTE_NAMESPACE = UUID("4f1c2a8e-7d3b-5e9a-b6c4-0a1d2e3f4b5c")
 
 
-def _ready(observer_id: UUID) -> None:
+async def _ready(conn, observer_id: UUID) -> None:
     # Without a worker transcribing, a note would only ever say "transcribing".
     if not transcription_enabled():
         raise HTTPException(503, "voice notes cannot be added right now")
-    check(f"voice-note:obs:{observer_id}", voice_note_limit())
+    await check(conn, f"voice-note:obs:{observer_id}", voice_note_limit())
 
 
 async def _count(conn, capture_id: UUID, sighting_id: UUID | None) -> int:
@@ -73,7 +73,7 @@ async def _already(conn, observer_id: UUID, client_token: str | None) -> JSONRes
     found = await conn.fetchval(
         "SELECT id FROM voice_notes WHERE observer_id=$1 AND client_token=$2", observer_id, client_token)
     return None if found is None else JSONResponse(
-        {"note_id": str(found), "duplicate": True}, status_code=202)
+        {"note_id": str(found), "duplicate": True}, status_code=202, headers={REPLAY_HEADER: "1"})
 
 
 def _note_id(observer_id: UUID, client_token: str | None) -> UUID:
@@ -98,8 +98,16 @@ async def _add(conn, storage, observer_id: UUID, capture_id: UUID, legacy: bool,
     prefix = f"sightings/{capture_id}" if legacy else f"captures/{capture_id}"
     key = f"{prefix}/notes/{note_id}.{ext}"
     async with conn.transaction():
-        # Serialises two notes saved at once, so the limit holds.
-        await conn.execute("SELECT 1 FROM captures WHERE id=$1 FOR UPDATE", capture_id)
+        # Serialises two notes saved at once, so the limit holds -- and with a
+        # deletion (app/erasure.py), which takes the same lock: whatever was
+        # checked before it was taken is checked again here, before any bytes
+        # are written, so a note cannot land on an upload or animal just deleted.
+        if not await conn.fetchval(
+                "SELECT 1 FROM captures WHERE id=$1 AND observer_id=$2 FOR UPDATE", capture_id, observer_id):
+            raise HTTPException(404, "no such capture")
+        if sighting_id is not None and not await conn.fetchval(
+                "SELECT 1 FROM sightings WHERE id=$1 AND capture_id=$2", sighting_id, capture_id):
+            raise HTTPException(404, "no such sighting")
         # The same recording saved twice at once: the second finds the first.
         if (done := await _already(conn, observer_id, client_token)) is not None:
             return done
@@ -130,7 +138,7 @@ async def add_to_sighting(sighting_id: UUID, audio: UploadFile = File(...),
                           usual_language: str | None = Form(None, max_length=8),
                           observer_id: UUID = Depends(require_observer), conn=Depends(get_conn),
                           storage=Depends(get_storage)):
-    _ready(observer_id)
+    await _ready(conn, observer_id)
     row = await conn.fetchrow(
         """SELECT s.capture_id, c.processing_state FROM sightings s JOIN captures c ON c.id = s.capture_id
            WHERE s.id=$1 AND s.observer_id=$2""", sighting_id, observer_id)
@@ -147,7 +155,7 @@ async def add_to_capture(capture_id: UUID, audio: UploadFile = File(...),
                          usual_language: str | None = Form(None, max_length=8),
                          observer_id: UUID = Depends(require_observer), conn=Depends(get_conn),
                          storage=Depends(get_storage)):
-    _ready(observer_id)
+    await _ready(conn, observer_id)
     capture = await owned(conn, capture_id, observer_id)
     # A /sighting upload's stand-in capture has no sheet; its note goes on the sighting.
     if capture["processing_state"] == "legacy":
@@ -204,7 +212,7 @@ async def redo_transcript(transcript_id: UUID, body: Redo, observer_id: UUID = D
     """
     if not redo_allowed():
         raise HTTPException(503, "transcribing again in another language is not available yet")
-    check(f"voice-note:obs:{observer_id}", voice_note_limit())
+    await check(conn, f"voice-note:obs:{observer_id}", voice_note_limit())
     async with conn.transaction():
         # Its job first, then the transcript: the order a completing
         # transcription takes them in.

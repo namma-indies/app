@@ -1,7 +1,9 @@
 import math
+from datetime import datetime
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,7 +24,7 @@ def pair_slack_m(cell_m: float) -> float:
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
 
     database_url: str = "postgresql://postgres:dev@localhost:5432/indiedex"
     database_url_sync: str = "postgresql+psycopg://postgres:dev@localhost:5432/indiedex"
@@ -41,20 +43,221 @@ class Settings(BaseSettings):
     # no allowlist. A flag of its own rather than "empty allowlist means
     # everyone", because `is_allowed` fails closed on purpose -- inverting that
     # would make deleting a line in `.env` a silent public launch. Opening the
-    # door should take a deliberate act. Requires SES production access, granted
-    # 2026-08-01 (50k/day, any recipient).
+    # door should take a deliberate act. Requires SES production access and
+    # confirmation of the live regional sending quotas; comments are not quotas.
     email_open_signup: bool = False
+
+    # A separate store-review door. No inbox, one non-moderator account.
+    store_review_enabled: bool = False
+    store_review_secret: SecretStr = SecretStr("")
+    rl_store_review_times: int = Field(default=5, ge=1, le=100)
+    rl_store_review_window_s: int = Field(default=900, ge=60, le=3600)
 
     # "console" (default) prints the link to the log; "ses" actually sends.
     # Fails safe: any other value means console.
     email_sender: str = "console"
     ses_region: str = "ap-south-1"
+    ses_configuration_set: str = ""
+    # Conservative defaults, not a claim about this account's live quota.
+    # Reserve headroom for every other sender using the same SES region.
+    email_daily_budget: int = Field(default=200, ge=1, le=1_000_000)
+    # Account mail (deletion links and notices) has its own cap, and may never
+    # use the share of the daily budget held back for sign-in links: a stream
+    # of deletion requests must not lock people out of signing in.
+    email_account_daily_budget: int = Field(default=40, ge=1, le=1_000_000)
+    email_signin_floor_fraction: float = Field(default=0.5, ge=0, le=1)
+    # Provider rate as a shared token bucket. SES's per-second rate for this
+    # account is in ops (about 14/s); 10 leaves headroom for other senders.
+    # A send that finds the bucket briefly empty waits up to max_wait_s
+    # (without holding a database connection) instead of being told "busy".
+    email_send_rate_per_s: float = Field(default=10.0, gt=0, le=1000)
+    email_send_burst: int = Field(default=10, ge=1, le=1000)
+    email_send_max_wait_s: float = Field(default=2.0, ge=0, le=10)
+    # Requests that may ask for mail, per source per day (IPv6: per /64),
+    # across sign-in and deletion. Counted before the address is looked up.
+    rl_email_ip_day_times: int = Field(default=100, ge=1)
+    # Deletion-link requests across all sources per day. Counted for every
+    # request, known address or not, so the answer never depends on whether
+    # an account exists -- while unknown addresses spend no provider budget.
+    rl_delete_request_day_times: int = Field(default=200, ge=1)
+    email_send_attempts: int = Field(default=3, ge=1, le=5)
+    email_backoff_max_s: int = Field(default=60, ge=1, le=300)
+    email_quota_backoff_s: int = Field(default=3600, ge=60, le=86400)
+    # SES refusing for the whole account (suspended, sending paused, MAIL FROM
+    # domain unverified) needs a human; stop calling it meanwhile.
+    email_account_pause_s: int = Field(default=3600, ge=60, le=86400)
     email_from: str = "IndieDex <hello@nammaindies.org>"
     public_base_url: str = "http://localhost:8000"
 
+    # Final documents are published separately. Empty values show an honest
+    # unavailable page; no draft legal text is shipped with the app. The
+    # privacy and support defaults are what the app linked to before these
+    # became settings, so deploying them changes nothing visible.
+    terms_url: str = ""
+    privacy_url: str = "https://nammaindies.org/privacy"
+    community_guidelines_url: str = ""
+    # The grievance form (#215) is served by this app.
+    grievance_url: str = "/grievances"
+    support_contact_name: str = ""
+    support_contact_email: str = "nammaindies@gmail.com"
+    support_contact_details: str = ""
+
+    @field_validator("terms_url", "privacy_url", "community_guidelines_url", "grievance_url")
+    @classmethod
+    def _public_document_url(cls, value: str) -> str:
+        if not value:
+            return value
+        if any(c.isspace() or ord(c) < 32 for c in value) or "\\" in value:
+            raise ValueError("policy URLs must not contain whitespace or backslashes")
+        parts = urlsplit(value)
+        if parts.scheme == "https" and parts.hostname and parts.username is None and parts.password is None:
+            return value
+        # Allows the separately implemented /grievances page on this server.
+        if value.startswith("/") and not value.startswith("//") and not parts.scheme and not parts.netloc:
+            if parts.path.startswith("/policies/"):
+                raise ValueError("a policy URL cannot redirect to another policy redirect")
+            return value
+        raise ValueError("policy URLs must be HTTPS or a path on this server")
+
+    @field_validator("support_contact_email")
+    @classmethod
+    def _support_email(cls, value: str) -> str:
+        if value and ("@" not in value or any(c.isspace() or c in "?#%" for c in value)):
+            raise ValueError("support contact must be an email address without URL parameters")
+        return value
+
+    # Enable only after finalized public documents and matching client flows
+    # are available. Versions are opaque publication identifiers, never drafts.
+    consent_enabled: bool = False
+    terms_version: str = Field(default="", max_length=100)
+    privacy_version: str = Field(default="", max_length=100)
+    community_guidelines_version: str = Field(default="", max_length=100)
+    # A self-assertion only; no birth date is collected. Product decides N.
+    consent_minimum_age: int | None = Field(default=None, ge=1, le=120)
+    # Clients from before the consent flow (#228) don't send the consent
+    # capability header and treat 428 as a permanent failure (their upload
+    # queue marks uploads failed). Until this instant they are let through
+    # instead of answered 428; unset means no grace, every client is held to
+    # consent. Give it a timezone (e.g. 2027-01-31T00:00:00+05:30).
+    consent_legacy_clients_until: datetime | None = None
+
+    @field_validator("consent_legacy_clients_until")
+    @classmethod
+    def _aware_cutoff(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("consent_legacy_clients_until needs a timezone")
+        return value
+
+    @model_validator(mode="after")
+    def _turnstile_both_or_neither(self):
+        if bool(self.turnstile_site_key.strip()) != bool(self.turnstile_secret_key.strip()):
+            raise ValueError("set both TURNSTILE_SITE_KEY and TURNSTILE_SECRET_KEY, or neither")
+        return self
+
+    @model_validator(mode="after")
+    def _consent_has_versions(self):
+        if self.consent_enabled and not all(value.strip() for value in (
+            self.terms_version, self.privacy_version, self.community_guidelines_version,
+        )):
+            raise ValueError("consent requires current terms, privacy and community guidelines versions")
+        return self
+
+    # Launch moderation operations (#198). Addresses belong in deployment
+    # settings, never in the repository. Empty retains alerts for later.
+    moderator_alert_emails: str = ""
+    moderation_digest_minutes: int = Field(default=60, ge=1, le=1440)
+    moderation_mail_poll_s: float = Field(default=5, ge=0.1, le=60)
+    # Provisional operational targets; product/coverage must confirm them.
+    moderation_response_hours: float = Field(default=24, gt=0, le=720)
+    moderation_severe_response_hours: float = Field(default=2, gt=0, le=168)
+    # Give up on one outbox message after this many failed sends (about two
+    # hours with the capped exponential backoff) instead of retrying a
+    # permanent provider error forever. Failed messages surface in health.
+    moderation_mail_max_attempts: int = Field(default=8, ge=1, le=50)
+    # Escalation for severe reports and urgent grievances still open as their
+    # clock runs down: one urgent reminder once this fraction of the window has
+    # elapsed, one more at the deadline. Checked every reminder_check_s.
+    moderation_reminder_fraction: float = Field(default=0.75, gt=0, lt=1)
+    moderation_reminder_check_s: int = Field(default=60, ge=5, le=3600)
+
+    # Public grievance contact (#199). Honest placeholders until people are
+    # appointed; never commit personal contact details here.
+    grievance_officer_name: str = ""
+    grievance_officer_email: str = ""
+    grievance_officer_contact: str = ""
+    # All provisional: confirm applicability and classification with a lawyer.
+    # Captured on each complaint so changing settings cannot rewrite its clocks.
+    grievance_acknowledge_hours: float = Field(default=24, gt=0, le=720)
+    grievance_resolve_hours: float = Field(default=168, gt=0, le=2160)
+    grievance_removal_hours: float = Field(default=36, gt=0, le=720)
+    grievance_intimate_hours: float = Field(default=2, gt=0, le=168)
+    grievance_government_hours: float = Field(default=3, gt=0, le=168)
+    rl_grievance_ip_times: int = Field(default=20, ge=1)
+    rl_grievance_email_times: int = Field(default=5, ge=1)
+    rl_grievance_window_s: int = Field(default=3600, ge=1)
+    # Optional Cloudflare Turnstile bot check on the public grievance form
+    # (docs/moderation-operations.md). Both empty (the default) = off, and
+    # the form behaves exactly as without it. Set both or neither: the site
+    # key is public (rendered into the page), the secret is a private
+    # deployment setting. Verification fails closed.
+    turnstile_site_key: str = ""
+    turnstile_secret_key: str = ""
+    turnstile_timeout_s: float = Field(default=5, gt=0, le=30)
+    # Moderator grievance queue page; older pages are fetched on demand.
+    grievance_queue_page_size: int = Field(default=100, ge=1, le=500)
+    # Reports per observer per window, across all sightings. Generous for a
+    # person flagging a bad batch; caps one account cycling severe holds/alerts.
+    rl_report_times: int = Field(default=30, ge=1)
+    rl_report_window_s: int = Field(default=3600, ge=1)
+    # Once a moderator has approved/cleared a capture, reports only take it
+    # down again when this many distinct accounts report it after that ruling.
+    # Every report still reaches the queue, and severe ones still alert
+    # urgently. Before any ruling, one severe (or two ordinary) reports hide it.
+    report_rehide_min_reporters: int = Field(default=3, ge=1)
+
     phone_hash_secret: str = "dev-phone-secret"
+    # Key for `banned_emails` hashes (security.email_hash, #180), kept apart
+    # from `phone_hash_secret` so rotating that one does not lift every email
+    # ban. Empty falls back to `phone_hash_secret`, which is what existing bans
+    # were hashed with: set this to the current PHONE_HASH_SECRET value before
+    # ever rotating that, then never change it.
+    ban_hash_secret: str = Field(default="", repr=False)
     session_secret: str = "dev-session-secret"
     magic_link_secret: str = "dev-magic-secret"
+
+    # Both sign-in and account-deletion email tokens, used or unused (#209).
+    # Keep seven days AFTER expiry, then delete on the next successful pass.
+    # Housekeeping runs at startup and hourly; this is separate from account
+    # deletion grace, sessions, email-provider logs and database backups.
+    login_token_retention_days: int = Field(default=7, ge=0)
+    login_token_cleanup_interval_s: float = Field(default=3600.0, gt=0)
+
+    # Private operational diagnostics. An empty token disables the route.
+    health_check_token: str = Field(default="", repr=False)
+    health_check_timeout_s: float = Field(default=3.0, ge=0.1, le=15)
+    health_worker_stale_s: int = Field(default=600, ge=60, le=86400)
+    health_queue_stale_s: int = Field(default=1800, ge=60, le=604800)
+    health_backfill_stale_s: int = Field(default=86400, ge=60, le=2592000)
+    health_backup_stale_s: int = Field(default=129600, ge=3600, le=2592000)
+    # Moderation/grievance outbox: the oldest unsent message older than this
+    # means delivery is stuck; a message given up on within the window degrades.
+    # Last restore-drill pass (monitoring/restore-drill.json, written by the
+    # drill with --record-pass). Not required by default: until the drill is
+    # enabled the check reports "disabled" with the age if one exists.
+    # Database disk. Free space is not visible through SQL without superuser
+    # shell-outs, so it is read with statvfs on a path where the Postgres data
+    # volume is mounted read-only into the API container (empty = not checked).
+    # Below the ratio is "low". The database's own size is always reported and
+    # compared to health_db_size_max_bytes when that is set (0 = off).
+    health_db_disk_path: str = ""
+    health_db_disk_min_free_ratio: float = Field(default=0.10, ge=0, le=0.9)
+    health_db_size_max_bytes: int = Field(default=0, ge=0)
+    health_restore_drill_required: bool = False
+    health_restore_drill_stale_s: int = Field(default=691200, ge=3600, le=7776000)
+    health_moderation_mail_stale_s: int = Field(default=3600, ge=60, le=604800)
+    health_moderation_mail_failed_window_s: int = Field(default=86400, ge=60, le=2592000)
+    ops_error_monitoring_enabled: bool = False
+    ops_error_alert_threshold: int = Field(default=5, ge=1, le=100000)
 
     s3_endpoint: str = "http://localhost:9000"
     # Host the browser fetches objects from, when it differs from where the
@@ -65,10 +268,41 @@ class Settings(BaseSettings):
     # Default-off: deploy schema and worker before deliberately changing intake.
     media_jobs_enabled: bool = False
     multi_animal_enabled: bool = False
+    # Grouping boxes of one capture into animals (app/tracking.py; Akash's
+    # 2026-11-19 policy: a confident grouping publishes, an unsure one asks the
+    # person). Sent to the worker with every capture job, so they are tuned
+    # here. Conservative, NOT calibrated on street clips -- see the module
+    # docstring and docs/specs/2026-11-19-multi-animal-grouping.md.
+    grouping_accept_min: float = 0.35
+    grouping_confident_min: float = 0.65
+    grouping_margin_min: float = 0.20
+    grouping_new_animal_max: float = 0.20
+    grouping_cosine_floor: float = 0.20
+    grouping_cosine_ceiling: float = 0.80
+    grouping_appearance_weight: float = 0.75
+    grouping_motion_speed_scale: float = 2.0
+    grouping_motion_horizon_s: float = 3.0
+    grouping_species_mismatch_penalty: float = 0.15
+    grouping_species_share_min: float = 0.70
     # The daily @nammaindies post. Off means a dry run: the timer still fires
     # and logs what it would have posted, and nothing reaches X. The four X
     # values are OAuth 1.0a for the @nammaindies account and live only in the
     # box .env -- this repo is public.
+    # Write an id-only record of every erasure to `erasures/` in the media
+    # bucket (app/erasure.py), so a database restored from a backup taken
+    # before an erasure can have it re-applied (scripts/replay_erasures.py).
+    # Off until ops decides it is wanted; see docs/ops/media-deletion.md.
+    erasure_ledger_enabled: bool = False
+    # Deleting an account (#179, app/accounts.py): how long it stays hidden
+    # but recoverable before it is erased (Q1), and how often the API looks
+    # for accounts whose time is up.
+    account_deletion_grace_days: int = 7
+    account_purge_interval_s: float = 300.0
+    # How many object-store purges (app/media_purges.py) run at once in the
+    # background. Each holds a pool connection (no transaction) while it waits
+    # on the store, so this bounds what an erased account with thousands of
+    # uploads can take from the pool (default size 10).
+    media_purge_concurrency: int = Field(default=2, ge=1, le=8)
     social_posting_enabled: bool = False
     x_api_key: str = ""
     x_api_secret: str = ""
@@ -269,6 +503,16 @@ class Settings(BaseSettings):
     # more than asking for a yes/no the contributor cannot answer confidently.
     reid_thin_evidence_frames: int = 4
 
+    # --- re-ID evaluation snapshot (scripts/reid_eval.py) -------------------
+    # Per-statement ceiling inside the snapshot's read-only transaction, so a
+    # pathological plan is cut off rather than holding a snapshot open for
+    # hours. Overridable per run with --statement-timeout-ms.
+    reid_eval_statement_timeout_ms: int = Field(default=120_000, ge=1_000)
+    # How many index rows the ANN replay may walk per probe for a located
+    # query before giving up, the stand-in for pgvector's iterative-scan cap
+    # (hnsw.max_scan_tuples, default 20,000).
+    reid_eval_ann_walk: int = Field(default=20_000, ge=50)
+
     # --- animal presence ---------------------------------------------------
     # A sighting whose photos score below this does not appear on /map, /dogs,
     # the public counts, or in re-ID candidate search. It stays in its owner's
@@ -298,6 +542,36 @@ class Settings(BaseSettings):
     # confident bulk. Raise it if the boundary turns out to sit higher than
     # expected.
     animal_review_max: float = 0.60
+
+    # --- upload screening (#181, app/screening.py) ----------------------------
+    # Off: uploads go public as soon as they are saved, as before #181.
+    screening_enabled: bool = True
+    # Hold when a confident person box covers at least this share of a frame.
+    # A guess until a pass over real uploads sets it: lower holds feeders'
+    # photos, higher lets close-up selfies through.
+    screening_person_area_min: float = 0.20
+    # Hold when indoor-only furniture (app/scene.py) scores at least this.
+    screening_indoor_min: float = 0.50
+    # Hold a new account's uploads until this many of them have gone public
+    # (screened clear or approved by a moderator). 0 turns the rule off, which
+    # is the default (product decision 2026-11: new accounts do not wait for a
+    # moderator, as in most apps; the person/indoor/detector/model holds still
+    # apply to everyone). Set it above 0 to bring the new-account hold back.
+    screening_trusted_after: int = Field(default=0, ge=0)
+    # An upload still unscreened after this long (worker down, process
+    # restarted) is put in front of a moderator as "not screened". It stays
+    # hidden either way.
+    screening_stale_s: int = 1800
+    # The local model as a second look (app/model_screening.py): it can only
+    # add a hold. On the local model only (SUGGEST_VIA=worker,
+    # SUGGESTIONS_ENABLED), as a street photo is never sent to a third party.
+    # Off until deliberately switched on, like descriptions.
+    screening_model_enabled: bool = False
+    # How long an upload the detector cleared waits, hidden, for the model.
+    # After this it shows on the detector's verdict alone, so a model that is
+    # down never blanks the map; a later "hold" from the model still takes
+    # it back down.
+    screening_model_wait_s: int = Field(default=600, ge=0, le=86_400)
 
     # --- aggregates --------------------------------------------------------
     # Which boundary scheme a public count is labelled with when the caller
@@ -329,11 +603,54 @@ class Settings(BaseSettings):
     geocode_timeout_s: float = Field(default=8.0, gt=0, le=60)
 
     # --- rate limiting -----------------------------------------------------
-    # In-process fixed windows. The container runs a single uvicorn with no
-    # --workers, so the counts are exact. Two consequences, neither a bug but
-    # both worth knowing: limits reset on deploy, and adding --workers would
-    # silently multiply every limit below by the worker count.
+    # Postgres-backed: shared across processes and retained across deploys.
     rate_limit_enabled: bool = True
+
+    # A separate rolling cooldown, even when the fixed address window has room.
+    auth_email_cooldown_s: int = Field(default=60, ge=1, le=3600)
+    # Third failure starts at 5 seconds, doubling to 15 minutes. A blocked
+    # request does not extend the block; an hour without failure resets it.
+    auth_backoff_after: int = Field(default=3, ge=1, le=20)
+    auth_backoff_base_s: int = Field(default=5, ge=1, le=60)
+    auth_backoff_max_s: int = Field(default=900, ge=60, le=3600)
+    auth_failure_window_s: int = Field(default=3600, ge=3600, le=86400)
+    # Every route key is an IP, and one carrier NAT is many people: backoff on
+    # an IP key starts only after this many failures in the window.
+    auth_ip_backoff_after: int = Field(default=10, ge=1, le=100)
+    # Sign-in link consumption: tokens are high-entropy, so no failure
+    # backoff -- only this plain per-source window.
+    rl_consume_times: int = Field(default=60, ge=1, le=10000)
+    rl_consume_window_s: int = Field(default=900, ge=60, le=86400)
+    # First-party SHA-256 proof-of-work, required on every passcode join.
+    # No third-party script, cookie, service or transfer of visitor data.
+    join_pow_bits: int = Field(default=16, ge=8, le=22)
+    join_pow_ttl_s: int = Field(default=300, ge=30, le=600)
+    # Added to join_pow_bits while the door-wide wrong-passcode budget below
+    # is exhausted: every extra bit doubles the work, so +4 is ~16x per guess
+    # for whoever is guessing, and seconds rather than minutes for a person.
+    # The sum may not pass 22, the most the app's solver (and proof.consume)
+    # will accept -- an older app handed more would refuse the challenge.
+    join_pow_escalated_bits: int = Field(default=4, ge=0, le=14)
+    # How long a client is told it has to solve an escalated challenge. The
+    # app's solver stops at this deadline with "timed out -- try again or sign
+    # in by email", so it bounds how long anyone, on any app version, sits on
+    # "Checking...". The server still accepts a solution for join_pow_ttl_s.
+    join_pow_escalated_wait_s: int = Field(default=120, ge=30, le=600)
+    rl_join_challenge_times: int = Field(default=60, ge=1, le=1000)
+
+    # Admission happens before multipart parsing, keyed by account, shared by
+    # /sighting and /capture (voice-note and re-transcription doors have
+    # buckets of their own at the same sizes). Replays of an accepted upload
+    # and requests the route turns away (4xx) are refunded.
+    rl_upload_hour_times: int = Field(default=60, ge=1, le=10000)
+    rl_upload_day_times: int = Field(default=200, ge=1, le=100000)
+    # Per source address (IPv6: per /64) and for the whole service, across
+    # every guarded door. Generous: one carrier NAT is many field testers.
+    rl_upload_ip_hour_times: int = Field(default=600, ge=1)
+    rl_upload_global_hour_times: int = Field(default=5000, ge=1)
+    abuse_signup_warn_hour: int = Field(default=20, ge=1)
+    abuse_signin_warn_hour: int = Field(default=50, ge=1)
+    abuse_upload_spike_hour: int = Field(default=20, ge=1)
 
     # Generous. Exists so a runaway client cannot spin the database, not to
     # ration anything.
@@ -350,6 +667,10 @@ class Settings(BaseSettings):
     # pass and a model pass on the shared GPU, so a runaway client must not
     # be able to queue hours of them. Far above anyone talking about dogs.
     rl_voice_note_times: int = 20
+    # Blocking someone (#180): plenty for a person, too few to make blocking
+    # the whole cohort a way to flood moderators' "blocked by" counts.
+    rl_block_times: int = 30
+    rl_block_window_s: int = 86400
     rl_voice_note_window_s: int = 3600
 
     # The reason rate limiting is in this change at all: this path had no
@@ -379,6 +700,15 @@ class Settings(BaseSettings):
     # join from one carrier NAT in a quarter of an hour.
     rl_join_times: int = 10
     rl_join_window_s: int = 900
+    # The same budget for the whole door, across every source. Exhausting it
+    # does not shut the door: for the rest of the window every passcode join
+    # needs join_pow_escalated_bits more proof-of-work, moderators see it on
+    # the abuse-signals screen, and correct passcodes keep getting in.
+    rl_join_global_wrong_times: int = Field(default=100, ge=1)
+    rl_join_global_wrong_window_s: int = Field(default=3600, ge=60)
+    # Successful passcode joins per source per day: a leaked code must not
+    # let one source mint accounts without end.
+    rl_join_success_ip_day_times: int = Field(default=50, ge=1)
 
     # Read the client IP from X-Real-IP, which Caddy sets from the real peer
     # and overwrites on every request (deploy/Caddyfile -- verified against
@@ -406,7 +736,9 @@ class Settings(BaseSettings):
     db_pool_max: int = 30
 
     # How coarse another observer's sightings look on the map and on a dog
-    # card. Full precision is reserved for animals you photographed yourself.
+    # card. Also used for place-search bias, on the client and before a query
+    # leaves the server (#208). Full precision is reserved for sightings you
+    # photographed yourself.
     #
     # 1 km is a neighbourhood in Bangalore: enough to show where dogs are and
     # how varied they are, not enough to find one. The number is a product
@@ -433,6 +765,22 @@ class Settings(BaseSettings):
         if self.reid_cell_slack_m is None:
             return pair_slack_m(self.map_coarsen_cell_m)
         return self.reid_cell_slack_m
+
+    @model_validator(mode="after")
+    def _store_review_has_secret(self):
+        secret = self.store_review_secret.get_secret_value()
+        if self.store_review_enabled and (not secret.isascii() or not 32 <= len(secret) <= 512):
+            raise ValueError("STORE_REVIEW_ENABLED requires a random ASCII STORE_REVIEW_SECRET of 32 to 512 characters")
+        return self
+
+    @model_validator(mode="after")
+    def _escalated_proof_is_solvable(self):
+        if self.join_pow_bits + self.join_pow_escalated_bits > 22:
+            raise ValueError(
+                f"join_pow_bits + join_pow_escalated_bits = "
+                f"{self.join_pow_bits + self.join_pow_escalated_bits}; the app's solver "
+                "accepts at most 22")
+        return self
 
     @model_validator(mode="after")
     def _slack_covers_the_cell(self):

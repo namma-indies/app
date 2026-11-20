@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getMe, setNoteLanguage, UnauthorizedError, type NoteLanguage } from "../api";
+import { CONSENT_ACCEPTED_EVENT } from "../consentEvents";
 
 export const NOTE_LANGUAGES: { code: NoteLanguage; label: string; short: string }[] = [
   { code: "en", label: "English", short: "EN" },
@@ -62,21 +63,31 @@ export function useNoteLanguage(onUnauthorized?: () => void) {
   const [usual, setUsual] = useState<NoteLanguage | null | undefined>(undefined);
   const [observer, setObserver] = useState<string | null>(null);
   useEffect(() => {
-    let live = true;
-    getMe().then((me) => {
-      if (!live) return;
-      setObserver(me.id);
-      const pending = unsaved(me.id);
-      if (me.note_language == null && pending) {
-        setUsual(pending);
-        void save(me.id, pending, onUnauthorized);
-      } else {
-        // Theirs is on the server already, or what is kept is someone else's: let it go.
-        if (read(UNSAVED)) write(UNSAVED, null);
-        setUsual(me.note_language ?? null);
-      }
-    }).catch((err) => { if (err instanceof UnauthorizedError) onUnauthorized?.(); });
-    return () => { live = false; };
+    let controller: AbortController | undefined;
+    function refresh() {
+      controller?.abort();
+      const request = new AbortController();
+      controller = request;
+      getMe(request.signal).then((me) => {
+        if (request.signal.aborted) return;
+        setObserver(me.id);
+        const pending = unsaved(me.id);
+        if (me.note_language == null && pending) {
+          setUsual(pending);
+          void save(me.id, pending, onUnauthorized);
+        } else {
+          // Theirs is on the server already, or what is kept is someone else's: let it go.
+          if (read(UNSAVED)) write(UNSAVED, null);
+          setUsual(me.note_language ?? null);
+        }
+      }).catch((err) => { if (!request.signal.aborted && err instanceof UnauthorizedError) onUnauthorized?.(); });
+    }
+    refresh();
+    window.addEventListener(CONSENT_ACCEPTED_EVENT, refresh);
+    return () => {
+      controller?.abort();
+      window.removeEventListener(CONSENT_ACCEPTED_EVENT, refresh);
+    };
   }, [onUnauthorized]);
   async function keep(language: NoteLanguage) {
     setUsual(language);                       // answered: not asked again, even if saving fails now

@@ -70,7 +70,7 @@ from uuid import UUID
 
 import asyncpg
 
-from app.aggregates import animal_present
+from app.aggregates import animal_present, not_rejected_upload
 
 METHOD = "identical_photo"
 CLIP_METHOD = "identical_clip"
@@ -104,7 +104,8 @@ _EVIDENCE = """
 # nothing else does, so it is never judged a copy. Crops are excluded from that
 # test: a /capture sighting holds only crops, and is judged by its sources.
 _HASH_SETS = """
-    SELECT s.id, s.created_at, s.duplicate_of,
+    SELECT s.id, s.created_at, s.duplicate_of, c.screening,
+           (s.review_status = 'rejected' OR c.screening = 'rejected') AS rejected,
            ARRAY(
                SELECT p.content_sha256 FROM photos p
                WHERE p.sighting_id = s.id AND p.content_sha256 IS NOT NULL
@@ -182,16 +183,11 @@ class IdenticalOutcome:
     duplicates_marked: list[UUID] = field(default_factory=list)
 
 
-async def link_identical(
-    conn: asyncpg.Connection, sighting_id: UUID, *, new_uuid
-) -> IdenticalOutcome | None:
-    """Link `sighting_id` with every sighting holding one of its photos.
-
-    None means the rule has nothing to say -- no hashed photo or clip, or no
-    other sighting has one -- and the caller carries on exactly as before. A
-    'skipped' outcome means it found a copy and declined, so the pair goes
-    to a person.
-    """
+async def _partners(conn: asyncpg.Connection, sighting_id: UUID):
+    """Every other sighting holding one of this one's photos (or its clip),
+    each with the evidence key that pairs them, and whether any copy was
+    passed over as a multi-animal photo. None when it has no hashed photo or
+    clip at all."""
     hashes = [r["content_sha256"] for r in await conn.fetch(_MY_HASHES, sighting_id)]
     clip = await conn.fetchval(_MY_CLIP, sighting_id)
     if not hashes and clip is None:
@@ -215,6 +211,23 @@ async def link_identical(
             declined = True
             continue
         partner_hash.setdefault(sid, key)
+    return partner_hash, declined
+
+
+async def link_identical(
+    conn: asyncpg.Connection, sighting_id: UUID, *, new_uuid
+) -> IdenticalOutcome | None:
+    """Link `sighting_id` with every sighting holding one of its photos.
+
+    None means the rule has nothing to say -- no hashed photo or clip, or no
+    other sighting has one -- and the caller carries on exactly as before. A
+    'skipped' outcome means it found a copy and declined, so the pair goes
+    to a person.
+    """
+    found = await _partners(conn, sighting_id)
+    if found is None:
+        return None
+    partner_hash, declined = found
     if not partner_hash:
         return IdenticalOutcome("skipped", reason="multi_animal") if declined else None
 
@@ -222,11 +235,15 @@ async def link_identical(
     # Rejected or no-animal rows drop out quietly, exactly as find_candidates
     # drops them: they are not candidates at all, so there is no pair to ask
     # about. If the resolving sighting itself is one, there is nothing to do.
+    # Rejected covers a moderator's ruling at screening too (#181): otherwise
+    # a clean copy of a rejected photo would be marked its duplicate and drop
+    # off the map with it. Photo and clip evidence both meet here.
     rows = await conn.fetch(
         f"""
         SELECT s.id, s.individual_id, s.captured_at FROM sightings s
         WHERE s.id = ANY($1::uuid[])
           AND s.review_status <> 'rejected'
+          AND {not_rejected_upload('s')}
           AND {animal_present()}
         """,
         group_ids,
@@ -337,6 +354,13 @@ async def mark_duplicates(conn: asyncpg.Connection, group: list[UUID]) -> list[U
 
     Only ever between sightings already linked to one dog, which is what makes
     hiding the copy safe: the dog keeps every photo, once.
+
+    Screening (#181) decides what may be an original. A rejected upload is
+    never one: a copy of it would vanish with it. A held upload is never the
+    original of one that is not held: a clean copy would otherwise wait on
+    someone else's moderation, and stay hidden for good if that is a reject.
+    The held upload is then the copy instead, or both count until a ruling
+    re-runs this (`settle_copies_after_ruling`).
     """
     rows = await conn.fetch(_HASH_SETS, group)
     originals: list = []  # earlier sightings that count, oldest first
@@ -345,9 +369,12 @@ async def mark_duplicates(conn: asyncpg.Connection, group: list[UUID]) -> list[U
         mine = set(r["hashes"])
         if r["duplicate_of"] is not None:
             continue  # already a copy; never an original for anything new
+        if r["rejected"]:
+            continue  # off every surface: neither an original nor worth marking
         original = None
         if mine and not r["unhashed"]:
-            original = next((o for o in originals if mine <= set(o["hashes"])), None)
+            original = next((o for o in originals
+                             if mine <= set(o["hashes"]) and _may_stand_for(o, r)), None)
         if original is None:
             originals.append(r)
             continue
@@ -364,6 +391,55 @@ async def mark_duplicates(conn: asyncpg.Connection, group: list[UUID]) -> list[U
         )
         marked.append(r["id"])
     return marked
+
+
+def _may_stand_for(original, copy) -> bool:
+    """Whether hiding `copy` behind `original` can only ever delay it.
+
+    `pending` and `checking` settle by themselves; `held` waits on a person
+    and may end rejected. Same for same: two held uploads wait together.
+    """
+    return original["screening"] != "held" or copy["screening"] == "held"
+
+
+async def settle_copies_after_ruling(conn: asyncpg.Connection, capture_id: UUID, state: str) -> list[UUID]:
+    """Re-run the copy marking a moderator's ruling on an upload has changed.
+
+    Rejected: every sighting marked a copy of one of its sightings is released
+    and judged again without it, so a clean copy never disappears with a
+    rejected original. Approved: its sightings are judged again now they show,
+    so a clean later copy left counting while it was held becomes its copy.
+    Returns the sightings released (reject) or re-judged (approve).
+
+    Caller holds `lock_matching` inside a transaction.
+    """
+    own = [r["id"] for r in await conn.fetch(
+        "SELECT id FROM sightings WHERE capture_id = $1 ORDER BY created_at, id", capture_id)]
+    if state == "rejected":
+        touched = [r["id"] for r in await conn.fetch(
+            "UPDATE sightings SET duplicate_of = NULL, updated_at = now() "
+            "WHERE duplicate_of = ANY($1::uuid[]) RETURNING id", own)]
+    else:
+        touched = own
+    for sid in touched:
+        # Only copy marking: no new link, no proposal touched. A copy is only
+        # ever marked among sightings already linked to one dog.
+        group = await _same_dog_copies(conn, sid)
+        if len(group) > 1:
+            await mark_duplicates(conn, group)
+    return touched
+
+
+async def _same_dog_copies(conn: asyncpg.Connection, sighting_id: UUID) -> list[UUID]:
+    """This sighting and every sighting of the same dog holding one of its
+    photos, by the evidence `link_identical` uses."""
+    found = await _partners(conn, sighting_id)
+    dog = await conn.fetchval("SELECT individual_id FROM sightings WHERE id = $1", sighting_id)
+    if found is None or not found[0] or dog is None:
+        return [sighting_id]
+    rows = await conn.fetch("SELECT id FROM sightings WHERE id = ANY($1::uuid[]) AND individual_id = $2",
+                            list(found[0]), dog)
+    return [sighting_id, *(r["id"] for r in rows)]
 
 
 async def clear_settled_proposals(conn: asyncpg.Connection, individual_id: UUID) -> int:

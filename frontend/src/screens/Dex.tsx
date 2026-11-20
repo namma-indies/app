@@ -12,6 +12,9 @@ import {
   type Sighting,
   type Suggestion,
 } from "../api";
+import DeleteSighting from "../components/DeleteSighting";
+import BlockSheet from "../components/BlockSheet";
+import { onVisibilityChanged } from "../visibility";
 import AddVoiceNote, { laterNotesOffered, type LaterNotesConfig } from "../components/AddVoiceNote";
 import PhotoDescription, { describedAlt } from "../components/PhotoDescription";
 import SuggestedDetails from "../components/SuggestedDetails";
@@ -75,16 +78,23 @@ const ownBusy = (s: Sighting) => isProcessing(s.processing_state) || (s.later_no
   || (s.voice_transcripts ?? []).some((t) => t.reading)
   || s.photo_description?.status === "describing";
 
-const UNFINISHED = new Set<CaptureSummary["processing_state"]>(["queued", "processing", "failed", "needs_review"]);
+// "no_animal" is listed too: it never becomes a sighting, so this entry is the
+// only place its contributor can see it, and delete it.
+const UNFINISHED = new Set<CaptureSummary["processing_state"]>(["queued", "processing", "failed", "needs_review", "no_animal"]);
 
 /** An upload that is not a sighting yet. One that needs its contributor stands
  * out, in the Journal where their sightings are, rather than as a banner over
- * the map. */
-function UploadEntry({ capture, onReview }: { capture: CaptureSummary; onReview: () => void }) {
+ * the map. Each can be deleted here, as a sighting can in its viewer (#54). */
+function UploadEntry({ capture, onReview, onDeleted, onUnauthorized }: {
+  capture: CaptureSummary;
+  onReview: () => void;
+  onDeleted: () => void;
+  onUnauthorized: () => void;
+}) {
   const needsYou = capture.processing_state === "needs_review";
   return (
     <article className={needsYou ? "spec upload-entry needs-review" : "spec upload-entry"}
-      aria-label={needsYou ? "Upload that needs you" : "Upload in progress"}
+      aria-label={needsYou ? "Upload that needs you" : isProcessing(capture.processing_state) ? "Upload in progress" : "Unfinished upload"}
       onClick={needsYou ? onReview : undefined}>
       <div className="frame">
         {capture.thumb_url ? <img src={capture.thumb_url} alt="your upload" /> : <div className="media-placeholder">No preview yet</div>}
@@ -94,9 +104,13 @@ function UploadEntry({ capture, onReview }: { capture: CaptureSummary; onReview:
         {needsYou ? <>
           <div className="name">TWO ANIMALS IN ONE SHOT</div>
           <div className="line">We need you to say which photos show which animal before this goes on the map.</div>
-          <button className="link-btn" onClick={(event) => { event.stopPropagation(); onReview(); }}>Separate the animals</button>
+          <button className="link-btn" onClick={(event) => { event.stopPropagation(); onReview(); }}>Check the animals</button>
         </> : <div className="processing-status">{processingLabel(capture.processing_state)}</div>}
         <div className="line">taken {formatWhen(capture.captured_at)}</div>
+        <div onClick={(event) => event.stopPropagation()}>
+          <DeleteSighting captureId={capture.capture_id} animalsInPhoto={0}
+            onDeleted={onDeleted} onUnauthorized={onUnauthorized} />
+        </div>
       </div>
     </article>
   );
@@ -116,19 +130,23 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
   const sharedFeed = useProcessingFeed(getMap, view === "map" && scope === "everyone", onUnauthorized);
   const captureFeed = useProcessingFeed(getCaptures, view === "map" || view === "journal", onUnauthorized, true);
   // Only uploads that are not yet sightings get a Journal entry of their own.
-  // A finished one is already there as its sightings, and one with no animal
-  // in it has nothing left to do.
+  // A finished one is already there as its sightings; one with no animal in it
+  // is listed so it can be deleted.
   const pendingUploads = (captureFeed.data ?? []).filter((capture) => UNFINISHED.has(capture.processing_state));
   const [reviewCaptureId, setReviewCaptureId] = useState<string | null>(null);
   const childSignature = (captureFeed.data ?? []).flatMap((capture) => capture.sighting_ids).sort().join(",");
   useEffect(() => {
     if (childSignature) { ownFeed.refresh(); sharedFeed.refresh(); }
   }, [childSignature, ownFeed.refresh, sharedFeed.refresh]);
+  // An unblock elsewhere brings someone's pins back: look again (#180).
+  useEffect(() => onVisibilityChanged(sharedFeed.refresh), [sharedFeed.refresh]);
   const { data: sightings } = ownFeed;
   const { data: everyone, setData: setEveryone, error: everyoneError } = sharedFeed;
   const selected = sightings?.find((s) => s.id === selectedId) ?? null;
   // Set while someone is reporting a sighting from a map popup.
   const [reporting, setReporting] = useState<string | null>(null);
+  // Set while someone is blocking whoever logged a sighting (#180).
+  const [blocking, setBlocking] = useState<string | null>(null);
   // Only someone who may be posted sees the share toggle. The endpoint checks
   // consent itself -- a client-side flag is a suggestion.
   const [canShare, setCanShare] = useState(false);
@@ -227,7 +245,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
     mapBody = (
       <>
         <p className="hint" role="alert">{everyone ? "Couldn't refresh the shared map — showing the last update." : "Couldn't load the shared map — showing yours."} <button onClick={sharedFeed.refresh}>Try again</button></p>
-        <DogMap sightings={everyone ?? sightings} onReport={everyone ? setReporting : undefined} />
+        <DogMap sightings={everyone ?? sightings} onReport={everyone ? setReporting : undefined} onBlock={everyone ? setBlocking : undefined} />
       </>
     );
     showingMap = true;
@@ -236,7 +254,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
   } else if (everyone.length === 0) {
     mapBody = <div className="empty-state">NO SIGHTINGS ANYWHERE YET</div>;
   } else {
-    mapBody = <DogMap sightings={everyone} onReport={setReporting} />;
+    mapBody = <DogMap sightings={everyone} onReport={setReporting} onBlock={setBlocking} />;
     showingMap = true;
   }
 
@@ -296,7 +314,10 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
           </div>
           {captureFeed.error && <p className="hint" role="alert">Couldn't load upload progress. <button onClick={captureFeed.refresh}>Try again</button></p>}
           {captureFeed.paused && <p className="hint">Upload processing is still pending. <button onClick={captureFeed.refresh}>Check uploads again</button></p>}
-          {pendingUploads.map((capture) => <UploadEntry key={capture.capture_id} capture={capture} onReview={() => setReviewCaptureId(capture.capture_id)} />)}
+          {pendingUploads.map((capture) => <UploadEntry key={capture.capture_id} capture={capture}
+            onReview={() => setReviewCaptureId(capture.capture_id)}
+            onDeleted={() => { captureFeed.refresh(); ownFeed.refresh(); }}
+            onUnauthorized={onUnauthorized} />)}
           {shown.map((s) => (
             <div key={s.id} className="spec" onClick={() => setSelected(s.id)}>
               <div className="frame">
@@ -328,7 +349,11 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
                       ? "REPORTED · UNDER REVIEW"
                       : s.off_map_reason === "hidden"
                         ? "HIDDEN BY A MODERATOR"
-                        : "NOT ON THE SHARED MAP · NO ANIMAL DETECTED"}
+                        : s.off_map_reason === "held"
+                          ? "WAITING FOR A MODERATOR · ONLY YOU CAN SEE IT"
+                          : s.off_map_reason === "checking"
+                            ? "BEING CHECKED · ONLY YOU CAN SEE IT FOR NOW"
+                            : "NOT ON THE SHARED MAP · NO ANIMAL DETECTED"}
                   </div>
                 )}
                 <div className="line">
@@ -349,6 +374,23 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
             </div>
           ))}
         </div>
+      )}
+
+      {blocking && (
+        <BlockSheet
+          sightingId={blocking}
+          name={(everyone ?? []).find((s) => s.id === blocking)?.observer}
+          onClose={() => setBlocking(null)}
+          onBlocked={(report) => {
+            const id = blocking;
+            setBlocking(null);
+            // Gone from the cohort map with everything else of theirs; the
+            // server knows which pins those are, so look again.
+            sharedFeed.refresh();
+            if (report) setReporting(id);
+          }}
+          onUnauthorized={onUnauthorized}
+        />
       )}
 
       {reporting && (
@@ -412,6 +454,17 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
             {laterNotesOffered(laterNotes) && <AddVoiceNote key={selected.id} target={{ sightingId: selected.id }} max={laterNotes.max}
               added={(selected.later_notes ?? []).filter((n) => n.sighting_id === selected.id).length}
               onAdded={ownFeed.refresh} onUnauthorized={onUnauthorized} />}
+            <DeleteSighting key={`delete-${selected.id}`} sightingId={selected.id} captureId={selected.capture_id} species={selected.species}
+              animalsInPhoto={selected.capture_id ? sightings.filter((x) => x.capture_id === selected.capture_id).length : 1}
+              onDeleted={(what) => {
+                const gone = new Set(what === "photo" && selected.capture_id
+                  ? sightings.filter((x) => x.capture_id === selected.capture_id).map((x) => x.id) : [selected.id]);
+                setSelected(null);
+                // Off the loaded cohort map at once; the next /dex says what is left.
+                setEveryone((cur) => (cur ?? []).filter((x) => !gone.has(x.id)));
+                ownFeed.refresh();
+              }}
+              onUnauthorized={onUnauthorized} />
           </div>
         </div>
       )}

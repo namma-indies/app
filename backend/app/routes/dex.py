@@ -4,7 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 
 from app import describe
-from app.aggregates import animal_present
+from app.aggregates import animal_present, screened
 from app.auth.deps import require_observer
 from app.deps import get_conn, get_storage
 from app.photos import thumb_key
@@ -16,10 +16,16 @@ router = APIRouter()
 
 
 def _off_map_reason(row) -> str | None:
+    # A person's decision is the more useful thing to hear, so it wins.
+    if row["review_status"] == "rejected" or row["screening"] == "rejected":
+        return "hidden"
     if row["review_status"] == "pending":
         return "reported"
-    if row["review_status"] == "rejected":
-        return "hidden"
+    # Screening (#181): waiting for a moderator, or not checked yet.
+    if row["screening"] == "held":
+        return "held"
+    if not row["screening_public"]:
+        return "checking"
     if not row["animal_ok"]:
         return "no_animal"
     return None
@@ -49,6 +55,8 @@ async def get_dex(
             s.processing_state,
             s.capture_id,
             c.processing_state = 'ready' AS details_editable,
+            COALESCE(c.screening, 'clear') AS screening,
+            {screened('s')} AS screening_public,
             s.species,
             -- A /capture upload keeps its note on the capture, which all its
             -- published sightings share.
@@ -63,7 +71,7 @@ async def get_dex(
         -- p.id breaks the tie: photos of one sighting share created_at exactly
         -- (single transaction, constant now()), so without it the order of a
         -- sighting's photos is arbitrary and can differ between requests.
-        ORDER BY s.captured_at DESC, p.created_at ASC, p.id ASC
+        ORDER BY s.captured_at DESC, s.id, (p.id IS NOT DISTINCT FROM s.cover_photo_id) DESC, p.created_at ASC, p.id ASC
         """,
         observer_id,
     )

@@ -51,7 +51,8 @@ FILES = {
         "__init__.py", "__main__.py", "client.py", "clip.py", "inference.py", "supervise.py", "multi.py",
         "transcribe.py", "llm.py")},
     **{f"app/{name}": f"backend/app/{name}" for name in (
-        "__init__.py", "analyse.py", "detect.py", "detect_reid.py", "embed.py", "photos.py", "video.py", "config.py", "tracking.py")},
+        "__init__.py", "analyse.py", "detect.py", "detect_reid.py", "embed.py", "photos.py", "video.py", "config.py", "tracking.py",
+        "scene.py")},
     "requirements.txt": "backend/gpu_worker/requirements.txt",
 }
 

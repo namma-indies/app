@@ -1,14 +1,19 @@
 import { useEffect, useState } from "react";
 import {
+  banObserver,
+  unbanObserver,
   getStats,
   getStatsAreas,
   getStatsObservers,
+  getAbuseSignals,
   UnauthorizedError,
   type Stats as StatsPayload,
   type StatsAreas,
   type StatsObserver,
+  type AbuseSignals as Signals,
 } from "../api";
 import { formatDay } from "../formatWhen";
+import AbuseSignals from "../components/AbuseSignals";
 
 /** The operator's view of the corpus: how many people have seen how many dogs.
  *
@@ -34,19 +39,40 @@ export default function Stats({ onUnauthorized }: { onUnauthorized: () => void }
   const [areas, setAreas] = useState<StatsAreas | null>(null);
   const [observers, setObservers] = useState<StatsObserver[] | null>(null);
   const [failed, setFailed] = useState(false);
+  const [activity, setActivity] = useState<Signals | null>(null);
 
   useEffect(() => {
-    Promise.all([getStats(), getStatsAreas(), getStatsObservers()])
-      .then(([s, a, o]) => {
+    Promise.all([getStats(), getStatsAreas(), getStatsObservers(), getAbuseSignals()])
+      .then(([s, a, o, activity]) => {
         setStats(s);
         setAreas(a);
         setObservers(o.observers);
+        setActivity(activity);
       })
       .catch((e) => {
         if (e instanceof UnauthorizedError) onUnauthorized();
         else setFailed(true);
       });
   }, [onUnauthorized]);
+
+  async function toggleBan(o: StatsObserver) {
+    const who = o.display_name ?? "this person";
+    try {
+      if (o.banned) {
+        const reason = prompt(`Lift the ban on ${who}? Everything they logged shows again. Reason (required for the record):`);
+        if (!reason?.trim()) return;
+        await unbanObserver(o.id, reason.trim());
+      } else {
+        const reason = prompt(`Ban ${who}? Everything they logged is hidden from everyone, and they can't sign in. Reason (for the record):`);
+        if (!reason?.trim()) return;
+        await banObserver(o.id, reason.trim());
+      }
+      setObservers((cur) => (cur ?? []).map((x) => (x.id === o.id ? { ...x, banned: !o.banned } : x)));
+    } catch (e) {
+      if (e instanceof UnauthorizedError) onUnauthorized();
+      else alert(e instanceof Error ? e.message : "Couldn't do that just now.");
+    }
+  }
 
   if (failed) return <div className="stats"><p className="stats-note">Couldn't load the numbers.</p></div>;
   if (!stats || !areas || !observers) return <div className="stats"><p className="stats-note">Counting…</p></div>;
@@ -77,6 +103,7 @@ export default function Stats({ onUnauthorized }: { onUnauthorized: () => void }
         number of animals is somewhere between.
       </p>
 
+      {activity && <AbuseSignals data={activity} />}
       <h3>BY MONTH</h3>
       <div className="months">
         {stats.months.map((m) => (
@@ -140,7 +167,13 @@ export default function Stats({ onUnauthorized }: { onUnauthorized: () => void }
               <td>
                 {o.display_name ?? "—"}
                 {o.trust_tier === "moderator" && <span className="tag">MOD</span>}
+                {o.banned && <span className="tag">BANNED</span>}
                 <span className="sub">{o.email ?? o.created_via ?? ""}</span>
+                {/* A signal for a person to read, never a trigger (#180). */}
+                {!!o.blocked_by && <span className="sub">blocked by {o.blocked_by}</span>}
+                {o.trust_tier !== "moderator" && (
+                  <button className="link-btn" onClick={() => void toggleBan(o)}>{o.banned ? "Unban" : "Ban"}</button>
+                )}
               </td>
               <td>{o.sightings}</td>
               <td>{o.confirmed_individuals}</td>

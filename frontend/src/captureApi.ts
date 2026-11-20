@@ -1,6 +1,6 @@
 import { API_BASE } from "./apiBase";
 import type { HeardText } from "./components/Transcript";
-import { buildSightingForm, HttpError, UnauthorizedError, type LaterNote, type PostSightingInput, type SightingAttrs } from "./api";
+import { buildSightingForm, HttpError, responseError, retryAfterSeconds, UnauthorizedError, type LaterNote, type PostSightingInput, type SightingAttrs } from "./api";
 
 export type CaptureState = "queued" | "processing" | "needs_review" | "ready" | "no_animal" | "failed" | "legacy";
 export interface CaptureSummary {
@@ -33,6 +33,9 @@ export interface CaptureInstance {
 }
 export interface CaptureGroup {
   instance_ids: string[];
+  /** The animal's species: the person's choice, or the vote over its boxes.
+   * Boxes in one animal may carry different per-frame labels. */
+  species?: "dog" | "cat" | null;
   known_name?: string | null;
   sex?: SightingAttrs["sex"] | null;
   ear_notch?: SightingAttrs["ear_notch"] | null;
@@ -56,8 +59,23 @@ export interface AnsweredCaptureSuggestion extends CaptureSuggestion {
   status: "accepted" | "corrected" | "dismissed" | "filled";
   chosen: string | null;
 }
+/** What the grouping knows about one of `groups`, same order (2026-11-19). */
+export interface AnimalHint {
+  instance_ids: string[];
+  species: "dog" | "cat";
+  /** The dog/cat vote was close: "might be a cat". */
+  species_uncertain?: boolean;
+  species_share?: number | null;
+  /** The worker's confidence in this grouping; null once the person changed it. */
+  confidence?: number | null;
+  confident?: boolean | null;
+  /** The best view: the face of the animal's card. */
+  representative_instance_id?: string | null;
+  reasons?: string[];
+}
 export interface CaptureDetail extends CaptureSummary {
   suggestions?: CaptureSuggestion[];
+  animal_hints?: AnimalHint[];
   answered_suggestions?: AnsweredCaptureSuggestion[];
   revision: number;
   instances: CaptureInstance[];
@@ -93,6 +111,7 @@ interface WireInstance {
 }
 interface WireCapture extends CaptureSummary {
   suggestions?: CaptureSuggestion[];
+  animal_hints?: AnimalHint[];
   answered_suggestions?: AnsweredCaptureSuggestion[];
   revision: number;
   instances: WireInstance[];
@@ -127,7 +146,7 @@ export function adaptCapture(wire: WireCapture): CaptureDetail {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { ...init, credentials: "include" });
   if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok) throw new HttpError(res.status);
+  if (!res.ok) throw responseError(res);
   return res.json() as Promise<T>;
 }
 
@@ -148,9 +167,11 @@ export function postCapture(input: PostSightingInput): Promise<PostCaptureRespon
 export async function getCaptures(signal?: AbortSignal): Promise<{ sightings: CaptureSummary[] }> {
   try {
     const result = await request<{ items: WireCapture[] }>("/captures", { signal });
-    return { sightings: result.items.map(({ instances, groups: _groups, revision: _revision, ...summary }) => ({
-      ...summary, thumb_url: instances?.[0]?.source_thumb_url ?? instances?.[0]?.thumb_url,
-    })) };
+    return { sightings: result.items.map(({ instances, groups: _groups, revision: _revision, animal_hints, ...summary }) => {
+      // The first animal's best view when the server named one, else its first box.
+      const face = instances?.find((instance) => instance.instance_id === animal_hints?.[0]?.representative_instance_id) ?? instances?.[0];
+      return { ...summary, thumb_url: face?.source_thumb_url ?? face?.thumb_url };
+    }) };
   } catch (err) {
     // Readers stay available after intake is disabled; old servers have no route.
     if (err instanceof HttpError && err.status === 404) return { sightings: [] };

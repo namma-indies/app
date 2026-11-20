@@ -2,13 +2,14 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 import fs from "node:fs";
+import { workboxOptions } from "./pwaWorkbox";
 
 // Namma IndieDex — lean placeholder PWA. A designer will rebuild this later.
 
 // Dev-server wiring. Overridable because none of these are universal: port 8000
 // is already taken on some machines, and the bucket name differs per developer.
 //   VITE_API_TARGET=http://localhost:8300 npm run dev
-const API = process.env.VITE_API_TARGET ?? API;
+const API = process.env.VITE_API_TARGET ?? "http://localhost:8000";
 const S3 = process.env.VITE_S3_TARGET ?? "http://localhost:9000";
 const BUCKET = process.env.VITE_S3_BUCKET ?? "indiedex-dev";
 const CERT = { cert: ".certs/dev.crt", key: ".certs/dev.key" };
@@ -16,15 +17,12 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
+      // The new SW skips waiting and claims open pages itself; the page-side
+      // half (update checks, reload-when-safe) is src/update/. The stock
+      // registerSW.js does neither, so it is not injected.
       registerType: "autoUpdate",
-      workbox: {
-        // Server-owned routes must reach the network, not the cached SPA shell.
-        // Without this the SW's navigateFallback serves index.html for the
-        // magic-link consume redirect and the /join gate, swallowing the
-        // Set-Cookie (login silently fails) and hiding the server-rendered
-        // /join page. Let these navigations pass through to the backend.
-        navigateFallbackDenylist: [/^\/auth\//, /^\/join/],
-      },
+      injectRegister: false,
+      workbox: workboxOptions,
       manifest: {
         name: "indiedex — Namma Indies",
         short_name: "indiedex",
@@ -78,10 +76,18 @@ export default defineConfig({
       "/dogs": { target: API, changeOrigin: true },
       "/proposal": { target: API, changeOrigin: true },
       "/auth": { target: API, changeOrigin: true },
+      "/account/consent": { target: API, changeOrigin: true },
       // Server-rendered sign-in gate. Without this the SPA shell answers it and
       // the passcode form is unreachable in dev.
       "/join": { target: API, changeOrigin: true },
+      "/policies": { target: API, changeOrigin: true },
+      "/support": { target: API, changeOrigin: true },
       "/health": { target: API, changeOrigin: true },
+      "/me": { target: API, changeOrigin: true },
+      "/moderation": { target: API, changeOrigin: true },
+      "/stats": { target: API, changeOrigin: true },
+      "/grievances": { target: API, changeOrigin: true },
+      "/monitoring": { target: API, changeOrigin: true },
 
       // Photos, so the whole app is one HTTPS origin. Otherwise the page is
       // https and MinIO is http, and the browser blocks every image as mixed

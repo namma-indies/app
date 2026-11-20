@@ -1,0 +1,428 @@
+import asyncio
+import json
+
+import asyncpg
+import httpx
+import pytest
+import pytest_asyncio
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from botocore.exceptions import ClientError
+
+from app.abuse import snapshot, upload_guard
+from app.auth.email_login import get_or_create_observer_by_email
+from app.config import settings
+from app.email.delivery import deliver, reserve
+from app.ids import uuid7
+from app.ratelimit import REPLAY_HEADER, Limit, check, mark_replay
+from app.security import issue_session
+
+
+async def test_excess_uploads_are_refused_before_the_body_is_read(authed_client, monkeypatch):
+    client, oid = authed_client
+    monkeypatch.setattr(settings, "rl_upload_hour_times", 1)
+    async with client._transport.app.state.pool.acquire() as conn:
+        await check(conn, f"upload:hour:{oid}", Limit(1, 3600))
+    read = False
+    async def body():
+        nonlocal read
+        read = True
+        yield b"untrusted upload bytes"
+    response = await client.post("/sighting", content=body(), headers={"Origin": "capacitor://localhost"})
+    assert response.status_code == 429
+    assert int(response.headers["Retry-After"]) > 0
+    assert not read
+    assert "retry-after" in response.headers["access-control-expose-headers"].lower()
+    assert "queued photos are safe" in response.json()["detail"]
+    other = uuid7()
+    async with client._transport.app.state.pool.acquire() as conn:
+        await conn.execute("INSERT INTO observers (id) VALUES ($1)", other)
+    assert (await client.post("/capture", headers={"Cookie": f"session={issue_session(other)}"})).status_code == 422
+
+
+async def test_malformed_uploads_are_not_charged(authed_client, monkeypatch):
+    client, _ = authed_client
+    monkeypatch.setattr(settings, "rl_upload_hour_times", 1)
+    for _ in range(3):
+        assert (await client.post("/sighting")).status_code == 422
+        assert (await client.post("/capture")).status_code == 422
+
+
+@pytest_asyncio.fixture
+async def guarded(authed_client):
+    """The guard in front of stand-in routes that answer however the test
+    says, so accepted uploads and replays can be counted without media."""
+    client, oid = authed_client
+    stub = FastAPI()
+    stub.state.pool = client._transport.app.state.pool
+    stub.middleware("http")(upload_guard)
+    answer = {"status": 201, "replay": None}
+
+    async def route(request: Request):
+        headers = {}
+        if answer["replay"] == "state":
+            mark_replay(request)
+        elif answer["replay"] == "header":
+            headers[REPLAY_HEADER] = "1"
+        return JSONResponse({}, status_code=answer["status"], headers=headers)
+
+    for path in ("/sighting", "/capture", "/sighting/{x}/voice-note", "/capture/{x}/voice-note",
+                 "/voice-transcript/{x}/redo", "/elsewhere"):
+        stub.post(path)(route)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=stub), base_url="http://test",
+                                 cookies={"session": issue_session(oid)}) as stub_client:
+        yield stub_client, answer
+
+
+async def test_concurrent_uploads_cannot_multiply_the_budget(guarded, monkeypatch):
+    client, _ = guarded
+    monkeypatch.setattr(settings, "rl_upload_hour_times", 3)
+    responses = await asyncio.gather(*(client.post("/sighting") for _ in range(16)))
+    assert sum(r.status_code == 201 for r in responses) == 3
+    assert sum(r.status_code == 429 for r in responses) == 13
+    async with client._transport.app.state.pool.acquire() as conn:
+        assert await conn.fetchval("SELECT sum(count) FROM abuse_hourly WHERE event='upload_throttled'") == 13
+
+
+async def test_both_upload_doors_share_one_account_budget(guarded, monkeypatch):
+    client, _ = guarded
+    monkeypatch.setattr(settings, "rl_upload_hour_times", 2)
+    assert (await client.post("/sighting")).status_code == 201
+    assert (await client.post("/capture")).status_code == 201
+    assert (await client.post("/sighting")).status_code == 429
+
+
+async def test_daily_denial_does_not_spend_hourly_capacity(guarded, monkeypatch):
+    client, _ = guarded
+    monkeypatch.setattr(settings, "rl_upload_day_times", 1)
+    assert (await client.post("/sighting")).status_code == 201
+    assert (await client.post("/capture")).status_code == 429
+    async with client._transport.app.state.pool.acquire() as conn:
+        assert {r["hits"] for r in await conn.fetch("SELECT hits FROM rate_limit_buckets")} == {1}
+
+
+@pytest.mark.parametrize("path", ["/sighting/1/voice-note", "/capture/1/voice-note", "/voice-transcript/1/redo"])
+async def test_voice_doors_are_budgeted_too(guarded, monkeypatch, path):
+    client, _ = guarded
+    monkeypatch.setattr(settings, "rl_upload_hour_times", 1)
+    assert (await client.post(path)).status_code == 201
+    assert (await client.post(path)).status_code == 429
+    # Their own buckets: a voice note does not use up a photo upload.
+    assert (await client.post("/sighting")).status_code == 201
+    assert (await client.post("/elsewhere")).status_code == 201
+
+
+@pytest.mark.parametrize("replay", ["state", "header"])
+async def test_replays_of_accepted_uploads_are_not_charged(guarded, monkeypatch, replay):
+    client, answer = guarded
+    monkeypatch.setattr(settings, "rl_upload_hour_times", 1)
+    answer["replay"] = replay
+    for _ in range(3):
+        response = await client.post("/sighting")
+        assert response.status_code == 201
+        assert REPLAY_HEADER not in response.headers
+    answer["replay"] = None
+    assert (await client.post("/sighting")).status_code == 201
+    assert (await client.post("/sighting")).status_code == 429
+
+
+async def test_rejected_requests_are_refunded(guarded, monkeypatch):
+    client, answer = guarded
+    monkeypatch.setattr(settings, "rl_upload_hour_times", 1)
+    answer["status"] = 422
+    for _ in range(3):
+        assert (await client.post("/capture")).status_code == 422
+    answer["status"] = 201
+    assert (await client.post("/capture")).status_code == 201
+    assert (await client.post("/capture")).status_code == 429
+
+
+async def test_uploads_are_capped_per_source_and_for_the_service(guarded, monkeypatch):
+    client, _ = guarded
+    pool = client._transport.app.state.pool
+    others = [uuid7() for _ in range(3)]
+    async with pool.acquire() as conn:
+        for oid in others:
+            await conn.execute("INSERT INTO observers (id) VALUES ($1)", oid)
+    def as_(oid, ip="192.0.2.1"):
+        return {"Cookie": f"session={issue_session(oid)}", "X-Real-IP": ip}
+    monkeypatch.setattr(settings, "rl_upload_ip_hour_times", 2)
+    assert (await client.post("/sighting", headers=as_(others[0]))).status_code == 201
+    assert (await client.post("/sighting", headers=as_(others[1]))).status_code == 201
+    assert (await client.post("/sighting", headers=as_(others[2]))).status_code == 429
+    assert (await client.post("/sighting", headers=as_(others[2], "192.0.2.2"))).status_code == 201
+    monkeypatch.setattr(settings, "rl_upload_global_hour_times", 3)
+    assert (await client.post("/sighting", headers=as_(others[2], "192.0.2.3"))).status_code == 429
+
+
+async def test_email_admission_is_shared_and_rolling(migrated_db, monkeypatch):
+    monkeypatch.setattr(settings, "email_sender", "ses")
+    monkeypatch.setattr(settings, "email_daily_budget", 2)
+    pool = await asyncpg.create_pool(settings.test_database_url, min_size=1, max_size=6)
+    async def attempt():
+        async with pool.acquire() as conn:
+            try:
+                return await reserve(conn)
+            except HTTPException as exc:
+                assert exc.status_code == 429
+                return None
+    try:
+        assert sum(r is not None for r in await asyncio.gather(*(attempt() for _ in range(12)))) == 2
+    finally:
+        await pool.close()
+    with pytest.raises(HTTPException) as exc:
+        await reserve(migrated_db)
+    assert int(exc.value.headers["Retry-After"]) > 86000
+    await migrated_db.execute("UPDATE email_send_attempts SET attempted_at=now()-interval '25 hours'")
+    assert await reserve(migrated_db) is not None
+
+
+async def test_the_send_rate_is_a_shared_token_bucket_with_a_short_wait(migrated_db, monkeypatch):
+    """Brief contention waits a moment instead of failing; a longer queue is
+    refused, and a refused call takes nothing from the bucket."""
+    monkeypatch.setattr(settings, "email_sender", "ses")
+    monkeypatch.setattr(settings, "email_send_rate_per_s", 1)
+    monkeypatch.setattr(settings, "email_send_burst", 2)
+    monkeypatch.setattr(settings, "email_send_max_wait_s", 1.5)
+    waits = [(await reserve(migrated_db)).wait_s for _ in range(3)]
+    assert waits[0] == waits[1] == 0
+    assert 0 < waits[2] <= 1.5
+    before = await migrated_db.fetchrow("SELECT tokens, refilled_at FROM email_delivery_state")
+    with pytest.raises(HTTPException) as exc:
+        await reserve(migrated_db)
+    assert exc.value.status_code == 429
+    assert await migrated_db.fetchrow("SELECT tokens, refilled_at FROM email_delivery_state") == before
+
+
+async def test_deliver_holds_no_connection_while_it_waits(migrated_db, monkeypatch):
+    monkeypatch.setattr(settings, "email_sender", "ses")
+    monkeypatch.setattr(settings, "email_send_rate_per_s", 2)
+    monkeypatch.setattr(settings, "email_send_burst", 1)
+    await reserve(migrated_db)   # empties the bucket: the next send waits ~0.5 s
+    pool = await asyncpg.create_pool(settings.test_database_url, min_size=1, max_size=1)
+    sent = asyncio.Event()
+    try:
+        async def send():
+            sent.set()
+        task = asyncio.create_task(deliver(pool, send))
+        await asyncio.sleep(0.15)
+        # The only connection is free while deliver waits for its turn.
+        async with pool.acquire(timeout=0.2) as conn:
+            assert await conn.fetchval("SELECT 1") == 1
+        assert not sent.is_set()
+        await task
+        assert sent.is_set()
+    finally:
+        await pool.close()
+
+
+async def test_transient_ses_failures_retry_without_persisting_links(migrated_db, monkeypatch, caplog):
+    monkeypatch.setattr(settings, "email_sender", "ses")
+    calls = 0
+    async def send():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ClientError({"Error": {"Code": "TooManyRequestsException", "Message": "private-recipient@example.test"}}, "SendEmail")
+    await deliver(migrated_db, send)
+    assert calls == 2
+    assert await migrated_db.fetchval("SELECT count(*) FROM email_send_attempts") == 2
+    assert await migrated_db.fetchval("SELECT count(*) FROM email_send_attempts WHERE accepted") == 1
+    assert "private-recipient" not in caplog.text
+    columns = await migrated_db.fetch("SELECT column_name FROM information_schema.columns WHERE table_name='email_send_attempts'")
+    assert {r["column_name"] for r in columns} == {"id", "scope", "attempted_at", "accepted", "purpose"}
+
+
+async def test_daily_quota_is_persisted_without_a_long_request(migrated_db, monkeypatch):
+    monkeypatch.setattr(settings, "email_sender", "ses")
+    calls = 0
+    async def send():
+        nonlocal calls
+        calls += 1
+        raise ClientError({"Error": {"Code": "LimitExceededException", "Message": "Daily message quota exceeded"}}, "SendEmail")
+    with pytest.raises(HTTPException) as exc:
+        await deliver(migrated_db, send)
+    assert calls == 1
+    assert int(exc.value.headers["Retry-After"]) >= 3600
+    fresh = await asyncpg.connect(settings.test_database_url)
+    try:
+        with pytest.raises(HTTPException):
+            await reserve(fresh)
+    finally:
+        await fresh.close()
+
+
+async def test_errors_are_classified_by_code_not_by_message(migrated_db, monkeypatch):
+    """A per-second throttle whose message happens to say "daily" is still a
+    per-second throttle: retried after a short wait."""
+    monkeypatch.setattr(settings, "email_sender", "ses")
+    calls = 0
+    async def send():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ClientError({"Error": {"Code": "TooManyRequestsException", "Message": "daily"}}, "SendEmail")
+    await deliver(migrated_db, send)
+    assert calls == 2
+
+
+@pytest.mark.parametrize("code", ["AccountSuspendedException", "SendingPausedException",
+                                  "MailFromDomainNotVerifiedException"])
+async def test_account_level_refusals_pause_every_worker_for_long(migrated_db, monkeypatch, caplog, code):
+    monkeypatch.setattr(settings, "email_sender", "ses")
+    calls = 0
+    async def send():
+        nonlocal calls
+        calls += 1
+        raise ClientError({"Error": {"Code": code, "Message": "private detail"}}, "SendEmail")
+    with pytest.raises(HTTPException) as exc:
+        await deliver(migrated_db, send)
+    assert calls == 1
+    assert exc.value.status_code == 503
+    assert int(exc.value.headers["Retry-After"]) >= settings.email_account_pause_s
+    assert code in caplog.text and "private detail" not in caplog.text
+    with pytest.raises(HTTPException):
+        await reserve(migrated_db)
+    assert await migrated_db.fetchval("SELECT sum(count) FROM abuse_hourly WHERE event='email_failed'") == 1
+
+
+async def test_account_mail_has_its_own_cap_and_never_reaches_the_signin_floor(migrated_db, monkeypatch):
+    monkeypatch.setattr(settings, "email_sender", "ses")
+    monkeypatch.setattr(settings, "email_daily_budget", 10)
+    monkeypatch.setattr(settings, "email_account_daily_budget", 3)
+    monkeypatch.setattr(settings, "email_signin_floor_fraction", 0.5)
+    for _ in range(3):
+        await reserve(migrated_db, "account")
+    with pytest.raises(HTTPException):
+        await reserve(migrated_db, "account")
+    # Sign-in still has the rest of the day's budget.
+    for _ in range(7):
+        await reserve(migrated_db, "signin")
+    with pytest.raises(HTTPException):
+        await reserve(migrated_db, "signin")
+    # And a floor: once sign-in alone has used the shared half, account mail stops.
+    await migrated_db.execute("DELETE FROM email_send_attempts")
+    monkeypatch.setattr(settings, "email_account_daily_budget", 10)
+    for _ in range(5):
+        await reserve(migrated_db, "signin")
+    with pytest.raises(HTTPException):
+        await reserve(migrated_db, "account")
+    await reserve(migrated_db, "signin")
+
+
+async def test_permanent_provider_error_is_not_retried(migrated_db, monkeypatch, caplog):
+    monkeypatch.setattr(settings, "email_sender", "ses")
+    calls = 0
+    async def send():
+        nonlocal calls
+        calls += 1
+        raise ClientError({"Error": {"Code": "MessageRejected", "Message": "private-reason@example.test"}}, "SendEmail")
+    with pytest.raises(HTTPException) as exc:
+        await deliver(migrated_db, send)
+    assert exc.value.status_code == 503
+    assert calls == 1
+    assert "private-reason" not in caplog.text
+
+
+async def test_provider_retry_ceiling_returns_a_wait_that_respects_inbox_cooldown(app_client, monkeypatch):
+    monkeypatch.setattr(settings, "email_sender", "ses")
+    monkeypatch.setattr(settings, "email_allowlist_domains", "example.test")
+    calls = 0
+    class Sender:
+        async def send(self, address, link):
+            nonlocal calls
+            calls += 1
+            raise ClientError({"Error": {"Code": "TooManyRequestsException", "Message": "rate exceeded"}}, "SendEmail")
+    monkeypatch.setattr("app.routes.join.get_sender", Sender)
+    response = await app_client.post("/auth/email", data={"email": "person@example.test"}, headers={"Accept": "application/json"})
+    assert calls == settings.email_send_attempts == 3
+    assert response.status_code == 429
+    assert int(response.headers["Retry-After"]) >= settings.auth_email_cooldown_s
+    assert "60 seconds" in response.json()["error"]
+
+
+async def test_capacity_denial_releases_address_cooldown_and_creates_no_account(app_client, monkeypatch):
+    monkeypatch.setattr(settings, "email_sender", "ses")
+    monkeypatch.setattr(settings, "email_allowlist_domains", "example.test")
+    monkeypatch.setattr(settings, "email_daily_budget", 1)
+    pool = app_client._transport.app.state.pool
+    async with pool.acquire() as conn:
+        await reserve(conn)
+    response = await app_client.post("/auth/email", data={"email": "person@example.test"}, headers={"Accept": "application/json"})
+    assert response.status_code == 429
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM observers") == 0
+        await conn.execute("UPDATE email_send_attempts SET attempted_at=now()-interval '25 hours'")
+        await conn.execute("UPDATE email_delivery_state SET next_at=now()-interval '1 second'")
+    class Sender:
+        async def send(self, address, link):
+            pass
+    monkeypatch.setattr("app.routes.join.get_sender", Sender)
+    assert (await app_client.post("/auth/email", data={"email": "person@example.test"})).status_code == 200
+
+
+async def test_creation_counters_commit_with_rows_and_ops_snapshot_is_readonly(migrated_db):
+    oid = await get_or_create_observer_by_email(migrated_db, email="person@example.test")
+    assert await get_or_create_observer_by_email(migrated_db, email="person@example.test") == oid
+    assert await migrated_db.fetchval("SELECT sum(count) FROM abuse_hourly WHERE event='signups'") == 1
+    with pytest.raises(RuntimeError):
+        async with migrated_db.transaction():
+            await get_or_create_observer_by_email(migrated_db, email="rollback@example.test")
+            raise RuntimeError("rollback")
+    assert await migrated_db.fetchval("SELECT sum(count) FROM abuse_hourly WHERE event='signups'") == 1
+    await migrated_db.execute("INSERT INTO sightings (id, observer_id, captured_at) VALUES ($1,$2,now())", uuid7(), oid)
+    assert await migrated_db.fetchval("SELECT sum(count) FROM abuse_hourly WHERE event='uploads'") == 1
+    async with migrated_db.transaction(readonly=True):
+        report = await snapshot(migrated_db)
+    assert report["hours"][0]["signups"] == 1
+    assert report["hours"][0]["uploads"] == 1
+    assert "person@example.test" not in json.dumps(report)
+
+
+async def test_moderators_can_see_failed_signins_but_regular_accounts_cannot(authed_client):
+    client, oid = authed_client
+    assert (await client.get("/moderation/abuse")).status_code == 404
+    await client.get("/auth/email/consume", params={"token": "bad"})
+    async with client._transport.app.state.pool.acquire() as conn:
+        await conn.execute("UPDATE observers SET trust_tier='moderator' WHERE id=$1", oid)
+    response = await client.get("/moderation/abuse")
+    assert response.status_code == 200
+    assert response.json()["hours"][0]["failed_signins"] == 1
+
+
+@pytest.mark.parametrize("sender,enabled", [("console", True), ("ses", False)])
+async def test_open_signup_refuses_missing_sending_or_rate_controls(monkeypatch, sender, enabled):
+    from app.main import lifespan
+    monkeypatch.setattr(settings, "email_open_signup", True)
+    monkeypatch.setattr(settings, "email_sender", sender)
+    monkeypatch.setattr(settings, "rate_limit_enabled", enabled)
+    with pytest.raises(RuntimeError, match="Open sign-up requires"):
+        async with lifespan(FastAPI()):
+            pytest.fail("unsafe configuration started")
+
+
+async def test_unknown_addresses_spend_no_signin_budget(app_client, monkeypatch):
+    """With consent on, the answer is the same for an address with no account,
+    but only a real send may spend provider budget."""
+    monkeypatch.setattr(settings, "email_sender", "ses")
+    monkeypatch.setattr(settings, "consent_enabled", True)
+    monkeypatch.setattr(settings, "email_allowlist_domains", "example.test")
+    monkeypatch.setattr(settings, "email_daily_budget", 1)
+    for n in range(3):
+        reply = await app_client.post("/auth/email", data={"email": f"nobody{n}@example.test"},
+                                      headers={"Accept": "application/json"})
+        assert reply.status_code == 200
+    async with app_client._transport.app.state.pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM email_send_attempts") == 0
+
+
+async def test_requests_for_mail_are_capped_per_source_per_day(app_client, monkeypatch):
+    monkeypatch.setattr(settings, "rl_email_ip_day_times", 2)
+    monkeypatch.setattr(settings, "email_allowlist_domains", "example.test")
+    class Sender:
+        async def send(self, address, link):
+            pass
+    monkeypatch.setattr("app.routes.join.get_sender", Sender)
+    codes = [(await app_client.post("/auth/email", data={"email": f"p{n}@example.test"})).status_code for n in range(2)]
+    codes.append((await app_client.post("/account/delete/request", data={"email": "p9@example.test"})).status_code)
+    assert codes == [200, 200, 429]

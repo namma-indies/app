@@ -1,21 +1,15 @@
-"""Fixed-window rate limiting, in process.
+"""Postgres-backed budgets, cooldowns and progressive authentication backoff.
 
-There was none of this anywhere in the application until now. The endpoint
-that needed it most was never `/stats` -- it is the email login path, which
-sits in front of production SES with no throttle of any kind.
-
-In-process and no Redis: `deploy/entrypoint.sh` runs a single uvicorn with no
---workers, so one dict is the whole picture and the counts are exact. Two
-consequences are deliberate rather than overlooked:
-
-  - limits reset on deploy, which is fine for dampening abuse and would not be
-    fine if this ever became a quota;
-  - adding --workers would silently multiply every limit by the worker count,
-    at which point this file is the thing to revisit.
+Every decision uses the database clock and an atomic upsert. No process-local
+counter can be reset by deploying or multiplied by adding uvicorn workers.
+Keys are domain-separated HMACs: neither addresses nor IPs are stored here.
 """
-
-import time
-from collections import OrderedDict
+import asyncio
+import hashlib
+import hmac
+import ipaddress
+import logging
+import math
 from dataclasses import dataclass
 
 from fastapi import HTTPException
@@ -23,9 +17,7 @@ from starlette.requests import Request
 
 from app.config import settings
 
-# Sweep is O(n), so it runs every SWEEP_EVERY writes rather than on each one.
-# The LRU cap is the real bound; the sweep just keeps idle memory honest.
-SWEEP_EVERY = 1000
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -34,93 +26,188 @@ class Limit:
     window_s: int
 
 
-class _FixedWindow:
-    """Counters keyed by (key, window index), capped and LRU-evicted.
-
-    The cap is not tidiness. A map keyed by client IP that grows without bound
-    is itself the denial-of-service: one forged key per request and the
-    limiter exhausts the box it was added to protect.
-    """
-
-    def __init__(self, max_keys: int = 10_000) -> None:
-        self._hits: OrderedDict[tuple[str, int], tuple[int, float]] = OrderedDict()
-        self._max_keys = max_keys
-        self._writes = 0
-
-    def clear(self) -> None:
-        self._hits.clear()
-        self._writes = 0
-
-    def hit(self, key: str, limit: Limit, now: float) -> int | None:
-        """Count one request. Returns None if allowed, else seconds to wait."""
-        window = int(now // limit.window_s)
-        expires_at = (window + 1) * limit.window_s
-        slot = (key, window)
-
-        count, _ = self._hits.get(slot, (0, expires_at))
-        count += 1
-        self._hits[slot] = (count, expires_at)
-        self._hits.move_to_end(slot)
-
-        self._writes += 1
-        if self._writes % SWEEP_EVERY == 0:
-            for stale in [s for s, (_, exp) in self._hits.items() if exp <= now]:
-                del self._hits[stale]
-        while len(self._hits) > self._max_keys:
-            self._hits.popitem(last=False)
-
-        if count > limit.times:
-            return max(1, int(expires_at - now))
-        return None
+def key_hash(key: str) -> bytes:
+    return hmac.digest(settings.phone_hash_secret.encode(), f"rate-limit:{key}".encode(), hashlib.sha256)
 
 
-_counter = _FixedWindow()
+def _network(host: str) -> str:
+    """One key per IPv4 address, one per IPv6 /64.
 
-
-def reset() -> None:
-    _counter.clear()
+    A single IPv6 subscriber is routinely handed a whole /64, so keying the
+    full address would give one caller 2**64 independent budgets."""
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    if addr.version == 6:
+        if addr.ipv4_mapped is not None:
+            return str(addr.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{addr}/64", strict=False))
+    return str(addr)
 
 
 def client_key(request: Request) -> str:
-    """The caller's IP, from the one header the proxy controls.
-
-    Caddy sets X-Real-IP from the actual peer and overwrites anything the
-    client sent (deploy/Caddyfile). Reading X-Forwarded-For instead would mean
-    depending on whether the proxy appends to or replaces a client-supplied
-    value -- and getting that backwards is not a bug, it is a bypass: the
-    limiter would key on a string the attacker chose.
-
-    Off by default, because in dev and in tests there is no proxy in front and
-    the header is simply something the caller typed.
-    """
+    """Only trust the header Caddy overwrites, and only in that topology."""
     if settings.trust_proxy_header:
         real = request.headers.get("x-real-ip")
         if real:
-            return real.strip()
-    return request.client.host if request.client else "unknown"
+            return _network(real.strip())
+    return _network(request.client.host) if request.client else "unknown"
 
 
-def check(key: str, limit: Limit) -> None:
+def throttled(seconds: float, message: str = "Too many requests.") -> HTTPException:
+    wait = max(1, math.ceil(seconds))
+    return HTTPException(429, f"{message} Try again in {wait} seconds.", headers={"Retry-After": str(wait)})
+
+
+async def cleanup(conn) -> int:
+    """One bounded, indexed sweep; returns how many rows went. Live budgets
+    are never evicted to make room."""
+    swept = 0
+    for table in ("rate_limit_buckets", "auth_failures", "join_pow_uses"):
+        status = await conn.execute(f"""DELETE FROM {table} WHERE ctid IN (
+            SELECT ctid FROM {table} WHERE expires_at <= statement_timestamp()
+            ORDER BY expires_at LIMIT 64 FOR UPDATE SKIP LOCKED
+        )""")
+        swept += int(status.split()[-1])
+    return swept
+
+
+async def sweeper(pool) -> None:
+    """The only place expired state is deleted: requests never pay for it.
+    Keeps sweeping while there is a backlog, so a burst of one-off keys
+    cannot outgrow a once-a-minute pass."""
+    while True:
+        try:
+            async with pool.acquire() as conn:
+                for _ in range(100):
+                    if not await cleanup(conn):
+                        break
+        except Exception:
+            logger.warning("rate-limit cleanup failed; will retry")
+        await asyncio.sleep(60)
+
+
+async def check(conn, key: str, limit: Limit, *, amount: int = 1) -> int:
+    """Charge `amount` against the window; returns the hits now counted.
+
+    Expired rows are reset in place by the upsert and swept by `sweeper`, so
+    a request never pays for housekeeping."""
+    if not settings.rate_limit_enabled:
+        return 0
+    if limit.times < 1 or limit.window_s < 1 or amount < 1:
+        raise ValueError("rate limits and amounts must be positive")
+    row = await conn.fetchrow("""
+        INSERT INTO rate_limit_buckets (key_hash, hits, expires_at)
+        VALUES ($1, $3, to_timestamp((floor(extract(epoch FROM statement_timestamp()) / $2) + 1) * $2))
+        ON CONFLICT (key_hash) DO UPDATE SET
+            hits = CASE WHEN rate_limit_buckets.expires_at <= statement_timestamp()
+                THEN $3 ELSE least(rate_limit_buckets.hits + $3, $4::bigint + $3) END,
+            expires_at = CASE WHEN rate_limit_buckets.expires_at <= statement_timestamp()
+                THEN EXCLUDED.expires_at ELSE rate_limit_buckets.expires_at END
+        RETURNING hits, extract(epoch FROM expires_at - statement_timestamp()) AS wait
+    """, key_hash(f"window:{limit.window_s}:{key}"), limit.window_s, amount, limit.times)
+    if row["hits"] > limit.times:
+        raise throttled(row["wait"])
+    return row["hits"]
+
+
+async def refund(conn, key: str, limit: Limit, *, amount: int = 1) -> None:
+    """Give back a charge that turned out not to count (a correct passcode, an
+    upload replay). Charging first and refunding after keeps concurrent
+    requests bounded by the budget at every instant."""
     if not settings.rate_limit_enabled:
         return
-    retry_after = _counter.hit(key, limit, time.time())
-    if retry_after is not None:
-        raise HTTPException(
-            status_code=429,
-            detail="Too many requests. Try again shortly.",
-            headers={"Retry-After": str(retry_after)},
-        )
+    await conn.execute("""UPDATE rate_limit_buckets SET hits = greatest(hits - $2, 0)
+        WHERE key_hash = $1 AND expires_at > statement_timestamp()""",
+        key_hash(f"window:{limit.window_s}:{key}"), amount)
 
 
-# Keys are built by the caller rather than by a dependency factory. The
-# authenticated surfaces key on `obs:<observer_id>` -- identity, not address,
-# so they never consult a client-controllable header at all and two people
-# behind one NAT do not share a budget. The unauthenticated ones key on
-# `<scope>:ip:<addr>`, scoped so one endpoint's budget cannot be spent by
-# another.
-#
-# The limits are functions rather than module constants so that a test can
-# monkeypatch the underlying setting and have it take effect.
+async def cooldown(conn, key: str, seconds: float) -> None:
+    """One admission per rolling interval; rejected calls do not extend it."""
+    if not settings.rate_limit_enabled:
+        return
+    row = await conn.fetchrow("""
+        INSERT INTO rate_limit_buckets (key_hash, hits, expires_at)
+        VALUES ($1, 1, statement_timestamp() + make_interval(secs => $2))
+        ON CONFLICT (key_hash) DO UPDATE SET
+            hits = CASE WHEN rate_limit_buckets.expires_at <= statement_timestamp() THEN 1 ELSE 2 END,
+            expires_at = CASE WHEN rate_limit_buckets.expires_at <= statement_timestamp()
+                THEN EXCLUDED.expires_at ELSE rate_limit_buckets.expires_at END
+        RETURNING hits, extract(epoch FROM expires_at - statement_timestamp()) AS wait
+    """, key_hash(f"cooldown:{key}"), float(seconds))
+    if row["hits"] != 1:
+        raise throttled(row["wait"], "Please wait before requesting another link.")
+
+
+async def raise_flag(conn, key: str, seconds: float) -> bool:
+    """Hold a flag up for `seconds`; True only for the call that raised it.
+
+    A raised flag keeps its expiry: raising it again does not extend it, so
+    a flag set for "the rest of this window" ends with the window."""
+    if not settings.rate_limit_enabled:
+        return False
+    row = await conn.fetchrow("""
+        INSERT INTO rate_limit_buckets (key_hash, hits, expires_at)
+        VALUES ($1, 1, statement_timestamp() + make_interval(secs => $2))
+        ON CONFLICT (key_hash) DO UPDATE SET
+            hits = CASE WHEN rate_limit_buckets.expires_at <= statement_timestamp() THEN 1 ELSE 2 END,
+            expires_at = CASE WHEN rate_limit_buckets.expires_at <= statement_timestamp()
+                THEN EXCLUDED.expires_at ELSE rate_limit_buckets.expires_at END
+        RETURNING hits
+    """, key_hash(f"flag:{key}"), max(float(seconds), 1.0))
+    return row["hits"] == 1
+
+
+async def flag_raised(conn, key: str) -> bool:
+    if not settings.rate_limit_enabled:
+        return False
+    return bool(await conn.fetchval(
+        "SELECT true FROM rate_limit_buckets WHERE key_hash = $1 AND expires_at > statement_timestamp()",
+        key_hash(f"flag:{key}")))
+
+
+async def check_backoff(conn, key: str) -> None:
+    if not settings.rate_limit_enabled:
+        return
+    wait = await conn.fetchval("""SELECT extract(epoch FROM blocked_until - statement_timestamp())
+        FROM auth_failures WHERE key_hash = $1 AND expires_at > statement_timestamp()
+        AND blocked_until > statement_timestamp()""", key_hash(key))
+    if wait is not None:
+        raise throttled(wait, "Too many failed sign-in attempts.")
+
+
+async def record_failure(conn, key: str, *, after: int | None = None) -> None:
+    """Record even the failure starting a lockout; commit before raising.
+
+    `after` is how many failures are free before backoff starts. Keys that are
+    an IP address pass `settings.auth_ip_backoff_after`: one carrier NAT is
+    many people, and a low threshold there punishes all of them."""
+    if not settings.rate_limit_enabled:
+        return
+    after = settings.auth_backoff_after if after is None else after
+    async with conn.transaction():
+        failures = await conn.fetchval("""
+            INSERT INTO auth_failures (key_hash, failures, blocked_until, expires_at)
+            VALUES ($1, 1, statement_timestamp(), statement_timestamp() + make_interval(secs => $2))
+            ON CONFLICT (key_hash) DO UPDATE SET
+                failures = CASE WHEN auth_failures.expires_at <= statement_timestamp()
+                    THEN 1 ELSE least(auth_failures.failures + 1, 100) END,
+                expires_at = EXCLUDED.expires_at
+            RETURNING failures
+        """, key_hash(key), settings.auth_failure_window_s)
+        delay = 0 if failures < after else min(
+            settings.auth_backoff_max_s,
+            settings.auth_backoff_base_s * 2 ** min(20, failures - after))
+        await conn.execute("""UPDATE auth_failures
+            SET blocked_until = statement_timestamp() + make_interval(secs => $2)
+            WHERE key_hash = $1""", key_hash(key), delay)
+    if delay:
+        raise throttled(delay, "Too many failed sign-in attempts.")
+
+
+async def clear_failures(conn, key: str) -> None:
+    await conn.execute("DELETE FROM auth_failures WHERE key_hash = $1", key_hash(key))
 
 
 def stats_limit() -> Limit:
@@ -131,19 +218,51 @@ def voice_note_limit() -> Limit:
     return Limit(settings.rl_voice_note_times, settings.rl_voice_note_window_s)
 
 
+def block_limit() -> Limit:
+    return Limit(settings.rl_block_times, settings.rl_block_window_s)
+
+
 def email_addr_limit() -> Limit:
-    """Anti-mail-bomb: tight, because it protects one person's inbox."""
     return Limit(settings.rl_email_addr_times, settings.rl_email_addr_window_s)
 
 
 def email_ip_limit() -> Limit:
-    """Anti-enumeration and cost: looser, because an IP is not a person.
-
-    Behind carrier-grade NAT one address is many subscribers, so treating it
-    as an identity turns an onboarding push into a lockout.
-    """
     return Limit(settings.rl_email_ip_times, settings.rl_email_ip_window_s)
 
 
 def join_limit() -> Limit:
     return Limit(settings.rl_join_times, settings.rl_join_window_s)
+
+
+def join_global_limit() -> Limit:
+    return Limit(settings.rl_join_global_wrong_times, settings.rl_join_global_wrong_window_s)
+
+
+def join_success_limit() -> Limit:
+    return Limit(settings.rl_join_success_ip_day_times, 86400)
+
+
+def consume_limit() -> Limit:
+    return Limit(settings.rl_consume_times, settings.rl_consume_window_s)
+
+
+def email_ip_day_limit() -> Limit:
+    return Limit(settings.rl_email_ip_day_times, 86400)
+
+
+def delete_request_limit() -> Limit:
+    return Limit(settings.rl_delete_request_day_times, 86400)
+
+
+# An upload route says "this was a replay of something already accepted" so
+# the upload guard can give the budget back: retrying a queued photo must not
+# cost the person twice. Routes with the request mark its state; routes
+# without one set this header, which the guard strips before replying.
+REPLAY_HEADER = "x-upload-replay"
+
+
+def mark_replay(request) -> None:
+    # Tolerates a stand-in request (handlers are called directly in tests).
+    state = getattr(request, "state", None)
+    if state is not None:
+        state.upload_replay = True

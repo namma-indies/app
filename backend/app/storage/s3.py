@@ -4,6 +4,14 @@ from botocore.exceptions import ClientError
 from app.config import settings
 
 
+# Written by scripts/backup_db.py after a verified upload; the only backup
+# object the API reads. Small JSON: key, size, created_at, pgdmp_verified.
+BACKUP_MARKER_KEY = "backups/latest.json"
+MARKER_MAX_BYTES = 4096
+# Written by scripts/restore_db_drill.py --record-pass after a full pass.
+RESTORE_DRILL_MARKER_KEY = "monitoring/restore-drill.json"
+
+
 class S3Storage:
     def __init__(
         self,
@@ -56,6 +64,91 @@ class S3Storage:
                 ):
                     return
                 raise
+
+    async def check_health(self) -> None:
+        """Exercise list/write/read permissions without touching user media.
+
+        The fixed key and payload contain no user data. No delete permission is
+        needed. Bucket lifecycle rules bound noncurrent versions of the probe.
+        The caller bounds the entire operation, including client construction.
+        """
+        async with self._client() as client:
+            await client.head_bucket(Bucket=self.bucket)
+            key = "monitoring/storage-probe"
+            await client.put_object(Bucket=self.bucket, Key=key, Body=b"ok", ContentType="text/plain")
+            result = await client.get_object(Bucket=self.bucket, Key=key)
+            body = result["Body"]
+            async with body:
+                if await body.read(3) != b"ok":
+                    raise RuntimeError("storage_probe_mismatch")
+
+    async def backup_health(self) -> dict | None:
+        """Newest backup's age and validity from the small `backups/latest.json`
+        marker the backup job writes after a verified upload.
+
+        Reads one fixed key only, so the API identity needs GetObject on that
+        key and no List/Get on the database dumps themselves. Never exposes the
+        dump's key. Missing marker -> None.
+        """
+        import json
+        import re
+        from datetime import datetime, timezone
+
+        pattern = re.compile(r"backups/indiedex-\d{8}T\d{6}Z\.dump\Z")
+        async with self._client() as client:
+            try:
+                result = await client.get_object(Bucket=self.bucket, Key=BACKUP_MARKER_KEY)
+            except ClientError as exc:
+                if exc.response.get("Error", {}).get("Code") in ("NoSuchKey", "404", "NotFound"):
+                    return None
+                raise
+            body = result["Body"]
+            async with body:
+                raw = await body.read(MARKER_MAX_BYTES + 1)
+        try:
+            if len(raw) > MARKER_MAX_BYTES:
+                raise ValueError
+            marker = json.loads(raw)
+            created = datetime.fromisoformat(marker["created_at"])
+            if created.tzinfo is None:
+                raise ValueError
+            age = int((datetime.now(timezone.utc) - created).total_seconds())
+            valid = (marker.get("version") == 1 and marker.get("pgdmp_verified") is True
+                     and isinstance(marker.get("key"), str) and bool(pattern.fullmatch(marker["key"]))
+                     and type(marker.get("size")) is int and marker["size"] >= 1024 and age >= -300)
+        except (ValueError, KeyError, TypeError, UnicodeError):
+            return {"age_s": None, "valid": False}
+        return {"age_s": max(0, age), "valid": valid}
+
+    async def restore_drill_health(self) -> dict | None:
+        """Age of the last successful restore drill, from its fixed marker."""
+        import json
+        from datetime import datetime, timezone
+
+        async with self._client() as client:
+            try:
+                result = await client.get_object(Bucket=self.bucket, Key=RESTORE_DRILL_MARKER_KEY)
+            except ClientError as exc:
+                if exc.response.get("Error", {}).get("Code") in ("NoSuchKey", "404", "NotFound"):
+                    return None
+                raise
+            body = result["Body"]
+            async with body:
+                raw = await body.read(MARKER_MAX_BYTES + 1)
+        try:
+            if len(raw) > MARKER_MAX_BYTES:
+                raise ValueError
+            marker = json.loads(raw)
+            passed = datetime.fromisoformat(marker["passed_at"])
+            if marker.get("version") != 1 or passed.tzinfo is None:
+                raise ValueError
+            age = int((datetime.now(timezone.utc) - passed).total_seconds())
+            if age < -300:
+                raise ValueError
+        except (ValueError, KeyError, TypeError, UnicodeError):
+            return {"age_s": None, "valid": False, "manifest_compared": False}
+        return {"age_s": max(0, age), "valid": True,
+                "manifest_compared": marker.get("manifest_compared") is True}
 
     async def put(self, key: str, data: bytes, content_type: str) -> None:
         async with self._client() as client:

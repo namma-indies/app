@@ -6,6 +6,7 @@ import { openDB, type IDBPDatabase } from "idb";
 import { postCapture } from "../captureApi";
 import { UPLOAD_COMPLETE_EVENT } from "../processing";
 import { newClientToken } from "../clientToken";
+import { requestConsent } from "../consentEvents";
 import { HttpError, postSighting, UnauthorizedError, type PostSightingInput } from "../api";
 
 const DB_NAME = "indiedex-queue";
@@ -24,6 +25,7 @@ type StoredPhoto = { bytes: ArrayBuffer; type: string };
 type StoredItem = Omit<QueueInput, "photos" | "video" | "audio"> & {
   id: number;
   status?: QueueStatus;
+  retry_at?: number;
   photo_data?: StoredPhoto[];
   photos?: Blob[];
   // A clip gets the same treatment as a photo, and needs it more: it is the
@@ -115,6 +117,14 @@ export function pendingCount(): Promise<number> {
   return countByStatus("pending");
 }
 
+export async function nextRetryAt(): Promise<number | null> {
+  const db = await getDb();
+  const items = (await db.getAll(STORE)) as StoredItem[];
+  const waits = items.filter((i) => (i.status ?? "pending") === "pending" && (i.retry_at ?? 0) > Date.now())
+    .map((i) => i.retry_at!);
+  return waits.length ? Math.min(...waits) : null;
+}
+
 export function failedCount(): Promise<number> {
   return countByStatus("failed");
 }
@@ -140,13 +150,13 @@ export async function discardFailed(id: number): Promise<void> {
 /** A permanent failure means retrying without user action can't succeed:
  * the request was rejected (4xx), not merely unreachable. 401 gets its own
  * branch since it's a `UnauthorizedError` instance rather than a `HttpError`.
- * 408 (request timeout) and 429 (rate limited) are 4xx but are meant to be
+ * 408 (request timeout), 428 (review policies) and 429 (rate limited) can be
  * retried -- 429 especially, since a queue drain hammering the server is
  * exactly the case that would trigger it. */
 function isPermanentFailure(err: unknown): boolean {
   if (err instanceof UnauthorizedError) return true;
   if (err instanceof HttpError) {
-    if (err.status === 408 || err.status === 429) return false;
+    if (err.status === 408 || err.status === 428 || err.status === 429) return false;
     return err.status >= 400 && err.status < 500;
   }
   return false;
@@ -173,6 +183,13 @@ export function setOnUnauthorized(cb: (() => void) | null): void {
 
 let flushing = false;
 let pendingRerun = false;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleRetry(at: number) {
+  if (typeof window === "undefined") return;
+  if (retryTimer !== null) clearTimeout(retryTimer);
+  retryTimer = setTimeout(() => { retryTimer = null; void flush(); }, Math.max(1, at - Date.now()));
+}
 
 export async function flush(): Promise<void> {
   // A second call while one is already in progress (e.g. a rapid second
@@ -184,6 +201,7 @@ export async function flush(): Promise<void> {
     return;
   }
   flushing = true;
+  if (retryTimer !== null) { clearTimeout(retryTimer); retryTimer = null; }
   try {
     do {
       pendingRerun = false;
@@ -192,6 +210,11 @@ export async function flush(): Promise<void> {
       for (const stored of all) {
         const status = stored.status ?? "pending";
         if (status !== "pending") continue;
+        if ((stored.retry_at ?? 0) > Date.now()) {
+          pendingRerun = false;
+          scheduleRetry(stored.retry_at!);
+          break;
+        }
         let record = stored;
         if (!record.client_token) {
           // Queued before tokens existed. Mint one and write it back *before*
@@ -214,6 +237,17 @@ export async function flush(): Promise<void> {
             }));
           }
         } catch (err) {
+          if (err instanceof HttpError && err.status === 428) {
+            requestConsent();
+            break; // Keep every queued byte/token pending until acceptance.
+          }
+          if (err instanceof HttpError && err.status === 429) {
+            const at = Date.now() + Math.max(1, err.retryAfterS ?? 60) * 1000;
+            await db.put(STORE, { ...record, retry_at: at });
+            pendingRerun = false;
+            scheduleRetry(at);
+            break;
+          }
           if (isPermanentFailure(err)) {
             // Write back `stored`, not the reconstructed item: persisting the
             // rebuilt Blobs would downgrade the record to the legacy shape.
