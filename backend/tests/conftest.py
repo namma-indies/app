@@ -11,6 +11,16 @@ from app.config import settings
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
+# Under pytest-xdist (`pytest -n auto`) each worker process gets its own
+# database and bucket, so the per-test TRUNCATE in one worker can't wipe rows
+# another worker's test is using. Done at import, before any fixture or app
+# module reads these settings. Without xdist the names are unchanged.
+_XDIST_WORKER = os.environ.get("PYTEST_XDIST_WORKER")
+if _XDIST_WORKER:
+    settings.test_database_url = f"{settings.test_database_url}_{_XDIST_WORKER}"
+    settings.test_database_url_sync = f"{settings.test_database_url_sync}_{_XDIST_WORKER}"
+    settings.s3_bucket = f"{settings.s3_bucket}-{_XDIST_WORKER}"
+
 
 def _default_db_url_sync() -> str:
     """The sync URL to the always-present `postgres` maintenance database,
@@ -48,8 +58,18 @@ def _migrated():
     that actually need Postgres should request this (directly, or
     transitively via `migrated_db` / `app_client` / `authed_client`), so
     pure-unit test files can run without Postgres available."""
-    _ensure_test_database()
-    _run_migrations()
+    # Some migrations create cluster-wide roles (e.g. public_read), which
+    # parallel xdist workers would race on. An advisory lock on the shared
+    # maintenance database serialises just this setup; tests still run in
+    # parallel afterwards.
+    admin_url = _default_db_url_sync().replace("postgresql+psycopg://", "postgresql://")
+    with psycopg.connect(admin_url, autocommit=True) as lock_conn:
+        lock_conn.execute("SELECT pg_advisory_lock(727001)")
+        try:
+            _ensure_test_database()
+            _run_migrations()
+        finally:
+            lock_conn.execute("SELECT pg_advisory_unlock(727001)")
     yield
 
 

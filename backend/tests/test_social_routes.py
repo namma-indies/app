@@ -43,7 +43,8 @@ async def _pick(client, sid, pid, caption="Spotted in Indiranagar 📸 @a_handle
     ("get", "/social/queue"),
     ("post", "/social/pick"),
     ("post", "/social/pass"),
-    ("delete", f"/social/pick/{uuid7()}"),
+    # A fixed id: pytest-xdist workers must all collect identical test ids.
+    ("delete", "/social/pick/01a1f7b2-6320-7ad3-a3e5-d29ef9484e91"),
 ])
 async def test_social_routes_404_for_non_moderators(app_client, method, path):
     async with _pool(app_client).acquire() as c:
