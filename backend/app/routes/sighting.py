@@ -359,7 +359,12 @@ async def create_sighting(
             )
         if existing is None:
             async with pool.acquire() as conn:
-                capture = await conn.fetchrow("SELECT id,processing_state FROM captures WHERE observer_id=$1 AND client_token=$2", observer_id, client_token)
+                capture = await conn.fetchrow(
+                    # Only a /capture upload, not the capture row every sighting gets
+                    # (same id, same commit): a racing winner's pair must read as a replay.
+                    "SELECT id,processing_state FROM captures WHERE observer_id=$1 AND client_token=$2 "
+                    "AND NOT EXISTS (SELECT 1 FROM sightings s WHERE s.id = captures.id)",
+                    observer_id, client_token)
             if capture is not None:
                 raise HTTPException(409, {"capture_id": str(capture["id"]), "processing_state": capture["processing_state"], "message": "upload already accepted by /capture; poll its status"})
         if existing is not None:
@@ -676,7 +681,12 @@ async def create_sighting(
             )
         if winner is None:
             async with pool.acquire() as conn:
-                capture = await conn.fetchrow("SELECT id,processing_state FROM captures WHERE observer_id=$1 AND client_token=$2", observer_id, client_token)
+                capture = await conn.fetchrow(
+                    # Only a /capture upload, not the capture row every sighting gets
+                    # (same id, same commit): a racing winner's pair must read as a replay.
+                    "SELECT id,processing_state FROM captures WHERE observer_id=$1 AND client_token=$2 "
+                    "AND NOT EXISTS (SELECT 1 FROM sightings s WHERE s.id = captures.id)",
+                    observer_id, client_token)
             if capture is not None:
                 raise HTTPException(409, {"capture_id": str(capture["id"]), "processing_state": capture["processing_state"], "message": "upload already accepted by /capture; poll its status"})
             raise
