@@ -1,0 +1,30 @@
+/* namma-indies@0.1.0 (iterating). Built from its brand pack; edit the pack, not this file. */
+
+:root[data-brand='namma-indies'],
+[data-brand='namma-indies'] {
+  --c-canvas: 250 247 242;
+  --c-surface: 255 253 248;
+  --c-ink: 43 38 32;
+  --c-structure: 43 38 32;
+  --c-action: 165 80 46;
+  --c-action-on-dark: 224 137 90;
+  --c-muted: 111 102 89;
+  --c-rule: 228 221 208;
+  --c-attention: 227 161 58;
+  --c-good: 79 107 58;
+  --c-concern: 138 75 8;
+  --c-alert: 164 74 43;
+  --c-chart-1: 165 80 46;
+  --c-chart-2: 43 38 32;
+  --c-chart-3: 216 196 166;
+  --c-chart-axis: 111 102 89;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-display: var(--font-sans);
+  --font-record: ui-monospace, Menlo, Consolas, monospace;
+  --font-hand: var(--font-sans);
+  --shadow-card: 0 1px 2px rgb(43 38 32 / 0.08);
+  --shadow-nav: 0 -8px 24px rgb(43 38 32 / 0.08);
+  --radius-card: 0.75rem;
+  --backdrop: none;
+}
+
