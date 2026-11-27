@@ -126,6 +126,27 @@ export async function permissionState(): Promise<PermissionState | "unknown"> {
 }
 
 /**
+ * Where the device is, but only if it will say so without asking and without
+ * making anyone wait.
+ *
+ * For the map's opening frame, where a position is a nicety: a permission
+ * prompt on opening a map is a worse trade than a slightly less local view, so
+ * this never causes one. It answers only when the permission is already known
+ * to be granted, and takes whatever fix the device has to hand (ten minutes is
+ * still this neighbourhood) rather than powering up the GPS for one.
+ *
+ * Where the Permissions API is missing or will not commit to an answer, this
+ * returns null and the map falls back to where they last logged an animal.
+ */
+export async function locateQuietly(): Promise<{ lat: number; lng: number } | null> {
+  if ((await permissionState()) !== "granted") return null;
+  if (!navigator.geolocation) return null;
+  const got = await attempt({ maximumAge: 600_000, timeout: 2_500, enableHighAccuracy: false });
+  if (typeof got === "string") return null;
+  return { lat: got.coords.latitude, lng: got.coords.longitude };
+}
+
+/**
  * How to undo a refused permission, per platform.
  *
  * Deliberately concrete. "Enable location in your settings" is useless advice
