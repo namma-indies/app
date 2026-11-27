@@ -22,6 +22,8 @@ function dog(over: Partial<Dog> = {}): Dog {
   return {
     id: "d1",
     name: null,
+    number: 1,
+    company: [],
     first_seen: "2026-07-01",
     last_seen: "2026-07-20",
     sighting_count: 3,
@@ -42,6 +44,86 @@ function dog(over: Partial<Dog> = {}): Dog {
 function resp(dogs: Dog[], propose_min = 0.71): DogsResponse {
   return { dogs, propose_min };
 }
+
+describe("a dog's number", () => {
+  it("is the one the server gave them, not their place in this list", async () => {
+    // Sorted by last-seen, so position says nothing: No. 47 is first here and
+    // would have been "NO. 002" when the number was counted off the list.
+    vi.mocked(getDogs).mockResolvedValue(resp([dog({ id: "a", number: 47 }), dog({ id: "b", number: 3 })]));
+    render(<Dogs onUnauthorized={() => {}} />);
+    expect(await screen.findByText("— NO. 047 —")).toBeInTheDocument();
+    expect(screen.getByText("— NO. 003 —")).toBeInTheDocument();
+    expect(screen.queryByText(/NO\. 00[12]/)).not.toBeInTheDocument();
+  });
+
+  it("gives way to a name", async () => {
+    vi.mocked(getDogs).mockResolvedValue(resp([dog({ name: "Kalu", number: 47 })]));
+    render(<Dogs onUnauthorized={() => {}} />);
+    expect(await screen.findByText("Kalu")).toBeInTheDocument();
+    expect(screen.queryByText(/NO\. 047/)).not.toBeInTheDocument();
+  });
+});
+
+describe("often in the company of", () => {
+  const pack = () => [
+    dog({ id: "a", number: 47, company: [{ id: "b", number: 52, together: 3 }, { id: "gone", number: 9, together: 1 }] }),
+    dog({ id: "b", number: 52, photos: ["https://example.test/b_thumb.webp"], company: [{ id: "a", number: 47, together: 3 }] }),
+    dog({ id: "c", number: 60 }),
+  ];
+  const cardOf = (title: string) => screen.getByText(title).closest(".dog-card") as HTMLElement;
+
+  it("lists who they are photographed with, most often first", async () => {
+    vi.mocked(getDogs).mockResolvedValue(resp(pack()));
+    render(<Dogs onUnauthorized={() => {}} />);
+    await screen.findByText("— NO. 047 —");
+    const card = cardOf("— NO. 047 —");
+    expect(card.querySelector(".company-head")).toHaveTextContent("OFTEN IN THE COMPANY OF");
+    expect([...card.querySelectorAll(".company-name")].map((n) => n.textContent)).toEqual(["NO. 052", "NO. 009"]);
+    // How often, but only where "often" is true of them.
+    expect([...card.querySelectorAll(".company-times")].map((n) => n.textContent)).toEqual(["3 TIMES"]);
+    expect(card.querySelector(".companion img")).toHaveAttribute("src", "https://example.test/b_thumb.webp");
+  });
+
+  it("says nothing on a card with no company", async () => {
+    vi.mocked(getDogs).mockResolvedValue(resp(pack()));
+    render(<Dogs onUnauthorized={() => {}} />);
+    await screen.findByText("— NO. 060 —");
+    expect(cardOf("— NO. 060 —").querySelector(".company")).toBeNull();
+  });
+
+  it("does not call one shared photograph a habit", async () => {
+    vi.mocked(getDogs).mockResolvedValue(resp([
+      dog({ id: "a", number: 47, company: [{ id: "b", number: 52, together: 1 }] }),
+      dog({ id: "b", number: 52, company: [{ id: "a", number: 47, together: 1 }] }),
+    ]));
+    render(<Dogs onUnauthorized={() => {}} />);
+    await screen.findByText("— NO. 047 —");
+    expect(cardOf("— NO. 047 —").querySelector(".company-head")).toHaveTextContent("SEEN IN THE COMPANY OF");
+    expect(document.querySelector(".company-times")).toBeNull();
+  });
+
+  it("goes to a companion's card when they are tapped", async () => {
+    vi.mocked(getDogs).mockResolvedValue(resp(pack()));
+    render(<Dogs onUnauthorized={() => {}} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Go to NO. 052" }));
+    expect(cardOf("— NO. 052 —")).toHaveClass("dog-card-marked");
+    expect(cardOf("— NO. 047 —")).not.toHaveClass("dog-card-marked");
+  });
+
+  it("still names a companion who is not in this list, without a way through", async () => {
+    vi.mocked(getDogs).mockResolvedValue(resp(pack()));
+    render(<Dogs onUnauthorized={() => {}} />);
+    await screen.findByText("NO. 009");
+    expect(screen.queryByRole("button", { name: "Go to NO. 009" })).not.toBeInTheDocument();
+  });
+
+  it("opens on the card it was asked for", async () => {
+    vi.mocked(getDogs).mockResolvedValue(resp(pack()));
+    render(<Dogs onUnauthorized={() => {}} focusId="c" />);
+    await screen.findByText("— NO. 060 —");
+    expect(cardOf("— NO. 060 —")).toHaveClass("dog-card-marked");
+  });
+});
 
 describe("Dogs", () => {
   it("leads with the number of animals, not the number of sightings", async () => {

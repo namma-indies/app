@@ -75,6 +75,9 @@ export default defineConfig({
       "/photo": { target: API, changeOrigin: true },
       "/dogs": { target: API, changeOrigin: true },
       "/proposal": { target: API, changeOrigin: true },
+      "/recognised": { target: API, changeOrigin: true },
+      // Also covers /captures, the Journal's upload-progress feed.
+      "/capture": { target: API, changeOrigin: true },
       "/auth": { target: API, changeOrigin: true },
       "/account/consent": { target: API, changeOrigin: true },
       // Server-rendered sign-in gate. Without this the SPA shell answers it and

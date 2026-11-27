@@ -93,6 +93,9 @@ OBSERVER_COLUMNS: dict[str, str] = {
     "email": "emptied",
     "x_handle": "emptied",
     "note_language": "emptied",
+    # When they last read what had been recognised (routes/recognised.py): a
+    # record of the person using the app, so it goes with them.
+    "recognitions_seen_at": "emptied",
     "social_consent": "false",
     # A ban is kept on the tombstone; the address it was for lives on only as
     # a keyed hash in banned_emails (#180).

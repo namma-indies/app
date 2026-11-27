@@ -108,7 +108,7 @@ describe("Review", () => {
 
   it("records a merge once confirmed and drops it from the queue", async () => {
     vi.mocked(getProposals).mockResolvedValue(resp([proposal()]));
-    vi.mocked(resolveProposal).mockResolvedValue(undefined);
+    vi.mocked(resolveProposal).mockResolvedValue({ number: null });
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<Review onUnauthorized={() => {}} />);
     await waitFor(() => expect(screen.getByText("SAME ANIMAL")).toBeInTheDocument());
@@ -120,7 +120,7 @@ describe("Review", () => {
 
   it("does not confirm for 'different' — that verdict is cheap to correct", async () => {
     vi.mocked(getProposals).mockResolvedValue(resp([proposal()]));
-    vi.mocked(resolveProposal).mockResolvedValue(undefined);
+    vi.mocked(resolveProposal).mockResolvedValue({ number: null });
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     render(<Review onUnauthorized={() => {}} />);
     await waitFor(() => expect(screen.getByText("DIFFERENT ANIMALS")).toBeInTheDocument());
@@ -164,7 +164,7 @@ describe("Review", () => {
 
   it("tells the caller after each verdict, so the dogs list can refresh", async () => {
     vi.mocked(getProposals).mockResolvedValue(resp([proposal()]));
-    vi.mocked(resolveProposal).mockResolvedValue(undefined);
+    vi.mocked(resolveProposal).mockResolvedValue({ number: null });
     const onDecided = vi.fn();
     render(<Review onUnauthorized={() => {}} onDecided={onDecided} />);
     await userEvent.click(await screen.findByText("DIFFERENT ANIMALS"));
@@ -198,7 +198,7 @@ describe("Review species wording", () => {
   const side = (species: "dog" | "cat" | null, id: string) => ({ sighting_id: id, date: "2026-07-01", thumb_url: null, species });
   it.each([["cat", "CAT"], ["dog", "DOG"]] as const)("names the %s in the buttons, the confirm and the toast", async (species, upper) => {
     vi.mocked(getProposals).mockResolvedValue(resp([proposal({ a: side(species, "s1"), b: side(species, "s2") })]));
-    vi.mocked(resolveProposal).mockResolvedValue(undefined);
+    vi.mocked(resolveProposal).mockResolvedValue({ number: null });
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<Review onUnauthorized={() => {}} />);
     expect(await screen.findByText(`DIFFERENT ${upper}S`)).toBeInTheDocument();

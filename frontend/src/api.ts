@@ -116,6 +116,9 @@ export interface Sighting {
   relistening?: { source: "note" | "clip"; state?: "listening" | "failed" | "no_speech" }[];
   /** Present on /dex only. Notes added after the upload, oldest first (#156). */
   later_notes?: LaterNote[];
+  /** Present on /dex only. The animal this sighting has been recognised as, or
+   * null while nobody has matched it. The number is the one on their card. */
+  individual?: { id: string; number: number; name: string | null } | null;
   /** Present on /dex only, for your own sightings with nothing noted (#160). */
   photo_description?: PhotoDescription | null;
   /** Present on /dex only. Details a model read from the voice note, for
@@ -531,6 +534,8 @@ export interface Dog {
   species?: "dog" | "cat" | null;
   /** Null until naming ships (issue #4); the card falls back to a number. */
   name: string | null;
+  /** Theirs for good, and the same for everyone looking. See `dogLabel.ts`. */
+  number: number;
   first_seen: string;
   last_seen: string;
   sighting_count: number;
@@ -553,6 +558,19 @@ export interface Dog {
    * population look-alikes outscore genuine matches, so no cut-off separates
    * them; the ordering is the part that holds. */
   looks_like: LookAlike[];
+  /** Other animals photographed in the same frame as this one, most often
+   * first. A fact about uploads -- one camera saw both -- unlike `looks_like`,
+   * which is a guess for a human to check. */
+  company: Companion[];
+}
+
+export interface Companion {
+  /** Another dog's id, resolvable against the same `dogs` list when they are
+   * in it; the number is carried here for when they are not. */
+  id: string;
+  number: number;
+  /** How many separate uploads show the two together. */
+  together: number;
 }
 
 export interface LookAlike {
@@ -644,7 +662,7 @@ export async function getProposals(): Promise<ProposalsResponse> {
 export async function resolveProposal(
   id: string,
   verdict: "same" | "different",
-): Promise<void> {
+): Promise<{ number: number | null }> {
   const form = new FormData();
   form.append("verdict", verdict);
   const res = await fetch(`${API_BASE}/proposal/${id}`, {
@@ -652,7 +670,59 @@ export async function resolveProposal(
     credentials: "include",
     body: form,
   });
-  await handle<unknown>(res);
+  // `number`: who a "same" made or added to. Absent from an older server.
+  const done = await handle<{ number?: number | null } | null>(res);
+  return { number: done?.number ?? null };
+}
+
+// --- recognised -----------------------------------------------------------
+
+/** One of your sightings turned out to be an animal with other sightings.
+ * Carries no place: two photographs, two dates, and who took the other one. */
+export interface Recognition {
+  individual: { id: string; number: number; name: string | null; species: "dog" | "cat" | null };
+  /** When the link was made. Passed back to `markRecognisedSeen` exactly as
+   * received -- see there. */
+  recognised_at: string;
+  /** Your sighting that was recognised. */
+  yours: { id: string; captured_at: string; thumb_url: string | null };
+  /** The other sighting of the same animal furthest from yours in time. */
+  other: { captured_at: string; thumb_url: string | null; mine: boolean; observer: string | null };
+  /** How many of the animal's sightings are yours, this one included. */
+  met_count: number;
+  sighting_count: number;
+  /** Display names of everyone else who has logged them. Untrusted text. */
+  observers: string[];
+}
+
+export interface RecognisedResponse {
+  /** Newest first, and only the latest few. */
+  recognised: Recognition[];
+  /** How many older ones were left out. */
+  more: number;
+}
+
+export async function getRecognised(): Promise<RecognisedResponse> {
+  const res = await fetch(`${API_BASE}/recognised`, { credentials: "include" });
+  return handle<RecognisedResponse>(res);
+}
+
+/** Mark everything up to `recognisedAt` as read.
+ *
+ * The string goes back untouched. It carries microseconds and a `Date` keeps
+ * milliseconds, so a round trip through one would land just before the
+ * recognition it was read from, and that card would come back on every open. */
+export async function markRecognisedSeen(recognisedAt: string): Promise<void> {
+  const form = new FormData();
+  form.append("as_of", recognisedAt);
+  const res = await fetch(`${API_BASE}/recognised/seen`, {
+    method: "POST",
+    credentials: "include",
+    body: form,
+  });
+  // 204: there is no body for `handle` to parse.
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok) throw responseError(res);
 }
 
 

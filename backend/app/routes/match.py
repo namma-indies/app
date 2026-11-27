@@ -573,5 +573,11 @@ async def resolve_proposal(
         if verdict == "same":
             await propose_known_names(conn, individual_id, [sighting_id, p["candidate_sighting_id"]])
 
+        # The number on their card, so the reviewer can be told who they just
+        # made or added to rather than only that it was saved.
+        number = (await conn.fetchval("SELECT number FROM individuals WHERE id=$1", individual_id)
+                  if verdict == "same" else None)
+
     return {"status": "ok", "verdict": verdict,
-            "individual_id": str(individual_id) if verdict == "same" else None}
+            "individual_id": str(individual_id) if verdict == "same" else None,
+            "number": number}

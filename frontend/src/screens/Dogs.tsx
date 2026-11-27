@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getDogs, getProposals, UnauthorizedError, type Dog, type DogsResponse } from "../api";
 import Review from "./Review";
 import { speciesNoun } from "../species";
 import { formatDayRange } from "../formatWhen";
+import { dogNumber, dogTitle } from "../dogLabel";
 
 /** The catalogue of identified individuals, and the matches that feed it.
  *
@@ -56,8 +57,26 @@ function whereLine(d: Dog): string {
   return `LAST SEEN ${d.lat.toFixed(4)}, ${d.lng.toFixed(4)}`;
 }
 
-export default function Dogs({ onUnauthorized }: { onUnauthorized: () => void }) {
+/** How the row of companions is introduced. "Often" is a claim about a habit,
+ * so it waits for a second upload: once is a meeting, twice is company. */
+export function companyHead(d: Dog): string {
+  return d.company.some((c) => c.together > 1) ? "OFTEN IN THE COMPANY OF" : "SEEN IN THE COMPANY OF";
+}
+
+export default function Dogs({
+  onUnauthorized,
+  focusId,
+}: {
+  onUnauthorized: () => void;
+  /** Open on this animal's card: scrolled to and marked. Set when someone
+   * arrives from a mention of them elsewhere (a recognition, the Journal). */
+  focusId?: string | null;
+}) {
   const [data, setData] = useState<DogsResponse | null>(null);
+  // Which card is marked. Starts as the one asked for and follows taps on a
+  // companion, so "who is that?" is answered by going to them.
+  const [marked, setMarked] = useState<string | null>(focusId ?? null);
+  const cards = useRef(new Map<string, HTMLDivElement>());
   const [failed, setFailed] = useState(false);
   // How many pairs are waiting. A failed count only hides the button: the
   // dogs themselves loaded, and the list is still worth showing.
@@ -91,6 +110,15 @@ export default function Dogs({ onUnauthorized }: { onUnauthorized: () => void })
     loadDogs();
     loadWaiting();
   }, [loadDogs, loadWaiting]);
+
+  useEffect(() => setMarked(focusId ?? null), [focusId]);
+  // After the list is on screen, not before: there is nothing to scroll to
+  // while it is still loading.
+  const loaded = data !== null;
+  useEffect(() => {
+    if (!marked || !loaded || reviewing) return;
+    cards.current.get(marked)?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+  }, [marked, loaded, reviewing]);
 
   if (reviewing) {
     return (
@@ -143,8 +171,12 @@ export default function Dogs({ onUnauthorized }: { onUnauthorized: () => void })
       <div className="journal-head">
         {dogs.length} INDIE{dogs.length === 1 ? "" : "S"} IDENTIFIED
       </div>
-      {dogs.map((d, i) => (
-        <div key={d.id} className="dog-card">
+      {dogs.map((d) => (
+        <div
+          key={d.id}
+          className={d.id === marked ? "dog-card dog-card-marked" : "dog-card"}
+          ref={(el) => { if (el) cards.current.set(d.id, el); else cards.current.delete(d.id); }}
+        >
           <div className="dog-strip">
             {d.photos.map((src, n) => (
               <img key={n} src={src} alt="" />
@@ -152,7 +184,7 @@ export default function Dogs({ onUnauthorized }: { onUnauthorized: () => void })
           </div>
           <div className="dog-meta">
             <div className={d.name ? "name" : "name anon"}>
-              {d.name ?? `— NO. ${String(dogs.length - i).padStart(3, "0")} —`}
+              {dogTitle(d)}
             </div>
             <div className="line">
               {seenLine(d)}
@@ -169,6 +201,37 @@ export default function Dogs({ onUnauthorized }: { onUnauthorized: () => void })
                     {TAG_LABELS[t] ?? t.toUpperCase()}
                   </span>
                 ))}
+              </div>
+            )}
+            {d.company.length > 0 && (
+              /* Stated, where the look-alikes below are asked: these two were
+                 in one photograph, which is a fact about an upload and not a
+                 model's opinion. So it sits above them and looks like part of
+                 the card rather than a queue. A companion beyond the list's
+                 cap, or hidden from this viewer, still gets their number. */
+              <div className="company">
+                <div className="company-head">{companyHead(d)}</div>
+                <div className="company-row">
+                  {d.company.map((c) => {
+                    const other = byId.get(c.id);
+                    const label = other?.name ?? dogNumber(c.number);
+                    const face = other?.photos[0] ? <img src={other.photos[0]} alt="" /> : <div className="company-blank">🐾</div>;
+                    const caption = (
+                      <>
+                        <span className="company-name">{label}</span>
+                        {c.together > 1 && <span className="company-times">{c.together} TIMES</span>}
+                      </>
+                    );
+                    return other ? (
+                      <button key={c.id} className="companion" onClick={() => setMarked(c.id)}
+                        aria-label={`Go to ${label}`}>
+                        {face}{caption}
+                      </button>
+                    ) : (
+                      <div key={c.id} className="companion">{face}{caption}</div>
+                    );
+                  })}
+                </div>
               </div>
             )}
             {d.looks_like.length > 0 && (

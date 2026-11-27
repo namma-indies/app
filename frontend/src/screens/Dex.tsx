@@ -27,6 +27,8 @@ import { getCaptures, type CaptureSummary } from "../captureApi";
 import ReportSheet from "../components/ReportSheet";
 import { speciesNoun } from "../species";
 import Dogs from "./Dogs";
+import Recognised from "../components/Recognised";
+import { dogName, dogTitle } from "../dogLabel";
 import { useProcessingFeed } from "../useProcessingFeed";
 import { isProcessing, processingLabel } from "../processing";
 import { formatWhen } from "../formatWhen";
@@ -121,6 +123,10 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
   // dog a verdict makes or grows shows up. FLAGS and POSTS live under ADMIN.
   const [view, setView] = useState<"map" | "journal" | "dogs">("map");
   const [selectedId, setSelected] = useState<string | null>(null);
+  // An animal to open DOGS on, when someone follows a mention of them from a
+  // recognition or a Journal entry. The DOGS tab itself opens on the list.
+  const [focusDog, setFocusDog] = useState<string | null>(null);
+  const seeDog = (id: string) => { setFocusDog(id); setSelected(null); setView("dogs"); };
   // The map can show the whole cohort's sightings, not just the viewer's.
   // Defaults to MINE: that renders straight from the /dex data already loaded
   // for the journal, so the common case costs no extra request. /map is loaded
@@ -269,10 +275,16 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
         <button className={view === "journal" ? "active" : ""} onClick={() => setView("journal")}>
           JOURNAL
         </button>
-        <button className={view === "dogs" ? "active" : ""} onClick={() => setView("dogs")}>
+        <button className={view === "dogs" ? "active" : ""} onClick={() => { setFocusDog(null); setView("dogs"); }}>
           DOGS
         </button>
       </div>
+
+      {/* What has been recognised since they last looked. Above the map and
+          the Journal alike, since either is where someone lands; not over
+          DOGS, which is where its button sends them. Mounted afresh on the way
+          back from DOGS, so a match confirmed there is told here. */}
+      {view !== "dogs" && <Recognised onSee={seeDog} onUnauthorized={onUnauthorized} />}
 
       {reviewCaptureId && <CaptureReview captureId={reviewCaptureId} laterNotes={laterNotesOffered(laterNotes) ? laterNotes : undefined} onClose={() => setReviewCaptureId(null)} onUnauthorized={onUnauthorized} onSaved={() => { setReviewCaptureId(null); captureFeed.refresh(); ownFeed.refresh(); sharedFeed.refresh(); }} />}
 
@@ -282,7 +294,7 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
       )}
 
       {view === "dogs" ? (
-        <Dogs onUnauthorized={onUnauthorized} />
+        <Dogs onUnauthorized={onUnauthorized} focusId={focusDog} />
       ) : view === "map" ? (
         <>
           <div className="scope-toggle">
@@ -322,10 +334,25 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
             <div key={s.id} className="spec" onClick={() => setSelected(s.id)}>
               <div className="frame">
                 {s.photos[0] ? <img src={s.photos[0].thumb_url} alt={describedAlt(s.photo_description) ?? `${speciesNoun(s.species)} sighting`} /> : <div className="media-placeholder">No preview yet</div>}
-                <span className="no">No. {String(numberOf.get(s.id) ?? 0).padStart(3, "0")}</span>
+                {/* "#", not "No.": this counts your sightings, and "NO. 047" is
+                    now a dog. Two "No."s on one card read as a contradiction. */}
+                <span className="no">#{String(numberOf.get(s.id) ?? 0).padStart(3, "0")}</span>
               </div>
               <div className="meta">
-                <div className="name anon">— UNIDENTIFIED —</div>
+                {s.individual ? (
+                  // The slot every sighting starts with empty, filled. A way
+                  // through to their card, because the next question after
+                  // "who is this" is "what else is known about them".
+                  <button
+                    className="name name-link"
+                    aria-label={`${dogName(s.individual)}: see them under DOGS`}
+                    onClick={(event) => { event.stopPropagation(); seeDog(s.individual!.id); }}
+                  >
+                    {dogTitle(s.individual)} <span aria-hidden="true">›</span>
+                  </button>
+                ) : (
+                  <div className="name anon">— UNIDENTIFIED —</div>
+                )}
                 {s.capture_id && s.details_editable && <button className="link-btn" onClick={(event) => { event.stopPropagation(); setReviewCaptureId(s.capture_id!); }}>Edit animal details</button>}
                 {canShare && (() => {
                   const shared = sharedNow[s.id] ?? s.shared_with_team === true;
@@ -415,8 +442,9 @@ export default function Dex({ onUnauthorized }: { onUnauthorized: () => void }) 
             {selected.photos.length > 0 ? <SightingFrames key={selected.id} photos={selected.photos} noun={speciesNoun(selected.species)} alt={describedAlt(selected.photo_description)} /> : <div className="media-placeholder">{processingLabel(selected.processing_state) ?? "Preview unavailable"}</div>}
             {selected.photos.length > 0 && processingLabel(selected.processing_state) && <p className="viewer-caption">{processingLabel(selected.processing_state)}</p>}
             <p className="viewer-caption">
-              No. {String(numberOf.get(selected.id) ?? 0).padStart(3, "0")} ·{" "}
+              #{String(numberOf.get(selected.id) ?? 0).padStart(3, "0")} ·{" "}
               {formatWhen(selected.captured_at)}
+              {selected.individual && <> · {dogName(selected.individual)}</>}
             </p>
             {selected.attrs?.note && <p className="viewer-note">{selected.attrs.note}</p>}
             {selected.audio_url && <audio className="viewer-audio" src={selected.audio_url} controls preload="none" aria-label="voice note" />}

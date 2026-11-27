@@ -22,6 +22,7 @@ from app.operational_errors import ErrorCaptureMiddleware, errors, flush_loop
 from app.routes.store_review import router as store_review_router
 from app.routes.dex import router as dex_router
 from app.routes.dogs import router as dogs_router
+from app.routes.recognised import router as recognised_router
 from app.routes.erase import router as erase_router
 from app.routes.account import router as account_router
 from app.routes.blocks import router as blocks_router
@@ -160,6 +161,7 @@ app.include_router(support_router)
 app.include_router(consent_router)
 app.include_router(dex_router)
 app.include_router(dogs_router)
+app.include_router(recognised_router)
 app.include_router(erase_router)
 app.include_router(account_router)
 app.include_router(blocks_router)

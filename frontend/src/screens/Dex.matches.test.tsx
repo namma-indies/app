@@ -27,7 +27,7 @@ const pair: Proposal = {
 };
 
 const dog: Dog = {
-  id: "d1", name: null, first_seen: "2026-10-01", last_seen: "2026-10-09",
+  id: "d1", name: null, number: 1, company: [], first_seen: "2026-10-01", last_seen: "2026-10-09",
   sighting_count: 2, observer_count: 2, seen_by_me: true, observers: ["Priya"],
   photos: [], lat: null, lng: null, precision: "none", cell_m: null, tags: [], looks_like: [],
 };
@@ -51,7 +51,7 @@ describe("matches inside the Dogs tab", () => {
     setup();
     vi.mocked(getDogs).mockResolvedValueOnce({ dogs: [], propose_min: 0.4 });
     vi.mocked(getProposals).mockResolvedValue({ proposals: [pair], propose_min: 0.4 });
-    vi.mocked(resolveProposal).mockResolvedValue(undefined);
+    vi.mocked(resolveProposal).mockResolvedValue({ number: 1 });
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<Dex onUnauthorized={() => {}} />);
 

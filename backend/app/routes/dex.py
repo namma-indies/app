@@ -62,10 +62,17 @@ async def get_dex(
             -- published sightings share.
             COALESCE(s.audio_s3_key, c.audio_s3_key) AS audio_s3_key,
             {animal_present()} AS animal_ok,
+            i.id AS individual_id,
+            i.number AS individual_number,
+            i.name AS individual_name,
             p.id AS photo_id,
             p.s3_key
         FROM sightings s
         LEFT JOIN captures c ON c.id = s.capture_id
+        -- Who this sighting turned out to be (app/routes/recognised.py). A
+        -- merged-away record is not an identity to show anyone.
+        LEFT JOIN individuals i ON i.id = s.individual_id
+             AND i.merged_into IS NULL AND i.status IS DISTINCT FROM 'merged'
         LEFT JOIN photos p ON p.sighting_id = s.id
         WHERE s.observer_id = $1
         -- p.id breaks the tie: photos of one sighting share created_at exactly
@@ -105,6 +112,14 @@ async def get_dex(
                 # animals, and its sheet would be empty.
                 "details_editable": row["details_editable"] is True,
                 "species": row["species"],
+                # The animal this sighting has been recognised as, or None
+                # while the slot is still empty. The number is the one on
+                # their card under DOGS.
+                "individual": None if row["individual_id"] is None else {
+                    "id": str(row["individual_id"]),
+                    "number": row["individual_number"],
+                    "name": row["individual_name"],
+                },
                 "on_map": _on_map(row),
                 "off_map_reason": _off_map_reason(row),
                 "photos": [],

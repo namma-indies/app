@@ -3,6 +3,7 @@ import { commonSpecies, speciesNoun } from "../species";
 import BlockSheet from "../components/BlockSheet";
 import PairMap, { type PairPoint } from "../components/PairMap";
 import { whenText, whereText } from "../pairWhere";
+import { dogNumber } from "../dogLabel";
 import {
   getProposals,
   HttpError,
@@ -133,13 +134,14 @@ export default function Review({
     if (verdict === "same" && !confirm(mergeWarning(pairNoun(p)))) return;
     setBusy(p.id);
     try {
-      await resolveProposal(p.id, verdict);
+      const made = await resolveProposal(p.id, verdict);
       // Drop it from the list rather than refetching: a refetch would reorder
       // the queue under someone working down it.
       setItems((cur) => (cur ?? []).filter((x) => x.id !== p.id));
       setNote(
         verdict === "same"
-          ? `Saved as one ${pairNoun(p)}. You'll find them under DOGS.`
+          // Who they just made or added to, by the number on that card.
+          ? `Saved as one ${pairNoun(p)}${made.number ? `: ${dogNumber(made.number)}` : ""}. You'll find them under DOGS.`
           : `Saved as two different ${pairNoun(p)}s.`,
       );
       onDecided?.();
