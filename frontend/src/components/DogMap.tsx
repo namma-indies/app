@@ -5,6 +5,8 @@ import type { MappableSighting } from "../api";
 import { processingLabel } from "../processing";
 import { formatWhen } from "../formatWhen";
 import { speciesNoun } from "../species";
+import { locateQuietly } from "../capture/geolocate";
+import { homeFrame, type Place } from "./mapFrame";
 
 const BANGALORE: [number, number] = [77.59, 12.97];
 const SOURCE_ID = "sightings";
@@ -266,9 +268,16 @@ export default function DogMap({
   // close over the first render's sightings forever.
   const sightingsRef = useRef(sightings);
   sightingsRef.current = sightings;
+  // Whether the opening frame has been set, and whether the person has since
+  // taken hold of the map. Once they have, nothing here moves it again.
+  const framedRef = useRef(false);
+  const touchedRef = useRef(false);
+  const hereRef = useRef<Place | null>(null);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
+    framedRef.current = false;
+    touchedRef.current = false;
 
     const map = new maplibregl.Map({
       container: containerRef.current,
@@ -279,6 +288,16 @@ export default function DogMap({
     });
     mapRef.current = map;
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+    // The way back to "around me" after wandering off, and the only route to it
+    // where the device will not report a position unasked (see locateQuietly).
+    // It asks for permission when tapped, never on opening the map.
+    map.addControl(
+      new maplibregl.GeolocateControl({
+        positionOptions: { enableHighAccuracy: true },
+        trackUserLocation: false,
+      }),
+      "top-right",
+    );
 
     // One delegated listener on the container rather than wiring each popup as
     // it opens. Popups are created and destroyed constantly as markers come in
@@ -292,6 +311,25 @@ export default function DogMap({
       if (blocked) onBlockRef.current?.(blocked);
     };
     container.addEventListener("click", onClick);
+    // Any press, scroll or key on the map counts as taking hold of it. Caught
+    // on the container, in the capture phase, because half the ways of moving
+    // the map (a cluster bubble, a pin, the zoom buttons) are DOM elements that
+    // move the camera from code and never raise a user-originated map event.
+    const onTouch = () => { touchedRef.current = true; };
+    const TOUCHES = ["pointerdown", "wheel", "keydown"] as const;
+    for (const type of TOUCHES) container.addEventListener(type, onTouch, true);
+
+    // Usually back before the style has loaded, in which case the opening frame
+    // simply uses it. When it loses that race the map re-frames once, and only
+    // if it is still exactly where it was put.
+    let gone = false;
+    void locateQuietly().then((here) => {
+      if (gone || !here) return;
+      hereRef.current = here;
+      if (!framedRef.current || touchedRef.current) return;
+      const frame = homeFrame(sightingsRef.current, here);
+      if (frame.anchor === "here") fitTo(map, frame.points);
+    });
 
     map.on("load", () => {
       map.addSource(SOURCE_ID, {
@@ -402,11 +440,13 @@ export default function DogMap({
         if (map.isSourceLoaded(SOURCE_ID)) updateMarkers();
       });
 
-      applyData(map, sightingsRef.current, true);
+      framedRef.current = applyData(map, sightingsRef.current, hereRef.current);
     });
 
     return () => {
+      gone = true;
       container.removeEventListener("click", onClick);
+      for (const type of TOUCHES) container.removeEventListener(type, onTouch, true);
       map.remove();
       mapRef.current = null;
     };
@@ -416,28 +456,44 @@ export default function DogMap({
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded() || !map.getSource(SOURCE_ID)) return;
-    applyData(map, sightings, false);
+    // Frames only until it has managed to once: the first batch can be all
+    // unlocated sightings, and the map should still open on the first one that
+    // has a place rather than stay parked on the default centre.
+    const settled = framedRef.current || touchedRef.current;
+    const framed = applyData(map, sightings, settled ? undefined : hereRef.current);
+    framedRef.current ||= framed;
   }, [sightings]);
 
   return <div ref={containerRef} className="map-wrap" />;
 }
 
-/** Push the current sightings into the source, and on first load frame them.
- * Fitting only once is deliberate: re-framing on every refresh would yank the
+/** Push the current sightings into the source and, when `here` is passed (a
+ * place, or null for "not known"), open on their neighbourhood. Returns
+ * whether it framed anything.
+ *
+ * Framing only once is deliberate: re-framing on every refresh would yank the
  * map out from under someone who had panned somewhere deliberately. */
-function applyData(map: maplibregl.Map, sightings: MappableSighting[], fit: boolean): void {
+function applyData(map: maplibregl.Map, sightings: MappableSighting[], here?: Place | null): boolean {
   const geoed = sightings.filter((s) => s.lat != null && s.lng != null);
   const src = map.getSource(SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
-  if (!src) return;
+  if (!src) return false;
   src.setData({ type: "FeatureCollection", features: geoed.map(toFeature) });
 
-  if (!fit || geoed.length === 0) return;
-  if (geoed.length === 1) {
-    map.jumpTo({ center: [geoed[0].lng as number, geoed[0].lat as number], zoom: 15 });
+  if (here === undefined) return false;
+  const frame = homeFrame(geoed, here);
+  if (frame.anchor === "none") return false;
+  fitTo(map, frame.points);
+  return true;
+}
+
+/** A lone sighting is centred at neighbourhood zoom; several are fitted, and
+ * `maxZoom` stops a tight knot of them from slamming to street level. */
+function fitTo(map: maplibregl.Map, points: [number, number][]): void {
+  if (points.length === 1) {
+    map.jumpTo({ center: points[0], zoom: 15 });
     return;
   }
   const bounds = new maplibregl.LngLatBounds();
-  for (const s of geoed) bounds.extend([s.lng as number, s.lat as number]);
-  // maxZoom stops a tight cluster of sightings from slamming to street level.
+  for (const p of points) bounds.extend(p);
   map.fitBounds(bounds, { padding: 56, maxZoom: 15, duration: 0 });
 }
