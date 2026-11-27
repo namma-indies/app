@@ -61,6 +61,19 @@ jobs:
             # Any line that collides with the heredoc delimiter is dropped
             # rather than allowed to terminate the value early -- that is an
             # output-injection hole, not a formatting nit.
+            #
+            # actions/checkout fetches a tag push as `<sha>:refs/tags/<name>`,
+            # which leaves a lightweight ref pointing at the commit and throws
+            # the tag object away. `%(contents)` then answers with the COMMIT
+            # message, so every release up to v1.3.0 told testers "Merge pull
+            # request #NNN" instead of its notes. Fetching the ref by name
+            # brings the annotation back.
+            git fetch --quiet --force --no-tags origin \
+              "+refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+            if [ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" != "tag" ]; then
+              echo "::warning::$GITHUB_REF_NAME is a lightweight tag, so there are"\
+                   "no release notes -- use 'git tag -a' to write them"
+            fi
             changelog="$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME" \
                          | grep -vxF "$EOF_MARKER" || true)"
           else
