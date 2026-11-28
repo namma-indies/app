@@ -67,6 +67,9 @@ LOOKALIKES_PER_DOG = 3
 # Neighbours the ANN stage pulls per photo before exact re-ranking, mirroring
 # matching.ANN_SHORTLIST. Cheap, and protects against fp16 mis-ranking.
 ANN_PROBE = 20
+# Companions listed per dog, most often seen together first. A row of faces,
+# not a census of the pack.
+COMPANY_PER_DOG = 4
 _TAG_KEYS = ("sex", "ear_notch", "condition")
 
 
@@ -156,6 +159,65 @@ async def _look_alikes(conn, ids: list[UUID], viewer: UUID) -> dict[UUID, list[d
     return out
 
 
+async def _company(conn, ids: list[UUID], viewer: UUID) -> dict[UUID, list[dict]]:
+    """Who each animal is seen with: other individuals in the same upload.
+
+    One photograph or clip with several animals in it is published as one
+    sighting per animal, all sharing a `capture_id` (app/captures.py). Two
+    individuals whose sightings share a capture were in front of the same lens
+    at the same moment, which is the strongest evidence of company there is --
+    and it was already in the database, unread.
+
+    WHY ONLY THE SAME UPLOAD
+    ------------------------
+    "Logged by one person within ten minutes and fifty metres" would find far
+    more pairs and would be a guess: two dogs on one street corner an hour
+    apart are neighbours, not companions. This counts only what a camera saw.
+    The price is that single-photo uploads never contribute (their capture is
+    a stand-in holding one sighting), so the list starts short and grows with
+    multi-animal captures.
+
+    A published sighting's grouping was either confident or confirmed by a
+    person (`captures.recheck_held`), so there is no unsure grouping to
+    exclude here. Two sightings of one capture can never be the same
+    individual (`matching.observations_compatible`), so an animal is never
+    its own company.
+
+    Built from the same sightings the card counts, on both sides of the pair:
+    `countable_sighting` and `visible_to`. Someone the viewer has blocked
+    contributes no company, exactly as they contribute no photographs.
+    """
+    if not ids:
+        return {}
+    rows = await conn.fetch(
+        f"""
+        WITH seen AS (
+            SELECT s.individual_id, s.capture_id, i.number
+            FROM sightings s
+            JOIN individuals i ON i.id = s.individual_id
+            WHERE s.capture_id IS NOT NULL
+              AND i.merged_into IS NULL AND i.status IS DISTINCT FROM 'merged'
+              AND {countable_sighting()} AND {visible_to('$2')}
+        )
+        SELECT a.individual_id AS dog_id, b.individual_id AS other_id, b.number,
+               count(DISTINCT a.capture_id) AS together
+        FROM seen a
+        JOIN seen b ON b.capture_id = a.capture_id AND b.individual_id <> a.individual_id
+        WHERE a.individual_id = ANY($1::uuid[])
+        GROUP BY a.individual_id, b.individual_id, b.number
+        -- Most often first; the number breaks ties so the order does not
+        -- shuffle between loads.
+        ORDER BY dog_id, together DESC, b.number
+        """,
+        ids, viewer)
+    out: dict[UUID, list[dict]] = {}
+    for r in rows:
+        bucket = out.setdefault(r["dog_id"], [])
+        if len(bucket) < COMPANY_PER_DOG:
+            bucket.append({"id": str(r["other_id"]), "number": r["number"], "together": r["together"]})
+    return out
+
+
 @router.get("/dogs")
 async def get_dogs(
     observer_id: UUID = Depends(require_observer),
@@ -167,6 +229,8 @@ async def get_dogs(
         SELECT
             i.id,
             i.name,
+            -- Theirs for good (migration 0050), and the same for every viewer.
+            i.number,
             min(s.captured_at) AS first_seen,
             max(s.captured_at) AS last_seen,
             count(*) AS sighting_count,
@@ -192,7 +256,7 @@ async def get_dogs(
           -- Built only from what this viewer may see: someone they blocked,
           -- or who blocked them, is not on the card at all (#180).
           AND {visible_to('$1')}
-        GROUP BY i.id, i.name
+        GROUP BY i.id, i.name, i.number
         ORDER BY max(s.captured_at) DESC
         LIMIT $2
         """,
@@ -267,6 +331,7 @@ async def get_dogs(
 
     locations = {r["individual_id"]: r for r in loc_rows}
     similar = await _look_alikes(conn, ids, observer_id)
+    company = await _company(conn, ids, observer_id)
 
     # A dog's descriptors come from many sightings that may disagree (one
     # observer says injured, a later one says healthy). Take the most frequent
@@ -309,6 +374,7 @@ async def get_dogs(
             {
                 "id": str(d["id"]),
                 "name": d["name"],
+                "number": d["number"],
                 "first_seen": d["first_seen"].date().isoformat(),
                 "last_seen": d["last_seen"].date().isoformat(),
                 "species": d["species"],
@@ -330,6 +396,9 @@ async def get_dogs(
                     if (vals := counts.get(d["id"], {}).get(key))
                 ],
                 "looks_like": similar.get(d["id"], []),
+                # Other animals photographed in the same frame as this one,
+                # most often first. A fact about uploads, unlike `looks_like`.
+                "company": company.get(d["id"], []),
             }
         )
     return {

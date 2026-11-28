@@ -826,6 +826,104 @@ button { font-family: inherit; }
   color: var(--accent); margin-top: 0.35rem;
 }
 
+/* The card someone was sent to: from a recognition, a Journal entry, or a
+   companion's face on another card. Terracotta where every other card is
+   bark, so it is findable in a long list without anything moving. */
+.dog-card-marked {
+  border-color: var(--accent); box-shadow: 3px 3px 0 var(--accent);
+  scroll-margin-top: 0.75rem;
+}
+
+/* Company: who they are photographed with. A solid rule and ink text where
+   the look-alikes below get a dashed rule and muted text, because this is
+   stated and those are asked. Round faces, like the pins on the map: these
+   are someones, where a look-alike's square is a photograph to compare. */
+.company { margin-top: 0.55rem; border-top: 2px solid var(--line); padding-top: 0.45rem; }
+.company-head {
+  font-family: "Silkscreen", monospace; font-size: 0.5rem;
+  color: var(--ink); margin-bottom: 0.4rem;
+}
+.company-row { display: flex; gap: 0.55rem; flex-wrap: wrap; }
+.companion {
+  width: 60px; padding: 0; border: 0; background: none; color: inherit; font: inherit;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+}
+button.companion { cursor: pointer; }
+button.companion:active img,
+button.companion:active .company-blank { transform: translate(1px, 1px); }
+.companion img,
+.company-blank {
+  width: 56px; height: 56px; object-fit: cover; display: block;
+  border: 3px solid var(--line); border-radius: 50%; background: var(--frame);
+  box-shadow: 2px 2px 0 var(--shadow);
+}
+.company-blank { display: flex; align-items: center; justify-content: center; font-size: 1.1rem; }
+.company-name { font-family: "Silkscreen", monospace; font-size: 0.52rem; color: var(--ink); }
+.company-times { font-family: "Silkscreen", monospace; font-size: 0.48rem; color: var(--accent); }
+
+/* --- Recognised: a sighting of yours turned out to be someone -------------
+   The one card in the app that arrives rather than being gone to, so it is
+   the one with a terracotta shadow. Two photographs at equal size, as in
+   Review -- but here the question has been answered, which is what the band
+   between them says. */
+.recognised {
+  background: var(--panel); border: 3px solid var(--line); border-radius: 4px;
+  box-shadow: 4px 4px 0 var(--accent);
+  padding: 0.75rem; margin: 0.25rem 0 0.6rem;
+  display: flex; flex-direction: column; gap: 0.55rem;
+  animation: recognised-in 360ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes recognised-in {
+  from { transform: translateY(-8px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) { .recognised { animation: none; } }
+.recognised-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-family: "Silkscreen", monospace; font-size: 0.72rem; color: var(--accent);
+}
+.recognised-count { font-size: 0.5rem; color: var(--muted); }
+.recognised-says { margin: 0; font-size: 0.92rem; line-height: 1.4; color: var(--ink); }
+.recognised-says strong {
+  display: block; margin-top: 0.15rem; font-weight: 400;
+  font-family: "Silkscreen", monospace; font-size: 1.05rem; color: var(--ink);
+}
+.recognised-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.55rem; }
+.recognised-side { margin: 0; min-width: 0; }
+.recognised-side img,
+.recognised-blank {
+  width: 100%; aspect-ratio: 1; object-fit: cover; display: block;
+  border: 3px solid var(--line); border-radius: 3px; background: var(--frame);
+}
+.recognised-blank { display: flex; align-items: center; justify-content: center; font-size: 1.6rem; }
+.recognised-side figcaption {
+  display: flex; justify-content: space-between; gap: 0.4rem; margin-top: 0.3rem;
+  font-family: "Silkscreen", monospace; font-size: 0.5rem; color: var(--ink);
+}
+.recognised-side figcaption span {
+  color: var(--accent); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.recognised-apart {
+  align-self: center; text-align: center;
+  font-family: "Silkscreen", monospace; font-size: 0.56rem; color: var(--ink);
+  background: var(--dust); border: 2px solid var(--line); padding: 3px 8px;
+}
+.recognised-known { margin: 0; font-size: 0.85rem; line-height: 1.45; color: var(--ink); opacity: 0.85; }
+.recognised-actions { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
+.recognised-see {
+  font-family: "Silkscreen", monospace; font-size: 0.62rem; cursor: pointer;
+  background: var(--accent); color: #fff; border: 3px solid var(--line); border-radius: 4px;
+  box-shadow: 2px 2px 0 var(--shadow); padding: 0.5rem 0.85rem;
+}
+.recognised-see:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0 var(--shadow); }
+
+/* A Journal entry's identity, once it has one: the same slot that says
+   UNIDENTIFIED, as a way through to their card. */
+.spec .name-link {
+  display: block; background: none; border: 0; padding: 0; cursor: pointer; text-align: left;
+}
+
 /* --- Review: possible matches awaiting a verdict -------------------------
    Two photos, side by side, equal weight. The whole question is "are these the
    same animal", so nothing may suggest an answer before the person looks --
