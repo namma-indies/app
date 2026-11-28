@@ -44,7 +44,7 @@ dials -- delaying recent sightings, and withholding identifying markings.
 import json
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.aggregates import countable_sighting, owner_active, screened, visible_to
 from app.auth.deps import require_observer
@@ -61,6 +61,9 @@ router = APIRouter()
 
 MAX_DOGS = 500
 PHOTOS_PER_DOG = 4
+# Sightings listed on one animal's page, newest first. A well-known dog could
+# have hundreds; the page is a field guide entry, not an export.
+MAX_PAGE_SIGHTINGS = 60
 
 # How many look-alikes to offer per dog. Three is a review queue; twenty is a
 # wall of thumbnails nobody reads.
@@ -225,6 +228,77 @@ async def get_dogs(
     conn=Depends(get_conn),
     storage: S3Storage = Depends(get_storage),
 ):
+    return {"dogs": await _cards(conn, storage, observer_id),
+            # Exposed so the UI can mark where the system would engage a human,
+            # without hardcoding a number that is expected to move as verdicts
+            # accumulate. It is a review hint, never a verdict.
+            "propose_min": settings.reid_propose_min}
+
+
+@router.get("/dogs/{individual_id}")
+async def get_dog(
+    individual_id: UUID,
+    observer_id: UUID = Depends(require_observer),
+    conn=Depends(get_conn),
+    storage: S3Storage = Depends(get_storage),
+):
+    """One animal's own page: their card, and every sighting of them this
+    viewer may see, newest first.
+
+    WHAT A SIGHTING SAYS DEPENDS ON WHOSE IT IS
+    -------------------------------------------
+    A page that lists every sighting of one dog with its time and place is a
+    schedule: where they are, and when. That is the shape this project has
+    ruled out ("no 'usually here at 9pm'", issue #5). So your own sightings
+    carry their time and their place, which you already know, and everyone
+    else's carry the day they were seen and the photograph -- no time, no
+    place, not even the coarse cell the map would give. Their observer is
+    named as the card names them.
+
+    404 for an animal this viewer has no countable sighting of, exactly as
+    they would be missing from `/dogs`.
+    """
+    cards = await _cards(conn, storage, observer_id, only=individual_id)
+    if not cards:
+        raise HTTPException(404, "no such animal")
+    rows = await conn.fetch(
+        f"""
+        SELECT s.id, s.captured_at, s.observer_id, o.display_name,
+               ST_Y(s.geog::geometry) AS lat, ST_X(s.geog::geometry) AS lng,
+               (SELECT p.s3_key FROM photos p WHERE p.sighting_id = s.id
+                 ORDER BY (p.id IS NOT DISTINCT FROM s.cover_photo_id) DESC, p.created_at, p.id
+                 LIMIT 1) AS s3_key
+        FROM sightings s
+        JOIN observers o ON o.id = s.observer_id
+        WHERE s.individual_id = $1 AND {countable_sighting()} AND {visible_to('$2')}
+        ORDER BY s.captured_at DESC, s.id DESC
+        LIMIT $3
+        """,
+        individual_id, observer_id, MAX_PAGE_SIGHTINGS)
+    with_photo = [r for r in rows if r["s3_key"]]
+    urls = dict(zip((r["id"] for r in with_photo),
+                    await storage.urls([thumb_key(r["s3_key"]) for r in with_photo])))
+    mine = [r for r in rows if r["observer_id"] == observer_id]
+    named = await labels_for(conn, [(r["lat"], r["lng"]) for r in mine if r["lat"] is not None])
+    sightings = []
+    for r in rows:
+        own = r["observer_id"] == observer_id
+        sightings.append({
+            "id": str(r["id"]) if own else None,
+            "mine": own,
+            "observer": None if own else r["display_name"],
+            # Yours: the moment. Anyone else's: the day, and nothing finer.
+            "captured_at": r["captured_at"] if own else None,
+            "day": r["captured_at"].date().isoformat(),
+            "place": named.get((r["lat"], r["lng"])) if own and r["lat"] is not None else None,
+            "thumb_url": urls.get(r["id"]),
+        })
+    return {**cards[0], "sightings": sightings}
+
+
+async def _cards(conn, storage: S3Storage, observer_id: UUID, *, only: UUID | None = None) -> list[dict]:
+    """The dog cards this viewer may see, newest sighting first; or just the
+    one animal `only`, when a page asks for it."""
     dogs = await conn.fetch(
         f"""
         SELECT
@@ -257,15 +331,17 @@ async def get_dogs(
           -- Built only from what this viewer may see: someone they blocked,
           -- or who blocked them, is not on the card at all (#180).
           AND {visible_to('$1')}
+          AND ($3::uuid IS NULL OR i.id = $3)
         GROUP BY i.id, i.name, i.number
         ORDER BY max(s.captured_at) DESC
         LIMIT $2
         """,
         observer_id,
         MAX_DOGS,
+        only,
     )
     if not dogs:
-        return {"dogs": []}
+        return []
 
     ids = [d["id"] for d in dogs]
 
@@ -406,10 +482,4 @@ async def get_dogs(
                 "company": company.get(d["id"], []),
             }
         )
-    return {
-        "dogs": out,
-        # Exposed so the UI can mark where the system would engage a human,
-        # without hardcoding a number that is expected to move as verdicts
-        # accumulate. It is a review hint, never a verdict.
-        "propose_min": settings.reid_propose_min,
-    }
+    return out

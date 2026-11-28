@@ -937,6 +937,29 @@ button.companion:active .company-blank { transform: translate(1px, 1px); }
 }
 .recognised-see:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0 var(--shadow); }
 
+/* --- A dog's own page ------------------------------------------------------
+   The card's plate and facts, then sections under thin rules: a field-guide
+   entry rather than another card. */
+.dog-lead-btn { display: block; width: 100%; padding: 0; border: 0; background: none; cursor: pointer; }
+.dog-meta .name-link { display: block; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+.dog-page { display: flex; flex-direction: column; gap: 0.65rem; margin-top: 0.25rem; padding-bottom: 1.5rem; }
+.dog-page-title {
+  margin: 0; font-family: "Silkscreen", monospace; font-weight: 400;
+  font-size: 1.15rem; color: var(--ink);
+}
+.dog-page-title.anon { color: var(--ink); }
+.dog-section { border-top: 2px solid var(--line); padding-top: 0.55rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.dog-section h3 { margin: 0; font-family: "Silkscreen", monospace; font-weight: 400; font-size: 0.56rem; color: var(--ink); }
+.dog-section.company { margin-top: 0; }
+.dog-sightings { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; }
+.dog-sighting { margin: 0; min-width: 0; }
+.dog-sighting img, .dog-sighting .recognised-blank {
+  width: 100%; aspect-ratio: 1; object-fit: cover; display: block;
+  border: 3px solid var(--line); border-radius: 3px; background: var(--frame);
+}
+.dog-sighting.mine img { border-color: var(--accent); }
+.dog-sighting figcaption { font-size: 0.68rem; line-height: 1.3; color: var(--ink); opacity: 0.85; margin-top: 0.25rem; overflow-wrap: anywhere; }
+
 /* A Journal entry's identity, once it has one: the same slot that says
    UNIDENTIFIED, as a way through to their card. */
 .spec .name-link {
