@@ -601,6 +601,12 @@ class Settings(BaseSettings):
     geocode_url: str = "https://nominatim.openstreetmap.org/search"
     geocode_user_agent: str = "NammaIndies/1.0 (+https://nammaindies.org; nammaindies@gmail.com)"
     geocode_timeout_s: float = Field(default=8.0, gt=0, le=60)
+    # Neighbourhood names for map cells (app/place_labels.py), from the same
+    # provider's reverse endpoint, filled in by a background worker. Off, the
+    # app shows coordinates as before and asks the provider nothing.
+    geocode_reverse_url: str = "https://nominatim.openstreetmap.org/reverse"
+    place_labels_enabled: bool = True
+    place_labels_idle_s: float = Field(default=5.0, gt=0, le=3600)
 
     # --- rate limiting -----------------------------------------------------
     # Postgres-backed: shared across processes and retained across deploys.

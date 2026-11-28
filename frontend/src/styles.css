@@ -479,8 +479,9 @@ button { font-family: inherit; }
 }
 .spec:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--shadow); }
 
+/* 108 px, up from 76: the photograph is the entry, and at 76 it was a stamp. */
 .spec .frame {
-  width: 76px; height: 76px; flex: none;
+  width: 108px; height: 108px; flex: none;
   border: 3px solid var(--line); background: var(--frame);
   overflow: hidden; position: relative; image-rendering: pixelated;
 }
@@ -696,6 +697,18 @@ button { font-family: inherit; }
   text-underline-offset: 3px;
 }
 .signout:active { color: var(--accent); }
+/* The one way into account and policy links, in the corner where sign out
+   was. Same quiet chrome. */
+.menu-btn {
+  margin-left: auto;
+  background: none; border: 2px solid var(--line); border-radius: 4px;
+  padding: 0.3rem 0.5rem; cursor: pointer;
+  font-family: "Silkscreen", "Courier New", monospace; font-size: 0.56rem; color: var(--ink);
+}
+.menu-btn:active { transform: translate(1px, 1px); }
+.account-menu-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 0.15rem; }
+.account-menu-actions .link-btn { font-size: 0.95rem; padding: 0.45rem 0; }
+.account-menu .legal-row { justify-content: flex-start; text-align: left; border-top: 2px dashed var(--line); margin-top: 0.6rem; }
 
 /* The CARTO basemaps are deliberately neutral-grey so data reads first, but
    neutral grey sits oddly against #f7eee0 paper. A light sepia pass warms the
@@ -776,6 +789,12 @@ button { font-family: inherit; }
 }
 .dog-strip img {
   width: 76px; height: 76px; flex: 0 0 auto; object-fit: cover;
+  border: 3px solid var(--line); background: var(--frame); border-radius: 3px;
+}
+/* The plate: the latest photograph at the card's full width. Thumbnails are
+   512 px on the long edge, enough for this on a phone. */
+.dog-lead {
+  width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block;
   border: 3px solid var(--line); background: var(--frame); border-radius: 3px;
 }
 

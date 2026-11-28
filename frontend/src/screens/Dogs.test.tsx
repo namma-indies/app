@@ -64,6 +64,34 @@ describe("a dog's number", () => {
   });
 });
 
+describe("where and how they look", () => {
+  it("says where in words, and 'around' for a place that is only a cell", async () => {
+    vi.mocked(getDogs).mockResolvedValue(resp([
+      dog({ id: "a", number: 1, place: "Indiranagar, Bengaluru" }),
+      dog({ id: "b", number: 2, place: "Domlur, Bengaluru", precision: "area", cell_m: 1000 }),
+    ]));
+    render(<Dogs onUnauthorized={() => {}} />);
+    expect(await screen.findByText(/LAST SEEN IN INDIRANAGAR, BENGALURU/)).toBeInTheDocument();
+    expect(screen.getByText(/LAST SEEN AROUND DOMLUR, BENGALURU/)).toBeInTheDocument();
+    expect(screen.queryByText(/12\.97/)).not.toBeInTheDocument();
+  });
+
+  it("falls back to the coordinates until the place has a name", async () => {
+    vi.mocked(getDogs).mockResolvedValue(resp([dog({ place: null })]));
+    render(<Dogs onUnauthorized={() => {}} />);
+    expect(await screen.findByText(/12\.9716, 77\.5946/)).toBeInTheDocument();
+  });
+
+  it("leads with the latest photograph, the rest in a strip", async () => {
+    vi.mocked(getDogs).mockResolvedValue(resp([dog({ photos: ["https://x.test/1.webp", "https://x.test/2.webp", "https://x.test/3.webp"] })]));
+    render(<Dogs onUnauthorized={() => {}} />);
+    await screen.findByText("— NO. 001 —");
+    expect(document.querySelector(".dog-lead")).toHaveAttribute("src", "https://x.test/1.webp");
+    expect([...document.querySelectorAll(".dog-strip img")].map((i) => i.getAttribute("src")))
+      .toEqual(["https://x.test/2.webp", "https://x.test/3.webp"]);
+  });
+});
+
 describe("often in the company of", () => {
   const pack = () => [
     dog({ id: "a", number: 47, company: [{ id: "b", number: 52, together: 3 }, { id: "gone", number: 9, together: 1 }] }),

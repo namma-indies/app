@@ -86,7 +86,7 @@ async def migrated_db(_migrated):
             "areas, individual_names, social_picks, media_purges, x_post_purges, account_deletions, "
             "moderation_actions, moderator_alerts, grievances, moderation_mail, "
             "rate_limit_buckets, auth_failures, join_pow_uses, email_delivery_state, "
-            "email_send_attempts, abuse_hourly RESTART IDENTITY CASCADE"
+            "email_send_attempts, abuse_hourly, place_labels RESTART IDENTITY CASCADE"
         )
         await conn.execute("RESET session_replication_role")
         yield conn
@@ -115,7 +115,7 @@ async def app_client(_migrated):
             "areas, individual_names, social_picks, media_purges, x_post_purges, account_deletions, "
             "moderation_actions, moderator_alerts, grievances, moderation_mail, "
             "rate_limit_buckets, auth_failures, join_pow_uses, email_delivery_state, "
-            "email_send_attempts, abuse_hourly RESTART IDENTITY CASCADE"
+            "email_send_attempts, abuse_hourly, place_labels RESTART IDENTITY CASCADE"
         )
         await c.execute("RESET session_replication_role")
 

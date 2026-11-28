@@ -50,6 +50,9 @@ function whereLine(d: Dog): string {
   // Printing four decimals of a coordinate that is accurate to a kilometre
   // invites the reader to believe the digits.
   if (d.lat == null || d.lng == null) return "NO LOCATION RECORDED";
+  // In words when the server has a name. "Around" for someone else's
+  // sighting: the name is the cell's, and the dog was somewhere in it.
+  if (d.place) return `LAST SEEN ${d.precision === "area" ? "AROUND" : "IN"} ${d.place.toUpperCase()}`;
   if (d.precision === "area") {
     const km = d.cell_m ? (d.cell_m / 1000).toFixed(d.cell_m % 1000 === 0 ? 0 : 1) : "1";
     return `LAST SEEN IN A ~${km} KM AREA · ${d.lat.toFixed(2)}, ${d.lng.toFixed(2)}`;
@@ -177,11 +180,17 @@ export default function Dogs({
           className={d.id === marked ? "dog-card dog-card-marked" : "dog-card"}
           ref={(el) => { if (el) cards.current.set(d.id, el); else cards.current.delete(d.id); }}
         >
-          <div className="dog-strip">
-            {d.photos.map((src, n) => (
-              <img key={n} src={src} alt="" />
-            ))}
-          </div>
+          {/* The latest photograph leads, at the card's full width: on a
+              field-guide page the animal is the plate, and the facts are the
+              caption. The rest are a strip under it. */}
+          {d.photos[0] && <img className="dog-lead" src={d.photos[0]} alt="" />}
+          {d.photos.length > 1 && (
+            <div className="dog-strip">
+              {d.photos.slice(1).map((src, n) => (
+                <img key={n} src={src} alt="" />
+              ))}
+            </div>
+          )}
           <div className="dog-meta">
             <div className={d.name ? "name" : "name anon"}>
               {dogTitle(d)}

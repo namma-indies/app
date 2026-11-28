@@ -8,6 +8,7 @@ from app.aggregates import animal_present, screened
 from app.auth.deps import require_observer
 from app.deps import get_conn, get_storage
 from app.photos import thumb_key
+from app.place_labels import labels_for
 from app.storage.s3 import S3Storage
 from app.suggestions import answered, newest_per_field
 from app.voice_notes import for_sighting, heard as heard_on
@@ -230,5 +231,11 @@ async def get_dex(
     described = await describe.for_sightings(conn, [UUID(sid) for sid in order])
     for sid in order:
         sightings[sid]["photo_description"] = described.get(UUID(sid))
+
+    # Where, in words: the neighbourhood of the sighting's map cell, once the
+    # background worker has looked it up (app/place_labels.py). None until then.
+    named = await labels_for(conn, [(s["lat"], s["lng"]) for s in sightings.values()])
+    for s in sightings.values():
+        s["place"] = named.get((s["lat"], s["lng"]))
 
     return {"sightings": [sightings[sid] for sid in order]}

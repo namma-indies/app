@@ -64,6 +64,18 @@ describe("who a sighting turned out to be", () => {
     expect(screen.getAllByText("— UNIDENTIFIED —")).toHaveLength(1);
   });
 
+  it("says where in words once the place has a name, and the coordinates until then", async () => {
+    setup([
+      sighting({ id: "s1", place: "Indiranagar, Bengaluru" }),
+      sighting({ id: "s2", captured_at: "2026-11-10T09:00:00Z", place: null }),
+    ]);
+    render(<Dex onUnauthorized={() => {}} />);
+    await userEvent.click(await screen.findByText("JOURNAL"));
+    // On the entry's second line, under "spotted 12 Nov · …".
+    expect(await screen.findByText(/Indiranagar, Bengaluru/)).toBeInTheDocument();
+    expect(screen.getByText(/12\.970, 77\.590/)).toBeInTheDocument();
+  });
+
   it("goes from the Journal entry to their card, not to the top of the list", async () => {
     setup([sighting({ individual: { id: "d47", number: 47, name: null } })]);
     render(<Dex onUnauthorized={() => {}} />);

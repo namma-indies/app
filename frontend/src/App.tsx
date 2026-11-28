@@ -12,6 +12,7 @@ import { getAccount, getDex, getMe, isAccountRestricted, UnauthorizedError, type
 import DeleteAccount from "./components/DeleteAccount";
 import BlockedPeople from "./components/BlockedPeople";
 import LegalLinks from "./components/LegalLinks";
+import AccountMenu from "./components/AccountMenu";
 import ConsentReview from "./components/ConsentReview";
 import { getAccountConsent, isConsentRequired } from "./consentApi";
 import { CONSENT_ACCEPTED_EVENT, CONSENT_REQUIRED_EVENT } from "./consentEvents";
@@ -237,27 +238,18 @@ export default function App() {
             {failed} couldn't sync
           </button>
         )}
-        <button
-          className="signout"
-          onClick={async () => {
-            // Confirm first: the tabbar is right there and a stray tap costs
-            // a round-trip through email to get back in.
-            if (!confirm("Sign out of indiedex?")) return;
-            await signOut();
-          }}
-        >
-          sign out
-        </button>
+        {/* Policies, blocking (Apple 1.2, #180), account deletion (Apple
+            5.1.1(v)) and signing out: findable from every screen, without
+            being the first thing on every screen. */}
+        <AccountMenu
+          onBlocked={() => setShowingBlocks(true)}
+          onDeleteAccount={() => setDeletingAccount(true)}
+          onSignOut={() => void signOut()}
+        />
       </div>
       {retryAt && retryAt > Date.now() && <p className="sync-delay" role="status">
         Upload limit reached. Your photos are saved on this device. Sync resumes after {new Date(retryAt).toLocaleString()}.
       </p>}
-      <LegalLinks>
-        {/* Apple 1.2: blocking abusive users, and undoing it (#180). */}
-        <button type="button" className="link-btn legal-link" onClick={() => setShowingBlocks(true)}>blocked people</button>
-        {/* Apple 5.1.1(v): deleting the account has to be in the app, findable. */}
-        <button type="button" className="link-btn legal-link" onClick={() => setDeletingAccount(true)}>delete account</button>
-      </LegalLinks>
       {deletingAccount && (
         <DeleteAccount onClose={() => setDeletingAccount(false)}
           onScheduled={(account) => { setDeletingAccount(false); setPendingDeletion(account); }}
