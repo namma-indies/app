@@ -68,7 +68,8 @@ describe("a dog's own page", () => {
     show(page());
     await screen.findByText("EVERY SIGHTING");
     const captions = [...document.querySelectorAll(".dog-sighting figcaption")].map((c) => c.textContent);
-    expect(captions[0]).toMatch(/^12 Nov · .*pm · Indiranagar, Bengaluru$/);
+    // The hour depends on the machine's timezone; the shape does not.
+    expect(captions[0]).toMatch(/^12 Nov · \d{1,2}:\d{2} [ap]m · Indiranagar, Bengaluru$/);
     expect(captions[2]).toBe("3 Mar · Priya");
   });
 
