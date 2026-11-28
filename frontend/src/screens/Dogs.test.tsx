@@ -7,12 +7,13 @@ import userEvent from "@testing-library/user-event";
 vi.mock("../api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api")>()),
   getDogs: vi.fn(),
+  getDog: vi.fn(),
   // Dogs asks how many matches are waiting on every mount. Empty unless a
   // test says otherwise; the matches block below restores this after itself.
   getProposals: vi.fn(async () => ({ proposals: [], propose_min: 0.4 })),
 }));
 
-import { getDogs, getProposals, UnauthorizedError, type Dog, type DogsResponse, type Proposal } from "../api";
+import { getDog, getDogs, getProposals, UnauthorizedError, type Dog, type DogPage, type DogsResponse, type Proposal } from "../api";
 import Dogs from "./Dogs";
 
 // See the note in Explore.test.tsx: no shared beforeEach resetting the mock.
@@ -39,6 +40,10 @@ function dog(over: Partial<Dog> = {}): Dog {
     looks_like: [],
     ...over,
   };
+}
+
+function page(over: Partial<DogPage> = {}): DogPage {
+  return { ...dog(), sightings: [], ...over };
 }
 
 function resp(dogs: Dog[], propose_min = 0.71): DogsResponse {
@@ -130,26 +135,31 @@ describe("often in the company of", () => {
     expect(document.querySelector(".company-times")).toBeNull();
   });
 
-  it("goes to a companion's card when they are tapped", async () => {
+  it("opens a companion's page when they are tapped, and comes back to their card", async () => {
     vi.mocked(getDogs).mockResolvedValue(resp(pack()));
+    vi.mocked(getDog).mockResolvedValue(page({ id: "b", number: 52 }));
     render(<Dogs onUnauthorized={() => {}} />);
-    await userEvent.click(await screen.findByRole("button", { name: "Go to NO. 052" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Open NO. 052" }));
+    expect(getDog).toHaveBeenLastCalledWith("b");
+    expect(await screen.findByRole("heading", { name: "— NO. 052 —" })).toBeInTheDocument();
+    await userEvent.click(screen.getByText("← All dogs"));
+    await screen.findByText(/INDIES IDENTIFIED/);
     expect(cardOf("— NO. 052 —")).toHaveClass("dog-card-marked");
-    expect(cardOf("— NO. 047 —")).not.toHaveClass("dog-card-marked");
   });
 
   it("still names a companion who is not in this list, without a way through", async () => {
     vi.mocked(getDogs).mockResolvedValue(resp(pack()));
     render(<Dogs onUnauthorized={() => {}} />);
     await screen.findByText("NO. 009");
-    expect(screen.queryByRole("button", { name: "Go to NO. 009" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open NO. 009" })).not.toBeInTheDocument();
   });
 
-  it("opens on the card it was asked for", async () => {
+  it("opens on the page it was asked for", async () => {
     vi.mocked(getDogs).mockResolvedValue(resp(pack()));
+    vi.mocked(getDog).mockResolvedValue(page({ id: "c", number: 60 }));
     render(<Dogs onUnauthorized={() => {}} focusId="c" />);
-    await screen.findByText("— NO. 060 —");
-    expect(cardOf("— NO. 060 —")).toHaveClass("dog-card-marked");
+    expect(await screen.findByRole("heading", { name: "— NO. 060 —" })).toBeInTheDocument();
+    expect(getDog).toHaveBeenLastCalledWith("c");
   });
 });
 

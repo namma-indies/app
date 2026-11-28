@@ -3,7 +3,8 @@ import { getDogs, getProposals, UnauthorizedError, type Dog, type DogsResponse }
 import Review from "./Review";
 import { speciesNoun } from "../species";
 import { formatDayRange } from "../formatWhen";
-import { dogNumber, dogTitle } from "../dogLabel";
+import { dogName, dogNumber, dogTitle } from "../dogLabel";
+import DogPage from "./DogPage";
 
 /** The catalogue of identified individuals, and the matches that feed it.
  *
@@ -18,7 +19,7 @@ import { dogNumber, dogTitle } from "../dogLabel";
  * grows a dog, so the place you give it is the place you see the result.
  */
 
-const TAG_LABELS: Record<string, string> = {
+export const TAG_LABELS: Record<string, string> = {
   male: "♂ MALE",
   female: "♀ FEMALE",
   left: "NOTCH-L",
@@ -44,7 +45,7 @@ function byLine(d: Dog): string {
   return `logged by ${d.observers.slice(0, 3).join(", ")} +${d.observers.length - 3} more`;
 }
 
-function whereLine(d: Dog): string {
+export function whereLine(d: Dog): string {
   // Exact only for a dog you have photographed yourself; otherwise the server
   // has already collapsed this to a grid cell, and the card has to say so.
   // Printing four decimals of a coordinate that is accurate to a kilometre
@@ -76,9 +77,11 @@ export default function Dogs({
   focusId?: string | null;
 }) {
   const [data, setData] = useState<DogsResponse | null>(null);
-  // Which card is marked. Starts as the one asked for and follows taps on a
-  // companion, so "who is that?" is answered by going to them.
+  // The animal whose page is open, if any. Starts as the one asked for.
+  const [openId, setOpenId] = useState<string | null>(focusId ?? null);
+  // The card last opened, marked on the way back so the list keeps its place.
   const [marked, setMarked] = useState<string | null>(focusId ?? null);
+  const open = (id: string) => { setMarked(id); setOpenId(id); };
   const cards = useRef(new Map<string, HTMLDivElement>());
   const [failed, setFailed] = useState(false);
   // How many pairs are waiting. A failed count only hides the button: the
@@ -114,14 +117,26 @@ export default function Dogs({
     loadWaiting();
   }, [loadDogs, loadWaiting]);
 
-  useEffect(() => setMarked(focusId ?? null), [focusId]);
+  useEffect(() => { setMarked(focusId ?? null); setOpenId(focusId ?? null); }, [focusId]);
   // After the list is on screen, not before: there is nothing to scroll to
-  // while it is still loading.
+  // while it is still loading, or while a page covers it.
   const loaded = data !== null;
   useEffect(() => {
-    if (!marked || !loaded || reviewing) return;
-    cards.current.get(marked)?.scrollIntoView?.({ block: "start", behavior: "smooth" });
-  }, [marked, loaded, reviewing]);
+    if (!marked || !loaded || reviewing || openId) return;
+    cards.current.get(marked)?.scrollIntoView?.({ block: "start" });
+  }, [marked, loaded, reviewing, openId]);
+
+  if (openId) {
+    return (
+      <DogPage
+        id={openId}
+        onBack={() => setOpenId(null)}
+        onOpen={open}
+        onUnauthorized={onUnauthorized}
+        faces={new Map((data?.dogs ?? []).map((d) => [d.id, d.photos[0]]))}
+      />
+    );
+  }
 
   if (reviewing) {
     return (
@@ -183,7 +198,11 @@ export default function Dogs({
           {/* The latest photograph leads, at the card's full width: on a
               field-guide page the animal is the plate, and the facts are the
               caption. The rest are a strip under it. */}
-          {d.photos[0] && <img className="dog-lead" src={d.photos[0]} alt="" />}
+          {d.photos[0] && (
+            <button className="dog-lead-btn" onClick={() => open(d.id)} aria-label={`${dogName(d)}: open their page`}>
+              <img className="dog-lead" src={d.photos[0]} alt="" />
+            </button>
+          )}
           {d.photos.length > 1 && (
             <div className="dog-strip">
               {d.photos.slice(1).map((src, n) => (
@@ -192,9 +211,9 @@ export default function Dogs({
             </div>
           )}
           <div className="dog-meta">
-            <div className={d.name ? "name" : "name anon"}>
-              {dogTitle(d)}
-            </div>
+            <button className={d.name ? "name name-link" : "name name-link anon"} onClick={() => open(d.id)}>
+              {dogTitle(d)} <span aria-hidden="true">›</span>
+            </button>
             <div className="line">
               {seenLine(d)}
               <br />
@@ -232,8 +251,8 @@ export default function Dogs({
                       </>
                     );
                     return other ? (
-                      <button key={c.id} className="companion" onClick={() => setMarked(c.id)}
-                        aria-label={`Go to ${label}`}>
+                      <button key={c.id} className="companion" onClick={() => open(c.id)}
+                        aria-label={`Open ${label}`}>
                         {face}{caption}
                       </button>
                     ) : (

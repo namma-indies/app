@@ -592,6 +592,34 @@ export interface DogsResponse {
   propose_min: number;
 }
 
+/** One sighting on an animal's page. Your own carry their moment and place;
+ * anyone else's only the day and the photograph, so the page is never a
+ * schedule of where the animal is when. */
+export interface DogPageSighting {
+  /** Your own sighting's id; null for anyone else's. */
+  id: string | null;
+  mine: boolean;
+  /** Who logged it, for anyone else's. Untrusted text. */
+  observer: string | null;
+  /** Yours only. */
+  captured_at: string | null;
+  /** `YYYY-MM-DD`, always. */
+  day: string;
+  /** Yours only, once named. */
+  place: string | null;
+  thumb_url: string | null;
+}
+
+export interface DogPage extends Dog {
+  /** Newest first, capped. */
+  sightings: DogPageSighting[];
+}
+
+export async function getDog(id: string): Promise<DogPage> {
+  const res = await fetch(`${API_BASE}/dogs/${encodeURIComponent(id)}`, { credentials: "include" });
+  return handle<DogPage>(res);
+}
+
 export async function getDogs(): Promise<DogsResponse> {
   const res = await fetch(`${API_BASE}/dogs`, { credentials: "include" });
   return handle<DogsResponse>(res);

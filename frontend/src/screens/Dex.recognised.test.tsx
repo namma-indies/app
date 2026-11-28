@@ -6,14 +6,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { getDex, getDogs, getMap, getMe, getProposals, getRecognised, type Dog, type Recognition, type Sighting } from "../api";
+import { getDex, getDog, getDogs, getMap, getMe, getProposals, getRecognised, type Dog, type Recognition, type Sighting } from "../api";
 import { getCaptures } from "../captureApi";
 import Dex from "./Dex";
 
 vi.mock("../api", async (original) => ({
   ...(await original<typeof import("../api")>()),
   getDex: vi.fn(), getMap: vi.fn(), getMe: vi.fn(), getDogs: vi.fn(), getProposals: vi.fn(),
-  getRecognised: vi.fn(), markRecognisedSeen: vi.fn(async () => {}),
+  getRecognised: vi.fn(), markRecognisedSeen: vi.fn(async () => {}), getDog: vi.fn(),
 }));
 vi.mock("../captureApi", async (original) => ({ ...(await original<typeof import("../captureApi")>()), getCaptures: vi.fn() }));
 vi.mock("../components/DogMap", () => ({ default: () => <div>map</div> }));
@@ -48,9 +48,11 @@ function setup(sightings: Sighting[], recognised: Recognition[] = []) {
   vi.mocked(getRecognised).mockResolvedValue({ recognised, more: 0 });
   // Two dogs, the one in question second, so "marked" cannot pass by being first.
   vi.mocked(getDogs).mockResolvedValue({ dogs: [dog({ id: "d3", number: 3 }), dog({})], propose_min: 0.4 });
+  vi.mocked(getDog).mockImplementation(async (id) => ({ ...dog(id === "d3" ? { id, number: 3 } : {}), sightings: [] }));
 }
 
-const marked = () => [...document.querySelectorAll(".dog-card-marked .name")].map((n) => n.textContent);
+/** The animal whose page is open, by its title. */
+const opened = () => [...document.querySelectorAll(".dog-page-title")].map((n) => n.textContent);
 
 describe("who a sighting turned out to be", () => {
   it("fills the Journal's empty slot, and leaves the others saying unidentified", async () => {
@@ -76,13 +78,14 @@ describe("who a sighting turned out to be", () => {
     expect(screen.getByText(/12\.970, 77\.590/)).toBeInTheDocument();
   });
 
-  it("goes from the Journal entry to their card, not to the top of the list", async () => {
+  it("goes from the Journal entry to their page", async () => {
     setup([sighting({ individual: { id: "d47", number: 47, name: null } })]);
     render(<Dex onUnauthorized={() => {}} />);
     await userEvent.click(await screen.findByText("JOURNAL"));
     await userEvent.click(await screen.findByRole("button", { name: /NO\. 047/ }));
-    await waitFor(() => expect(marked()).toEqual(["— NO. 047 —"]));
-    // It opened their card, not the photo viewer the rest of the entry opens.
+    await waitFor(() => expect(opened()).toEqual(["— NO. 047 —"]));
+    expect(getDog).toHaveBeenLastCalledWith("d47");
+    // Their page, not the photo viewer the rest of the entry opens.
     expect(document.querySelector(".viewer-overlay")).toBeNull();
   });
 
@@ -94,19 +97,19 @@ describe("who a sighting turned out to be", () => {
     expect(screen.getByText("RECOGNISED")).toBeInTheDocument();
 
     await userEvent.click(screen.getByText("SEE THEM"));
-    await waitFor(() => expect(marked()).toEqual(["— NO. 047 —"]));
+    await waitFor(() => expect(opened()).toEqual(["— NO. 047 —"]));
     expect(screen.queryByText("RECOGNISED")).not.toBeInTheDocument();
   });
 
-  it("opens DOGS on the list, unmarked, from the tab itself", async () => {
+  it("opens DOGS on the list from the tab itself", async () => {
     setup([sighting({ individual: { id: "d47", number: 47, name: null } })]);
     render(<Dex onUnauthorized={() => {}} />);
     await userEvent.click(await screen.findByText("JOURNAL"));
     await userEvent.click(await screen.findByRole("button", { name: /NO\. 047/ }));
-    await waitFor(() => expect(marked()).toHaveLength(1));
+    await waitFor(() => expect(opened()).toHaveLength(1));
     await userEvent.click(screen.getByText("MAP"));
     await userEvent.click(screen.getByText("DOGS"));
     expect(await screen.findByText(/2 INDIES IDENTIFIED/)).toBeInTheDocument();
-    expect(marked()).toEqual([]);
+    expect(opened()).toEqual([]);
   });
 });
