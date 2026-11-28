@@ -123,11 +123,14 @@ async def lifespan(app: FastAPI):
     from app.ratelimit import sweeper as limiter_sweeper
     limiter_cleanup = asyncio.create_task(limiter_sweeper(app.state.pool))
     abuse_cleanup = asyncio.create_task(abuse_sweep(app.state.pool))
+    from app.place_labels import consumer as place_label_worker
+    place_labeller = (asyncio.create_task(place_label_worker(app.state.pool))
+                      if settings.place_labels_enabled else None)
     try:
         yield
     finally:
         for task in (consumer, suggester, purger, token_cleaner, moderator_mail, error_flusher,
-                     limiter_cleanup, abuse_cleanup):
+                     limiter_cleanup, abuse_cleanup, place_labeller):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):

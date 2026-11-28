@@ -55,7 +55,11 @@ function attrTags(s: Sighting): string[] {
   return attrTagFields(s).map((t) => t.label);
 }
 
+/** Where, as a field note would say it: the neighbourhood, once the server has
+ * looked it up (a new place gets its name by the next visit), otherwise the
+ * coordinates. */
 function where(s: Sighting): string {
+  if (s.place) return s.place;
   if (s.lat != null && s.lng != null) return `${s.lat.toFixed(3)}, ${s.lng.toFixed(3)}`;
   return "no GPS";
 }

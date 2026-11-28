@@ -53,6 +53,7 @@ from app.deps import get_conn, get_storage
 from app.embed import EMBED_DIM, MODEL_NAME
 from app.reid_recipe import ACTIVE_RECIPE
 from app.photos import thumb_key
+from app.place_labels import labels_for
 from app.precision import resolve_precision
 from app.storage.s3 import S3Storage
 
@@ -330,6 +331,9 @@ async def get_dogs(
         photos.setdefault(row["individual_id"], []).append(url)
 
     locations = {r["individual_id"]: r for r in loc_rows}
+    # The last-seen place in words. Named per map cell (app/place_labels.py),
+    # so it says no more about another person's sighting than its cell does.
+    named = await labels_for(conn, [(r["lat"], r["lng"]) for r in loc_rows])
     similar = await _look_alikes(conn, ids, observer_id)
     company = await _company(conn, ids, observer_id)
 
@@ -389,6 +393,7 @@ async def get_dogs(
                 "lat": lat,
                 "lng": lng,
                 "precision": where.precision if where else "none",
+                "place": named.get((loc["lat"], loc["lng"])) if loc is not None else None,
                 "cell_m": where.cell_m if where else None,
                 "tags": [
                     max(vals.items(), key=lambda kv: kv[1])[0]

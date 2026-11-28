@@ -119,6 +119,9 @@ export interface Sighting {
   /** Present on /dex only. The animal this sighting has been recognised as, or
    * null while nobody has matched it. The number is the one on their card. */
   individual?: { id: string; number: number; name: string | null } | null;
+  /** Present on /dex only. The neighbourhood, in words ("Indiranagar,
+   * Bengaluru"); null until the server has looked it up, or with no GPS. */
+  place?: string | null;
   /** Present on /dex only, for your own sightings with nothing noted (#160). */
   photo_description?: PhotoDescription | null;
   /** Present on /dex only. Details a model read from the voice note, for
@@ -552,6 +555,9 @@ export interface Dog {
   /** Exact only for a dog you have photographed yourself. */
   precision: Precision;
   cell_m: number | null;
+  /** Where they were last seen, in words, named for the same map cell either
+   * way. Null until looked up. Absent from an older server. */
+  place?: string | null;
   tags: string[];
   /** Nearest visual neighbours, best first. A ranked shortlist for a human to
    * review -- explicitly NOT a claim that these are the same animal. On this
